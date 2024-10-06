@@ -1,0 +1,60 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1657562097",
+            "description": "Simpler variant of Directional Flow use to hide the repeating Tiling by rotating cells in random directions. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7dGfzR",
+            "likes": 8,
+            "name": "Texture Tiling Hider Square",
+            "published": 3,
+            "tags": [
+                "barycentric",
+                "flow",
+                "pattern",
+                "hex",
+                "directional",
+                "dodecahedron",
+                "vectorfield",
+                "stochastic",
+                "direction",
+                "byexample"
+            ],
+            "usePreview": 1,
+            "username": "gehtsiegarnixan",
+            "viewed": 361
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2022 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/*\nThis is a simple variant of the Square Directional Flow. This one simply doesn't move.\nIt is a great way to create a non repeating tiling. \nThis uses 3 cheap hash calls, and 3 texture lookups.\n\nDirectional Flow animates and rotates a texture in multiple directions with \na flowmap. This means that water wave textures can flow in multiple directions \nat the same time, while the waves point in the right direction. This is not \npossible with trational flow animation, which either has only one wind \ndirection or stretches the texture with temporal blending. The Directional Flow\ndoes this by blending in the spatial dimension. \n\nThe earliest iteration of directional flow I could find is from 2010:\nhttps://www.rug.nl/society-business/centre-for-information-technology/research/hpcv/publications/watershader/\nBut CatlikeCoding's version is much better explained, so I recommend reading \nit as a guide:\nhttps://catlikecoding.com/unity/tutorials/flow/directional-flow/\n\nThis is also an alternet version of by-example stochastic textureing:\nhttps://inria.hal.science/hal-01824773\n*/\n\n//#define RepeatTiling\n//#define ShowGrid\n\n// My customized hash which is faster than a texture lookup\n// inspired by David Hoskins https://www.shadertoy.com/view/XdGfRR\n#define VPRIME1 uvec2(3480082861U, 2420690917U)\n#define VPRIME2 uvec2(1317666547U, 2149110343U)\n#define SMALLESTFLOAT (1.0 / float(0xffffffffU))\nvec2 hash22(vec2 p)\n{\n\tuvec2 q = uvec2(ivec2(p)) * VPRIME1;\n\tq = (q.x & q.y) * VPRIME2;\n\treturn vec2(q) * SMALLESTFLOAT;\n}\n\n// struct to hold 5 floats at a time of my tiling functions\nstruct tilingVal \n{\n    vec2 grid;       // Coordinates of the cell in the grid (UV centered on cell)\n    vec2 id;         // ID values\n    float edgeDist;  // Edge distance from the cell's center to its boundaries\n};\n\n// Square tiling function, 0 and negative values don't work\ntilingVal squareTile(vec2 uv) {\n    vec2 grid = fract(uv) - 0.5;   // the cell coordinates in the grid\n\n    vec2 distanceFromCenter = abs(grid);\n    float edgeDist = (0.5 - max(distanceFromCenter.x, distanceFromCenter.y)) * 2.0;\n\n    vec2 id = uv - grid;  // ID values for the cell\n\n    return tilingVal(grid, id, edgeDist);  // make tilingVal struct\n}\n\n// Rhombus tiling function\ntilingVal rhomTile(vec2 uv) {\n    vec2 a = fract(uv- vec2(.0, .5))-.5;\n    vec2 b = fract(uv- vec2(.5, .0))-.5;    \n    vec2 grid = dot(a,a) < dot(b,b) ? a : b; //UV centered in cell\n    \n    vec2 ma = abs(a);\n    vec2 mb = abs(b);\n    float eDist = (max(ma.x+ma.y,mb.x+mb.y)-0.5)*2.; //Edge Distance\n    \n    // adding tiny offset to prevent floating point errors\n    vec2 id = uv - grid  + 0.0000001; //ID values\n    return tilingVal(grid, id, eDist);  // make tilingVal struct\n}\n\n// rotates and animates texture in flowmap direction \nvec3 directionalTex (vec2 uv, vec2 flowMap) {\n    vec2 direction = normalize(flowMap); // normalize for rotation\n    uv = mat2x2(direction.y, direction.x, -direction.x, direction.y)*uv; // rotate UVs\n    \n    uv += flowMap; // offset\n    \n    return texture(iChannel0, uv).xyz; // sample texture\n}\n\n// Increases the steepness of Alpha while preserving 0-1 range and 1 sum\n// See 2 value example (https://www.desmos.com/calculator/dpxa6mytnv)\nvec3 smoothContrast(vec3 alpha, float contrast) {\n    // increase steepness using power\n    vec3 powAlpha = pow(alpha, vec3(contrast));\n    \n    // normalize back to precentage of 1\n    return powAlpha/(powAlpha.x + powAlpha.y + powAlpha.z);\n}\n\n// 3 Grids blending between each other with each tile having a unique rotation and offset\nvec3 squareDirectionalNoise(vec2 uv, float gridRes, float contrast) {\n    #ifdef RepeatTiling    \n        uv = fract(uv); // repeating UVs is sometimes useful\n        // needs to be a hole number or tiling won't be seamless\n        gridRes = floor(gridRes);\n    #endif    \n    \n    uv *= gridRes; // scalue UVs to gridres\n    \n    tilingVal A = squareTile(uv); // grid A\n    tilingVal B = squareTile(uv + vec2(0.5)); // grid B offset to corner of grid A\n    tilingVal C = rhomTile(uv); // grid C\n        \n    // adding prime number to avoid 0 where hash does not work, rescale to -1-1\n    vec2 noiseA = hash22(A.id + 181.)*2.-1.;\n    \n    #ifdef RepeatTiling\n        // mod for repeating at UV=1, add prime number to avoid 0\n        vec2 noiseB = hash22(mod(B.id, gridRes) + 691.) * 2. -1.;\n        // also multiply by 2 as hash rounds UVs, adding ti\n        vec2 noiseC = hash22(mod(C.id, gridRes)*2. + 353.) * 2. -1.;\n    #else\n        vec2 noiseB = hash22(B.id + 691.)*2.-1.;\n        vec2 noiseC = hash22(C.id * 2. + 353.) * 2. -1.;\n    #endif\n    \n    // scale UVs so the entire texture is visible in a tile\n    // the proper range is ~1-3 and artists don't read, so constant\n    A.grid *= 2.0;\n    B.grid *= 2.0;\n    C.grid *= 2.0;\n    \n    // rotate and offset then sample texture\n    vec3 gridA = directionalTex(A.grid, noiseA);\n    vec3 gridB = directionalTex(B.grid, noiseB);\n    vec3 gridC = directionalTex(C.grid, noiseC);\n    \n    //All edgeDist added = 1 -> so we can skip the more expensive C calculation\n    vec3 alpha = vec3(A.edgeDist, B.edgeDist, 1.-(A.edgeDist + B.edgeDist)); \n    \n    alpha = smoothContrast(alpha, contrast); // increase contrast\n    \n    // interpolate result\n    vec3 col = gridA * alpha.x + gridB * alpha.y + gridC * alpha.z;\n    \n    #ifdef ShowGrid\n        // overlaying the edges of the alpha mask\n        float lineThickness = 0.05; // must be smaller than 0.1\n        vec3 mask = step(abs(alpha - 0.1), vec3(lineThickness));\n        return max(mask, col);\n    #else\n        return col;\n    #endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    // rectangular UVs\n    vec2 uv = fragCoord/iResolution.y;    \n    // uv *= 2.; // to better see repeating tilings\n    \n    float gridRes = 3.;\n    float contrast = 4.; //1 no contrast, higher values increase contrast\n\n    vec3 col = squareDirectionalNoise(uv, gridRes, contrast);\n\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

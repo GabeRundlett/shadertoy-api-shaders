@@ -1,0 +1,136 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1664102779",
+            "description": "Finally decided to give Ray Tracing In One Weekend book (Peter Shirley) a try. This shader performs the final render from Ch. 13 (Where Next?). Drag the mouse to rotate camera. ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "styBR1",
+            "likes": 11,
+            "name": "RT in One Weekend: Next",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "ray",
+                "illumination",
+                "tracing",
+                "diffuse",
+                "montecarlo",
+                "hash",
+                "weekendmglobal"
+            ],
+            "usePreview": 0,
+            "username": "piyushslayer",
+            "viewed": 704
+        },
+        "renderpass": [
+            {
+                "code": "/**\n* Finally decided to give Ray Tracing In One Weekend (Peter Shirley) a try.\n* http://in1weekend.blogspot.com/2016/01/ray-tracing-in-one-weekend.html\n*\n* This shader performs the final render from Chapter 13 of the book. \n*\n* Most of the ray tracer logic lies in the common tab with some initialization and input handling\n* in Buffer A. Buffer B stores last frame's mouse location. \n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec4 outColor = textureLod(iChannel0, uv, 0.0);\n    fragColor = vec4(pow(outColor.xyz, vec3(1.0 / 2.2)), 1.0);\n    if (fragCoord.y < 1.0) fragColor = vec4(0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI         3.1415926535\n#define TWO_PI     6.2831853071\n#define BIG_EPS    1e-3\n#define SMOL_EPS   1e-8\n\n#define Saturate(x) clamp(x, 0.0, 1.0)\n\n#define M_LAMBERTIAN 0\n#define M_METAL 1\n#define M_DIELECTRIC 2\n\nconst float cameraNear = BIG_EPS;\nconst float cameraFar  = 65535.0;\n\nstruct Camera\n{\n    vec3 origin, forward, left, up, lowerLeftCorner, horizontal, vertical;\n    float lensRadius;\n};\n\nstruct Ray\n{\n    vec3 origin, direction;\n};\n\nstruct Material\n{\n    int type;\n    vec3 albedo;\n    float extraParam; // This can be fuzz for metals, or IOR for dielectrics (nothing for lambert)\n};\n\nstruct HitResult\n{\n    float t;\n    vec3 position, normal;\n    Material material;\n    bool frontFace;\n};\n\nstruct Sphere\n{\n    vec3 center;\n    float radius;\n    Material material;\n};\n\n// Quality hashes collection by nimitz https://www.shadertoy.com/view/Xt3cDn\nfloat hashSeed = 0.0;\n\nuint BaseHash(uvec2 p) {\n    p = 1103515245U * ((p >> 1U) ^ (p.yx));\n    uint h32 = 1103515245U * ((p.x) ^ (p.y >> 3U));\n    return h32 ^ (h32 >> 16);\n}\n\nfloat Hash1(inout float seed)\n{\n    uint n = BaseHash(floatBitsToUint(vec2(seed += 0.1, seed += 0.1)));\n    return float(n) * (1.0 / float(0xffffffffU));\n}\n\nvec2 Hash2(inout float seed) {\n    uint n = BaseHash(floatBitsToUint(vec2(seed += 0.1, seed += 0.1)));\n    uvec2 rz = uvec2(n, n * 48271U);\n    return vec2(rz.xy & uvec2(0x7fffffffU)) / float(0x7fffffff);\n}\n\nvec3 Hash3(inout float seed) {\n    uint n = BaseHash(floatBitsToUint(vec2(seed += 0.1, seed += 0.1)));\n    uvec3 rz = uvec3(n, n * 16807U, n * 48271U);\n    return vec3(rz & uvec3(0x7fffffffU)) / float(0x7fffffff);\n}\n\nvec2 RandomPointInUnitDisk(inout float seed)\n{\n    vec2 h = Hash2(seed) * vec2(1.0, TWO_PI);\n    return h.x * vec2(cos(h.y), sin(h.y));\n}\n\n// Source: Karthik Karanth's blog: \n// https://karthikkaranth.me/blog/generating-random-points-in-a-sphere/#better-choice-of-spherical-coordinates\nvec3 RandomPointInUnitSphere(inout float seed) {\n    vec3 h = Hash3(seed) * vec3(TWO_PI, 2.0, 1.0) - vec3(0.0, 1.0, 0.0);\n    float theta = h.x;\n    float sinPhi = sqrt(1.0 - h.y * h.y);\n    float r = pow(h.z, 0.3333333334);\n    \n    return r * vec3(cos(theta) * sinPhi, sin(theta) * sinPhi, h.y);\n}\n\nvec3 GetIntersectPoint(in Ray ray, in float t)\n{\n    return ray.origin + ray.direction * t;\n}\n\nvec3 GetBackgroundColor(in float y)\n{\n    // Get a nice skyblue-ish gradient background\n    return mix(vec3(1.0), vec3(0.5, 0.7, 1.0), y);\n}\n\nvoid FlipNormalAndIOR(in Ray incoming, inout HitResult result)\n{\n    float isFrontFace = float(dot(incoming.direction, result.normal) < 0.0);\n    result.material.extraParam = mix(result.material.extraParam,\n        1.0 / result.material.extraParam, isFrontFace);   \n    result.normal = mix(-result.normal, result.normal, isFrontFace);\n}\n\n// PBRT Book refract: \n// https://www.pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#Refract\nbool RefractPBRT(in vec3 V, in vec3 N, in float etaRatio, inout float cosThetaI, inout vec3 transmitted)\n{\n    transmitted = vec3(SMOL_EPS); // Avoid NaNs\n    \n    cosThetaI = max(0.0, dot(-V, N));\n    float sin2ThetaI = 1.0 - cosThetaI * cosThetaI;\n    float cos2ThetaT = 1.0 - etaRatio * etaRatio * sin2ThetaI;\n    \n    if (cos2ThetaT < 0.0) return false;\n    \n    transmitted = etaRatio * V + (etaRatio * cosThetaI - sqrt(cos2ThetaT)) * N;\n    \n    return true;\n}\n\nfloat SchlickApprox(float cosine, float etaRatio) \n{\n    float r0 = (1.0 - etaRatio) / (1.0 + etaRatio);\n    r0 *= r0;\n    return r0 + (1.0 - r0) * pow((1.0 - cosine), 5.0);\n}\n\n// Scatter the incoming ray based on the bxdf\nbool ScatterRay(in Ray incoming, in HitResult hitInfo, inout vec3 attenuation, inout Ray scattered)\n{\n    if (hitInfo.material.type == M_LAMBERTIAN)\n    {\n        scattered = Ray(hitInfo.position, normalize(hitInfo.normal + RandomPointInUnitSphere(hashSeed)));\n        attenuation = hitInfo.material.albedo;\n        return true;\n    }\n    else if(hitInfo.material.type == M_METAL)\n    {\n        scattered = Ray(hitInfo.position, normalize(reflect(incoming.direction, hitInfo.normal) + \n            hitInfo.material.extraParam * RandomPointInUnitSphere(hashSeed)));\n        attenuation = hitInfo.material.albedo;\n        return dot(scattered.direction, hitInfo.normal) > 0.0;\n    }\n    else if (hitInfo.material.type == M_DIELECTRIC)\n    {\n        FlipNormalAndIOR(incoming, hitInfo);\n        vec3 transmitDirection;\n\n        float cosThetaI;\n        bool isRefracted = RefractPBRT(incoming.direction, hitInfo.normal, hitInfo.material.extraParam, \n            cosThetaI, transmitDirection);\n        float shouldReflect = mix(1.0, step(Hash1(hashSeed), SchlickApprox(cosThetaI, \n            hitInfo.material.extraParam)), float(isRefracted));\n        transmitDirection = mix(transmitDirection, reflect(incoming.direction, hitInfo.normal), shouldReflect);\n        \n        scattered = Ray(hitInfo.position, normalize(transmitDirection));\n        \n        attenuation = hitInfo.material.albedo;\n        \n        return true;\n    }\n    \n    return false;\n}\n\nbool IntersectSphere(in Ray ray, in Sphere sphere, inout HitResult result)\n{\n    vec3 oc = ray.origin - sphere.center;\n    float a = dot(ray.direction, ray.direction);\n    float b = dot(oc, ray.direction);\n    float c = dot(oc, oc) - sphere.radius * sphere.radius;\n    float d = b * b - a * c;\n    \n    if (d < 0.0) return false;\n\n    float temp = (-b - sqrt(d)) / a; // Nearest hit\n    \n    if (temp < result.t && temp > cameraNear)\n    {\n        result.t = temp;\n        result.position = GetIntersectPoint(ray, temp);\n        result.normal = (result.position - sphere.center) * 1.0 / sphere.radius;\n        result.material = sphere.material;\n        return true;\n    }\n   \n    return false;\n}\n\n#define GRID_ROW_SIZE 10.0\n\nbool IntersectWorld(in Ray ray, inout HitResult worldResult)\n{\n    HitResult tempResult;\n    tempResult.t = cameraFar;\n    bool worldHit = false;\n    \n    // Floor\n    if (IntersectSphere(ray,\n        Sphere(vec3(0.0, -5000.0, 0.0), 5000.0, Material(M_LAMBERTIAN, vec3(0.5, 0.5, 0.5), 1.0)), tempResult))\n    {\n        worldResult = tempResult;\n        worldHit = true;\n    }\n    \n    // Big Glass\n    if (IntersectSphere(ray,\n        Sphere(vec3(0.0, 1.0, 0.0), 1.0, Material(M_DIELECTRIC, vec3(1.0), 1.5)), tempResult))\n    {\n        worldResult = tempResult;\n        worldHit = true;\n    }\n    \n    // Big Lamber\n    if (IntersectSphere(ray,\n        Sphere(vec3(-4.0, 1.0, 0.0), 1.0, Material(M_LAMBERTIAN, vec3(0.4, 0.2, 0.1), 1.0)), tempResult))\n    {\n        worldResult = tempResult;\n        worldHit = true;\n    }\n    \n    // Big Metal\n    if (IntersectSphere(ray,\n        Sphere(vec3(4.0, 1.0, 0.0), 1.0, Material(M_METAL, vec3(0.7, 0.6, 0.5), 0.0)), tempResult))\n    {\n        worldResult = tempResult;\n        worldHit = true;\n    }\n    \n    vec4 h; // w -> seed\n    vec4 center = vec4(0.0); // w -> material extra param, fuzz for metal and ior for dielectric\n    int randomMaterialType;\n    \n    for (float x = -GRID_ROW_SIZE; x < GRID_ROW_SIZE; ++x)\n    {\n        for(float y = -GRID_ROW_SIZE; y < GRID_ROW_SIZE; ++y)\n        {\n            h.w = x + y * 0.125;\n            h.xyz = Hash3(h.w);\n            center.xyz = vec3(x * 1.1 + 0.9 * h.x, 0.2, y * 1.1 + 0.9 * h.y);\n            randomMaterialType = int(mix(float(M_LAMBERTIAN), float(M_METAL), float(h.z > 0.75)));\n            randomMaterialType = int(mix(float(randomMaterialType), float(M_DIELECTRIC), float(h.z > 0.9)));\n            \n            if (length(center.xyz - vec3(4.0, 0.2, 0.0)) > 0.9 &&\n                length(center.xyz) > 0.9 &&\n                length(center.xyz - vec3(-4.0, 0.2, 0.0)) > 0.9)\n            {\n                center.w = mix(0.25, 1.5, float(randomMaterialType == M_DIELECTRIC));\n                center.w = mix(center.w, h.z * 0.25, float(randomMaterialType == M_METAL));\n                h.xyz = mix(h.xyz * h.xyz, sqrt(h.xyz), float(randomMaterialType == M_DIELECTRIC));\n\n                if (IntersectSphere(ray,\n                    Sphere(center.xyz, 0.2, Material(randomMaterialType, h.xyz, center.w)), tempResult))\n                {\n                    worldResult = tempResult;\n                    worldHit = true;\n                }\n            }\n        }\n    }\n    \n    return worldHit;\n}\n\n#define MAX_BOUNCES 4\n\nvec3 GetSceneColor(in Ray ray)\n{\n    HitResult worldResult;\n    vec3 sceneColor = vec3(1.0);\n    \n    for (int i = 0; i < MAX_BOUNCES; ++i)\n    {\n        if (IntersectWorld(ray, worldResult))\n        {\n            Ray scattered; \n            vec3 attenuation;\n            if (ScatterRay(ray, worldResult, attenuation, scattered))\n            {\n                sceneColor *= attenuation;\n                ray = scattered;\n            }\n            else\n            {\n                break;\n            }\n        }\n        else\n        {\n            return sceneColor * GetBackgroundColor(ray.direction.y * 0.5 + 0.5);\n        }\n    }\n    \n    return vec3(0.0);\n}\n\nRay GetCameraRay(in Camera camera, in vec2 uv)\n{\n    vec2 randomInDisk = camera.lensRadius * RandomPointInUnitDisk(hashSeed);\n    vec3 offset = camera.left * randomInDisk.x + camera.up * randomInDisk.y;\n    return Ray(camera.origin + offset, normalize(camera.lowerLeftCorner + uv.x * camera.horizontal \\\n        + uv.y * camera.vertical - camera.origin - offset));\n}\n\nCamera GetCamera(in vec3 eye, in vec3 lookAt, in vec3 up, in vec2 camRot, in float fov, in float aspect, in float aperture)\n{\n    Camera camera;\n    \n    float theta = fov * PI * 0.0055555556; // 1.0 / 180.0\n    float h = tan(theta * 0.5);\n    float viewportHeight = 2.0 * h;\n    float viewportWidth = aspect * viewportHeight;\n\n    // Handle camera mouse rotation\n    vec3 eyeToFocus = eye - lookAt;\n    float eyeToFocusDistance = length(eyeToFocus);\n    \n    // Translate toward anchor point\n    eye -= lookAt;\n    \n    // Rotate using spherical coords\n    camRot.x = camRot.x * PI * 2.0;\n    camRot.y = mix(PI * 0.02, PI * 0.48, camRot.y);\n    \n    eye.x = eyeToFocusDistance * sin(camRot.x) * sin(camRot.y);\n    eye.y = eyeToFocusDistance * cos(camRot.y);\n    eye.z = eyeToFocusDistance * cos(camRot.x) * sin(camRot.y);\n    \n    // Translate rotated position back\n    eye += lookAt;\n    \n    // Construct orthonormal basis\n    camera.forward = normalize(eye - lookAt);\n    camera.left = normalize(cross(up, camera.forward));\n    camera.up = cross(camera.forward, camera.left);\n\n    // Set up camera\n    camera.origin = eye;\n    camera.horizontal = eyeToFocusDistance * viewportWidth * camera.left;\n    camera.vertical = eyeToFocusDistance * viewportHeight * camera.up;\n    camera.lowerLeftCorner = camera.origin - camera.horizontal * 0.5 \\\n        - camera.vertical * 0.5 - eyeToFocusDistance * camera.forward;\n        \n    camera.lensRadius = aperture * 0.5;\n    \n    return camera;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/**\n* Buffer A initializes stuff for ray tracing (camera, rays, input handling etc) and initiates\n* the ray tracing process. At the end, it accumulates the ray traced result with the previously\n* accumulated history buffer. \n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    hashSeed = float(BaseHash(floatBitsToUint(fragCoord))) / float(0xffffffffU) + iTime;\n    \n    //vec2 uv = (2.0 * (floor(fragCoord) + Hash2(hashSeed)) - iResolution.xy) / iResolution.y;\n    vec2 uv = (floor(fragCoord) + Hash2(hashSeed)) / iResolution.xy;\n    \n    vec4 currentMouse = iMouse / iResolution.xyxy;\n    vec4 previousMouse = texelFetch(iChannel1, ivec2(fragCoord), 0); // last frame mouse coords\n    vec2 cameraRotationUVSpace = texelFetch(iChannel0, ivec2(0), 0).xy;\n    \n    vec4 historyColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    float sampleCount = historyColor.w;\n    \n    // Add mouse drag velocity to camera so it only moves from its current position\n    if (currentMouse.z > 0.0 && previousMouse.z > 0.0)\n    {\n        cameraRotationUVSpace += currentMouse.xy - previousMouse.xy;\n        cameraRotationUVSpace.y = Saturate(cameraRotationUVSpace.y);\n        \n        // Reset history on mouse click\n        sampleCount = 1.0;\n        historyColor.xyz = vec3(0.0);\n    }\n    \n    // Reset history on resolution change\n    if (texelFetch(iChannel0, ivec2(0), 0).z != iResolution.x)\n    {\n        sampleCount = 1.0;\n        historyColor.xyz = vec3(0.0);\n    }\n    \n    vec3 outColor = vec3(0.);\n    \n    if (iFrame == 0) // Initial camera position\n    {\n        cameraRotationUVSpace = vec2(0.21, 0.95);\n        sampleCount = 1.0;\n    } \n    \n    outColor = GetSceneColor(\n        GetCameraRay(\n            GetCamera(vec3(13.0, 2.0, 3.0),\n                      vec3(0.0),\n                      vec3(0.0, 1.0, 0.0),\n                      cameraRotationUVSpace,\n                      30.0, iResolution.x / iResolution.y, 0.16), uv));\n    \n    outColor = mix(historyColor.xyz, outColor, 1.0 / sampleCount++);\n    \n    // Save the cameraPosition at [0, 0] coordinate of this buffer\n    if (all(lessThan(fragCoord, vec2(1.0))))\n    {\n        outColor = vec3(cameraRotationUVSpace, iResolution.x);\n    }\n    \n    fragColor = vec4(outColor, sampleCount);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n* Buffer B just saves the current frame's mouse position for it to be used in the next frame.\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 mouse = iMouse / iResolution.xyxy;\n    fragColor = mouse;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

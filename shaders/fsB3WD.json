@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1617382296",
+            "description": "Exp. to reduce artifacts when the ray is nearly tangent to surface.\n--> If we happen to be on the last iteration of marching, then use a much larger epsilon. <--\nL: No fix\nR: Fix\nT: 150 iters steps\nB: 70 iters\n\noriginal: https://shadertoy.com/view/fdBGWD",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "fsB3WD",
+            "likes": 11,
+            "name": "Reduce tangent-grazing artifacts",
+            "published": 3,
+            "tags": [
+                "tangents",
+                "artifacts"
+            ],
+            "usePreview": 0,
+            "username": "elenzil",
+            "viewed": 319
+        },
+        "renderpass": [
+            {
+                "code": "/*\n * oxe:\n * An experiment using oneshade's beautiful \"Limited Smooth Mod\" shader https://shadertoy.com/view/fdBGWD .\n * \n * The idea here is to reduce those annoying sky-showing-through artifacts we always get near edge-on surfaces\n * when the ray has marched out to its maximum number of steps and we're spending our time\n * running parallel to a surface.\n *\n * --> When checking if we're \"close enough\" to the surface to call it a hit,\n * --> if we happen to be on the last iteration, then use a much wider threshhold.\n * --> ie, on the last step check for say epsilon 2.0 instead of epsilon 0.001.\n * \n * This introduces some inaccuracies where actual surfaces blend together.\n *\n */\n\n\n\n// Fork of \"Limited Smooth Mod\" by oneshade. \n// 2021-04-02 16:24:13\n\n// SDFs\nfloat sdBox(in vec3 p, in vec3 b) {\n    vec3 q = abs(p) - b;\n    return length(max(q, 0.0)) + min(0.0, max(q.x, max(q.y, q.z)));\n}\n\n// Distance operators\n// Use continuous! It will look a lot nicer.\nfloat smoothModLim(in float x, in float span, in float size, in float smoothness, in bool continuous) {\n    float m = 1.0 - smoothness;\n    float ss = span / size;\n\n    float sModX = asin(sin(x / size) * m) * size;\n\n    float slope = 1.0;\n    float offs = asin(sin(ss) * m) * size;\n\n    if (continuous) {\n        float s = sin(ss);\n        slope = m * cos(ss) / sqrt(1.0 - m * m * s * s);\n    }\n\n    float sModLimX = mix(sModX, (x - span) * slope + offs, step(span, x));\n    sModLimX = mix(sModLimX, (x + span) * slope - offs, 1.0 - step(-span, x));\n\n    return sModLimX;\n}\n\n// Scene\nfloat mapScene(in vec3 p) {\n    p.x = smoothModLim(p.x, 6.0, 1.5, 0.3, true);\n    p.y = smoothModLim(p.y, 6.0, 1.5, 0.3, true);\n    p.z = smoothModLim(p.z, 6.0, 1.5, 0.3, true);\n    \n    float t = iTime * 0.03 + 13.5;\n\n    float c = cos(t), s = sin(t);\n    p.xz *= mat2(c, -s, s, c);\n    p.yz *= mat2(c, -s, s, c);\n\n    return sdBox(p, vec3(1.0, 0.25, 1.5));\n}\n\n// Gradient\nvec3 getNormal(in vec3 p) {\n    vec3 e = vec3(0.001, 0.0, 0.0);\n    return normalize(vec3(mapScene(p + e.xyy) - mapScene(p - e.xyy),\n                          mapScene(p + e.yxy) - mapScene(p - e.yxy),\n                          mapScene(p + e.yyx) - mapScene(p - e.yyx)));\n}\n\nint iterMax(in vec2 fragCoord) {\n    // oxe: 70 iterations is a bit artifically low here, to exaggerate the effect.\n    // oneshade's original value is 150.\n    return fragCoord.y > iResolution.y / 2.0 ? 150 : 70;\n}\n\nbool closeEnough(in vec2 fragCoord, in float d, in int iter) {\n    if (fragCoord.x < iResolution.x / 2.0) {\n        return d < 0.001;\n    }\n    else {\n        return (d < 0.001) || (iter == iterMax(fragCoord) && d < 2.0);\n    }\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n\n    vec2 mouse = true ? (iMouse.xy - center) / iResolution.y * 3.14 : vec2(0.0);\n    vec2 uv = (fragCoord - center) / iResolution.y;\n\n    vec3 ro = vec3(0.0, 0.0, 25.0);\n    vec3 rd = normalize(vec3(uv, -1.0));\n\n    // Rotate with mouse\n    float cy = cos(mouse.x), sy = sin(mouse.x);\n    float cp = cos(mouse.y), sp = sin(mouse.y);\n\n    ro.yz *= mat2(cp, -sp, sp, cp);\n    ro.xz *= mat2(cy, -sy, sy, cy);\n    rd.yz *= mat2(cp, -sp, sp, cp);\n    rd.xz *= mat2(cy, -sy, sy, cy);\n\n    // Sky\n    fragColor = vec4(mix(vec3(0.25, 0.25, 1.0), vec3(1.0), 0.5 + 0.5 * rd.y), 1.0);\n\n    // Raymarch\n    float t = 0.0, d;\n    for (int i=0; i <= iterMax(fragCoord); i++) {\n        vec3 p = ro + rd * t;\n        d = mapScene(p);\n        if (closeEnough(fragCoord, d, i)) {\n            vec3 n = getNormal(p);\n            vec3 l = vec3(-0.58, 0.58, 0.58);\n\n            vec3 color = abs(n) * 1.25;\n            fragColor.rgb = color * max(0.2, dot(n, l));\n\n            break;\n        }\n\n        if (t > 50.0) {\n            break;\n        }\n\n        t += d;\n    }\n    \n    // oxe: screen-split lines\n    fragColor = mix(fragColor, vec4(1.0), 0.5 * floor(mod((fragCoord.x - iResolution.x / 2.0 + 10.0) / 20.0, 2.0)) * smoothstep(2.0, 0.0, abs(fragCoord.y - iResolution.y / 2.0)));\n    fragColor = mix(fragColor, vec4(1.0), 0.5 * floor(mod((fragCoord.y - iResolution.y / 2.0 + 10.0) / 20.0, 2.0)) * smoothstep(2.0, 0.0, abs(fragCoord.x - iResolution.x / 2.0)));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

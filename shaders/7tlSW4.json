@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1625792094",
+            "description": "Testing in a simple scene with a rotating box. I'm really missing a volumetric shadow! I think that will go on my todo list. Control the light with the mouse.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7tlSW4",
+            "likes": 12,
+            "name": "Light With Object",
+            "published": 3,
+            "tags": [
+                "3d",
+                "illumination",
+                "light",
+                "volumetric",
+                "integration"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 220
+        },
+        "renderpass": [
+            {
+                "code": "float getIllumination(in vec3 p, in float k, in float d) {\n    return k / (1.0 + dot(p, p) / (d * d));\n}\n\n// Short range (up to oclluder at t)\nfloat volumeLightPartial(in vec3 ro, in vec3 rd, in float k, in float d, in float t) {\n    float b = dot(ro, rd);\n    float c = dot(ro, ro) + d * d;\n    float h = sqrt(c - b * b), r = b / h;\n    return d * d * k * (atan(t / h + r) - atan(r)) / h;\n}\n\n// Infinite range\nfloat volumeLightFull(in vec3 ro, in vec3 rd, in float k, in float d) {\n    const float rho = 1.57079632679;\n    float b = dot(ro, rd);\n    float c = dot(ro, ro) + d * d;\n    float h = sqrt(c - b * b);\n    return d * d * k * (rho - atan(b / h)) / h;\n}\n\nfloat iSphere(in vec3 ro, in vec3 rd, in float r) {\n    float b = dot(ro, rd);\n    float c = dot(ro, ro) - r * r;\n    float h = sqrt(b * b - c);\n    if (h < 0.0) return -1.0;\n    return -b - sqrt(h);\n}\n\n// Modified from https://iquilezles.org/articles/intersectors\nfloat iBox(in vec3 ro, in vec3 rd, in vec3 boxSize, out vec3 outNormal)  {\n    vec3 n = ro / rd;\n    vec3 k = boxSize / abs(rd);\n    vec3 q = abs(ro) - boxSize;\n    vec3 t1 = -k - n, t2 = +k - n;\n    float tN = max(max(t1.x, t1.y), t1.z);\n    float tF = min(min(t2.x, t2.y), t2.z);\n    if (tN > tF || tF < 0.0) return -1.0;\n    outNormal = -sign(rd) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);\n    return mix(tN, tF, step(0.0, -max(q.x, max(q.y, q.z))));\n}\n\n// Camera matrix\nmat3 getCamera(in vec2 viewDir) {\n    vec2 c = cos(viewDir); vec2 s = sin(viewDir);\n    return mat3(       c.x, 0.0,         s.x,  // Right\n                s.x * -s.y, c.y, -c.x * -s.y,  // Up\n                s.x *  c.y, s.y, -c.x *  c.y); // Forward\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n    vec2 uv = (fragCoord - center) / iResolution.y;\n    vec2 mouse = (iMouse.xy - center) / iResolution.y;\n    fragColor = vec4(0.0);\n\n    // Camera ray\n    mat3 cam = getCamera(vec2(0.65, 0.0));\n    vec3 ro = vec3(-2.0, 0.0, 4.5);\n    vec3 rd = normalize(cam * vec3(uv, 1.0));\n\n    // Light control\n    float k = 0.8 + 0.1 * cos(iTime), d = 0.5;\n    vec3 lightColor = vec3(1.0, 0.75, 0.15);\n\n    vec3 lightPos = vec3(0.0);\n    if (iMouse.z > 0.0) {\n        vec3 md = normalize(cam * vec3(mouse, 1.0));\n        lightPos = ro - vec3(md.xy * ro.z / md.z, ro.z);\n    }\n\n    // Box control\n    vec3 boxSize = vec3(1.0), boxNor;//, dummy;\n    vec3 boxPos = vec3(3.0, 0.0, 0.0);\n\n    mat3 boxRot = mat3(1.0); // Identity\n    float c = cos(iTime), s = sin(iTime);\n    boxRot *= mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); // XZ rotation\n    boxRot *= mat3(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c); // YZ rotation\n\n    // Intersect box\n    vec3 roBox = (ro - boxPos) * boxRot;\n    vec3 rdBox = rd * boxRot;\n    float tBox = iBox(roBox, rdBox, boxSize, boxNor);\n\n    if (tBox > 0.0) {\n        vec3 hitPos = ro + rd * tBox;\n        boxNor = boxRot * boxNor;\n\n        // Lighting\n        vec3 lightDir = normalize(lightPos - hitPos);\n        float diff = max(0.0, dot(lightDir, boxNor));\n        float illum = clamp(getIllumination(hitPos - lightPos, k, d), 0.0, 1.0) * diff * 10.0;\n        float scatterLight = volumeLightPartial(ro - lightPos, rd, k, d, tBox);\n        //if (iBox((hitPos + lightDir * 0.001 - boxPos) * boxRot, lightDir * boxRot, boxSize, dummy) > 0.0) illum = 0.0, scatterLight = 0.0;\n\n        float checkers = 0.5 + 0.5 * mod(dot(floor((roBox + rdBox * tBox) * 2.0 + 0.001), vec3(1.0)), 2.0);\n        fragColor.rgb += vec3(1.0, 0.0, 0.0) * checkers * lightColor * illum;\n        fragColor.rgb = mix(fragColor.rgb, lightColor, clamp(scatterLight, 0.0, 1.0));\n    }\n\n    else {\n        fragColor.rgb += volumeLightFull(ro - lightPos, rd, k, d) * lightColor;\n    }\n\n    float tSphere = iSphere(ro - lightPos, rd, 0.1);\n    if (tSphere > 0.0 && (tBox > 0.0 ? (tSphere < tBox) : true)) {\n        fragColor.rgb = 2.0 * lightColor;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

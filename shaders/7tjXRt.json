@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1628421082",
+            "description": "[b]New one at [url]https://www.shadertoy.com/view/sscGR8[/url][/b]\nBeat synced up to [url=https://youtu.be/Iuw8Lrg0Jyg]Black Panther's ending theme[/url]. Try that song!\nColor scheme inspired by the movie's tunnel fight\nMouse drag.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7tjXRt",
+            "likes": 1,
+            "name": "Black Panther Tribute (Old)",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "sdf",
+                "scene"
+            ],
+            "usePreview": 0,
+            "username": "chenglou",
+            "viewed": 271
+        },
+        "renderpass": [
+            {
+                "code": "// Beat is synced to All The Stars: https://youtu.be/Iuw8Lrg0Jyg\n// New one at https://www.shadertoy.com/view/sscGR8\n\n#define MAX_DEPTH 3 // 2 reflection passes. 60fps on this machine\n\n#define PI 3.14159\n\n// utils from inigo\nfloat sdSphere(vec3 p, float r) {\n  return length(p) - r;\n}\nfloat sdBox(vec3 p, vec3 b) {\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\nfloat opRep( in float p, in float s ) {\n    return mod(p+s*0.5,s)-s*0.5;\n}\nfloat expImpulse(float x, float k) {\n    float h = k*x;\n    return h*exp(1.0-h);\n}\n// modified from mercury sdf\nvec3 pModPolarXY(vec3 p, float repetitions) {\n\tfloat angle = 2.*PI/repetitions;\n\tfloat a = atan(p.y, p.x) + angle/2. + p.z / 2.; // twist the tunnel\n\tfloat r = length(p.xy);\n\tfloat c = floor(a/angle);\n\ta = mod(a,angle) - angle/2.;\n\treturn vec3(cos(a) * r, sin(a) * r, p.z);\n}\n\nconst vec3 Killmonger = vec3(0.77, 0.62, 0.32);\nconst vec3 TChalla = vec3(0.72, 0.52, 0.99); // RIP\nconst vec3 Okoye = vec3(0.84, 0.53, 0.46);\n// All The Stars from Black Panther has a beat per minute of 97\nconst float secondPerBeat = 60. / 97.;\n// Beat's peak doesn't happen at time 0. Shift it to be so\n// This eases manually syncing with the music's beat if you press restart\nconst float beatOffset = 0.075;\n\nstruct material { vec3 attenuation; vec3 emission; float sdf; };\n\nmaterial map(vec3 p, float beat) {\n    // polar repeat & twist field\n    vec3 rotatedP = pModPolarXY(p, 8.); // 8 rail blocks\n    rotatedP.x += beat * 0.03 - 0.3; // periodic impulse, try in graphtoy\n    rotatedP.z = opRep(p.z - iTime / 2., 0.25); // z axis move & rail block repeat\n    \n    const vec3 halfSize = vec3(.015, .077, 0.11);\n    float dRailways = sdBox(rotatedP, halfSize);\n    float dLights = sdBox(rotatedP, halfSize + vec3(-0.01, 0.01, -0.01)) - 0.004; // rounder\n    float dOrb = sdSphere(p, 0.1);\n    \n    // colors\n    vec3 attenuation, emission;\n    if (dRailways > dLights || dRailways > dOrb) {\n        vec3 color = mod(iTime + beatOffset, secondPerBeat * 2.) > secondPerBeat ? TChalla : Killmonger;\n        attenuation = color;\n        emission = color * (0.7 + beat / 2.); // tune up emission when the beat's high\n    } else {\n        attenuation = Okoye;\n        emission = vec3(0);\n    }\n\n    return material(attenuation, emission, min(dRailways, min(dLights, dOrb)));\n}\n\nvec3 calcNormal( in vec3 p, float beat) {\n    float h = 1e-5;\n    const vec2 k = vec2(1,-1);\n    return normalize( k.xyy*map( p + k.xyy*h, beat).sdf + \n                      k.yyx*map( p + k.yyx*h, beat).sdf + \n                      k.yxy*map( p + k.yxy*h, beat).sdf + \n                      k.xxx*map( p + k.xxx*h, beat).sdf );\n}\n\nfloat maxT = 12.;\nbool rayMarch(vec3 ro, vec3 rd, float beat, out float t, out material m, out vec3 glow) {\n    t = 1e-3;\n    glow = vec3(1);\n    for(int i = 0; i < 85; i++) {\n        vec3 p = ro + t * rd;\n        m = map(p, beat);\n        float df = abs(m.sdf);\n        \n        if (df < 0.0007) return true;\n        if (t > maxT) return false;\n        \n        // add a physically incorrect glow when near an emissive material\n        const float glowDist = .05;\n        float diff = glowDist - df;\n        glow += m.emission * step(0., diff) * diff * 5.; // adjust 5 for glow strengh\n        \n        t += max(0.001, m.sdf);\n    }\n    return false;\n}\n\nvec3 rayTrace(vec3 ro, vec3 rd, float beat, vec2 seed) {\n    vec3 color = vec3(0);\n    // We want the emissive lights to also keep reflecting. See usage below\n    // This should be the correct way to calculate such light. I haven't seen\n    // it anywhere else (iteratively, on GLSL) so I had to derive the calculations.\n    vec3 accumulatedAttenuation = vec3(1);\n\n    vec3 ro_ = ro;\n    vec3 rd_ = rd;\n\n    const vec3 background = vec3(0.09, 0.09, .27);\n    const vec3 backgroundAttenuation = background * 0.1;\n    vec3 glow;\n\n    for (int depth = 0; depth < MAX_DEPTH; depth++) {\n        float t;\n        material m;\n        bool hit = rayMarch(ro_, rd_, beat, t, m, glow);\n\n        if (hit) {\n            vec3 pos = ro_ + rd_ * t;\n            vec3 normal = calcNormal(pos, beat);\n            vec3 reflected = reflect(rd_, normal);\n\n            color += accumulatedAttenuation * m.emission;\n            accumulatedAttenuation *= m.attenuation;\n\n            if (dot(reflected, normal) > 0.) {\n                ro_ = pos;\n                rd_ = reflected;\n            }\n        } else {\n            float gradient = rd_.y / iResolution.y * 500. + 0.5;\n            vec3 emission = background * gradient;\n            \n            color += accumulatedAttenuation * emission;\n            accumulatedAttenuation *= backgroundAttenuation;\n            color += accumulatedAttenuation;\n            \n            break;\n        }\n    }\n    color *= glow; // this isn't physically accurate but whatever\n    \n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 uv = (1. * fragCoord) / iResolution.xy;\n    float aspect_ratio = iResolution.x / iResolution.y;\n\n    // camera\n    vec3 ro;\n    if (length(iMouse.xy) == 0.) {\n        ro = smoothstep(0., 0.9, vec3(vec2(1) - iTime / 4., 1));\n    } else {\n        ro = vec3(-(2. * iMouse.xy - iResolution.xy) / iResolution.y, 1);\n    }\n    vec3 lookat = vec3(cos(iTime) / 10., sin(iTime) / 10., 0);\n    vec3 vup = vec3(0, 1, 0);\n    float vfov = 50.;\n\n    float theta = radians(vfov);\n    float h = tan(theta / 2.);\n    float viewport_height = 2.0 * h;\n    float viewport_width = aspect_ratio * viewport_height;\n\n    vec3 w = normalize(ro - lookat);\n    vec3 u = normalize(cross(vup, w));\n    vec3 v = cross(w, u);\n\n    vec3 horizontal = viewport_width * u;\n    vec3 vertical = viewport_height * v;\n    vec3 lower_left_corner = ro - horizontal / 2. - vertical / 2. - w;\n\n    vec3 rd = normalize(lower_left_corner + uv.x * horizontal + uv.y * vertical - ro);\n\n    float beat = expImpulse(mod(iTime + beatOffset, secondPerBeat), 14.);\n    vec3 color = rayTrace(ro, rd, beat, uv);\n    \n    color = pow(color, vec3(1.0/2.2)); // gamma correction\n\n    fragColor = vec4(color, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,134 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1590471016",
+            "description": "- Just an experiment with lighting volumetric data\n- First pass computes light penetration to each voxel; second pass blends the result along the camera ray\n- Inputs: Mouse, ASDF (color, lighting, density, debug)",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "tdjBR1",
+            "likes": 377,
+            "name": "Volumetric lighting",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "clouds",
+                "voxel",
+                "volumetric",
+                "nebula",
+                "smoke"
+            ],
+            "usePreview": 0,
+            "username": "tmst",
+            "viewed": 9495
+        },
+        "renderpass": [
+            {
+                "code": "// ========================\n// Marching through volume\n// ========================\n\n#define DATA(lmn) texture(iChannel0, vcubeFromLMN(2, lmn)).st\n\nvec2 getDataInterp(vec3 lmn) {\n    vec3 flmn = floor(lmn);\n\n    vec2 d000 = DATA( flmn );\n    vec2 d001 = DATA( flmn + vec3(0.0, 0.0, 1.0) );\n    vec2 d010 = DATA( flmn + vec3(0.0, 1.0, 0.0) );\n    vec2 d011 = DATA( flmn + vec3(0.0, 1.0, 1.0) );\n    vec2 d100 = DATA( flmn + vec3(1.0, 0.0, 0.0) );\n    vec2 d101 = DATA( flmn + vec3(1.0, 0.0, 1.0) );\n    vec2 d110 = DATA( flmn + vec3(1.0, 1.0, 0.0) );\n    vec2 d111 = DATA( flmn + vec3(1.0, 1.0, 1.0) );\n\n    vec3 t = lmn - flmn;\n    return mix(\n        mix(mix(d000, d100, t.x), mix(d010, d110, t.x), t.y),\n        mix(mix(d001, d101, t.x), mix(d011, d111, t.x), t.y),\n        t.z\n    );\n}\n\nvoid readLMN(in vec3 lmn, out float density, out float lightAmount) {\n    #ifdef SMOOTHING\n    \tvec2 data = getDataInterp(lmn);\n    #else\n    \tvec2 data = DATA(lmn);\n    #endif\n\n    bool noLight = texelFetch(iChannel2, ivec2(KEY_S,0), 0).x > 0.5;\n    lightAmount = noLight ? 1.0 : data.t;\n    lightAmount = mix(lightAmount, 1.0, 0.025);\n\n    // density = fDensity(iChannel1, lmn, iTime);\n    density = data.s;\n}\n\nvec4 march(vec3 p, vec3 nv, vec2 fragCoord) {\n    vec2 tRange;\n    float didHitBox;\n    boxClip(BOX_MIN, BOX_MAX, p, nv, tRange, didHitBox);\n    tRange.s = max(0.0, tRange.s);\n\n    vec4 color = vec4(0.0);\n    if (didHitBox < 0.5) {\n        return color;\n    }\n    \n    bool noColor = texelFetch(iChannel2, ivec2(KEY_A,0), 0).x > 0.5;\n\tbool noDensity = texelFetch(iChannel2, ivec2(KEY_D,0), 0).x > 0.5;\n    \n    float t = tRange.s + min(tRange.t-tRange.s, RAY_STEP)*hash12(fragCoord);\n    int i=0;\n    for (; i<150; i++) { // Theoretical max steps: (BOX_MAX-BOX_MIN)*sqrt(3)/RAY_STEP\n        if (t > tRange.t || color.a > QUIT_ALPHA) { break; }\n\n        vec3 rayPos = p + t*nv;\n        vec3 lmn = lmnFromWorldPos(rayPos);\n\n        float density;\n        float lightAmount;\n        readLMN(lmn, density, lightAmount);\n\n        vec3 cfrag = noColor ? vec3(1.0) : colormap(0.7*density+0.8);\n        density = noDensity ? 0.1 : density;\n\n        float calpha = density * MAX_ALPHA_PER_UNIT_DIST * RAY_STEP;\n        vec4 ci = clamp( vec4(cfrag * lightAmount, 1.0)*calpha, 0.0, 1.0);\n        color = blendOnto(color, ci);\n\n        t += RAY_STEP;\n    }\n\n    float finalA = clamp(color.a/QUIT_ALPHA, 0.0, 1.0);\n    color *= (finalA / (color.a + 1e-5));\n\n    bool showSteps = texelFetch(iChannel2, ivec2(KEY_F,0), 0).x > 0.5;\n    return showSteps ? vec4(vec3(float(i)/150.0), 1.0) : color;\n}\n\n// ================\n// Final rendering\n// ================\n\n#define RES iResolution\n#define TAN_HALF_FOVY 0.5773502691896257\n#define VIGNETTE_INTENSITY 0.25\n\nvec3 skybox(vec3 nvDir) {\n    return ( mix(0.1, 0.2, smoothstep(-0.2,0.2, nvDir.y)) )*vec3(1.0);\n}\n\nvec3 nvCamDirFromClip(vec3 nvFw, vec2 clip) {\n    vec3 nvRt = normalize(cross(nvFw, vec3(0.,1.,0.)));\n    vec3 nvUp = cross(nvRt, nvFw);\n    return normalize(TAN_HALF_FOVY*(clip.x*(RES.x/RES.y)*nvRt + clip.y*nvUp) + nvFw);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord / iResolution.xy;\n\n    // Camera\n    float isMousePressed = clamp(iMouse.z, 0.0, 1.0);\n    vec2 mouseAng = mix(\n        vec2(CAM_THETA, CAM_PHI),\n        PI * vec2(4.0*iMouse.x, iMouse.y) / iResolution.xy,\n        isMousePressed\n    );\n\n    vec3 camPos = 2.5 * SPHERICAL(mouseAng.x, mouseAng.y);\n    vec3 lookTarget = vec3(0.0);\n\n\tvec3 nvCamFw = normalize(lookTarget - camPos);\n    vec3 nvCamDir = nvCamDirFromClip(nvCamFw, uv*2. - 1.);\n\n    // Render\n    vec3 bgColor = skybox(nvCamDir);\n    vec4 fgColor = march(camPos, nvCamDir, fragCoord);\n    vec3 finalColor = blendOnto(fgColor, vec4(bgColor, 1.0)).rgb;\n\n    // Vignette\n    vec2 radv = vec2(0.5, 0.5) - uv;\n    float dCorner = length(radv) / INV_SQRT_2;\n    float vignetteFactor = 1.0 - mix(0.0, VIGNETTE_INTENSITY, smoothstep(0.4, 0.9, dCorner));\n\n    fragColor = vec4(vignetteFactor * finalColor, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//#define PERFORMANCE_MODE\n\n// ==========================\n// Generic Helpers/Constants\n// ==========================\n\n// Keyboard input description: https://www.shadertoy.com/view/lsXGzf\n#define KEY_A 65\n#define KEY_S 83\n#define KEY_D 68\n#define KEY_F 70\n\n#define PI 3.141592653589793\n#define TWOPI 6.283185307179586\n#define HALFPI 1.570796326794896\n#define INV_SQRT_2 0.7071067811865476\n\n#define POLAR(theta) vec3(cos(theta), 0.0, sin(theta))\n#define SPHERICAL(theta, phi) (sin(phi)*POLAR(theta) + vec3(0.0, cos(phi), 0.0))\n\nfloat len2Inf(vec2 v) {\n    vec2 d = abs(v);\n    return max(d.x, d.y);\n}\n\nvoid boxClip(\n    in vec3 boxMin, in vec3 boxMax,\n    in vec3 p, in vec3 v,\n    out vec2 tRange, out float didHit\n){\n    //for each coord, clip tRange to only contain t-values for which p+t*v is in range\n    vec3 tb0 = (boxMin - p) / v;\n    vec3 tb1 = (boxMax - p) / v;\n    vec3 tmin = min(tb0, tb1);\n    vec3 tmax = max(tb0, tb1);\n\n    //t must be > tRange.s and each tmin, so > max of these; similar for t1\n    tRange = vec2(\n        max(max(tmin.x, tmin.y), tmin.z),\n        min(min(tmax.x, tmax.y), tmax.z)\n    );\n\n    //determine whether ray intersects the box\n    didHit = step(tRange.s, tRange.t);\n}\n\n// cf. Dave Hoskins https://www.shadertoy.com/view/4djSRW\n// -------------------------\nfloat hash12(vec2 p) {\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3) {\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 hash31(float p) {\n   vec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n   p3 += dot(p3, p3.yzx+33.33);\n   return fract((p3.xxy+p3.yzz)*p3.zyx);\n}\n// -------------------------\n\n// cf. iq https://www.shadertoy.com/view/ll2GD3\nvec3 colormap(float t) {\n    return .5 + .5*cos(TWOPI*( t + vec3(0.0,0.1,0.2) ));\n}\n\nvec4 blendOnto(vec4 cFront, vec4 cBehind) {\n    return cFront + (1.0 - cFront.a)*cBehind;\n}\n\n// ======================\n// Voxel packing helpers\n// ======================\n\n#define BOX_MIN vec3(-1.0)\n#define BOX_MAX vec3(1.0)\n#define BOX_N 128.0\n\nvec3 lmnFromWorldPos(vec3 p) {\n    vec3 uvw = (p - BOX_MIN) / (BOX_MAX - BOX_MIN);\n    return uvw * vec3(BOX_N-1.0);\n}\n\nvec3 worldPosFromLMN(vec3 lmn) {\n    return mix(BOX_MIN, BOX_MAX, lmn/(BOX_N-1.0));\n}\n\n// Data is organized into 3 \"pages\" of 128x128x128 voxels.\n// Each \"page\" takes up 2 faces of the 1024x1024 cubemap,\n// each face storing 8x8=64 of the 128x128 slices.\n\nvec3 vcubeFromLMN(in int page, in vec3 lmn) {\n    // subtexture within [0,8)^2\n    float l = mod(round(lmn.x), 128.0);\n    float tm = mod(l, 8.0);\n    float tn = mod((l - tm)/8.0, 8.0);\n    vec2 tmn = vec2(tm, tn);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(round(lmn.yz), 128.0);\n\n    // pixel position on 1024x1024 face\n    vec2 fragCoord = 128.0*tmn + mn + 0.5;\n    vec2 p = fragCoord*(2.0/1024.0) - 1.0;\n\n    vec3 fv;\n    if (page == 1) {\n        fv = vec3(1.0, p);\n    } else if (page == 2) {\n        fv = vec3(p.x, 1.0, p.y);\n    } else {\n        fv = fv = vec3(p, 1.0);\n    }\n\n    if (l < 64.0) {\n        return fv;\n    } else {\n        return -fv;\n    }\n}\n\nvoid lmnFromVCube(in vec3 vcube, out int page, out vec3 lmn) {\n    // page and parity, and pixel position on 1024x1024 texture\n    vec2 p;\n    float parity;\n    if (abs(vcube.x) > abs(vcube.y) && abs(vcube.x) > abs(vcube.z)) {\n        page = 1;\n        p = vcube.yz/vcube.x;\n        parity = vcube.x;\n    } else if (abs(vcube.y) > abs(vcube.z)) {\n        page = 2;\n        p = vcube.xz/vcube.y;\n        parity = vcube.y;\n    } else {\n        page = 3;\n        p = vcube.xy/vcube.z;\n        parity = vcube.z;\n    }\n    vec2 fragCoord = floor((0.5 + 0.5*p)*1024.0);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(fragCoord, 128.0);\n\n    // subtexture within [0,8)^2\n    vec2 tmn = floor(fragCoord/128.0);\n\n    float lAdd;\n    if (parity > 0.0) {\n        lAdd = 0.0;\n    } else {\n        lAdd = 64.0;\n    }\n    lmn = vec3(tmn.y*8.0 + tmn.x + lAdd, mn);\n}\n\n// ===================\n// Density definition\n// ===================\n\n#define MAX_ALPHA_PER_UNIT_DIST 10.0\n#define QUIT_ALPHA 0.99\n#define QUIT_ALPHA_L 0.95\n\n#ifdef PERFORMANCE_MODE\n    #define RAY_STEP 0.035\n    #define RAY_STEP_L 0.05\n#else\n\t#define RAY_STEP 0.025\n    #define RAY_STEP_L 0.025\n\t#define SMOOTHING\n#endif\n\n#define CAM_THETA (0.2*iTime)\n#define CAM_PHI (HALFPI - 0.2)\n#define LIGHT_POS (0.9*POLAR(CAM_THETA+PI*0.15) + vec3(0.0, 2.0, 0.0))\n\n// cf. iq https://www.shadertoy.com/view/4sfGzS\nfloat noise(sampler2D randSrc, vec3 x) {\n    vec3 i = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n\tvec2 uv = (i.xy+vec2(37.0,17.0)*i.z) + f.xy;\n\tvec2 rg = textureLod( randSrc, (uv+0.5)/256.0, 0.0).yx;\n\treturn mix( rg.x, rg.y, f.z );\n}\n\nfloat fbm(sampler2D randSrc, vec3 p) {\n    p *= 0.6;\n    float v = noise(randSrc, p);\n\n    p *= 0.3;\n    v = mix(v, noise(randSrc, p), 0.7);\n\n    p *= 0.3;\n    v = mix(v, noise(randSrc, p), 0.7);\n\n    return v;\n}\n\nfloat fDensity(sampler2D randSrc, vec3 lmn, float t) {\n    t += 32.0;\n    \n    // Current position adjusted to [-1,1]^3\n    vec3 uvw = (lmn - vec3(63.5))/63.5;\n\n    // Value used to offset the main density\n    float d2 = fbm(randSrc,\n\t\tvec3(0.6, 0.3, 0.6)*lmn +\n\t\tvec3(0.0, 8.0*t, 0.0)\n\t);\n\n    // Main density\n    float d1 = fbm(randSrc,\n        0.3*lmn +\n        vec3(0.0, 4.0*t, 0.0) +\n        5.0*vec3( cos(d2*TWOPI), 2.0*d2, sin(d2*TWOPI) )\n    );\n    d1 = pow(d1, mix( 4.0, 12.0, smoothstep(0.6,1.0,len2Inf(uvw.xz)) ));\n\n    // Tweak density curve\n    float a = 0.02;\n    float b = 0.08;\n    return 0.02 + 0.2*smoothstep(0.0, a, d1) + 0.5*smoothstep(a, b, d1) + 0.18*smoothstep(b, 1.0, d1);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ==========================\n// Store density on \"page 1\"\n// ==========================\n\nvec4 doPage1(vec3 lmn) {\n    return vec4(fDensity(iChannel1, lmn, iTime), 1.0, 1.0, 1.0);\n}\n\nvec4 getPage1(vec3 lmn) {\n    bool isInit = iFrame < 5;\n    return isInit ? doPage1(lmn) : texture(iChannel0, vcubeFromLMN(1, lmn));\n}\n\n// ===========================\n// Store lighting on \"page 2\"\n// ===========================\n\nfloat march(vec3 p, vec3 nv) {\n    float lightAmount = 1.0;\n\n    vec2 tRange;\n    float didHitBox;\n    boxClip(BOX_MIN, BOX_MAX, p, nv, tRange, didHitBox);\n    tRange.s = max(0.0, tRange.s);\n\n    if (didHitBox < 0.5) {\n        return 0.0;\n    }\n\n    float t = tRange.s + min(tRange.t-tRange.s, RAY_STEP_L)*hash13(100.0*p);\n    int i=0;\n    for (; i<150; i++) { // Theoretical max steps: (BOX_MAX-BOX_MIN)*sqrt(3)/RAY_STEP_L\n        if (t > tRange.t || lightAmount < 1.0-QUIT_ALPHA_L) { break; }\n        \n        vec3 rayPos = p + t*nv;\n        vec3 lmn = lmnFromWorldPos(rayPos);\n\n        float density = getPage1(lmn).s;\n        float calpha = clamp(density * MAX_ALPHA_PER_UNIT_DIST * RAY_STEP_L, 0.0, 1.0);\n\n        lightAmount *= 1.0 - calpha;\n\n        t += RAY_STEP_L;\n    }\n\n    return lightAmount;\n}\n\nvec4 doPage2(vec3 lmn) {\n\tfloat density = getPage1(lmn).s;\n\n\tvec3 p = worldPosFromLMN(lmn);\n    float lightAmount = march(p, normalize(LIGHT_POS - p));\n\n    return vec4(density, lightAmount, 1.0, 1.0);\n}\n\n// ==================\n// Write to cube map\n// ==================\n\nvoid mainCubemap(out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir) {\n    vec3 lmn;\n    int pageDst;\n    lmnFromVCube(rayDir, pageDst, lmn);\n\n    if (pageDst == 1) {\n        fragColor = doPage1(lmn);\n    } else if (pageDst == 2) {\n        fragColor = doPage2(lmn);\n    } else {\n        discard;\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

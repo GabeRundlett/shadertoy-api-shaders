@@ -1,0 +1,56 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1584261267",
+            "description": "Just testing some things and fiddling around. Tried to implement my own shadow algorithm without cheating ... and then cheated a bit ... but still learnt something! ^-^",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WdsyRn",
+            "likes": 26,
+            "name": "Glossy Snake on Mars",
+            "published": 3,
+            "tags": [
+                "shadow",
+                "snake",
+                "mars",
+                "penumbra",
+                "soft",
+                "daylight"
+            ],
+            "usePreview": 0,
+            "username": "ddoodm",
+            "viewed": 729
+        },
+        "renderpass": [
+            {
+                "code": "const float INFINITY = 300.0;\nconst float EPSILON = 0.001;\nconst float PI = 3.14159;\nconst float SHADOW_AREA = 50.0;\nconst bool DO_REFLECTION = false;\n\nvec3 lp1 = normalize(vec3(0.7, 0.6, -0.7));\n\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\nfloat smin( float d1, float d2, float k )\n{\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h);\n}\n\nfloat smax( float d1, float d2, float k )\n{\n    float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );\n    return mix( d2, -d1, h ) + k*h*(1.0-h);\n}\n\nfloat sdBox(vec3 p, vec3 b)\n{\n    return length(max(abs(p) - b, 0.0));\n}\n\nfloat sdSphere(vec3 p, float r)\n{\n    return length(p) - r;\n}\n\nfloat sdPlane(vec3 p)\n{\n    return p.y;\n}\n\nvec2 sdWorld(vec3 p) {\n    float dp = length(p);\n    float d = 0.0;\n    \n    float s1, b1, p1;\n    \n    // sphere\n    {\n        vec3 pp = p;\n        float bf = pow(abs(sin(iTime * 4.0)), 0.8);\n        pp -= vec3(\n            cos(iTime * 4.0) * 2.5,\n            bf*5.0,\n            -cos(iTime * 2.0 + PI/2.0) * 3.);\n        s1 = sdSphere(pp, 1.0);\n    }\n    \n    // box\n    {\n        vec3 pp = p + vec3(\n            cos(p.z*0.4 + iTime*4.0)*4.0,\n            -1.0 + sin(p.z-iTime*4.0)*0.5,\n            0.0);\n        pp.y += pow(abs(p.z*0.03), 11.0);\n        float r = max(0.0, 0.25);\n        vec3 br = vec3(r, r, 100.0);\n        b1 = sdBox(pp, br);\n        b1 -= 0.3; // rounding\n        b1 *= 0.5; // fix marcher\n                \n        d = min(s1, b1);\n    }\n    \n    // ground\n    {\n        vec3 pp = p;\n        float dirt = textureLod(iChannel0, p.xz*0.02, 0.0).x;\n        float cd = dp;\n\t\tcd *= 0.5 + 0.25 * (cos(p.x/30.0) + sin(p.z/20.0));\n\t\tpp.y -= pow(cd*0.015, 2.5);\n        dirt *= (1.0 - min(1.0,cd*0.005));\n        dirt *= 1.5;\n        pp.y += dirt;\n        \n        p1 = sdPlane(pp+vec3(0.0, 0.0, 0.0));\n        \n        // slight performance enhancement\n        if(dp < 100.0)\n        {\n            // mirrored hills with holes in em\n        \tfloat hillo = textureLod(iChannel0, p.xz*0.005, 0.0).y;\n            float hilld = 85.0;\n            pp.z = -abs(pp.z); // mirror\n            pp.y -= hillo * 5.0;\n            float hill1 = sdSphere(pp+vec3(0,30.,hilld), 50.0);\n            p1 = smin(p1, hill1, 20.0);\n            pp.x *= 2.4;\n            pp.y *= 1.1;\n            pp.z *= 1.0;\n            pp -= -(1.0+2.0*vec3(hillo,0,hillo))*2.0;\n            float hillh1 = sdSphere(pp+vec3(0,12.,hilld-48.), 21.0);\n            p1 = smax(hillh1, p1, 3.0);\n        }\n        \n        d = min(d, p1);\n    }\n    \n    // floor is 1, white is 2\n    float mat = 100.0;\n    if(p1<=d) mat = 1.0;\n    if(b1<=d) mat = 2.0;\n    if(s1<=d) mat = 3.0;\n    \n    return vec2(d, mat);\n}\n\nvec4 trace(vec3 ro, vec3 rd)\n{\n    const int ITERS = 200;\n    \n    vec3 p = ro;\n    vec2 d;\n    \n    for(int i = 0; i < ITERS; i++)\n    {\n        d = sdWorld(p);\n        \n        if(d.x <= EPSILON) {\n            return vec4(p, d.y);\n        }\n        if(d.x >= INFINITY) {\n            return vec4(p, 0.0);\n        }\n        \n        p += rd * d.x;\n    }\n    \n    return vec4(p, d.y);\n}\n\nvec3 normal(vec3 p)\n{\n    vec2 e = vec2(EPSILON, 0.0);\n    return normalize(vec3(\n    \tsdWorld(p+e.xyy).x - sdWorld(p-e.xyy).x,\n        sdWorld(p+e.yxy).x - sdWorld(p-e.yxy).x,\n        sdWorld(p+e.yyx).x - sdWorld(p-e.yyx).x\n\t));\n}\n\nfloat softShadow(vec3 ro, vec3 rd)\n{\n    const int ITERS = 30;\n\n    float nearest = 1.0;\n    \n    float t = 0.1;\n    for(int i = 0; i < ITERS; i++)\n    {\n        vec3 p = ro + rd * t;\n        float d = sdWorld(p).x;\n        \n        float od = d / t;\n        \n        if(od < nearest) {\n            nearest = od;\n        }\n        if(d <= EPSILON) {\n\t\t\treturn 0.0;\n        }\n        if(d >= INFINITY) {\n            break;\n        }\n        \n        t += min(0.5, max(EPSILON, d));\n    }\n    \n    return nearest;\n}\n\nvec3 shadeSky(vec3 rd)\n{\n    vec3 up = vec3(0.0, 1.0, 0.0);\n    float du = max(0.0, dot(rd, up));\n    float id = 1.0 - du;\n    id = pow(id, 2.0);\n    \n    float dl = max(0.0, dot(rd, lp1));\n    dl = pow(dl, 5.0);\n    dl += pow(dl, 4.0);\n    vec3 lc = vec3(1.0, 0.9, 0.9);\n    \n    float hz = pow(max(0.0, 1.0 - du*0.6), 30.0);\n    vec3 hzc = vec3(1.0, 0.85, 0.85);\n    \n    vec3 bc = vec3(0.4, 0.6, 0.9);\n    \n    return mix(bc*id + lc*dl, hzc, hz);\n}\n\nvec3 shadeWorld(vec4 pm, vec3 ro, vec3 n)\n{\n    vec3 lp2 = vec3(0.0, -1.0, 0.0);\n    vec3 lp3 = -lp1;\n    \n    float mat = pm.w;\n    vec3 p = pm.xyz;\n    float d = length(p);\n    vec3 r = reflect(normalize(p-ro), n);\n\n    vec3 amb = vec3(0.15, 0.16, 0.2);\n    vec3 alb = vec3(1.0);\n    vec3 salb = vec3(1.0);\n    vec3 l3alb = vec3(1.0,0.7,0.5);\n    \n    if(mat < 1.5) {\n        // floor\n        amb *= 0.7;\n        alb = vec3(1.0,0.7,0.5);\n        salb = vec3(0);\n        l3alb = vec3(0);\n    } else if (mat < 2.5) {\n        // band\n        amb = vec3(0.3,0.2,0.25);\n        alb = vec3(1.0,0.4,0.4);\n    }\n    \n    float l1 = max(0.0, dot(n, lp1));\n    float l2 = max(0.0, dot(n, lp2));\n    float l3 = max(0.0, dot(n, lp3));\n    \n    float spec1 = pow(max(0.0, dot(r, lp1)), 50.0);\n    \n    float s1 = 1.0;\n    if(d <= SHADOW_AREA)\n    {\n\t\ts1 = softShadow(p, lp1);\n    \ts1 = max(0.2, min(1.0, s1 * 4.0));\n    }\n\n    return  amb * alb +\n        \talb * l1 * s1 +\n        \talb * l3 * l3alb * 0.15 +\n        \tsalb * spec1;\n}\n\nvec3 shade(vec4 hit, vec3 ro, vec3 rd)\n{\n    vec3 col;\n    vec3 p = hit.xyz;\n    float d = length(p - ro);\n    \n    if(hit.w < 0.5) {\n        col = shadeSky(rd);\n    } else {\n    \tvec3 n = normal(p);\n        vec3 sky = shadeSky(rd);\n        vec3 world = shadeWorld(hit, ro, n);\n        float dm = min(pow(d*0.003, 1.8), 1.0);\n        col = mix(world, sky, dm);\n        \n        if(DO_REFLECTION && hit.w>2.5 && hit.w<3.5)\n        {\n            // ball\n            vec3 r = reflect(rd, n);\n            vec4 rhit = trace(p+r*EPSILON, r);\n            vec3 rn = normal(rhit.xyz);\n            vec3 rc;\n            if(rhit.w<0.5) rc = shadeSky(r);\n            else rc = shadeWorld(rhit, p, rn);\n            col = mix(col, rc, 0.3);\n        }\n    }\n    \n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    uv = (uv - vec2(0.5)) * 2.0;\n    uv.x *= iResolution.x / iResolution.y;\n\n    float t = iTime*0.4 + PI*0.3 + iMouse.x/iResolution.x*PI*2.0;\n    \n    vec3 ro = vec3(0.0, 4.0, -15.0);\n    vec3 rd = normalize(vec3(uv.x, uv.y, 1.8));\n    \n    mat3 rot = mat3(\n        cos(t), 0,\tsin(t),\n        0,\t\t1,\t0,\n        -sin(t),0,\tcos(t));\n    ro *= rot;\n    rd *= rot;\n    \n    vec4 hit = trace(ro, rd);\n    \n    vec3 col = shade(hit, ro, rd);\n    \n\tcol = ACESFilm(col);\n        \n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

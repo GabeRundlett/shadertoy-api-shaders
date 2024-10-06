@@ -1,0 +1,113 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1519073508",
+            "description": "Reference: a jewelry piece I found online. Pretty hard to get right, unfortunately :(",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XdcyDM",
+            "likes": 135,
+            "name": "Creation Stone",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "terrain",
+                "snow",
+                "rock",
+                "density",
+                "crystal",
+                "jewelry"
+            ],
+            "usePreview": 1,
+            "username": "mmerchante",
+            "viewed": 3371
+        },
+        "renderpass": [
+            {
+                "code": "#define FIXED_STEP_SIZE .0175\n#define FIXED_STEPS 100\n\n#define MAX_DISTANCE 50.0\n#define MIN_DISTANCE 4.0\n#define EPSILON .025\n#define EPSILON_MEDIUM .75\n\n#define MEDIUM_ETA .5757575\n\n// https://www.shadertoy.com/view/4djSRW\n//  3 out, 3 in...\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+19.19);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n//  1 out, 3 in...\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat dot2(vec3 p)\n{\n    return dot(p, p);\n}\n\nfloat worley(vec3 p)\n{\n    float d = 10.0;\n    \n    vec3 n = floor(p);\n    \n    for(int z = -1; z <= 1; z++)\n    for(int y = -1; y <= 1; y++)\n    for(int x = -1; x <= 1; x++)\n    {\n        vec3 neighbor = n + vec3(x,y,z);\n        vec3 centerPosition = neighbor + hash33(neighbor);\n        \n        d = min(d, dot2(centerPosition - p) + .7);\n        \n        if(d < 0.0)\n            break;\n\t}\n\n\treturn d;\n}\n\nfloat density(vec3 p)\n{\n   \tp.xz -= worley(p * 2.342) * .2;\n    p.y += .45;\n    p *= .15;\n    p.xz *= .75;\n    float d = p.y * 1.5;\n    p.y += sin(p.x * 12.0) * .05 - .05;\n    p.xz += sin(p.y * 12.0) * .01 + .01;\n    p.y *= .35;\n    \n    float edge0 = p.y * 8.0 + (sin(p.y * 1.0)  * .5 + .5) * .3;    \n   \tfloat terrain = smoothstep(edge0 + .2, edge0, texture(iChannel1, p.xz * 2.0).r) * 1.25;\n    \n    d += terrain;\n    \n    // This adds a nice rim over the terrain\n    d += sin(terrain * 3.14 - .5) * 1.5; \n    d += p.y + .4;\n    d -= smoothstep(.1, -.05, p.y - d * .005);    \n    \n\treturn d;\n}\n\nfloat terrain(vec3 p)\n{\n\tp.xz -= worley(p * 2.342) * .2;\n    p.y += .45;\n    p *= .15;\n    p.xz *= .75;\n    p.y += sin(p.x * 12.0) * .05 - .05;\n    p.xz += sin(p.y * 12.0) * .01 + .01;\n    p.y *= .35;\n    \n    float tx = texture(iChannel1, p.xz).r + .05;    \n\n   \tfloat terrain = smoothstep(.3, .0, tx * .2 + texture(iChannel1, p.xz * 2.0).r * .5) * 1.5;\n    return terrain;\n}\n\n// ---------------------------------------------------------\n\nstruct Intersection\n{\n    float totalDistance;\n    float mediumDistance;\n    float sdf;\n    float density;\n    int materialID;\n};\n    \nstruct Camera\n{\n\tvec3 origin;\n    vec3 direction;\n    vec3 left;\n    vec3 up;\n};\n    \n// ---------------------------------------------------------\n    \nIntersection FinalizeRaymarch(Camera camera, vec4 bufA)\n{    \n    Intersection outData;\n    outData.sdf = 0.0;\n    outData.density = 0.0;\n    outData.totalDistance = bufA.w;\n\n    // INNER MEDIUM\n    if(outData.totalDistance < MAX_DISTANCE)\n    {\n        float t = FIXED_STEP_SIZE;\n        float d = 0.0;\n        \n        vec3 hitPosition = camera.origin + camera.direction * (outData.totalDistance + EPSILON);\n        vec3 normal = bufA.xyz;\n        \n        float roughETA = MEDIUM_ETA + hash13(hitPosition * 44.) *.02;\n        vec3 refr = refract(camera.direction, normal, roughETA);\n        \n        for(int i = 0; i < FIXED_STEPS; ++i)\n        {            \n            vec3 p = hitPosition + refr * t;\n            \n            // We know the size of the rock\n            if(length(p) > length(hitPosition))\n                break;\n            \n            float dd = density(p);\n            d += dd;\n            t += FIXED_STEP_SIZE * dd * (.9 + hash13(p * 22.2) * .3);\n            \n            if(dd < EPSILON_MEDIUM || t > 4.5)\n                break;\n        }\n        \n        outData.density = d;\n        outData.mediumDistance = t;\n    }\n    \n    return outData;\n}\n\nvec3 Render(Camera camera, Intersection isect, vec4 bufA, vec2 uv)\n{\n    vec3 p = camera.origin + camera.direction * isect.totalDistance;\n    \n    if(isect.totalDistance < MAX_DISTANCE)\n    {        \n        vec3 lPos = camera.origin - camera.left * 6.0 - camera.up * 15.0;\n        vec3 normal = bufA.xyz;\n        \n        vec3 refl = reflect(camera.direction, normal);\n        vec3 env = texture(iChannel0, refl).rgb;\n        \n        float fresnel = smoothstep(.65, .2, -dot(normal, camera.direction));\n        \n        vec3 innerColor = vec3(.25, .75, 1.0);\n        \n        float den = max(0.0001, isect.density) * .0075;\n        vec3 refr = refract(camera.direction, normal, MEDIUM_ETA);\n        vec3 innerP = p + refr * isect.mediumDistance;\n                \n        float deposit = terrain(innerP);\n        vec3 toLight = normalize(lPos - innerP);\n        vec3 volumetric = innerColor * vec3(den + deposit * .375) + vec3(deposit * .2);\n        \n        // Smooth the interface\n        volumetric *= volumetric * smoothstep(-.0, .65, isect.mediumDistance);\n        \n        return env * fresnel * .75 * smoothstep(-.05, .2, normal.y) + volumetric;        \n    }\n    \n    float vignette = 1.0 - pow(length(uv) / 2., 2.0);\n    return vec3(.15, .175, .25) * vignette * vignette * .5;\n}\n\n\nCamera GetCamera(vec2 uv, float zoom)\n{\n    float dist = 4.0 / zoom;\n    float time = 2.9 + iTime * .2;\n    \n    vec3 target = vec3(0.0, 1.0, 0.0);\n    vec3 p = vec3(0.0, 3.5, 0.0) + vec3(cos(time), 0.0, sin(time)) * dist;\n        \n    vec3 forward = normalize(target - p);\n    vec3 left = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));\n    vec3 up = normalize(cross(forward, left));\n\n    Camera cam;   \n    cam.origin = p;\n    cam.direction = normalize(forward - left * uv.x * zoom - up * uv.y * zoom);\n    cam.up = up;\n    cam.left = left;\n        \n    return cam;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (-iResolution.xy + (fragCoord*2.0)) / iResolution.y;    \n    \n    // Cheating here...\n    if(abs(uv.y) > .75)\n    {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    vec2 rawUV = fragCoord / iResolution.xy;\n    vec4 bufA = texture(iChannel2, rawUV);\n    \n    Camera camera = GetCamera(uv, .5);\n    Intersection isect = FinalizeRaymarch(camera, bufA);\n    \n    vec3 color = Render(camera, isect, bufA, uv);\n    \n    \n\tfragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buf A: Container raymarching\n\n#define MAX_STEPS 50\n#define MAX_STEPS_F float(MAX_STEPS)\n\n#define FIXED_STEP_SIZE .025\n\n#define MAX_DISTANCE 50.0\n#define MIN_DISTANCE 4.0\n#define EPSILON .025\n#define EPSILON_MEDIUM .75\n#define EPSILON_NORMAL .05\n\n// hg_sdf\nconst vec3 GDFVectors[19] = vec3[19](\n\tvec3(1.0,.0,.0),\n\tvec3(.0,1.0,.0),\n\tvec3(.0,.0,1.0),\n\tvec3(.577,.577,.577),\n\tvec3(-.577,.577,.577),\n\tvec3(.577,-.577,.577),\n\tvec3(.577,.577,-.577),\n\tvec3(.0,.357,.934),\n\tvec3(.0,-.357,.934),\n\tvec3(.934,.0,.357),\n\tvec3(-.934,.0,.357),\n\tvec3(.357,.934,.0),\n\tvec3(-.357,.934,.0),\n\tvec3(.0,.851,.526),\n\tvec3(.0,-.851,.526),\n\tvec3(.526,.0,.851),\n\tvec3(-.526,.0,.851),\n\tvec3(.851,.526,.0),\n\tvec3(-.851,.526,.0)\n);\n\n\nfloat sdf(vec3 p)\n{\n\tfloat d = 0.0;\n    \n    p = abs(p);\n    \n    d = max(d, dot(p, GDFVectors[2]));\n    d = max(d, dot(p, GDFVectors[3]));\n    d = max(d, dot(p, GDFVectors[4]));\n    d = max(d, dot(p, GDFVectors[5]));\n    d = max(d, dot(p, GDFVectors[6]));\n    d = max(d, dot(p, GDFVectors[7]));\n    d = max(d, dot(p, GDFVectors[8]));\n    d = max(d, dot(p, GDFVectors[9]));\n    d = max(d, dot(p, GDFVectors[10]));    \n    d = max(d, dot(p, GDFVectors[11]));\n    d = max(d, dot(p, GDFVectors[12]));\n    d = max(d, dot(p, GDFVectors[13]));\n    d = max(d, dot(p, GDFVectors[14]));\n    d = max(d, dot(p, GDFVectors[15]));\n    d = max(d, dot(p, GDFVectors[16]));    \n    d = max(d, dot(p, GDFVectors[17]));\n    d = max(d, dot(p, GDFVectors[18]));\n    \n    return (d - 3.0) * 1.25;\n}\n\n// ---------------------------------------------------------\n\nstruct Intersection\n{\n    float totalDistance;\n    float mediumDistance;\n    float sdf;\n    float density;\n    int materialID;\n};\n    \nstruct Camera\n{\n\tvec3 origin;\n    vec3 direction;\n    vec3 left;\n    vec3 up;\n};\n    \n// ---------------------------------------------------------\n\nIntersection Raymarch(Camera camera)\n{    \n    Intersection outData;\n    outData.sdf = 0.0;\n    outData.density = 0.0;\n    outData.totalDistance = MIN_DISTANCE;\n        \n\tfor(int j = 0; j < MAX_STEPS; ++j)\n\t{\n        vec3 p = camera.origin + camera.direction * outData.totalDistance;\n\t\toutData.sdf = sdf(p);\n\n\t\toutData.totalDistance += outData.sdf;\n                \n\t\tif(outData.sdf < EPSILON || outData.totalDistance > MAX_DISTANCE)\n            break;\n\t}\n    \n    return outData;\n}\n\nCamera GetCamera(vec2 uv, float zoom)\n{\n    float dist = 4.0 / zoom;\n    float time = 2.9 + iTime * .2;\n    \n    vec3 target = vec3(0.0, 1.0, 0.0);\n    vec3 p = vec3(0.0, 3.5, 0.0) + vec3(cos(time), 0.0, sin(time)) * dist;\n        \n    vec3 forward = normalize(target - p);\n    vec3 left = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));\n    vec3 up = normalize(cross(forward, left));\n\n    Camera cam;   \n    cam.origin = p;\n    cam.direction = normalize(forward - left * uv.x * zoom - up * uv.y * zoom);\n    cam.up = up;\n    cam.left = left;\n        \n    return cam;\n}\n\nvec3 sdfNormal(vec3 p, float epsilon)\n{\n    vec3 eps = vec3(epsilon, -epsilon, 0.0);\n    \n\tfloat dX = sdf(p + eps.xzz) - sdf(p + eps.yzz);\n\tfloat dY = sdf(p + eps.zxz) - sdf(p + eps.zyz);\n\tfloat dZ = sdf(p + eps.zzx) - sdf(p + eps.zzy); \n\n\treturn normalize(vec3(dX,dY,dZ));\n}\n\n// https://www.shadertoy.com/view/Xts3WM\nfloat curv(in vec3 p, in float w)\n{\n    vec2 e = vec2(-1., 1.) * w;\n    \n    float t1 = sdf(p + e.yxx), t2 = sdf(p + e.xxy);\n    float t3 = sdf(p + e.xyx), t4 = sdf(p + e.yyy);\n    \n    return .25/e.y*(t1 + t2 + t3 + t4 - 4.0 * sdf(p));\n}\n\nvec3 triplanar(vec3 P, vec3 N)\n{   \n    vec3 Nb = abs(N);\n    \n    float b = (Nb.x + Nb.y + Nb.z);\n    Nb /= vec3(b);\n    \n    vec3 c0 = textureLod(iChannel0, P.xy, 3.0).rgb * Nb.z;\n    vec3 c1 = textureLod(iChannel0, P.yz, 3.0).rgb * Nb.x;\n    vec3 c2 = textureLod(iChannel0, P.xz, 3.0).rgb * Nb.y;\n    \n    return c0 + c1 + c2;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (-iResolution.xy + (fragCoord*2.0)) / iResolution.y;    \n    \n    // Cheating here...\n    if(abs(uv.y) > .75)\n    {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    Camera camera = GetCamera(uv, .5);\n    Intersection isect = Raymarch(camera);\n    \n    vec3 p = camera.origin + camera.direction * isect.totalDistance;\n    \n    float c = curv(p, .15);\n    float longC = curv(p, .45);\n    vec3 normal = sdfNormal(p, EPSILON_NORMAL);\n    \n    vec3 tx = triplanar(p * .75, normal) + triplanar(p * 1.5, normal) * .2;\n    tx = tx * 2.0 - 1.0;\n    tx *= .025 + longC * .075;\n        \n    \n    // By feeding the curvature into the normal and distance, we ad enough weirdness to make it plausible\n    if(isect.sdf < EPSILON)\n        isect.totalDistance -= c * 1.5;\n    \n    fragColor =vec4(normalize(normal + tx - c * .25), isect.totalDistance);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

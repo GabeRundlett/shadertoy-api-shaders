@@ -1,0 +1,65 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1604744083",
+            "description": "SDF returns material id",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WdtfR7",
+            "likes": 14,
+            "name": "Crullers",
+            "published": 3,
+            "tags": [
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "Catzpaw",
+            "viewed": 438
+        },
+        "renderpass": [
+            {
+                "code": "//--- Crullers\n// by Catzpaw 2020\n\n#define ITER 128\n#define EPS 1e-4\n#define NEAR 0.5\n#define FAR 15.0\n\n#define ZERO min(0,iFrame)\n\nmat2 rot(float a){float s=sin(a),c=cos(a);return mat2(c,s,-s,c);}\nvec3 hsv(float h,float s,float v){return ((clamp(abs(fract(h+vec3(0.,.666,.333))*6.-3.)-1.,0.,1.)-1.)*s+1.)*v;}\n\n//COLOR ADJUSTMENT\nconst mat3 rgb2yc = mat3(.299,.587,.114,.595716,-.274453,-.321263,.211456,-.522591,.311135);\nconst mat3 yc2rgb = mat3(1.,.9563,.6210,1.,-.2721,-.6474,1.,-1.1070,1.7046);\nvec3 adjust(vec3 c,float h,float s){\n\tc*=rgb2yc;\n    h=atan(c.z,c.y)+h;\n    s=length(c.yz)*s;\n    return vec3(c.r,cos(h)*s,sin(h)*s)*yc2rgb;\n}\n\n//LIGHT COLOR\nvec3 lcol,scol;\n\n//BUMP MAP\nfloat bump(vec3 p){\n    float b=clamp(max(abs(sin(p.x*p.y*3.14)),abs(sin(p.z*8.))),.98,1.)-.98;\n\treturn b*1.5;\n}\n\n//SDF WITH MATERIAL ID\nfloat sdiTwistedRing(vec3 p,out int id){\n    p.xz*=rot(iTime*.6);\n    p=vec3(length(p.xz)-2.5,p.y,atan(p.x,p.z));\n    float b=bump(p);\n    p.xy*=rot(p.z*8.);\n\tfloat d1=length(p.xy+vec2(0, .2))+b-.99,\n          d2=length(p.xy+vec2(0,-.2))+b-.99;\n    id=abs(d1)<abs(d2)?0:2;\n    id+=b>.0?0:1;\n    return min(d1,d2);\n}\n\n//SCENE\nfloat map(vec3 p,out int id){\n\tint i1,i2;\n    p.yz*=rot(iTime*.5);\n    float d1=sdiTwistedRing(p    +vec3(-1.25,0,0),i1),\n          d2=sdiTwistedRing(p.xzy+vec3( 1.25,0,0),i2);\n    id=abs(d1)<abs(d2)?i1:3+i2;\n    return min(d1,d2);\n}\n\n//NORMAL\nvec3 normal(vec3 p){\n    const vec2 e=vec2(-1,1);\n    int z;\n    return normalize(e.xxx*map(p+e.xxx*EPS,z)+e.xyy*map(p+e.xyy*EPS,z)+\n                     e.yxy*map(p+e.yxy*EPS,z)+e.yyx*map(p+e.yyx*EPS,z));\n}\n\n//RAYMARCHING\nfloat trace(vec3 ro,vec3 rd,out int id,out vec3 p,out vec3 n){\n    float t=NEAR,d;\n    for(int i=ZERO;i<ITER;i++){\n        p=ro+rd*t;\n        d=map(p,id);\n        if(abs(d)<EPS||t>FAR)break;\n        t+=step(d,1.)*d*.5+d*.5;\n    }\n    n=normal(p);\n    return min(t,FAR);\n}\n\n//AMBIENT OCCULUSION\nfloat ao(vec3 p,vec3 no){\n\tfloat o=2.,s=.5;int z;\n    for(float i=1.;i<5.;i++){float r=.3*i;o+=(map(no*r+p,z)-r)*s;s*=.5;}\n    return clamp(o*.5,0.,1.);\n}\n\n//SOFT SHADOW\nfloat shadow(vec3 p,vec3 ld){\n\tfloat o=2.,s=1.;int z;\n    for(float i=1.;i<4.;i++){float r=1.5*i;o+=(map(-ld*r+p,z)-r)*s;s*=.5;}\n    return clamp(o,0.,1.);\n}\n\n//CUBEMAPS\nvec3 cubemap(vec3 d){\n\treturn mix(texture(iChannel0,d).rgb,texture(iChannel1,d).rgb,\n               clamp(cos(iTime*.2)*20.+.5,0.,1.));\n}\n\n//REFLECTION\nvec3 reflection(vec3 p,vec3 rd,vec3 n){\n    //find the reflected surface\n    int id;\n    rd=reflect(rd,n);\n    float d,t=.2;\n    for(int i=ZERO;i<ITER;i++){\n        d=map(rd*t+p,id);\n        if(d<EPS||d>4.)break;\n        t+=d;\n    }\n    if(d<EPS){\n        //found\n        vec3 c=hsv(float(id)*.2+iTime*.04,.2,1.);\n        if(id%3<1){\n            //the surface is non-metal\n\t    \treturn c*.4;\n        }else{\n            //the surface is metal\n\t\t    n=normal(p+rd*t);\n\t    \treturn c*adjust(pow(cubemap(reflect(rd,n)),vec3(2.)),.0,.1)*2.;\n        }\n    }else{\n        //not found\n        return adjust(pow(cubemap(rd),vec3(4.)),.0,.2)*16.;\n    }\n}\n\n//MATERIAL\nvec3 material(int id,vec3 p,vec3 rd,vec3 n){\n\n    //normalized light direction\n    vec3 ld=vec3(0,-1,0);\n\n    //non-metal(10% mirror) or metal(100% mirror)\n    vec3 m=reflection(p,rd,n);\n    vec3 c=id%3<1?.9+m*.1:m;\n\n    //light and shadow\n    c*=lcol*max(dot(reflect(ld,n),-rd),0.)*shadow(p,ld)+scol*.4;\n\n    //surface color with AO\n    c*=hsv(float(id)*.2+iTime*.04,.2,ao(p,n));\t\n\n    return c;\n}\n\n//MAIN\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //CAMERA SETUP\n    vec2 uv=(fragCoord-.5*iResolution.xy)/iResolution.y;\n    vec3 p,n,c=vec3(0),\n         ro=vec3(0,sin(iTime*.32)*.3,-6.5+cos(iTime*.6)*.5),\n         rd=normalize(vec3(uv,.5));\n    mat2 r=rot(sin(iTime*.32)*.5);\n    ro.yz*=r;\n    rd.yz*=r;\n    ro.xz*=rot(iTime*.3);\n    rd.xz*=rot(iTime*.3+sin(iTime*.6+3.14)*.15);\n\n    //GET SURFACE AND MATERIAL ID\n    int  id;\n    float t=trace(ro,rd,id,p,n);\n\n    //SHADING\n    if(t>12.){\n        //background\n        c=cubemap(rd);\n    }else{\n        //light color from background\n        lcol=cubemap(vec3(0,-1,0))+.2;\n        //shadow color from background\n        scol=cubemap(vec3(0,1,0))*.4+.2;\n        //get surface color\n\t    c=material(id,p,rd,n);\n    }\n    fragColor=vec4(c,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

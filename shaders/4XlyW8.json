@@ -1,0 +1,82 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1726089231",
+            "description": "Signed Jump Flooding, to create a SIGNED distance field of a shape of which we only know it's inside and outside regions.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4XlyW8",
+            "likes": 48,
+            "name": "Signed Jump Flooding",
+            "published": 3,
+            "tags": [
+                "2d",
+                "flood",
+                "jumpflooding",
+                "jf"
+            ],
+            "usePreview": 0,
+            "username": "iq",
+            "viewed": 606
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2024 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n// SIGNED Jump Flooding creates a discretized SDFs for shapes for which\n// we only know the interior and exterior pixels.\n//\n// Similar to https://www.shadertoy.com/view/lXscDH it doesn't need to\n// keep track of distances so in the end all fits into a 32 bit integer\n// buffer. Because Shadertoy doesn't support that yet, we use encode/decode\n// the bits into the red channel of the RGBA32F buffer. This doesn't work\n// if the 32 bit pattern happens to be a IEEE754 denormal pattern, as\n// user \"timestamp\" noted.\n//\n// With the current buffer size and packing strategy, he largest image\n// it can compute the SDF for is 32,768 x 65,534.\n//\n// See also https://www.shadertoy.com/view/ct2cDV and https://www.shadertoy.com/view/McByRd\n\n\n// .x  = distance\n// .yz = closet point\nvec3 map( in vec2 p )\n{\n    uint b = floatBitsToUint(texelFetch(iChannel0, ivec2(p), 0).x);\n    uint x = b & 0x7fffu;\n    uint y = b >> 16;\n    uint s = b & 0x8000u;\n    \n    float d = length(p-vec2(x,y));\n    return vec3( (s==0u)?d:-d, x, y );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 p = fragCoord;\n    vec2 m = iMouse.z>0.001 ? iMouse.xy : iResolution.xy*(0.5+0.4*sin(iTime*vec2(0.3,0.5)+vec2(0.0,2.0)));\n    \n    // distance\n    vec3 dce = map(p);\n\n    // colorize\n    vec3 col = (dce.x>0.0) ? vec3(0.9,0.6,0.3) : vec3(0.65,0.85,1.0);\n    \n    if( iFrame>0 )\n    {\n    vec2  g = (p-dce.yz)/dce.x; // gradient\n    float d = 2.0*dce.x/iResolution.y;\n    col *= 1.0 + vec3(0.5*g,0.0)*smoothstep(0.1,-0.1,sin(6.283185*iTime/8.0));\n    col *= 1.0 - exp2(-24.0*abs(d));\n    col *= 0.8 + 0.2*smoothstep(-0.5,0.5,cos(128.0*d));\n    col = mix( col, vec3(1.0), 1.0-smoothstep(1.0,3.0,abs(dce.x)) );\n\n    // mouse probe\n    dce = map(m);\n    float ra = iResolution.y*0.01;\n    float dp = min(min(abs(length(p-m)-abs(dce.x)),\n                       length(p-m)-ra),\n                       length(p-dce.yz)-ra);\n    col = mix(col, vec3(1.0,1.0,0.0), 1.0-smoothstep(1.5, 2.5, dp));\n    }\n    \n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n// some binary shape (0=inside, 1=outside)\nfloat shape( in vec2 p )\n{\n    // circle\n    // return length(p)<0.5?0.0:1.0;\n    \n    // mandelbrot set\n    vec2 z = vec2(0.0);\n    vec2 c = p - vec2(0.75,0.0);\n    for( int i=0; i<15; i++ )\n    {\n        z = vec2(z.x*z.x-z.y*z.y,2.0*z.x*z.y) + c;\n        if( dot(z,z)>4.0 ) return 1.0;\n    }\n    return 0.0;\n}\n\n\n//------------------------------------------------------------------------------------------\n// 32 bit buffer layout. Each entry stores the closest point and some metadata:\n//\n// 00-14 : x coordinate, from 0 to 32,767\n// 15    : set (1=interior, 0=exterior)\n// 16-31 : y coordinate, from 0 to 65,534. Value FFFF is reserved to signal unresolved pixel\n//------------------------------------------------------------------------------------------\n\n// (x, y, set, resolved)\nivec4 unpack( uint d )\n{\n    uint x = d & 0x7fffu;\n    uint y = d >> 16;\n    uint s = d & 0x8000u;\n    uint r = (y==0xffffu)?0u:1u;\n    return ivec4(x,y,s,r);\n}\n\n// we only pack resolved pixels\nuint pack( ivec2 p, int s )\n{\n    return uint(p.x)|uint(s)|(uint(p.y)<<16);\n}\n\n// initialize buffer (d>=0 is the interior set, d<1 is the exterior set)\nuint init( float d ) \n{\n    return d<0.5 ? 0xffffffffu : 0xffff7fffu;\n}\n\n//------------------------------------------------------------------------------------------\n\n// this could be done in pure integer arithmetic if we had uin64_t available to us\nfloat dot2( in ivec2 x ) { return dot(vec2(x),vec2(x)); }\n\nint computeNumPasses( in ivec2 resolution )\n{\n    int dim = max( resolution.x, resolution.y );\n    \n    // would be easier if we could ise findMSB() from GLSL 4.0.\n    // but for now this will do (I want to stay in integer land)\n    #if 1\n        dim = max(dim-1,0);\n        int r = 0;\n        if( dim > 0xFFFF ) { dim >>= 16; r |= 16; }\n        if( dim > 0x00FF ) { dim >>=  8; r |=  8; }\n        if( dim > 0x000F ) { dim >>=  4; r |=  4; }\n        if( dim > 0x0003 ) { dim >>=  2; r |=  2; }\n        if( dim > 0x0001 ) { dim >>=  1; r |=  1; }\n        return r+1;\n    #else\n        if( dim>=32768 ) return 16;\n        if( dim>=16384 ) return 15;\n        if( dim>= 8192 ) return 14;\n        if( dim>= 4096 ) return 13;\n        if( dim>= 2048 ) return 12;\n        if( dim>= 1024 ) return 11;\n        if( dim>=  512 ) return 10;\n        if( dim>=  256 ) return  9;\n        if( dim>=  128 ) return  8;\n        if( dim>=   64 ) return  7;\n        if( dim>=   32 ) return  6;\n        if( dim>=   16 ) return  5;\n        if( dim>=    8 ) return  4;\n        if( dim>=    4 ) return  3;\n        if( dim>=    2 ) return  2;\n                         return  1;\n    #endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    int frame = iFrame; // & 255;\n    \n    int numPasses = computeNumPasses( ivec2(iResolution.xy) );\n    \n    //---------------------------------------------------------------------------------\n    // First frame we mark the interior and exterior pixel sets\n    //---------------------------------------------------------------------------------\n    if( frame==0 )\n    {\n        vec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n        float d = shape(p);\n        \n        // initialize 32 bit buffer\n        fragColor.x = uintBitsToFloat(init(d));\n    }\n    //---------------------------------------------------------------------------------\n    // Next \"numPasses\" number of frames, perform one Jump Flood algorithm pass\n    //---------------------------------------------------------------------------------\n    else if( (frame>=1) && (frame<=numPasses) )\n    {\n        // read 32 bits from buffer\n        ivec2 p_pixl = ivec2(fragCoord);\n        uint p_data_packed = floatBitsToUint(texelFetch(iChannel0, p_pixl, 0).r);\n        ivec4 p_data = unpack(p_data_packed);\n        \n        // distance to closest known pixel on the complementary set (interior vs exterior)\n        float currdis = (p_data.w==1) ? dot2( p_pixl-p_data.xy ) : 1e20;\n        \n        int width = (1<<(numPasses-frame));\n\n        // pre-clip scan window (removes in-loop conditionals)\n        int minx = p_pixl.x-width < 0                    ? 0 : -1;\n        int miny = p_pixl.y-width < 0                    ? 0 : -1;\n        int maxx = p_pixl.x+width > int(iResolution.x)-1 ? 0 :  1;\n        int maxy = p_pixl.y+width > int(iResolution.y)-1 ? 0 :  1;\n        \n        for( int y=miny; y<=maxy; y++ )\n        for( int x=minx; x<=maxx; x++ )\n        {\n            // 1. gather a distant pixel\n            ivec2 q_offs = ivec2(x,y)*width;\n            ivec2 q_pixl = p_pixl + q_offs;\n            ivec4 q_data = unpack(floatBitsToUint(texelFetch(iChannel0,q_pixl,0).x));\n        \n            // 2. does it belong to the complementary set?\n            if( q_data.z != p_data.z ) \n            {\n                // if so, is it closer than the closest known pixel so far?\n                float dis = dot2(q_offs);\n                if( dis < currdis )\n                {\n                    // if so, update our record\n                    currdis = dis;\n                    p_data_packed = pack(q_pixl.xy,p_data.z);\n                }     \n           }\n           \n           // 3. or is it maybe an already resolved pixel?\n           else if( q_data.w==1 )\n           {\n                // if so, is its closest known pixel closer than the closest known pixel so far?\n                float dis = dot2(q_data.xy-p_pixl);\n                if( dis < currdis )\n                {\n                    // if so, update our record\n                    currdis = dis;\n                    p_data_packed = pack(q_data.xy,p_data.z);\n                }\n            }\n        }\n        \n        // write 32 bits to buffer\n        fragColor.r = uintBitsToFloat(p_data_packed);\n    }\n    //---------------------------------------------------------------------------------\n    // then copy content (because Shadertoy ping-pongs two textures per pass)\n    //---------------------------------------------------------------------------------\n    else if( frame==numPasses+1 )\n    {\n        fragColor = texelFetch(iChannel0,ivec2(fragCoord),0);\n    }\n    //---------------------------------------------------------------------------------\n    // Rest of frames do nothing, we are done here\n    //---------------------------------------------------------------------------------\n    else\n    {\n        discard;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

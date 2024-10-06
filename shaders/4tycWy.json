@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1538123171",
+            "description": "use perlin noise to simulate water surfaces.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4tycWy",
+            "likes": 16,
+            "name": "Demo - Simple Water",
+            "published": 3,
+            "tags": [
+                "noise",
+                "raymarch",
+                "fbm",
+                "perlin",
+                "water"
+            ],
+            "usePreview": 0,
+            "username": "ikuto",
+            "viewed": 1356
+        },
+        "renderpass": [
+            {
+                "code": "#define\tAA 2\n#define HASHSCALE 0.1031\n\nfloat hash(vec3 p3)\n{\n\tp3 = fract(p3 * HASHSCALE); \n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 fade(vec3 t) { return t*t*t*(t*(6.*t-15.)+10.); }\n\nfloat grad(float hash, vec3 p) \n{\n    int h = int(1e4*hash) & 15;\n\tfloat u = h<8 ? p.x : p.y,\n \t\t  v = h<4 ? p.y : h==12||h==14 ? p.x : p.z;\n    return ((h&1) == 0 ? u : -u) + ((h&2) == 0 ? v : -v);\n}\n\n//3d perlin noise, based on https://mrl.nyu.edu/~perlin/paper445.pdf and https://mrl.nyu.edu/~perlin/noise/.\nfloat perlinNoise3D(vec3 p)\n{\n\tvec3 pi = floor(p), pf = p - pi, w = fade(pf);\n    return mix( mix( mix( grad(hash(pi + vec3(0, 0, 0)), pf - vec3(0, 0, 0)),\n                           grad(hash(pi + vec3(1, 0, 0)), pf - vec3(1, 0, 0)), w.x ),\n            \t      mix( grad(hash(pi + vec3(0, 1, 0)), pf - vec3(0, 1, 0)), \n                \t \t   grad(hash(pi + vec3(1, 1, 0)), pf - vec3(1, 1, 0)), w.x ), w.y ),\n        \t\t mix( mix( grad(hash(pi + vec3(0, 0, 1)), pf - vec3(0, 0, 1)), \n                \t\t   grad(hash(pi + vec3(1, 0, 1)), pf - vec3(1, 0, 1)), w.x ),\n            \t\t  mix( grad(hash(pi + vec3(0, 1, 1)), pf - vec3(0, 1, 1)), \n                \t\t   grad(hash(pi + vec3(1, 1, 1)), pf - vec3(1, 1, 1)), w.x ), w.y ), w.z );\n}\n\nfloat fbm(vec3 pos, int octaves, float persistence) \n{\n    float total = 0.0, frequency = 1.0, amplitude = 1.0, maxValue = 0.0;\n    for(int i = 0; i < octaves; ++i) \n    {\n        total += perlinNoise3D(pos * frequency) * amplitude;\n        maxValue += amplitude;\n        amplitude *= persistence;\n        frequency *= 2.0;\n    }\n    return total / maxValue;\n}\n\nfloat getNoise(vec3 p)\n{\n    return 0.15 * fbm(p + 0.3*iTime, 4, 0.3);\n}\n\n//build a right handed look at view matrix.\nmat3 lookAt( in vec3 eye, in vec3 center, in vec3 up )\n{\n\tvec3 f = normalize(center - eye);\n\tvec3 s = normalize(cross(f, up));\n\tvec3 u = cross(s, f);\n    return mat3(s, u, -f);\n}\n\n//distance functions\nfloat sdSphere(vec3 pos, float radius) { return length(pos) - radius; }\n\nfloat sdBox(vec3 pos, vec3 size) \n{\n    vec3 d = abs(pos) - size;\n    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));\n}\n\n//distance operations\nvec2 opU(vec2 a, vec2 b) { return a.x < b.x ? a : b; } //union\n\nvec2 mapScene(vec3 pos) \n{ \n    float shapeIndex = 0.0;\n    vec2 res = vec2(sdSphere(pos - vec3(-3, 0, 0), 2.0), shapeIndex++);\n    res = opU(res, vec2(sdBox(pos - vec3(3, 0, 0), vec3(1.5)), shapeIndex++));\n    res.x += getNoise(pos);\n    return res;\n}\n\nfloat sdScene(vec3 pos) { return mapScene(pos).x; }\n\nvec3 calculateNormal(in vec3 p) \n{\n    const vec3 t = vec3(0.01, 0.0, 0.0);\n    float gradX = sdScene(p + t.xyy) - sdScene(p - t.xyy);\n    float gradY = sdScene(p + t.yxy) - sdScene(p - t.yxy);\n    float gradZ = sdScene(p + t.yyx) - sdScene(p - t.yyx);\n    \n    vec3 normal = vec3(gradX, gradY, gradZ);\n    return normalize(normal);\n}\n\nvec2 rayMarch(vec3 rayOri, vec3 rayDir)\n{\n    const float MAX_TRACE_DISTANCE = 20.0;\n    const int MAX_STEPS = 64;\n    \n    float totalDistance = 0.0, shapeIndex = -1.0;\n    for (int i = 0; i < MAX_STEPS; ++i) {\n        vec2 res = mapScene(rayOri + totalDistance * rayDir);\n        float minHitDistance = 0.0005 * totalDistance;\n        if (res.x < minHitDistance) {\n            shapeIndex = res.y; break; \n        }\n        if (totalDistance > MAX_TRACE_DISTANCE) break;\n        totalDistance += res.x;\n    }\n    \n\treturn vec2(totalDistance, shapeIndex);\n}\n\nvec3 render(vec3 rayOri, vec3 rayDir)\n{\n\tvec3 color = pow(texture(iChannel1, rayDir).rgb, vec3(2.2));\n    vec2 res = rayMarch(rayOri, rayDir);\n    int shapeIndex = int(res.y);\n    if (shapeIndex >= 0) {\n        vec3 pos = rayOri + rayDir * res.x;\n        vec3 normal = calculateNormal(pos);\n\t\tvec3 refractDir = refract(rayDir, normal, 0.8);\n        \n\t\tcolor = pow(texture(iChannel1, refractDir).rgb, vec3(2.2)) * 0.9;\n        if (shapeIndex == 0) color*= vec3(0.3, 0.7, 1.0);\n    }\n    \n    return color;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) \n{\n    vec3 totalColor = vec3(0.0);\n    \n    vec2 angle = (iMouse.z > 0.5) ? 4.0*(2.0*iMouse.xy/iResolution.xy-1.0) : vec2(0.0);\n    vec3 rayOri = vec3(12.0*sin(angle.x), angle.y+5.0, 12.0*cos(angle.x));\n    vec3 rayTgt = vec3(0.0);\n    \n    for (int i = 0; i < AA; ++i)\n    for (int k = 0; k < AA; ++k)\n    {\n        vec2 offset = vec2(float(i) + .5, float(k) + .5) / float(AA) - .5;\n        vec2 uv = (fragCoord + offset - iResolution.xy * 0.5) / iResolution.x;\n        \n    \tmat3 viewMat = lookAt(rayOri, rayTgt, vec3(0.0, 1.0, 0.0));\n    \tvec3 rayDir = normalize(viewMat * vec3(uv, -1.0));\n\n   \t\tvec3 color = render(rayOri, rayDir);\n        totalColor += color;\n    }         \n    \n\ttotalColor /= float(AA * AA);\n    totalColor = pow(totalColor, vec3(0.45));\n\tfragColor = vec4(totalColor, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

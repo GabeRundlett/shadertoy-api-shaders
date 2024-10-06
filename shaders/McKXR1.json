@@ -1,0 +1,103 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1720463341",
+            "description": "I've had this shader for a long time now and I've not done anything with it.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "McKXR1",
+            "likes": 11,
+            "name": "Nebula Rendering 1",
+            "published": 3,
+            "tags": [
+                "volume",
+                "nebula",
+                "density"
+            ],
+            "usePreview": 0,
+            "username": "TheNosiriN",
+            "viewed": 224
+        },
+        "renderpass": [
+            {
+                "code": "float sphere(vec3 eye, vec3 dir, float rad, out bool inside, out bool hit, out vec2 tfn){\n    float a = dot(dir, dir);\n    float b = 2.*dot(eye,dir);\n    float c = dot(eye,eye)-rad*rad;\n    float d = b*b-4.*a*c;\n\n    if (d < 0.0){\n        hit = false;\n    }else{\n        hit = true;\n    }\n\n    tfn.x = (-b-sqrt(d))/(2.*a);\n    tfn.y = (-b+sqrt(d))/(2.*a);\n\n    if (tfn.x < 0.){\n        inside = true;\n        return tfn.y;\n    }else{\n        inside = false;\n        return tfn.x;\n    }\n}\n\n\nvec3 rotateCamera(float len, vec2 m)\n{\n    float phi = m.x * PI * 2.0;\n    float psi = m.y * PI;\n    return len * vec3(cos(phi)*sin(psi), cos(psi), sin(phi)*sin(psi));\n}\n\n\nfloat noise3d(in vec3 x) {\n    return textureLod(iChannel3, x*0.01, -100.).x*3.-1.0;\n\n    // x *= 0.3;\n    // vec3 p = floor(x), f = fract(x);\n\t// f *= f*(3.-f-f);\n\t// vec2 uv = (p.xy+vec2(37.,17.)*p.z) + f.xy,\n    // rg = textureLod( iChannel0, (uv+.5)/256., -100.).yx;\n\t// // return mix(rg.x, rg.y, f.z);\n    // return mix(rg.x, rg.y, f.z)*3.-1.;\n}\n\n\n\n\nfloat fbm(vec3 p){\n    float steps = 7.0;\n    float fac = pow(2., steps);\n    p *= fac * 1.46;\n\n    float sm = 0.0;\n    float f = 1.0/fac;\n    float a = 0.5;\n    for (int i=0; i<int(steps); ++i){\n        sm += noise3d(p * f) * a;\n        f *= 2.;\n        a *= 0.5;\n    }\n    return sm;\n}\n\n\nfloat mapVolume(vec3 p, out float density) {\n    float rad = pow(p.y/4., 2.);\n    float shape;// = length(p)-1.;//length(p.xz)-rad;//max(abs(p.y)-12.0, max(length(p.xz)-rad, -length(p.xz)+(rad-0.1) ));\n\n    // p = mix(p*0.5, p, min(length(p)/4., 1.));\n    p = mix(p*max(length(p), 2.)*1., p, min(length(p)/2.5, 1.));\n\n    float tex = texture(iChannel2, p.xz*0.05).x;\n    density = fbm(p)*2.-1.;\n    density *= tex;\n    //density = fbm(p*10.);\n    //shape = p.y - density*3.;\n    shape = density*3.;\n    return abs(shape)-1.;\n}\n\n\n\n\nvoid mainImage( out vec4 O, in vec2 C )\n{\n#ifdef MARGIN\n    if (abs(C.y-R.y/2.) >= min(R.x, R.y)/margin){ O=vec4(0); return; }\n#endif\n\n    // blue noise jittering\n    vec2 noiseSize = vec2(textureSize(iChannel1, 0).xy);\n    ivec2 repCoord = ivec2(fract(C/noiseSize) * noiseSize);\n    float tang = mod(float(iFrame), 3.142*2.);\n    vec2 repOffset = vec2(cos(tang), sin(tang)) * 10.;\n\n    vec4 jit4 = texelFetch(iChannel1,\n        ivec2(fract( (vec2(repCoord)+repOffset) /noiseSize) * noiseSize),\n    0).xyzw;\n\n    //float ojit = (jit4.x+jit4.y+jit4.z+jit4.w)/4.;\n    float ojit = jit4[iFrame % 4];\n    float jit = ojit * 0.2;\n\n\n    vec2 uv = (C-R/2.)/min(R.x,R.y);\n    //vec3 eye = rotateCamera(40.0, iMouse.xy/R.xy);\n    vec3 eye = rotateCamera(40.0, vec2(0.1, 0.001));\n\n    vec3 f = normalize(vec3(0) - eye),\n    s = normalize(cross(f, vec3(0,1,0))),\n    dir = (\n        mat4(vec4(s,0), vec4(cross(s, f),0), vec4(-f,0), vec4(1)) *\n        vec4(normalize(vec3(uv, -2.4)), 0)\n    ).xyz;\n\n\n\n    vec3 radius = vec3(12.);\n    int steps = 64;\n    float startdist = 0.0;\n\n    vec3 normal;\n    bool inside;\n    vec2 tfn;\n    bool hit;\n    float dp = sphere(eye, dir, radius.x, inside, hit, tfn);\n\n    vec4 acc = vec4(0);\n\n    if (hit){\n        //add ambient contribution\n        acc.a = abs(tfn.x-tfn.y)*0.01;\n    }else{\n        O = vec4(0);\n        return;\n    }\n\n    vec3 sp;\n    if (inside){\n        sp = eye;\n    }else{\n        sp = eye + dir * dp;\n    }\n\n\n    float density;\n    vec3 cp = sp;\n    float lradius = length(radius);\n\n    for (int i=0; i<steps; ++i){\n        float nd = length(cp) - radius.x;\n        if(nd >= 0.0001)break;\n        \n        // russian roulette the brighter accumulations\n        if (acc.a >= (ojit+0.9)){ break; }\n\n        if (distance(cp,sp) > startdist)\n        {\n            float dist = 1.0-mapVolume(cp/2.5, density)*2.5;\n            float rdensity = remap(saturate(density), 0., 0.2, 0., 1.);\n            float tacc = max(dist, 0.1)/float(steps);\n\n            vec4 color;\n            color.xyz = hsv_to_rgb(vec3(\n                rdensity*0.5 - 0.1,\n                (1.0-rdensity)*1.2,\n                rdensity*10.// + smoothstep(0.3, 0.1, abs(rdensity-0.5))*10.\n            ));\n\n            // color.xyz = pal( rdensity*2. + 0.6, vec3(0.5,0.5,0.5),vec3(0.5,0.5,0.5),vec3(1.0,0.7,0.4),vec3(0.0,0.15,0.20) );\n\n            color.a = 1.0;\n            acc += color * tacc * (min(easeInExpo(1.0-rdensity,2.)*10., 1.) + 0.15);\n        }\n        cp += dir * ((lradius*3.0)/float(steps) - jit);\n    }\n\n    acc.xyz = max(acc.xyz * acc.a, 0.);\n    acc.xyz = ACESFilm(acc.xyz);\n\n    // Output to screen\n    O = vec4(acc.xyz,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI 3.1415972\n#define R (iResolution.xy)\n#define saturate(x) clamp(x, 0.0, 1.0)\n#define TIME iTime\n#define MARGIN\n\nconst float margin = 2.2;\n\n\nvec3 hue_to_rgb(float hue)\n{\n    float r = abs(hue * 6.0 - 3.0) - 1.0;\n    float g = 2.0 - abs(hue * 6.0 - 2.0);\n    float b = 2.0 - abs(hue * 6.0 - 4.0);\n    return saturate(vec3(r,g,b));\n}\nvec3 hsv_to_rgb(vec3 hsv)\n{\n    vec3 rgb = hue_to_rgb(hsv.x);\n    return ((rgb - 1.0) * hsv.y + 1.0) * hsv.z;\n}\n\nfloat easeInExpo(float x, float e) {\n    return x == 0. ? 0. : pow(e, 10. * x - 10.);\n}\n\nfloat remap(float v, float oldmn, float oldmx, float newmn, float newmx){\n    return ((v - oldmn) * (newmx - newmn)) / (oldmx - oldmn) + newmn;\n}\n\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03; float c = 2.43;\n    float d = 0.59; float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\nvec3 pal( in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d )\n{\n    return a + b*cos( 6.28318*(c*t+d) );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

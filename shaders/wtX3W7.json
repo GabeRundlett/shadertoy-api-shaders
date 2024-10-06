@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1556493575",
+            "description": "Re-uploaded: Sphere of Confusion tracing. Sampling the cone of confusion with spheres. This was based on an idea from IQ and some code help from knighty.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wtX3W7",
+            "likes": 14,
+            "name": "Chain Reaction",
+            "published": 3,
+            "tags": [
+                "soc"
+            ],
+            "usePreview": 0,
+            "username": "eiffie",
+            "viewed": 696
+        },
+        "renderpass": [
+            {
+                "code": "// Chain Reaction by eiffie\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n#define REFLECTIONS\n#define SHADOWS\n//#define TEXTURECUBE\n//#define CIRCLE_LINKS\n#define TWISTS 4.5\n\n// V2 added shadows and made it compile on my older machine by unrolling the code\n#define time iTime\n#define size iResolution\n#define TAO 6.2831853\nfloat focalDistance,tim,pixelSize;\nconst float aperture=0.1,shadowCone=0.5,reflectionCone=0.5,pdt=10.0/TAO,tdp=TAO/10.0;\nvec3 L;\nconst vec3 mcol=vec3(2.0,1.6,1.0);\n\nvec2 Rot2D(vec2 v, float angle) {return cos(angle)*v+sin(angle)*vec2(v.y,-v.x);}\n\nfloat Link(vec3 p, float a){\n p.xy=Rot2D(p.xy,a);\n p.y+=1.0+sin(a+tim)*0.2;\n p.yz=Rot2D(p.yz,a*TWISTS+tim);\n#ifdef CIRCLE_LINKS\n return length(vec2(length(p.xy)-0.225,p.z))-0.0225;\n#else\n return length(vec2(length(max(abs(p.xy)-vec2(0.125,0.025),0.0))-0.1,p.z))-0.02;\n#endif \n}\n\nfloat DE(in vec3 p){\n float a=atan(p.x,-p.y)*pdt;\n return min(Link(p,floor(0.5+a)*tdp),Link(p,(floor(a)+0.5)*tdp));\n}\n\nfloat CircleOfConfusion(float t){//calculates the radius of the circle of confusion at length t\n return max(abs(focalDistance-t)*aperture,pixelSize*(1.0+t));\n}\nmat3 lookat(vec3 fw,vec3 up){\n fw=normalize(fw);vec3 rt=normalize(cross(fw,up));return mat3(rt,cross(rt,fw),fw);\n}\nfloat linstep(float a, float b, float t){return clamp((t-a)/(b-a),0.,1.);}// i got this from knighty and/or darkbeam\n//random seed and generator\nfloat randSeed;\nfloat randStep(){//a simple pseudo random number generator based on iq's hash\n return  (0.8+0.2*fract(sin(++randSeed)*4375.5453123));\n}\n#ifdef SHADOWS\nfloat FuzzyShadow(vec3 ro, vec3 rd, float lightDist, float coneGrad, float rCoC){\n float t=0.0,d,s=1.0,r;\n ro+=rd*rCoC*2.0;\n for(int i=0;i<4;i++){\n  r=rCoC+t*coneGrad;d=DE(ro+rd*t)+r*0.5;s*=linstep(-r,r,d);t+=abs(d)*randStep();\n }\n return clamp(s,0.0,1.0);\n}\n#endif\nvec3 Background(vec3 rd){\n#ifdef TEXTURECUBE\n return textureCube(iChannel0,rd).rgb;\n#else\n float s=max(0.0,dot(rd,L));\n return vec3(1.0,0.5,0.25)*(s+pow(s,10.0))+rd*0.05;\n#endif\n}\n#ifdef REFLECTIONS\nvec3 FuzzyReflection(vec3 ro, vec3 rd, float coneGrad, float rCoC){\n float t=0.0,d,r;\n ro+=rd*rCoC*2.0;\n vec4 col=vec4(0.0);\n for(int i=0;i<3;i++){//had to unroll this before to get it to compile correctly?!?!\n  r=rCoC+t*coneGrad;d=DE(ro);\n  if(d<r){\n   vec2 v=vec2(r*0.1,0.0);//use normal deltas based on CoC radius\n   vec3 N=normalize(vec3(DE(ro+v.xyy)-d,DE(ro+v.yxy)-d,DE(ro+v.yyx)-d));\n   if(N!=N)N=-rd;\n   vec3 scol=mcol*(0.1+Background(reflect(rd,N)))*(0.75+0.5*dot(N,L));\n   float alpha=(1.0-col.w)* linstep(-r,r,-d);\n   col+=vec4(scol*alpha,alpha);\n  }\n  d=max(d,r*0.5)*randStep();ro+=d*rd;t+=d;\n }\n return col.rgb+Background(rd)*(1.0-clamp(col.w,0.0,1.0));\n}\n#endif\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n tim=time*2.0;\n randSeed=fract(cos((fragCoord.x+fragCoord.y*117.0+time*10.0)*473.7192451));\n pixelSize=2.0/size.y;\n vec3 ro=vec3(0.0,0.0,-2.75);\n vec3 rd=lookat(vec3(cos(tim)*0.2,-sin(tim)*0.2,0.0)-ro,vec3(0.0,1.0,0.0))*normalize(vec3((2.0*fragCoord.xy-size.xy)/size.y,2.0));\n focalDistance=length(ro);\n L=normalize(vec3(0.5,0.6,0.4));\n vec4 col=vec4(0.0);//color accumulator\n float t=2.5;//distance traveled\n ro+=rd*t;//move close to object\n for(int i=0;i<12;i++){//march loop\n  if(col.w>0.9 || t>4.0)continue;//bail if we hit a surface or go out of bounds\n  float rCoC=CircleOfConfusion(t);//calc the radius of CoC\n  float d=DE(ro);\n  if(d<rCoC){//if we are inside add its contribution\n   vec2 v=vec2(rCoC*0.1,0.0);//use normal deltas based on CoC radius\n   vec3 N=normalize(vec3(-d+DE(ro+v.xyy),-d+DE(ro+v.yxy),-d+DE(ro+v.yyx)));\n   if(N!=N)N=-rd;\n   vec3 refl=reflect(rd,N);\n   vec3 scol=mcol*(0.1+Background(refl));\n#ifdef SHADOWS\n   scol*=FuzzyShadow(ro,L,3.0,shadowCone,rCoC);\n#else\n   scol*=(0.75+0.5*dot(N,L));\n#endif\n#ifdef REFLECTIONS\n   scol+=0.5*FuzzyReflection(ro,refl,reflectionCone,rCoC);\n#endif\n   float alpha=(1.0-col.w)*linstep(-rCoC,rCoC,-d);//calculate the mix like cloud density\n   col+=vec4(scol*alpha,alpha);//blend in the new color \n  }\n  d=max(d,pixelSize)*randStep();//add in noise to reduce banding and create fuzz\n  ro+=d*rd;//march\n  t+=d;\n }//mix in background color\n col.rgb=mix(Background(rd),col.rgb,clamp(col.w,0.0,1.0));\n\n fragColor = vec4(clamp(col.rgb,0.0,1.0),1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

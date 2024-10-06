@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1646605987",
+            "description": "Orthographic ray march of terrain. I'm planning on optimizing this in a compute shader but used this as a scratch environment to get the look I wanted.\n\nImplements a simple voxel based AO and ray marched shadows.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NsjfzG",
+            "likes": 6,
+            "name": "Ray March Voxel Terrain",
+            "published": 3,
+            "tags": [
+                "terrain",
+                "raymarch",
+                "voxel",
+                "ao",
+                "orthographic"
+            ],
+            "usePreview": 1,
+            "username": "natethegreat2525",
+            "viewed": 502
+        },
+        "renderpass": [
+            {
+                "code": "#define voxResolution 150.\n#define topPlane .1\n#define verticalBlocks (topPlane * voxResolution)\n\nbool sampleVoxels(vec3 pos) {\n    int x = int(floor(pos.x));\n    int y = int(floor(pos.y));\n    int z = int(floor(pos.z));\n    \n    float height = verticalBlocks * (1. - texture(iChannel0, vec2(float(x) / voxResolution, float(z) / voxResolution)).r);\n\n    return float(y) < height-1.0;\n}\n\n// This AO gives a nice cartoonish highlight on the front corners of cubes.\n// This could be fixed by clamping the value but I prefer the effect in this case.\nfloat getAO(vec3 pos) {\n    \n    float sum = 0.;\n    if (sampleVoxels(pos + vec3(1, 0, 0))) {\n        sum += fract(pos.x);\n    }\n    if (sampleVoxels(pos + vec3(-1, 0, 0))) {\n        sum += 1.-fract(pos.x);\n    }\n    if (sampleVoxels(pos + vec3(0, 1, 0))) {\n        sum += fract(pos.y);\n    }\n    if (sampleVoxels(pos + vec3(0, -1, 0))) {\n        sum += 1.-fract(pos.y);\n    }\n    if (sampleVoxels(pos + vec3(0, 0, 1))) {\n        sum += fract(pos.z);\n    }\n    if (sampleVoxels(pos + vec3(0, 0, -1))) {\n        sum += 1.-fract(pos.z);\n    }\n    \n    return 1. - sum/6.;\n}\n\nbool inShadow(vec3 pos, vec3 dir) {\n    int x = int(floor(pos.x));\n    int y = int(floor(pos.y));\n    int z = int(floor(pos.z));\n\n    int xInc = int(sign(dir.x));\n    int yInc = int(sign(dir.y));\n    int zInc = int(sign(dir.z));\n\n    vec3 timeDeltas = vec3(abs(dir.y/dir.x), 1, abs(dir.y/dir.z));\n    vec3 maxTimes = vec3(\n        (fract(pos.x) - .5)*-sign(dir.x) + .5,\n        (fract(pos.y) - .5)*-sign(dir.y) + .5,\n        (fract(pos.z)-.5)*-sign(dir.z)+.5)\n            * timeDeltas;\n            \n    // There is probably a better branchless way but for now just using this. Also it seems like the\n    // 3d implementation in the paper has a bug so I changed it a bit here.\n    // https://www.researchgate.net/publication/2611491_A_Fast_Voxel_Traversal_Algorithm_for_Ray_Tracing\n    for (int i = 0; i < 20; i++) {\n        float height = verticalBlocks * (1. - texture(iChannel0, vec2(float(x) / voxResolution, float(z) / voxResolution)).r);\n        if (float(y) < height-1.0) {\n            return true;\n        }\n        if (maxTimes.x < maxTimes.y && maxTimes.x < maxTimes.z) {\n            x+=xInc;\n            maxTimes.x += timeDeltas.x;\n        } else if (maxTimes.y < maxTimes.x && maxTimes.y < maxTimes.z) {\n            y+=yInc;\n            maxTimes.y += timeDeltas.y;\n        } else {\n            z+=zInc;\n            maxTimes.z += timeDeltas.z;\n        }\n        if (float(y) > topPlane * voxResolution) {\n            break;\n        }\n    }\n    return false;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float ang = iTime*.4;\n    vec3 dir = normalize(vec3(0, -1, 2));//iTime/5.));\n\n    vec3 camPos = vec3(-sin(ang)*1.8, 1, -cos(ang)*1.8);\n    float camScale = .5;\n    vec2 camSize = vec2(camScale, camScale*iResolution.y/iResolution.x);\n    \n    \n    dir.xz = dir.xz * cos(ang) + dir.zx * sin(ang);\n    \n    \n    vec3 up = vec3(0, 1, 0);\n    \n    float pixelScale = camScale / iResolution.x;\n    \n    vec3 xVec = normalize(cross(dir, up)) * pixelScale;\n    vec3 yVec = normalize(cross(dir, xVec)) * pixelScale;\n    \n    vec2 relFragCoord = fragCoord - iResolution.xy*.5;\n    relFragCoord.y = -relFragCoord.y;\n    \n    vec3 fragStart = camPos + relFragCoord.x * xVec + relFragCoord.y * yVec;\n    \n\n    float topPlaneYTime = (topPlane - fragStart.y) / dir.y;\n    vec3 topPlaneLoc = fragStart + dir*topPlaneYTime;\n    \n    //Old debug code\n    /*float stepLen = .005;\n    vec3 dirScaled = dir*stepLen/(length(dir.xz));\n    for (int i = 0; i < 200; i++) {\n        float height = 1.-texture(iChannel0, topPlaneLoc.xz).r;\n        if (height * topPlane > topPlaneLoc.y) {\n            fragColor = vec4(height, 0, 0, 1);\n            break;\n        }\n        topPlaneLoc += dirScaled;\n    }*/\n    \n    vec3 lightDir = normalize(vec3(1,1.12,1.5));\n    \n    \n    int x = int(floor(topPlaneLoc.x*voxResolution));\n    int y = int(floor(topPlaneLoc.y*voxResolution));\n    int z = int(floor(topPlaneLoc.z*voxResolution));\n    \n    int xInc = int(sign(dir.x));\n    int yInc = int(sign(dir.y));\n    int zInc = int(sign(dir.z));\n    \n    vec3 timeDeltas = vec3(abs(dir.y/dir.x), 1, abs(dir.y/dir.z));\n    vec3 maxTimes = vec3(\n        (fract(topPlaneLoc.x*voxResolution) - .5)*-sign(dir.x) + .5,\n        1,\n        (fract(topPlaneLoc.z*voxResolution)-.5)*-sign(dir.z)+.5)\n            * timeDeltas;\n            \n    float lastTime = 0.;\n    for (int i = 0; i < 200; i++) {\n        float height = verticalBlocks * (1. - texture(iChannel0, vec2(float(x) / voxResolution, float(z) / voxResolution)).r);\n        if (float(y) < height) {\n            float val = height / verticalBlocks;\n            vec3 col = vec3(sin(val*1000.0), sin(val*3452.0 + 34.3), cos(val*3442.234 + 54.953));\n            //col = vec3(val,0,0);\n            //fragColor = vec4(col*.3 + vec3(.7,.7,.7), 1);\n            fragColor = vec4(val*.3, val*.5 + .3, val*.0, 1);\n            vec3 shadowPos = topPlaneLoc*voxResolution + dir*(lastTime-.01)/abs(dir.y);\n            vec3 samplePos = topPlaneLoc*voxResolution + dir*(lastTime-.1)/abs(dir.y);\n            float shade = 1.0;\n            if (inShadow(shadowPos, lightDir)) {\n                shade *= .5;\n            }\n            shade *= getAO(samplePos);\n            fragColor.rgb = fragColor.rgb * shade;\n            break;\n        }\n        if (maxTimes.x < maxTimes.y && maxTimes.x < maxTimes.z) {\n            x+=xInc;\n            lastTime = maxTimes.x;\n            maxTimes.x += timeDeltas.x;\n        } else if (maxTimes.y < maxTimes.x && maxTimes.y < maxTimes.z) {\n            y+=yInc;\n            lastTime = maxTimes.y;\n            maxTimes.y += timeDeltas.y;\n        } else {\n            z+=zInc;\n            lastTime = maxTimes.z;\n            maxTimes.z += timeDeltas.z;\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

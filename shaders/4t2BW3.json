@@ -1,0 +1,205 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1520303663",
+            "description": "current path tracing test work blah blah tho ive pretty much abandoned it i guess",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4t2BW3",
+            "likes": 0,
+            "name": "CURRENT pt work",
+            "published": 3,
+            "tags": [
+                "testptv"
+            ],
+            "usePreview": 0,
+            "username": "dtoadq",
+            "viewed": 226
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  vec2 uv = fragCoord.xy / iResolution.xy;\n  vec4 r = texture(iChannel1, uv);\n  if ( r.w == 0.0f ) r = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n //if (uv.x > 0.5f) {\n    fragColor = pow(r, vec4(1.0f/2.2f));\n  //} else {\n  //  fragColor = r;\n  //}\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n// ------ SETTINGS ------ //////////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n#define MARCH_LENGTH 128\n#define MARCH_MAX_DIST 256.0f\n#define MARCH_ACCURACY 0.0005f\n\n#define LT_PATH_LENGTH 8\n\n// #define LT_PROPAGATE_TERMINATE_IMMEDIATELY\n#define SEED_USING_UV_COORDINATES\n\n#define SeedTime iTime\n\n////////////////////////////////////////////////////////////////////////////////\n// ----- util ----- ////////////////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\nfloat sqr(float i) { return i*i; }\n\n#define SQR(x) ((x)*(x))\n#define PI   3.141592653589793f\n#define IPI  0.318309886183791f\n#define IPI2 0.159154943091895f\n#define TAU  6.283185307179586f\n#define ITAU 0.159154943091895f\n\n////////////////////////////////////////////////////////////////////////////////\nvoid Union(inout vec2 t, float d, in float ID) {\n  if (t.x > d) t = vec2(d, ID);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvoid Union(inout vec2 t, vec2 o) {\n  if (t.x > o.x) t = o;\n}\n\n// -- from morgan mcguire\nfloat hash(float n) {\n  n = fract(n * 0.8031f);\n  n *= n + 19.19f;\n  n *= n + n;\n  return fract(n);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat SampleUniform(inout float seed) {\n  seed += 1.1f;\n  return hash(seed);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec2 SampleUniform2(inout float seed) {\n  return vec2(SampleUniform(seed), SampleUniform(seed));\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 SampleUniform3(inout float seed) {\n  return vec3(SampleUniform(seed), SampleUniform(seed), SampleUniform(seed));\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvoid CalculateXY(vec3 nor, out vec3 binormal, out vec3 bitangent) {\n  binormal =\n    abs(nor.x) < 1.0f ? vec3(1.0f, 0.0f, 0.0f) : vec3(0.0f, 1.0f, 0.0f);\n  binormal = normalize(cross(nor, binormal));\n  bitangent = cross(binormal, nor);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 ReorientHemisphere(vec3 wo, vec3 N) {\n  vec3 binormal, bitangent;\n  CalculateXY(N, binormal, bitangent);\n  return bitangent*wo.x + binormal*wo.y + wo.z*N;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 ToCartesian(float cosTheta, float phi) {\n  float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta));\n  return vec3(cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta);\n}\n\n////////////////////////////////////////////////////////////////////////////////\n// ----- emitter -----\nstruct Emitter { vec3 ori, emi; float radius; };\n#define EmitterLength 2\nEmitter emitters[EmitterLength];\n\n#define SceneIdToEmitterIdx(f) (int((f) - 1000.0f))\n#define E2mitterIdxToSceneId(i) (float(i) + 1000.0f)\n#define IsEmitter(idx) ((idx) >= 1000)\n\n////////////////////////////////////////////////////////////////////////////////\nvoid EmitterInitialize() {\n  // idx ori nor emi bounds\n  emitters[0].ori = vec3(0.0f, 0.0f, 0.0f);\n  emitters[0].emi = vec3(0.8f);\n  emitters[0].radius = 2.5f;\n\n  emitters[1].ori = vec3(0.0f, 10.0f, 16.0f);\n  emitters[1].emi = vec3(0.08f, 0.02f, 0.65f);\n  emitters[1].radius = 2.5f;\n\n  // emitters[2].ori = vec3(8.0f, 5.0f, 8.0f);\n  // emitters[2].emi = vec3(0.08f, 0.02f, 0.02f);\n  // emitters[2].radius = 2.5f;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec2 MapEmitters(in vec3 ori) {\n  vec2 res = vec2(999999.0f);\n  for (int i = 0; i != EmitterLength; ++ i) {\n    vec3 o = ori.xyz;\n    o -= emitters[i].ori;\n    o.xyz = mod(o.xyz, vec3(50.0f, 25.0f, 50.0f)) - vec3(25.0f, 12.5f, 25.0f);\n    Union(\n      res\n    , length(o) - emitters[i].radius\n    , 1000.0f + float(i)\n    );\n  }\n  return res;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nint EmitterSampleIdx(inout float seed) {\n  return 0;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 EmitterSampleWi(int idx, vec3 ori, inout float seed) {\n  return\n    normalize(\n      (normalize((SampleUniform3(seed)-0.5f)*2.0f) * emitters[idx].radius)\n    + emitters[idx].ori\n    - ori\n    );\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat EmitterPdf(int idx, vec3 ori, vec3 wi, float dist) {\n  float surfaceArea = SQR(emitters[idx].radius);\n  vec3 sphereNormal = normalize(emitters[idx].ori - ori);\n  return 1.0f;\n}\n\n////////////////////////////////////////////////////////////////////////////////\n// ----- scene information ----- ///////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\nvec2 SceneMap(vec3 ori); // prototyped as it has many helper functions\n\n////////////////////////////////////////////////////////////////////////////////\nvec2 SceneMarch(vec3 ori, vec3 dir) {\n  float dist = 0.0f;\n  vec2 cur;\n  int i = 0;\n\n  for (; i != MARCH_LENGTH; ++ i) {\n    cur = SceneMap(ori + dir*dist);\n    if (cur.x <= MARCH_ACCURACY || dist > MARCH_MAX_DIST) break;\n    dist += cur.x;\n  }\n\n  if (dist > MARCH_MAX_DIST || dist < 0.0f)\n    return vec2(-1.0f);\n\n  return vec2(dist, cur.y);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 SceneNormal(vec3 ori) {\n  vec2 e = vec2(1.0f, -1.0f)*0.001f;\n  return normalize(\n    e.xyy*SceneMap(ori + e.xyy).x\n  + e.yyx*SceneMap(ori + e.yyx).x\n  + e.yxy*SceneMap(ori + e.yxy).x\n  + e.xxx*SceneMap(ori + e.xxx).x\n  );\n}\n\n\n////////////////////////////////////////////////////////////////////////////////\n// ------ BRDF/MATERIAL ------ /////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\n////////////////////////////////////////////////////////////////////////////////\nstruct Material {\n  vec3 albedo;\n  float metallic;\n  float roughness;\n  float anisotropy;\n  float anisotropyRotation;\n  // vec3 normalMap;\n  float transparency;\n  float cutOutOpacity;\n  float sheen;\n  float specular;\n  vec3 specularTint;\n\n  vec3 clearcoat;\n  float clearcoatRoughness;\n  // vec3 clearcoatNormalMap;\n\n  // vec3 emissionColor;\n  // float emissionValue;\n  // float emissionMode;\n  // float energyNormalizatoin;\n\n  float thinWalled;\n  float indexOfRefraction;\n  vec3 attenuationColor;\n  float attenuationDistance;\n  vec3 subsurfaceColor;\n};\n\n////////////////////////////////////////////////////////////////////////////////\nMaterial GetMaterial(vec3 ori, float sceneId) {\n  Material m;\n\n  if (sceneId == 1.0f) m. albedo = vec3(0.5f, 0.2f, 0.3f)*IPI;\n  if (sceneId == 2.0f) m. albedo = vec3(0.9f, 0.2f, 0.4f)*IPI;\n  if (sceneId == 3.0f) m. albedo = vec3(1.0f)*IPI;\n  if (sceneId == 4.0f) m. albedo = vec3(1.0f)*IPI;\n  if (sceneId == 5.0f) m. albedo = vec3(0.1f, 0.1f, 0.1f)*IPI;\n  if (sceneId == 6.0f) m. albedo = vec3(0.3f, 0.3f, 0.3f)*IPI;\n\n\n  m. metallic = 0.0f;\n\n  if (sceneId == 1.0f) m. roughness = 0.2f;\n  if (sceneId == 2.0f) m. roughness = 0.2f;\n  if (sceneId == 3.0f) m. roughness = 0.0f;\n  if (sceneId == 4.0f) m. roughness = 0.1f;\n  if (sceneId == 5.0f) m. roughness = 0.9f;\n  if (sceneId == 6.0f) m. roughness = 0.9f;\n\n  if (sceneId == 1.0f) m. anisotropy = 0.1f;\n  if (sceneId == 2.0f) m. anisotropy = 0.1f;\n  if (sceneId == 3.0f) m. anisotropy = 0.0f;\n  if (sceneId == 4.0f) m. anisotropy = 0.4f;\n  if (sceneId == 5.0f) m. anisotropy = 0.1f;\n  if (sceneId == 6.0f) m. anisotropy = 0.1f;\n\n  m. anisotropyRotation = 0.0f;\n  // vec3 normalMap;\n  m. transparency = 0.0f;\n  m. cutOutOpacity = 0.0f;\n  m. sheen = 0.0f;\n\n  if (sceneId == 1.0f) m. specular = 0.0f;\n  if (sceneId == 2.0f) m. specular = 0.0f;\n  if (sceneId == 3.0f) m. specular = 1.0f;\n  if (sceneId == 4.0f) m. specular = 1.0f;\n  if (sceneId == 5.0f) m. specular = 0.0f;\n  if (sceneId == 6.0f) m. specular = 0.0f;\n\n  if (sceneId == 1.0f) m. specularTint = vec3(1.0f);\n  if (sceneId == 2.0f) m. specularTint = vec3(1.0f);\n  if (sceneId == 3.0f) m. specularTint = vec3(1.0f);\n  if (sceneId == 4.0f) m. specularTint = vec3(1.0f);\n  if (sceneId == 5.0f) m. specularTint = vec3(1.0f);\n  if (sceneId == 6.0f) m. specularTint = vec3(1.0f);\n\n  m. clearcoat = vec3(0.0f);\n  m. clearcoatRoughness = 0.0f;\n  // vec3 clearcoatNormalMap;\n\n  // vec3 emissionColor;\n  // float emissionValue;\n  // float emissionMode;\n  // float energyNormalizatoin;\n\n  m. thinWalled = 0.0f;\n  if (sceneId == 3.0f) m.thinWalled = 1.0f;\n  m. indexOfRefraction = 1.2f;\n  m. attenuationColor = vec3(0.0f);\n  m. attenuationDistance = 0.0f;\n  m. subsurfaceColor = vec3(0.0f);\n\n  return m;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat BsdfPdf(vec3 nor, vec3 wi, vec3 wo, inout Material mat) {\n  if (mat.thinWalled> 0.0f) return 1.0f;\n  return IPI;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 BsdfSample(\n  vec3 nor, vec3 wi, inout Material mat\n, out float pdf, inout float seed\n) {\n  if (mat.thinWalled > 0.0f) {\n    pdf = 1.0f;\n    nor = normalize(refract(wi, nor, mat.indexOfRefraction));\n  }\n\n  vec2 u = SampleUniform2(seed);\n  vec3 wo =\n    ReorientHemisphere(normalize(ToCartesian(sqrt(u.y), TAU*u.x)), nor);\n  pdf = BsdfPdf(nor, wi, wo, mat);\n  return normalize(wo);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat CalculateIndexOfRefraction(float iorI, float iorO) {\n  return sqr((iorI - iorO) / (iorI + iorO));\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat DirectionalAlbedoApprox(float cosTheta, float E0, float alphaUv) {\n  return\n    mix(\n      E0 + (1.0f - E0)*pow(1.0f - cosTheta, 5.0f)\n    , 0.04762f + 0.95238f*E0\n    , 1.0f - pow(1.0f - alphaUv, 5.0f)\n    );\n}\n\nfloat CosWeightedSingleScatterGgxApprox(float cosTheta, float alphaUv) {\n  return\n    1.0f\n  - 1.4594f*alphaUv*cosTheta\n  * (-0.20277f + alphaUv*(2.772f + alphaUv*(-2.6175f + 0.73343f*alphaUv)))\n  * ( 3.09507f + cosTheta*(-9.11369f + cosTheta\n    * (15.8884f + cosTheta*(-13.70343f + 4.51786f * cosTheta))\n    ))\n  ;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat SmithGgx(float cosTheta, float alpha) {\n  return sqrt(1.0f - alpha + alpha/(SQR(cosTheta)));\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 BsdfFs(vec3 nor, vec3 wi, vec3 wo, inout Material m) {\n  wi = -wi;\n\n  vec3 diffuse, specular;\n\n  vec3 H = normalize(wi + wo);\n\n  vec3 binormal, bitangent;\n  CalculateXY(nor, binormal, bitangent);\n\n  float\n    dotWiN = dot(wi, nor),\n    dotWoN = dot(wo, nor);\n\n  // FIXME what the hell is the below supposed to be\n  float alphaUv = 1.0f;\n\n  { // -- calculate diffuse\n    // Fd = Pd * B()\n    // B() calculates lambertian & directional energy distribution\n    // Pd describes albedo\n\n    float specularTintMax =\n      max(max(m.specularTint.r, m.specularTint.g), m.specularTint.b);\n\n    // vec3 E0 =\n\n    float E0 = m.indexOfRefraction * specularTintMax;\n\n    // float Psr0 =\n    //   (1.0f - m.metallic)*m.indexOfRefraction*m.specular*specularTintMax\n    // + m.metallic*m.albedo;\n\n    float\n      OutgoingAlbedo = 1.0f - DirectionalAlbedoApprox(dotWoN, E0, alphaUv)\n    , IncomingAlbedo = 1.0f - DirectionalAlbedoApprox(dotWiN, E0, alphaUv)\n    , AvgAlbedo = E0 + (1.33263f*alphaUv - 0.072359f)*(1.0f - E0)*E0;\n\n    // -- B()\n    diffuse =\n      vec3(IPI*(1.0f - m.specular))\n    + m.specular*( (IncomingAlbedo*OutgoingAlbedo) / (PI*(1.0f - AvgAlbedo)) );\n\n    // -- Pd()\n    diffuse *= m.albedo * (1.0f - m.metallic) * (1.0f - m.transparency);\n  }\n\n  { // -- calculate specular\n    // Fr = Mr*F + Mr,ms * Fms\n\n    vec3 Fresnel;\n    float Distribution, Geometric;\n\n    vec3 Fresnel0 =\n      (1.0f - m.metallic) * m.indexOfRefraction * m.specular * m.specularTint\n    + m.metallic * m.albedo;\n\n    float Fresnel90 = (1.0f - m.metallic) * m.specular + m.metallic;\n\n    { // -- calculate fresnel\n      // if Nt >= Ni\n      //   Ps,r,0 + (Ps,r,90 - Ps,r,0) (1 - cos\\theta)^5\n      // if Nt < Ni && sin^2\\thetaT < 1\n      //   Ps,r,0 + (Ps,r,90 - Ps,r,0) (1 - cos\\theta_T)^5\n      //   cos\\theta_T = (Ni/Nt)^2 (1 - cos^2\\theta_i)\n      // if Nt < Ni && sin^2\\thetaT >= 1 (total internal reflection)\n      //   1\n\n      Fresnel =\n        Fresnel0 + (vec3(Fresnel90) - Fresnel0)*pow(1.0f - dotWoN, 5.0f);\n    }\n\n    float\n      aspect = sqrt(1.0f - m.anisotropy*0.9f)\n    , ax     = max(0.001f, SQR(m.roughness)/aspect)\n    , ay     = max(0.001f, SQR(m.roughness)*aspect)\n    ;\n\n    { // -- calculate microfacet distribution term\n      // Uses generalized Trowbridge-Reitz GTR\n      float\n        alpha = (PI * ax * ay)\n      , model =\n        sqr(dot(binormal,  H))/(SQR(ax))\n      + sqr(dot(bitangent, H))/(SQR(ay))\n      + sqr(dot(H, nor))\n      ;\n\n      Distribution = (1.0f/alpha) * (1.0f/SQR(model));\n    }\n\n    { // -- calculate geometric microfacet term\n      // Uses smith shadow-masking\n\n      // I don't know what to put here, it asks for\n      //     cos^2 Phi {wi, wo}\n      // and sin^2 Phi {wi, wo}\n      // not sure what any of the above is\n\n      float phi = 0.25f;\n\n      float alphaWo = phi*phi * ax*ax, alphaWi = sqr(1.0f - phi) * ay*ay;\n\n      Geometric = 2.0f/(SmithGgx(dotWoN, alphaWo) + SmithGgx(dotWiN, alphaWi));\n    }\n\n    float energyConservation = (4.0f * dotWiN * dotWoN);\n\n    // -- set the microfacet specular component\n    specular = Geometric * Fresnel * Distribution * (1.0f/energyConservation);\n\n    // -- calculate missing energy in microfacet specular component\n    float MultipleScatteringGgx;\n    vec3 MultipleScatteringFresnel;\n\n    float albedoAvg =\n      1.0f\n    + alphaUv*(-0.113f + alphaUv\n      * (-1.8695f + alphaUv*(2.2268f - 0.83397f*alphaUv))\n    );\n\n    { // -- calculate MultipleScatteringGgx\n      float\n        albedoWo = CosWeightedSingleScatterGgxApprox(dotWoN, alphaUv)\n      , albedoWi = CosWeightedSingleScatterGgxApprox(dotWiN, alphaUv);\n\n      MultipleScatteringGgx =\n        (1.0f - albedoWi)*(1.0f - albedoWo)\n      / (PI * (1.0f - albedoAvg))\n      ;\n    }\n\n    { // -- calculate MultipleScatteringFresnel\n      vec3 fresnelAvg = vec3(1.0f/21.0f)*Fresnel90 + (20.f/21.0f)*Fresnel0;\n\n      MultipleScatteringFresnel =\n        (fresnelAvg*fresnelAvg * albedoAvg)\n      / (vec3(1.0f) - fresnelAvg*(1.0f - albedoAvg))\n      ;\n    }\n\n    specular += MultipleScatteringGgx * MultipleScatteringFresnel;\n  }\n\n  return diffuse + specular;\n}\n\n\n////////////////////////////////////////////////////////////////////////////////\n// ----- light transport ----- /////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\n#define LT_PROPAGATE_CONTINUE 0\n#define LT_PROPAGATE_END 1\n#define LT_PROPAGATE_INDIRECT_ACCUMULATE 2\n#define LT_PROPAGATE_DIRECT_ACCUMULATE 3\n\n////////////////////////////////////////////////////////////////////////////////\nint Propagate(\n  inout vec3 radiance\n, inout vec3 accumulatedIrradiance\n, inout vec3 ro\n, inout vec3 rd\n, inout vec2 marchRes\n, inout float seed\n, int step\n) {\n  if (marchRes.x <= 0.0f) {\n    return LT_PROPAGATE_END;\n  }\n\n  ro += rd * marchRes.x;\n\n  vec3 nor = SceneNormal(ro);\n\n  if (IsEmitter(int(marchRes.y))) {\n    int emitIdx = SceneIdToEmitterIdx(marchRes.y);\n    accumulatedIrradiance +=\n      emitters[emitIdx].emi\n    * radiance\n    ;\n    if (step == 0) accumulatedIrradiance = emitters[emitIdx].emi;\n    return LT_PROPAGATE_DIRECT_ACCUMULATE;\n  }\n\n  Material mat = GetMaterial(ro, marchRes.y);\n\n  float bsdfPdf;\n  vec3 bsdfWo = BsdfSample(nor, rd, mat, bsdfPdf, seed);\n  radiance =\n    radiance\n  * BsdfFs(nor, rd, bsdfWo, mat)\n  / bsdfPdf\n  ;\n\n#ifdef LT_PROPAGATE_TERMINATE_IMMEDIATELY\n  accumulatedIrradiance = bsdfWo;\n  return LT_PROPAGATE_DIRECT_ACCUMULATE;\n#endif\n\n  float marchAdd = mat.thinWalled > 0.0f ? 10.0f : 0.01f;\n\n  marchRes = SceneMarch(ro + bsdfWo*marchAdd, bsdfWo);\n  rd = bsdfWo;\n\n  return LT_PROPAGATE_CONTINUE;\n}\n\n////////////////////////////////////////////////////////////////////////////////\n///------ CAMERA ------ ////////////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 CameraOrigin() {\n  return\n    vec3(\n      sin(iMouse.x/iResolution.x*TAU)*15.0f\n    , -28.0f + iMouse.y/iResolution.y * 28.0f\n    , cos(iMouse.x/iResolution.x*TAU)*15.0f\n    );\n}\n\n////////////////////////////////////////////////////////////////////////////////\nmat3 LookAt(vec3 nor, vec3 up) {\n  vec3\n    ww = normalize(nor)\n  , uu = normalize(cross(up, ww))\n  , vv = normalize(cross(uu, ww));\n  return mat3(uu, vv, ww);\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec3 LookAt(vec3 nor, vec2 uv, vec3 up, float fov) {\n  return normalize(LookAt(nor, up)*vec3(uv, fov));\n}\n\n////////////////////////////////////////////////////////////////////////////////\n///------ ENTRY ------ /////////////////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n  // initialize uv/seed/emitters/etc\n  fragColor = vec4(0.0f, 0.0f, 0.0f, 1.0f);\n  vec2 uv = vec2(-1.0f) + 2.0f*fragCoord.xy/iResolution.xy;\n  uv.x *= iResolution.x/iResolution.y;\n  float seed =\n#ifdef SEED_USING_UV_COORDINATES\n    hash(uv.x * iResolution.x)\n  + hash(uv.y * iResolution.y)\n#endif\n  + hash(iTime * 0.10015f)\n  ;\n\n  { // -- dither rays\n    vec2 invRes = vec2(1.0f)/iResolution.xy;\n\n    seed = hash(seed);\n    // jitter uv\n    // uv += invRes*2.0f*seed - invRes;\n  }\n\n  // initialize camera\n  vec3\n    ro = CameraOrigin()\n  , rd = LookAt(normalize(-ro), uv, vec3(0.0f, 1.0f, 0.0f), 0.75f);\n\n  // initialize emitter\n  EmitterInitialize();\n\n  // apply initial march\n  vec2 marchRes = SceneMarch(ro, rd);\n  if (marchRes.x <= 0.0f) {\n    fragColor = vec4(vec3(marchRes.x+1.0f), 0.0f);\n    return;\n  }\n\n  // fragColor = vec4(abs(SceneNormal(ro + rd*marchRes.x)), 1.0f);\n  // return;\n\n  // apply light transport\n  int hit = 0;\n  vec3\n    radiance = vec3(1.0f)\n  , accumulatedIrradiance = vec3(0.0f);\n\n  for (int i = 0; i != LT_PATH_LENGTH; ++ i) {\n    int returnEnum =\n      Propagate(radiance, accumulatedIrradiance, ro, rd, marchRes, seed, i);\n\n    if(returnEnum == LT_PROPAGATE_END) { break; }\n    if(returnEnum == LT_PROPAGATE_INDIRECT_ACCUMULATE) hit = 1;\n    if(returnEnum == LT_PROPAGATE_DIRECT_ACCUMULATE) {\n      hit = 1;\n      break;\n    }\n  }\n\n  fragColor = vec4(accumulatedIrradiance, hit == 1 ? 1.0f : 0.0f);\n}\n\n////////////////////////////////////////////////////////////////////////////////\n// ------ SURFACE/GEOMETRY ------ //////////////////////////////////////////////\n////////////////////////////////////////////////////////////////////////////////\n\n////////////////////////////////////////////////////////////////////////////////\nfloat TerrainHeightmap(vec3 ori) {\n  float sd = dot(ori, vec3(0.0f, -1.0f, 0.0f)) + 9.5f;\n  return sd;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nfloat sdBox(vec3 p, vec3 b) {\n  vec3 d = abs(p) - b;\n  return length(max(d, 0.0f)) + min(max(d.x, max(d.y, d.z)), 0.0f);\n}\n\nfloat sdOctahedron(vec3 p, float s) {\n  p = abs(p);\n  return (p.x + p.y + p.z - s) * 0.57735027f;\n}\n\nvoid opRotate(inout vec2 p, float a) {\n  p = cos(a)*p + sin(a)*vec2(p.y, -p.x);\n}\n\nfloat sdTorus(vec3 p, vec2 t) {\n  vec2 q = vec2(length(p.xz) - t.x, p.y);\n  return length(q) - t.y;\n}\n\n////////////////////////////////////////////////////////////////////////////////\nvec2 SceneMap(vec3 ori) {\n  vec2 res = vec2(9999999.0f);\n  {\n    vec3 o = ori - vec3(0.0f, 12.0f, 0.0f);\n    o.xz = mod(o.xz, 50.0f) - 25.0f;\n    Union(res, length(o) - 15.5f, 1.0f);\n  }\n\n  {\n    vec3 o = ori - vec3(2.0f, -10.0f, 23.5f);\n    o.xz = mod(o.xz, 50.0f) - 25.0f;\n    Union(res, length(o) - 6.5f, 2.0f);\n  }\n\n\n\n  {\n    vec3 o = ori - vec3(0.75f, 4.0f, 0.75f);\n    o.xz = mod(o.xz, 25.0f) - 12.5;\n    Union(res, sdOctahedron(o, 4.5f), 4.0f);\n  }\n\n  Union(res, TerrainHeightmap(ori), 5.0f);\n  Union(res, dot(ori, vec3(0.0f, 1.0f, 0.0f)) + 138.5f, 6.0f);\n  Union(res, dot(ori, vec3(1.0f, 0.0f, 0.0f)) + 100.5f, 6.0f);\n  Union(res, dot(ori, vec3(-1.0f, 0.0f, 0.0f)) + 100.5f, 6.0f);\n  Union(res, dot(ori, vec3(0.0f, 0.0f, -1.0f)) + 100.5f, 6.0f);\n  Union(res, dot(ori, vec3(0.0f, 0.0f, 1.0f)) + 100.5f, 6.0f);\n\n\n  Union(res, MapEmitters(ori));\n  return res;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//#define COLLECT\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  vec2 uv = fragCoord.xy / iResolution.xy;\n  vec4 old = texture(iChannel0, uv);\n    \n  #ifdef COLLECT\n    old = vec4(\n      (iMouse.z - iMouse.x)/100.0,\n      (iMouse.w - iMouse.y)/250.0,\n      float(iFrame),\n      0.0\n    );  \n  #else\n    if (iMouse.z > 0.0) {\n      old = vec4(\n        (iMouse.z - iMouse.x)/100.0,\n        (iMouse.w - iMouse.y)/250.0,\n        float(iFrame),\n        0.0\n      );\n    }\n  #endif\n    \n  fragColor = old;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define SAMPLES 512.0f\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  vec2 xy = gl_FragCoord.xy/iResolution.xy;\n  float f_delta = float(iFrame) - texture(iChannel2, vec2(0.5)).z;\n\n  vec4 c0 = texture(iChannel0, xy),\n       c1 = texture(iChannel1, xy);\n\n  if ( f_delta <= 1.0 ) {\n    c1 = fragColor = vec4(0.0);\n  }\n\n  if ( c0.w == 0.0 || c1.w >= 1.0 ) { // miss/end\n    fragColor = c1;\n  } else {\n    float t = c1.w*SAMPLES; // 0.01 => 1.0, 1.0 => 100.0\n    fragColor.xyz = mix(c0.xyz, c1.xyz, (t/(t+1.0)));\n    fragColor.w = c1.w+(1.0/SAMPLES);\n  }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

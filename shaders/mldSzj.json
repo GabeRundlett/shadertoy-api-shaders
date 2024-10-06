@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1685602197",
+            "description": "个人练习 主要是Smooth Minimum和环境遮罩AO，是对以前的东西进行的修改",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mldSzj",
+            "likes": 2,
+            "name": "Smooth Minimum&AO",
+            "published": 3,
+            "tags": [
+                "ao",
+                "smoothminimum"
+            ],
+            "usePreview": 0,
+            "username": "CodeJUN",
+            "viewed": 168
+        },
+        "renderpass": [
+            {
+                "code": "#define TMIN 0.1\n#define TMAX 150.\n#define RAYMARCH_TIME 128\n#define PRECISION .001\n#define AA 3\n#define PI 3.14159265\n\nvec2 fixUV(in vec2 c)\n{\n    return(2.*c-iResolution.xy)/min(iResolution.x,iResolution.y);\n\n}\n\nfloat sdfSphere(in vec3 p)//球体\n{\n    return length(p) - .8 ;\n}\n\nfloat sdfRect(in vec3 p, in vec3 b)//方形\n{\n    vec3 d=abs(p)-b;\n    return length(max(d,-.2))+min(max(d.x,max(d.y,d.z)),0.);//奇奇怪怪的\n\n}\n\nfloat sdfPlane(in vec3 p)\n{\n    return p.y;    \n}\n\n\nfloat smin(float a,float b,float k)//最小值\n{\n    float h=clamp(.5+.5*(b-a)/k,0.0,1.0);\n    return mix(b,a,h)-k*h*(1.0-h);\n\n}\n\nfloat map(in vec3 p)//合并\n{\n    float d=sdfSphere(p);\n    d =smin(d,sdfPlane(p),.25+0.5*sin(iTime));\n    /*float h=sdfRect(p,vec3(0.));\n    d =min(d,sdfPlane(p+vec3(0.,1.,0.))+(h,sdfRect(p,vec3(1.))));*/\n  \n    return d;\n\n}\n\nfloat rayMarch(in vec3 ro, in vec3 rd)//射线方向和源头\n{\n    float t=TMIN;\n    for(int i=0;i<RAYMARCH_TIME &&t<TMAX;i++)\n    {\n        vec3 p=ro+t*rd;\n        //float d=sdfSphere(p);//输出球体\n        //float d=sdfRect(p,vec3(.8+.1*sin(iTime),.3+.2*cos(iTime),.3));//输出方形\n        float d=map(p);\n        if(d<PRECISION)\n        {\n            //return t;\n            break;\n        }\n        t += d;\n    }\n    return t;\n}\n\nfloat calcAO(vec3 p,vec3 n)//AO 物体间的AO\n{\n    float occ=0.0;\n    float sca=1.0;\n    for(int i=0;i<5;i++)\n    {\n        float h=.01+.03*float(i);\n        float d= map(p+n*h);\n        occ +=(h-d)*sca;\n        if(occ>.35)\n            break;\n    }\n    return clamp(1.-3.*occ,0.,1.);\n}\nfloat calcAO2(vec3 n)// 平面AO\n{\n    return 0.5+0.5*n.y;    \n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal(in vec3 p)//光照\n{\n    const float h=0.0001;;\n    const vec2 k= vec2 (1,-1);\n  /* return normalize(k.xyy * sdfSphere(p + k.xyy * h) +\n        k.yyx * sdfSphere(p + k.yyx * h) +\n        k.yxy * sdfSphere(p + k.yxy * h) +\n        k.xxx * sdfSphere(p + k.xxx * h));*/ \n     return normalize(k.xyy * map(p + k.xyy * h) +\n        k.yyx * map(p + k.yyx * h) +\n        k.yxy * map(p + k.yxy * h) +\n        k.xxx * map(p + k.xxx * h));\n}\n\nmat3 setCamera(vec3 ta,vec3 ro,float cr)//摄像机围绕球体旋转\n{\n    vec3 z=normalize(ta-ro);\n    vec3 cp=vec3(sin(cr) , cos(cr),0.);\n    vec3 x= normalize(cross(z,cp));\n    vec3 y=cross(x,z);\n    return mat3(x,y,z);\n\n}\n\n// https://iquilezles.org/articles/rmshadows\nfloat softShadow(in vec3 ro,in vec3 rd,float k)//软阴影\n{\n    float res=1.0;\n    float ph=1e20;\n    for(float t=TMIN;t<TMAX;)\n    {\n        \n        float h =map(ro+rd*t);\n        if(h<.01)\n            return 0.0;\n        float y =h*h/(2.0*ph);\n        float d=sqrt(h*h-y*y);\n        res=min(res,k*d/max(0.0,t-y));\n        ph=h;\n        t+=h;\n    }\n    return res;\n}\n\nvec3 render(vec2 uv )\n{\n    vec3 color =vec3(.05);//背景颜色\n    vec3 ro =vec3 (2.*cos(iTime),1.,2.*sin(iTime));//球体旋转\n    if(iMouse.z>0.001)//鼠标控制\n    {\n        float theta=iMouse.x/iResolution.x*2.*PI;\n        ro=vec3(2.*cos(theta),1.+0.2*cos(iTime),2.*sin(theta));\n    }\n    vec3 ta=vec3(0.);//摄像机位置\n    mat3 cam=setCamera(ta,ro,.1*sin(iTime));//摄像机运动\n    vec3 rd =normalize(cam*vec3 (uv,1.));//球体大小\n    float t=rayMarch(ro,rd);\n    if(t<TMAX)\n    {\n        vec3 p=ro+t*rd;\n        vec3 n= calcNormal(p);\n        vec3 light =vec3 (2.*cos(iTime),2.,2.*sin(iTime+2.));//光线移动\n        //vec3 light =vec3 (2.,2.,2.);\n       \n        float dif=clamp(dot(normalize(light-p),n),0.,1.);\n        p+=PRECISION*n;\n       // float st = softShadow(p,normalize(light-p),2.);//明显交界线\n        \n        dif *=softShadow(p,normalize(light-p),2.);//光线平滑\n       /*float st=rayMarch(p,normalize(light-p));\n        if(st<TMAX)//假阴影\n        {\n            dif*=.1; \n        }*/\n\n        float amd=0.5+0.5*dot(n,vec3(0.,1.,0));//环境灯光亮度\n        color=amd*vec3(0.05)+dif*vec3(.6);\n\n        float ao=calcAO(p,n);\n        ao *=calcAO2(n);\n        color *=ao;\n\n    }\n    return sqrt(color);//幂\n\n}\n\nvoid mainImage(out vec4 fragColor,in vec2 fragCoord)\n{\n    vec3 color=vec3(0.);\n    for(int m =0;m<AA;m++)\n    {\n        for(int n=0; n<AA;n++)\n        {\n            vec2 offset=2.*(vec2(float(m),float(n))/float(AA)-0.5);\n            vec2 uv = fixUV(fragCoord+offset);\n            color += render(uv);\n        }\n    }\n    fragColor=vec4(color/float(AA*AA),1.);\n} ",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

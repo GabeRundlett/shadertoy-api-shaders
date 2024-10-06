@@ -1,0 +1,214 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1594999639",
+            "description": "PBR based on lessons from: [url=https://learnopengl.com/PBR/Theory]Learn OpenGL[/url]\nHit \"Reset time\" button first (so pre-filtering can happen on loaded cube map texture instead of blank, black one).\nUse mouse to rotate.\nMay crash low-end GPUs.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wlscRH",
+            "likes": 6,
+            "name": "Physically Based Rendering test",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "pbr"
+            ],
+            "usePreview": 0,
+            "username": "zduny",
+            "viewed": 658
+        },
+        "renderpass": [
+            {
+                "code": "const int samples = 3; // (square root, actual number = samples^2)\nconst float animationSpeed = 0.1;\nconst bool enablePointLights = true;\nconst bool enableToneMapping = true;\nconst bool showBRDFlookUpTable = false;\nconst float exposure = 1.0;\n\nstruct Material {\n  vec3 albedo;\n  float metallic;\n  float roughness;\n};\n\nstruct PointLight {\n  vec3 position;\n  vec3 color;\n};\n\nvec3 pbrPointLight(in Material material, in PointLight light, in vec3 position,\n                   in vec3 normal, in vec3 cameraPosition) {\n  vec3 toLight = light.position - position;\n\n  vec3 N = normalize(normal);\n  vec3 V = normalize(cameraPosition - position);\n  vec3 L = normalize(toLight);\n  vec3 H = normalize(V + L);\n\n  float distanceToLight = length(toLight);\n  float attenuation = 1.0 / (distanceToLight * distanceToLight);\n\n  vec3 radiance = light.color * attenuation;\n\n  float NDF = distributionGGX(N, H, material.roughness);\n  float G = geometrySmith(N, V, L, material.roughness);\n\n  vec3 F0 = vec3(0.04);\n  F0 = mix(F0, material.albedo, material.metallic);\n  vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);\n\n  vec3 kS = F;\n  vec3 kD = vec3(1.0) - kS;\n  kD *= 1.0 - material.metallic;\n\n  vec3 numerator = NDF * G * F;\n  float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;\n  vec3 specular = numerator / max(denominator, 0.00001);\n\n  float NdotL = max(dot(N, L), 0.0);\n\n  return (kD * material.albedo / pi + specular) * radiance * NdotL;\n}\n\n// const float MAX_REFLECTION_LOD = 4.0;\n// #define getSpecular(R, roughness) textureLod(prefilterMap, R,  roughness *\n// MAX_REFLECTION_LOD).rgb;\n/* It's a poor approximation, but, for the purpose of this example, I had to\n   settle for this, since ShaderToy does not support multiple cube maps at the\n   moment, or, alternatively, it does not allow saving to different cubemap\n   mipmap levels, which is needed to prefilter environment map for different\n   roughness values and storing it efficiently. */\n#define getSpecular(R, roughness)                                              \\\n  mix(texture(iChannel0, R).rgb, texture(irradianceMap, R).rgb, roughness);\n\nvec3 pbrImageBased(in Material material, in samplerCube irradianceMap,\n                   in sampler2D brdfLUT, in vec3 position, in vec3 normal,\n                   in vec3 cameraPosition, in float ambientOcclusion) {\n  vec3 N = normalize(normal);\n  vec3 V = normalize(cameraPosition - position);\n  vec3 R = reflect(-V, N);\n\n  vec3 F0 = vec3(0.04);\n  F0 = mix(F0, material.albedo, material.metallic);\n  vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, material.roughness);\n\n  vec3 kS = F;\n  vec3 kD = 1.0 - kS;\n  kD *= 1.0 - material.metallic;\n\n  vec3 irradiance = texture(irradianceMap, N).rgb;\n  vec3 diffuse = irradiance * material.albedo;\n\n  vec3 prefilteredColor = getSpecular(R, material.roughness);\n  vec2 brdf =\n      texture(brdfLUT, vec2(max(dot(N, V), 0.0), material.roughness)).rg;\n  vec3 specular = prefilteredColor * (F * brdf.x + brdf.y);\n\n  vec3 ambient = (kD * diffuse + specular) * (1.0 - ambientOcclusion);\n\n  return ambient;\n}\n\nvec3 trace(in Ray ray) {\n  int count = 7;\n  float stp = 1.5;\n  float offset = stp * float(count) / 2.0;\n\n  vec3 outPosition;\n  vec3 outNormal;\n  Material outMaterial;\n\n  /* I use a matrix stack to make my toys easily portable to \"normal\",\n   * rasterization based workflow. */\n  mat4 transform = rotationMatrix(up, iTime * 0.2 * animationSpeed) *\n                   rotationMatrix(right, iTime * 0.35 * animationSpeed);\n\n  float t = 10000.0;\n  for (int i = 0; i < count; i++) {\n    for (int j = 0; j < count; j++) {\n      float metallic = float(j) / float(count - 1);\n      float roughness = 1.0 - float(i) / float(count - 1);\n\n      float x = (float(i) + 0.5) * stp - offset;\n      float y = (float(j) + 0.5) * stp - offset;\n\n      Sphere sphere = Sphere((vec4(x, y, 0.0, 1.0) * transform).xyz, 0.5);\n      float t0, t1;\n      if (rayIntersectsSphere(ray, sphere, t0, t1) && t0 > 0.0 && t0 < t) {\n        t = t0;\n\n        outPosition = positionOnRay(ray, t);\n        outNormal = sphereNormal(sphere, outPosition);\n        outMaterial.albedo = vec3(1.0, 0.0, 0.0);\n        outMaterial.metallic = metallic;\n        outMaterial.roughness = roughness;\n      }\n    }\n  }\n\n  vec3 outputColor = vec3(0.0);\n  if (t < 10000.0) {\n    outputColor += pbrImageBased(outMaterial, iChannel1, iChannel2, outPosition,\n                                 outNormal, ray.origin, 0.0);\n\n    if (enablePointLights) {\n      PointLight light;\n      vec3 ambientLight = vec3(0.001);\n      light.position = vec3(-20.0, 20.0, 20.0);\n      light.color = vec3(6000.0);\n      outputColor +=\n          pbrPointLight(outMaterial, light, outPosition, outNormal, ray.origin);\n\n      light.position = vec3(20.0, 20.0, 30.0);\n      light.color = vec3(2000.0);\n      outputColor +=\n          pbrPointLight(outMaterial, light, outPosition, outNormal, ray.origin);\n\n      light.position = vec3(20.0, -20.0, 25.0);\n      light.color = vec3(1500.0);\n      outputColor +=\n          pbrPointLight(outMaterial, light, outPosition, outNormal, ray.origin);\n\n      light.position = vec3(-20.0, -20.0, 25.0);\n      light.color = vec3(1800.0);\n      outputColor +=\n          pbrPointLight(outMaterial, light, outPosition, outNormal, ray.origin);\n    }\n  } else {\n    outputColor = texture(iChannel0, ray.direction).rgb;\n  }\n\n  if (enableToneMapping) {\n    outputColor = vec3(1.0) - exp(-outputColor * exposure);\n  } else {\n    outputColor *= exposure;\n  }\n\n  return outputColor;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  const float fov = pi / 1.8;\n  float step = 1.0 / float(samples);\n\n  float normalizer = float(samples * samples);\n\n  vec2 mouse = (iMouse.xy / iResolution.xy - vec2(0.5)) * 5.0;\n  /* I use a matrix stack to make my toys easily portable to \"normal\",\n   * rasterization based workflow. */\n  mat4 transform = rotationMatrix(up, mouse.x * 1.3) *\n                   rotationMatrix(right, 2.5 + mouse.y * 1.3) *\n                   translationMatrix(vec3(0.0, 0.0, 12.0));\n\n  vec3 outColor = vec3(0.0);\n  float t0, t1;\n  for (int sx = 0; sx < samples; sx++) {\n    for (int sy = 0; sy < samples; sy++) {\n      Ray ray = createRayPerspective(\n          iResolution.xy, (fragCoord + vec2(float(sx), float(sy)) * step), fov);\n\n      transformRay(ray, transform);\n\n      outColor += trace(ray);\n    }\n  }\n\n  outColor /= normalizer;\n\n  fragColor = vec4(toSRGB(outColor), 1.0);\n\n  if (showBRDFlookUpTable) {\n    vec2 uv = fragCoord / iResolution.xy;\n    fragColor = vec4(texture(iChannel2, uv).rgb, 1.0);\n  }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float epsilon = 0.00001;\nconst float pi = 3.14159265359;\n\nconst vec3 right = vec3(1.0, 0.0, 0.0);\nconst vec3 up = vec3(0.0, 1.0, 0.0);\n\n// Color\nvec3 toSRGB(in vec3 color) { return pow(color, vec3(1.0 / 2.2)); }\n\n// Matrix\nmat4 rotationMatrix(in vec3 axis, in float angle) {\n  axis = normalize(axis);\n  float s = sin(angle);\n  float c = cos(angle);\n  float oc = 1.0 - c;\n\n  return mat4(\n      oc * axis.x * axis.x + c, oc * axis.x * axis.y - axis.z * s,\n      oc * axis.z * axis.x + axis.y * s, 0.0, oc * axis.x * axis.y + axis.z * s,\n      oc * axis.y * axis.y + c, oc * axis.y * axis.z - axis.x * s, 0.0,\n      oc * axis.z * axis.x - axis.y * s, oc * axis.y * axis.z + axis.x * s,\n      oc * axis.z * axis.z + c, 0.0, 0.0, 0.0, 0.0, 1.0);\n}\n\nmat4 translationMatrix(in vec3 translation) {\n  return mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,\n              translation.x, translation.y, translation.z, 1.0);\n}\n\n// Ray\nstruct Ray {\n  vec3 origin;\n  vec3 direction;\n};\n\nRay rayFromTo(in vec3 from, in vec3 to) {\n  return Ray(from, normalize(to - from));\n}\n\nRay createRayPerspective(in vec2 resolution, in vec2 screenPosition,\n                         in float verticalFov) {\n  vec2 topLeft = vec2(-resolution.x, -resolution.y) * .5;\n  float z = (resolution.x * .5) / abs(tan(verticalFov / 2.0));\n\n  return Ray(vec3(0.0, 0.0, 0.0),\n             normalize(vec3(topLeft + screenPosition, -z)));\n}\n\nvec3 positionOnRay(in Ray ray, in float t) {\n  return ray.origin + ray.direction * t;\n}\n\nvoid transformRay(inout Ray ray, mat4 matrix) {\n  ray.origin = (matrix * vec4(ray.origin, 1.0)).xyz;\n  ray.direction = normalize(matrix * vec4(ray.direction, 0.0)).xyz;\n}\n\nvoid reflectRay(inout Ray ray, vec3 position, vec3 normal) {\n  ray.origin = position + normal * epsilon;\n  ray.direction = reflect(ray.direction, normal);\n}\n\n// Sphere\nstruct Sphere {\n  vec3 position;\n  float radius;\n};\n\nvec3 sphereNormal(in Sphere sphere, in vec3 position) {\n  return normalize(position - sphere.position);\n}\n\nbool rayIntersectsSphere(in Ray ray, in Sphere sphere, out float t0,\n                         out float t1) {\n  float a = dot(ray.direction, ray.direction);\n  vec3 s0_r0 = ray.origin - sphere.position;\n  float b = 2.0 * dot(ray.direction, s0_r0);\n  float c = dot(s0_r0, s0_r0) - (sphere.radius * sphere.radius);\n  float delta = b * b - 4.0 * a * c;\n  float a_2 = 2.0 * a;\n\n  if (delta < 0.0) {\n    return false;\n  }\n\n  float delta_sqrt = sqrt(delta);\n\n  t0 = (-b - delta_sqrt) / a_2;\n  t1 = (-b + delta_sqrt) / a_2;\n\n  return true;\n}\n\n// Physically based rendering\nvec3 fresnelSchlick(in float cosTheta, in vec3 F0) {\n  return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);\n}\n\nvec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {\n  return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);\n}\n\nfloat distributionGGX(in vec3 N, in vec3 H, in float roughness) {\n  float a = roughness * roughness;\n  float a2 = a * a;\n  float NdotH = max(dot(N, H), 0.0);\n  float NdotH2 = NdotH * NdotH;\n\n  float nom = a2;\n  float denom = (NdotH2 * (a2 - 1.0) + 1.0);\n  denom = pi * denom * denom;\n\n  return nom / max(denom, 0.001);\n}\n\nfloat geometrySchlickGGX(in float NdotV, in float roughness) {\n  float r = (roughness + 1.0);\n  float k = (r * r) / 8.0;\n\n  float nom = NdotV;\n  float denom = NdotV * (1.0 - k) + k;\n\n  return nom / denom;\n}\n\nfloat geometrySmith(in vec3 N, in vec3 V, in vec3 L, in float roughness) {\n  float NdotV = max(dot(N, V), 0.0);\n  float NdotL = max(dot(N, L), 0.0);\n  float ggx2 = geometrySchlickGGX(NdotV, roughness);\n  float ggx1 = geometrySchlickGGX(NdotL, roughness);\n\n  return ggx1 * ggx2;\n}\n\nfloat geometrySchlickGGXforIBL(in float NdotV, in float roughness) {\n  float a = roughness;\n  float k = (a * a) / 2.0;\n\n  float nom = NdotV;\n  float denom = NdotV * (1.0 - k) + k;\n\n  return nom / denom;\n}\n\nfloat geometrySmithIBL(in vec3 N, in vec3 V, in vec3 L, in float roughness) {\n  float NdotV = max(dot(N, V), 0.0);\n  float NdotL = max(dot(N, L), 0.0);\n  float ggx2 = geometrySchlickGGXforIBL(NdotV, roughness);\n  float ggx1 = geometrySchlickGGXforIBL(NdotL, roughness);\n\n  return ggx1 * ggx2;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainCubemap(out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri,\n                 in vec3 rayDir) {\n  if (iFrame > 0) {\n    fragColor = texture(iChannel1, rayDir);\n  } else {\n    vec3 N = rayDir;\n\n    vec3 irradiance = vec3(0.0);\n\n    // tangent space calculation from origin point\n    vec3 up = vec3(0.0, 1.0, 0.0);\n    vec3 right = cross(up, N);\n    up = cross(N, right);\n\n    float hack = max(1.0 - float(iFrame), 0.0);\n\n    float sampleDelta = 0.05;\n    float nrSamples = 0.0f;\n    for (float phi = 0.0; phi < 2.0 * pi * hack; phi += sampleDelta) {\n      for (float theta = 0.0; theta < 0.5 * pi * hack; theta += sampleDelta) {\n        // spherical to cartesian (in tangent space)\n        vec3 tangentSample =\n            vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));\n        // tangent space to world\n        vec3 sampleVec = tangentSample.x * right + tangentSample.y * up +\n                         tangentSample.z * N;\n\n        irradiance +=\n            texture(iChannel0, sampleVec).rgb * cos(theta) * sin(theta);\n        nrSamples++;\n      }\n    }\n\n    irradiance = pi * irradiance * (1.0 / float(nrSamples));\n\n    fragColor = vec4(irradiance, 1.0);\n  }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "#define STORAGE iChannel0\nconst ivec2 resolutionDataLocation = ivec2(1, 0);\n\nbool saveResolutionData(in ivec2 fragCoord, out vec4 fragColor) {\n  if (fragCoord == resolutionDataLocation) {\n    vec4 previousResolutionData = texelFetch(STORAGE, fragCoord, 0);\n    vec2 oldResolution = previousResolutionData.xy;\n    fragColor = vec4(iResolution.xy, oldResolution);\n      \n    return true;\n  }\n    \n  return false;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  ivec2 position = ivec2(fragCoord);\n  if (!saveResolutionData(position, fragColor)) {\n    fragColor = texelFetch(STORAGE, position, 0);\n  }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float radicalInverseVdC(uint bits) {\n  bits = (bits << 16u) | (bits >> 16u);\n  bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);\n  bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);\n  bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);\n  bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);\n  return float(bits) * 2.3283064365386963e-10; // / 0x100000000\n}\n\nvec2 hammersley(uint i, uint N) {\n  return vec2(float(i) / float(N), radicalInverseVdC(i));\n}\n\nvec3 importanceSampleGGX(vec2 Xi, vec3 N, float roughness) {\n  float a = roughness * roughness;\n\n  float phi = 2.0 * pi * Xi.x;\n  float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));\n  float sinTheta = sqrt(1.0 - cosTheta * cosTheta);\n\n  // from spherical coordinates to cartesian coordinates - halfway vector\n  vec3 H;\n  H.x = cos(phi) * sinTheta;\n  H.y = sin(phi) * sinTheta;\n  H.z = cosTheta;\n\n  // from tangent-space H vector to world-space sample vector\n  vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);\n  vec3 tangent = normalize(cross(up, N));\n  vec3 bitangent = cross(N, tangent);\n\n  vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;\n  return normalize(sampleVec);\n}\n\nvec2 integrateBRDF(float NdotV, float roughness) {\n  vec3 V;\n  V.x = sqrt(1.0 - NdotV * NdotV);\n  V.y = 0.0;\n  V.z = NdotV;\n\n  float A = 0.0;\n  float B = 0.0;\n\n  vec3 N = vec3(0.0, 0.0, 1.0);\n\n  const uint SAMPLE_COUNT = 1024u;\n  for (uint i = 0u; i < SAMPLE_COUNT; ++i) {\n    // generates a sample vector that's biased towards the\n    // preferred alignment direction (importance sampling).\n    vec2 Xi = hammersley(i, SAMPLE_COUNT);\n    vec3 H = importanceSampleGGX(Xi, N, roughness);\n    vec3 L = normalize(2.0 * dot(V, H) * H - V);\n\n    float NdotL = max(L.z, 0.0);\n    float NdotH = max(H.z, 0.0);\n    float VdotH = max(dot(V, H), 0.0);\n\n    if (NdotL > 0.0) {\n      float G = geometrySmithIBL(N, V, L, roughness);\n      float G_Vis = (G * VdotH) / (NdotH * NdotV);\n      float Fc = pow(1.0 - VdotH, 5.0);\n\n      A += (1.0 - Fc) * G_Vis;\n      B += Fc * G_Vis;\n    }\n  }\n  A /= float(SAMPLE_COUNT);\n  B /= float(SAMPLE_COUNT);\n\n  return vec2(A, B);\n}\n\n#define STORAGE iChannel1\nconst ivec2 resolutionDataLocation = ivec2(1, 0);\nbool resolutionChanged() {\n  vec4 resolutionData = texelFetch(STORAGE, resolutionDataLocation, 0);\n  return resolutionData.xy != resolutionData.zw;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 uv = fragCoord / iResolution.xy;\n\n  if (iFrame > 0 && !resolutionChanged()) {\n    fragColor = texture(iChannel0, uv);\n  } else {\n    vec2 integratedBRDF = integrateBRDF(uv.x, uv.y);\n    fragColor = vec4(integratedBRDF, 0.0, 1.0);\n  }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

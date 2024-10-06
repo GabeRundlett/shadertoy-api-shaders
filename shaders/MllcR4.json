@@ -1,0 +1,52 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1503951268",
+            "description": "In 3D normals cannot be blended from different blend shapes. Same in 2D, in principle... In fact it is possible to kind-of do so in 2D, at equal storage space, if the right strategies for storing normals is employed.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MllcR4",
+            "likes": 17,
+            "name": "2D Blend Shape Normals",
+            "published": 3,
+            "tags": [
+                "2d",
+                "interpolation"
+            ],
+            "usePreview": 0,
+            "username": "iq",
+            "viewed": 1391
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2017 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n// In 3D, normals cannot be blended from different blend shapes. Same in 2D, in\n// principle... However, it is in fact possible to kind-of do it in 2D, at equal\n// storage space, if the right strategies for computing normals is employed.\n\n// This shader generates a deforming shape by interpolating linearly between \n// three different static shapes. This is how \"blend shapes\" are usually employed\n// for facial animation in games. The position of each vertex in the final\n// deformed mesh is simply the weighted sum of the blend shapes:\n// \n// P[i] = a*Pa[i] + b*Pb[i] + c*Pc[i]  with a+b+c=1\n//\n// Often vertex normals are interpolated as well in this way, despite it is\n// mathematically incorrect to do so. This shaders displays the error introduced\n// by doing so. Yellow/orange normals are the interpolated normals while blue\n// normals are the true normals of the interpolated shape. As you can see, they\n// often don't match. This is due to the fact that normalization is not a linear\n// operator.\n// \n// However, I found a way to fix this in 2D. \"Method 0\" implements it, and\n// produces normals that match perfectly the true normals (yellow ones get\n// rendered bellow the blue ones).\n//\n// The trick is to not normalize the normals (or tangents), and instead\n// interpolating them un-normalized, deferring the normalization to\n// after-interpolation.\n//\n// So, Method 0 is the correct interpolation of normals proposed in this shader.\n// Method 1 and method 2 show the problem that arises in games, under two\n// different ways to compute vertex normals (area/length dependant and indepedent):\n//\n// method 2:  T[i] = norm( norm(P[i+1]-P[i]) + norm(P[i]-P[i-1]) );  \n// method 1:  T[i] = norm( norm(P[i+1]-P[i-1]) \n// method 0:  T[i] = P[i+1]-P[i-1]\n\n\n\n\nfloat hash( uint n ) \n{\n\tn = (n << 13U) ^ n; // integer hash copied from Hugo Elias\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return float( n & uvec3(0x7fffffffU))/float(0x7fffffffU);\n}\n\nfloat sdot( vec2 v ) { return dot(v,v); }\n\nfloat sdSegmentSq( in vec2 p, in vec2 a, in vec2 b )\n{\n\tp -= a; b-= a;\n    return sdot( p - b*clamp( dot(p,b)/sdot(b), 0.0, 1.0 ) );\n}\n\nfloat sdPointSq( in vec2 p, in vec2 a )\n{\n    return sdot( p - a );\n}\n\n//=================================================================================================\n\n\nconst int kNumPoints = 16;\nint gMethod;\n\nvoid generatePath( out vec2 path[kNumPoints], uint seed )\n{\n    const vec2 off = vec2(0.0,0.0);\n    const vec2 sca = vec2(2.0,1.5);\n    \n    vec2 d = vec2(1000.0);\n    vec2 q = vec2(0.0);           \n    path[0] = sca*q + off;\n    \n    float dir = 0.0;\n    for( int i=1; i<kNumPoints; i++ )\n    {\n        float h = float(i)/float(kNumPoints);\n        dir += 1.7*(-1.0+2.0*hash( uint(i*7)+seed) );\n        q += 0.16*vec2( cos(dir), sin(dir) );\n        q = mix( q, path[0], pow(h,16.0) );\n        path[i] = sca*q + off;\n    }\n}\n\nvec2 computeTangent( in vec2 a, in vec2 b, in vec2 c )\n{\n    return (gMethod==0) ? c - a :\n           (gMethod==1) ? normalize( c-a ) :\n                          normalize( normalize(c-b) + normalize(b-a) );\n}\n\nvoid computeNormals( out vec2 norm[kNumPoints], in vec2 path[kNumPoints] )\n{\n    for( int i=0; i<kNumPoints; i++ )\n    {\n        vec2 n = computeTangent( path[(i-1+kNumPoints)%kNumPoints],\n                                 path[(i+0+kNumPoints)%kNumPoints],\n                                 path[(i+1+kNumPoints)%kNumPoints] );\n        norm[i] = vec2(n.y, -n.x );\n    }\n}\n\nvec3 drawPathAndNormals( in vec3 col, in vec2 p, in float e, in vec2 path[kNumPoints], in vec3 pathColor, in float normLength )\n{\n    vec3 d = vec3(1000.0);\n    for( int i=0; i<kNumPoints; i++ )\n    {\n        vec2 a = path[(i-1+kNumPoints)%kNumPoints];\n        vec2 b = path[(i+0+kNumPoints)%kNumPoints];\n        vec2 c = path[(i+1+kNumPoints)%kNumPoints];\n\n        vec2 n = computeTangent( a, b, c );\n        \n        n = normLength*normalize(vec2(n.y, -n.x ));\n\n        d = min( d, vec3(sdSegmentSq(p,b,c), \n                         sdPointSq(p,b),\n                         sdSegmentSq(p,b,b+n)) );\n    }\n    d = sqrt(d);\n\n    col = mix( col, pathColor, 1.0-smoothstep(0.0,2.0*e,d.x) );\n    col = mix( col, pathColor, 1.0-smoothstep(5.0*e,6.0*e,d.y) );\n    col = mix( col, pathColor, 1.0-smoothstep(0.0,2.0*e,d.z) );\n    \n    return col;\n}\n\nvec3 drawNormals( in vec3 col, in vec2 p, in float e, in vec2 path[kNumPoints], in vec2 norm[kNumPoints], in vec3 pathColor, in float normLength )\n{\n    float d = 1000.0;\n    for( int i=0; i<kNumPoints; i++ )\n    {\n        vec2 b = path[i];\n        vec2 n = normLength*normalize(norm[i]);\n\n        d = min( d, sdSegmentSq(p,b,b+n) );\n    }\n    d = sqrt(d);\n\n    return mix( col, pathColor, 1.0-smoothstep(0.0,2.0*e,d) );\n}\n\nivec2 letterOffsets[] = ivec2[]( \n    ivec2(13,11), ivec2(5,9), ivec2(4,8), ivec2(8,9),\n    ivec2(15,9), ivec2(4,9), ivec2(0,5), ivec2(0,12) );\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // cycle through the three method to compute and stoer normals\n    float h = mod( iTime, 12.0 );\n         if( h>8.0 ) gMethod = 2;\n    else if( h>4.0 ) gMethod = 1;\n    else             gMethod = 0;\n        \n    letterOffsets[7].x = gMethod;\n        \n    // visualization        \n    float e = 2.0/iResolution.y;\n\tvec2 p = (-iResolution.xy+2.0*fragCoord) / iResolution.y;\n\n    // generate 3 shapes\n    vec2 pathA[kNumPoints];\n    vec2 pathB[kNumPoints];\n    vec2 pathC[kNumPoints];\n\tgeneratePath(pathA, 1U);\n\tgeneratePath(pathB, 8U);\n    generatePath(pathC,15U);\n\n    // compute their normals\n    vec2 normA[kNumPoints];\n    vec2 normB[kNumPoints];\n    vec2 normC[kNumPoints];\n    computeNormals( normA, pathA );\n    computeNormals( normB, pathB );\n    computeNormals( normC, pathC );\n        \n    // interpolate shapes and normals\n    float t = iTime*0.05;\n    vec3  w = 0.5 + 0.3*sin(vec3(10.0,11.0,12.0)*t + vec3(0.0,3.0,2.0)) + 0.2*sin(vec3(21.0,19.0,20.0)*t + vec3(1.0,4.0,3.0));\n    w /= (w.x+w.y+w.z);\n    \n    vec2 pathR[kNumPoints];\n    vec2 normR[kNumPoints];\n    for( int i=0; i<kNumPoints; i++ )\n    {\n        pathR[i] = w.x*pathA[i] + w.y*pathB[i] + w.z*pathC[i];\n        normR[i] = w.x*normA[i] + w.y*normB[i] + w.z*normC[i];\n    }\n\n    // draw interpolated path, its real normals (in blue), and the interpolated normals (in red)\n    vec3 col = vec3(1.0);\n\n    col = drawNormals(         col, p, e, pathR, normR, vec3(1.0,0.5,0.0), 0.3 );\n\tcol = drawPathAndNormals(  col, p, e, pathR,        vec3(0.0,0.3,0.8), 0.3 );\n\n    // text\n    {\n        vec2 uv = (p-vec2(-0.5,0.8))*8.0;\n\n        ivec2 iuv = ivec2(floor(uv));\n        vec2 fuv = fract(uv);\n\n        if( iuv.x>=0 && iuv.x<=7 && iuv.y==0 )\n        {\n            fuv = 0.5 + vec2(0.5,1.0)*(fuv-0.5);\n            float te = textureLod( iChannel0, ( vec2(letterOffsets[iuv.x]*64) + fuv*64.0 )/1024.0, 0.0 ).w;\n            te = smoothstep( 0.48, 0.51, te );\n            col *= te;\n        }\n    }\n \n    // vignette\n    col *= 1.0 - 0.15*length(p);\n\n\tfragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

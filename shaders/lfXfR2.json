@@ -1,0 +1,172 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1724053821",
+            "description": "See comments for controls\n\nWIP to demonstrate some position localisation ideas\n\nClick or drag on the texture to update the map with a new ping.  The target is near the centre of the screen and successive clicks refine the map to focus the hot area there.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "lfXfR2",
+            "likes": 3,
+            "name": "Heat-map based object search",
+            "published": 3,
+            "tags": [
+                "interactive",
+                "heatmap"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 144
+        },
+        "renderpass": [
+            {
+                "code": "// Display buffer A (the heatmap and ping markers) using a palette and contour lines.\n// Use auto-scaling information from buffer B.\n// Show some debug information when shift is held down.\n// Show the target position when T is held down.\n\n#define SHIFT_KEY (texelFetch(iChannel3, ivec2(16,0),0).x > 0.5)\n#define P_TOGGLE (texelFetch(iChannel3, ivec2(80,2),0).x > 0.5)\n#define C_TOGGLE (texelFetch(iChannel3, ivec2(67,2),0).x > 0.5)\n#define W_TOGGLE (texelFetch(iChannel3, ivec2(87,2),0).x > 0.5)\n\nvec3 heatmap(float v) {\n    v = v * 2.0 - 1.0;\n    vec3 rise = smoothstep(vec3(0.40, 0.00,-2.00),\n                           vec3(0.80, 0.40, 0.00), vec3(v));\n    vec3 fall = smoothstep(vec3(1.00, 0.80, 0.20),\n                           vec3(2.00, 1.00, 0.60), vec3(v));\n\n    vec3 c = rise * (1.0 - fall);\n    return c;\n}\n\nfloat contour(float v) {\n    v *= 16.0;\n    float d = length(vec2(dFdx(v), dFdy(v))) * 1.4;\n    v = fract(v) - 0.5;\n    return smoothstep(0.0, d, abs(v));\n}\n\nvec4 bar(float lo, float x, float hi, float cy) {\n    float xl = min(x, 0.);\n    float xh = max(0., x);\n\n    xl = cy - (xl - lo) * iResolution.y / (hi - lo);\n    xh = cy - (xh - lo) * iResolution.y / (hi - lo);\n    return vec4(smoothstep(-0.01, 0.01, xl)\n              * smoothstep(-0.01, 0.01, -xh));\n}\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec4 map = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec4 range = texelFetch(iChannel1, ivec2(0), 0);\n    float p = map.z;\n    float v = (map.w - range.x) * range.w;\n    fragColour = vec4(heatmap(v), 1.0);\n\n    if (P_TOGGLE) {\n        // put an X at the target:\n        vec2 uv = worldspace(fragCoord, iResolution.xy) - target();\n        float t = aastep(0.3 - length(uv));\n        t *= aastep(0.05 - min(abs(uv.x - uv.y), abs(uv.x + uv.y)));\n        fragColour = mix(fragColour, vec4(1,.75,1,1), t * 0.75);\n        fragColour = mix(fragColour, vec4(1,1,.75,1), p * 0.75);\n    }\n    if (C_TOGGLE) {\n        fragColour = mix(W_TOGGLE ? vec4(1) : vec4(0), fragColour, contour(v));\n    }\n\n\n    if (SHIFT_KEY) {\n        float v = range[int(fragCoord.x / 16.0) & 3];\n        if (fragCoord.x < 64.0) {\n            int phase = int(fragCoord.x) & 15;\n            if (phase == 15) {\n               v = 0.0;\n            } else if (phase > 12) {\n                v = log2(v);\n            } else if (phase > 8) {\n                v *= 0.1;\n            }\n            fragColour = bar(-2.0, v, 2.0, fragCoord.y);\n            if (phase == 15) fragColour = vec4(0);\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Update the values in buffer A with the latest reading if the mouse button is\n// currently down.  Or zero the buffer if space is pressed.\n// Apply some decay so old readings don't persist forever and swamp newer data.\n\n// channel z has markup showing the ping positions.\n// channel w has the heat map itself.\n\n#define SPACE_KEY (texelFetch(iChannel3, ivec2(32,0),0).x > 0.5)\n#define TAB_KEY (texelFetch(iChannel3, ivec2(9,2),0).x > 0.5)\n#define MOUSE_CLICK (iMouse.w > 0.0)\n#define MOUSE_DRAG (iMouse.z > 0.0)\n\nvoid mainImage(out vec4 fragData, in vec2 fragCoord) {\n    int mode = TAB_KEY ? 1 : 0;\n    fragData = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    if (iFrame == 0 || SPACE_KEY) fragData = vec4(0);\n\n    if (MOUSE_DRAG /*&& (iFrame & 3) == 0*/) {\n        vec2 uv = worldspace(fragCoord, iResolution.xy);\n        vec2 origin = worldspace(iMouse.xy, iResolution.xy);\n\n        // update heat map:\n        float p = evaluate_point(origin, uv, iFrame, mode);\n        fragData.w += max(0.0, 2.0 + log2(p));\n\n        // mouse positions:\n        float d = distance(origin, uv);\n        float v = aastep(0.20 - d) - aastep(0.15 - d);\n        fragData.z = max(fragData.z, v);\n    }\n\n    // Decay, because we want any bad readings, or any sensor\n    // drift, to eventually be cancelled out by later readings.\n#if 0\n    fragData -= sign(fragData) * min(abs(fragData), vec4(0, 0, 0.0005, 0.005));\n#else\n    fragData *= vec4(1, 1, 0.9999, 0.999);\n#endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Randomly sample buffer A to get an idea of the minimum and maximum values.\n// filter the result to hide most of the noise.\n\nivec2 ihash(int x) {\n    return x * ivec2(1337, 7331) + iFrame * ivec2(137, 731);\n}\n\nvoid mainImage(out vec4 fragData, in vec2 fragCoord) {\n    if (floor(fragCoord) != vec2(0.0)) discard;\n\n    fragData = texelFetch(iChannel0, ivec2(0), 0);\n    if (iFrame == 0) fragData = vec4(0.5);\n\n    // Get our initial values from the target position, because we have to\n    // start somewhere and that's probably the true maximum.\n    float hi = texture(iChannel1, world_to_texture(target())).w;\n    float lo = hi;\n\n    // Iterating 10k times per pixel looks terrible, but we only do it for a\n    // single pixel (and everyone else in its warp).\n    for (int i = 0; i < 10000; ++i) {\n        ivec2 i2 = ihash(i) % ivec2(iResolution.xy);\n        float w = texelFetch(iChannel1, i2, 0).w;\n        lo = min(lo, w);\n        hi = max(hi, w);\n    }\n    // Lowpass the stored result to gradually seek the calculated result.\n    fragData.x = mix(fragData.x, lo, 0.05);\n    fragData.y = mix(fragData.y, hi, 0.05);\n    fragData.z = (fragData.y - fragData.x) + 0.1;\n    fragData.w = 1.0 / fragData.z;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// All the functions representing measurements, noise, confidence,\n// mapping from screen space, etc...\n\nfloat scale = 25.0;\n\nvec2 target()\n{\n    return vec2(0.3);\n}\n\nvec2 worldspace(vec2 p, vec2 r) {\n    float s = scale / r.x;\n    return (p - 0.5 * r) * s;\n}\n\nvec2 world_to_texture(vec2 p) {\n  return p / scale + 0.5;\n}\n\nfloat measure(vec2 origin, vec2 target, int mode) {\n    switch (mode) {\n    case 0:\n        return log(distance(origin, target));\n    case 1:\n        return atan(origin.y - target.y, origin.x - target.x);\n  }\n  return 0.0;\n}\n\nfloat compare(float a, float b, int mode) {\n    switch (mode) {\n    case 0:\n        return abs(a - b);\n    case 1:\n        return mod(a - b + 3.14159, 6.283185) - 3.14159;\n    }\n    return 0.0;\n}\n\nfloat noise(float x, float d, int seed, int mode) {\n    float n = float((seed * 123) % 456) / 456.0;\n    switch (mode) {\n    case 0:\n        return x + (n - 0.5) * 0.4;\n    case 1:\n        return x + (n - 0.5) * 0.08;\n    }\n    return x;\n}\n\nfloat blur(float x, float d) {\n     const float sqrt2pi = sqrt(6.28);\n     float s = 0.35;\n     return exp(x * x / (s * s * -2.0)) / (s * sqrt2pi);\n}\n\n\nfloat evaluate_point(vec2 origin, vec2 uv, int seed, int mode) {\n    // how far is this pixel from our origin?  This may affect\n    // the estimate of the precision.\n    float d = distance(origin, uv);\n\n    // what reading do we get on the target?\n    float m = measure(origin, target(), mode);\n\n    // what reading would we expect if the target were here?\n    float n = measure(origin, uv, mode);\n\n    // if these are similar then the target could be here, so\n    // far as we know from this reading.\n    float c = compare(m, n, mode);\n\n    // but there's noise.\n    c = noise(c, distance(origin, target()), seed, mode);\n\n    // but we expect noise.\n    float b = blur(c, d);\n    \n    return b;\n}\n\n\nfloat aastep(float v) {\n    float d = fwidth(v) * 1.4;\n    return smoothstep(-d, d, v);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,132 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1585951075",
+            "description": "Long time I haven't been on shadertoy.\nGlad to hear from you.\n\nStill drifting in a desolate space journey...\n\nMusic Koyaanisqatsi, Philip Glass, 1983\n",
+            "flags": 96,
+            "hasliked": 0,
+            "id": "wsSczz",
+            "likes": 37,
+            "name": "Lockdown",
+            "published": 3,
+            "tags": [
+                "fbm",
+                "space",
+                "planet",
+                "crater"
+            ],
+            "usePreview": 0,
+            "username": "ocb",
+            "viewed": 779
+        },
+        "renderpass": [
+            {
+                "code": "// Author: \t\tocb\n// Title: \t\tLockdown\n\n// Ray-marching + FBM is twice a slow process.\n// Moreover, computing hard shadows needs the same process again (twice slow again)\n// To maintain acceptable speed perfos:\n// 1- The crater shape function is ray-marched first (with no fbm)\n// \t  and when close to the final surface the FBM is included in the ray-march process.\n// 2- The hard shadows are pre-computed in buffer A.\n//    Using the 4 channels (4 squared sectors around origin) to increase resolution.\n// \t  Hard shadows are just added at the end of the color process.\n//    A trick is used to detect screen size (resolution) changes.\n//\n// More comments are included in Common to manage some parameters.\n\n\n\n/*****************************    Image   *****************************/\n\nvec3 skyCol(vec3 ray){\n    float lit = dot(ray,LIGHT);\n    return vec3(1,.5,0)*(.6-max(0.,ray.y))*(.7+.3*lit) + .002/(1.002-lit);\n}\n  \n/************************************************************************/\n/*\t\t\t\t\t\t\tGround fct\t\t\t\t\t\t\t\t\t*/\n/************************************************************************/\n\n// mapping global crater shape\nfloat shape(vec2 g){\n\tfloat a = .000001*(g.x*g.x + g.y*g.y);\n    float h = smin(a*a,abs(1./a),.2)+.8/(50.*a+1.);\n    return h;\n}\n\n// mapping accurate ground, adding shape + fbm + texture\nfloat ground(vec2 g, float t){\n\tfloat len = max(abs(g.x),abs(g.y));\n    if(len>5000.) return .5; \n    float h = shape(g);\n    float m = fbm(vec3(g.x,maxHill*h,g.y));\n    m *= 1.-linstep(3000.,5000.,len);\n    \n    // scaling texture\n    float tex,trans,dump;\n    if(t>300.){\n    \tfloat dump = 1.-linstep(300.,2000.,t);\n        tex = dump*1.5*texture(iChannel0,.00125*g.xy+.5).r;\n    }\n    else if(t>100.){\n    \ttrans = linstep(100.,300.,t);\n        tex = trans*1.5*texture(iChannel0,.00125*g.xy+.5).r+(1.-trans)*.3*texture(iChannel0,.01*g.xy+.5).r;\n    }\n    else if(t>50.){\n        tex = .3*texture(iChannel0,.01*g.xy+.5).r;\n    }\n    else{\n    \ttrans = linstep(20.,50.,t);\n        tex = trans*.3*texture(iChannel0,.01*g.xy+.5).r+(1.-trans)*.05*texture(iChannel0,.05*g.xy+.5).r;\n    }\n        \n    return maxHill*(.4*h*m+.2*m+.4*h)+ tex;\n}\n\n\nvec3 getGndNormal(vec3 p, float t){\n    vec2 e = vec2(.1-.075*step(t,50.),0.);\t// step() to adjust accuracy to the scale\n\tfloat dx = ground(p.xz+e.xy,t) - p.y;\n    float dy = ground(p.xz+e.yx,t) - p.y;\n    return normalize(vec3(dx,-e.x,dy));    \n}\n\n\n// Fast marching to the global shape\nfloat traceShape(in vec3 pos, in vec3 ray){\n    float t = 0., dh;\n    vec3 p = pos;\n    for(int i=0;i<60;i++){\n        dh = p.y-maxHill*shape(p.xz)*1.15;\n        if(dh<10.)break;\n        t += dh;\n        p = pos+t*ray;\n        if(p.y > 1.5*maxHill && ray.y>=0.){\n            t = INFINI;\n            break;\n        }\n    }\n    return t;\n}\n\n// Marching:\n// step 1 = fast marching to the shape\n// step 2 = fine tunning on the ground\nfloat traceGround(in vec3 pos, in vec3 ray){\n    float t = 0.;\n\n    float dh = pos.y-ground(pos.xz,t);\n    if(dh<.1) return .0001;\n    \n    if(pos.y > maxHill*shape(pos.xz)*1.15) t = traceShape(pos, ray);    \n    if(t == INFINI) return INFINI;\n    \n    vec3 p = pos + t*ray;\n    for(int i=0; i<70;i++){\n        dh = p.y-ground(p.xz,t);\n        if(abs(dh)<.1-.075*step(t,50.)) break;\n        t += .9*dh;\n        p = pos+t*ray;\n        if(p.y > 1.5*maxHill && ray.y>=0.){\n            t = INFINI;\n            break;\n        }\n    }\n    return t;\n}\n\n\n\nvec3 PaintCrater(vec3 p, vec3 ray, float tg, vec3 norm){\n    \n    // scaling texture\n    float trans;\n    vec3 tex;\n    if(max(abs(p.x),abs(p.z))>3000.){\n        tex = texture(iChannel0,.0000625*p.xz+.5).rgb;\n    }\n \telse if(tg>100.){\n    \ttrans = linstep(100.,300.,tg);\n        tex = trans*texture(iChannel0,.00125*p.xz+.5).rgb+(1.-trans)*texture(iChannel0,.01*p.xz+.5).rgb;\n    }\n    else if(tg>50.){\n        tex = texture(iChannel0,.01*p.xz+.5).rgb;\n    }\n    else{\n    \ttrans = linstep(20.,50.,tg);\n        tex = trans*texture(iChannel0,.01*p.xz+.5).rgb+(1.-trans)*texture(iChannel0,.05*p.xz+.5).rgb;\n    }\n    \n    // setting color and shade\n    vec3 col = vec3(.5,.25,.0)*(.8+max(0.,p.y)/maxHill)+ tex;\n    col *= dot(-norm,LIGHT);\n\n    // fog\n    float tt = 3000./tg;\n    col *= min(1.,tt);\n    col = mix(skyCol(ray), col, min(.7,tt));\n\n    return col;\n}\n\nfloat groundShadows(vec2 p){\n    float txg;\n    vec2 e = vec2(.001,0.), f = vec2(-.001,.001);\n    vec2 g = abs(p.xy)/2000.;\n    if(sign(p.x)>0.){\n        if(sign(p.y)>0.){\n            txg = texture(iChannel1,g+e.xx).x\t// Simple triangular interpolation\n                + texture(iChannel1,g+f.xy).x\t// is enough and reduce workload\n                + texture(iChannel1,g-e.yx).x\n                - 3.*iResolution.x;\t\t\t\t// removing resolution info (stored in buffer A)\n        }\n        else{\n            txg = texture(iChannel1,g+e.xx).y\n                + texture(iChannel1,g+f.xy).y\n                + texture(iChannel1,g-e.yx).y;\n        }\n    }\n    else{\n        if(sign(p.y)>0.){\n            txg = texture(iChannel1,g+e.xx).w\n                + texture(iChannel1,g+f.xy).w\n                + texture(iChannel1,g-e.yx).w;\n        }\n        else{\n            txg = texture(iChannel1,g+e.xx).z\n                + texture(iChannel1,g+f.xy).z\n                + texture(iChannel1,g-e.yx).z;\n        }\n    }\n    return txg *= .333333;\n}\n\n/************************************************************************/\n/*\t\t\t\t\t\t\tDome fct\t\t\t\t\t\t\t\t\t*/\n/************************************************************************/\n\n// coord. change\nvec2 polar(vec3 p){ return vec2(atan(p.z/p.x)+PI*step(p.x,0.),atan(length(p.xz)/p.y)); }\n\nvec3 cartesian(vec2 i){float s = sin(i.y); return vec3(s*cos(i.x),cos(i.y),s*sin(i.x));}\n\n// Raycasting\nvec2 sphere(in vec3 p, in vec3 O, in float r, in vec3 ray){\n    vec2 t = vec2(INFINI);\n    vec3 d = O - p;\n    float b = dot(d, ray);\n    \n    if (b >= 0.){\n        float c = dot(d,d) - r*r;\n    \tfloat D = b*b - c;\n    \tif (D >= 0.){\n        \tfloat VD = sqrt(D);\n            t.x= b - VD;\n            t.y= b + VD;\n        }\n    }\n    return t;\n}\n\n// Black structure on sphere, depending on scale\nfloat structure(vec3 p, float scale){\n    vec2 a = polar(p)/PIdiv2;\n    a.y *= 3.;\n    float iy = floor(a.y);\n    a.x *= 2.*scale;\n    a.x += 1./pow(scale,scale);\n    a.x += mod(iy,2.)*.5;\n    a = fract(a)-vec2(.5,0.);\n    float d = 2.*abs(a.x);\n    /*if(iy<scale-6.) d = 1.;\n    else*/ if(iy<scale-5.) d -= smoothstep(.0,.1,a.y)-.05;\n    else d -= smoothstep(-0.12,.5,a.y)-.05;\n\n    return d;\n}\n\n// Black structure on sphere.\n// Call twice at 2 differents scales (thick and thin) \nfloat frame(vec3 p){\n        \n    float d = structure(p,2.);\n    float c = smoothstep(-.04,-.02,-abs(d));\n\n    d = structure(p,4.);\n    c = max(c,smoothstep(-.03,-.01,-abs(d)));\n    \n    return c;\n}\n\nvec3 DrawStruct(vec3 p, vec3 ray, vec3 C){\n\tvec3 col = vec3(.0);\n    p -= C;\t\t// origin of the coord set on the center of sphere\n    \n    col -= frame(p);\t// blacken the frame\n    \n    vec2 tile = WINTILE/PIdiv2;\t\t// number of window glass\n    vec2 a = tile*polar(p);\t\t\t// tiling polar coordinates\n    vec2 i = floor(a.xy)/tile;\n    vec2 f = abs(fract(a.xy)-.5);\n    \n    float d = smoothstep(.48,.5,max(f.x,f.y));\t\t\t// draw thin contour of each window\n    col -= d;\n        \n    vec3 norm = cartesian(i);\t\t// back to cartesian. Same normal for the whole window (i = floor)\n    vec3 refl = reflect(ray,norm);\t\n    \n    float spec = .2/(1.1-dot(LIGHT,refl));\t\t// calculating sky reflection\n    col += spec*skyCol(refl);\t\t\t\t\t// and specular light\n    col += spec*d;\t\t\t\t\t\t\t\t// sky reflection is used on the whole surface to set the golden color of the dome\n    \n    p += C;\n    float t = traceGround(p,refl);\t\t\t\t// Adding ground reflection using the\n    if(t<INFINI){\t\t\t\t\t\t\t\t// window normal\n        p += t*refl;\t\t\t\t\t\t\t\t\n        p.y = ground(p.xz,t);\t\t\t\t\t\t\t\t\n    \tvec3 n = getGndNormal(p,t);\n    \tcol += .5*PaintCrater(p,refl,t,n)*groundShadows(p.xz);\n    }\n    else col += skyCol(refl);\n    \n    return col;\n}\n\n\n/************************************************************************/\n/*\t\t\t\t\t\t\tCamera\t\t\t\t\t\t\t\t\t\t*/\n/************************************************************************/\n\n\nvec3 getCamPos(in vec3 camTarget){\n    \n #ifdef FREE_CAM\n    float \trau = RAU,\n            alpha = iMouse.x/iResolution.x*4.*PI,\n            theta = (iMouse.y+.001)/iResolution.y*PI+ (PI/2.0001);\t// +0.001 to avoid black horizontal line\n #else\n    float ti = TIME_SET;\n    float cs = (1.-cos(ti*.09-PI));\n    //float s = smoothstep(25.,120.,abs(ti-60.));\n    float rau = 25. + 2500.*smoothstep(25.,120.,abs(ti-90.))*(1.-smoothstep(180.,280.,ti)),\n    \t  alpha = ti*.12-1.,\n    \t  theta = .1*cs*cs*cs+.05;\n #endif\n            \n    return rau*vec3(-cos(theta)*sin(alpha),sin(theta),cos(theta)*cos(alpha))+camTarget;\n}\n\nvec3 getRay(in vec2 st, in vec3 pos, in vec3 camTarget){\n    float \tfocal = 1.;\n    vec3 ww = normalize( camTarget - pos);\n    vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0)) ) ;\n    vec3 vv = cross(uu,ww);\n\treturn normalize( st.x*uu + st.y*vv + focal*ww );\n}\n\n\n/************************************************************************/\n/*\t\t\t\t\t\t\t\tMain\t\t\t\t\t\t\t\t\t*/\n/************************************************************************/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 st = (fragCoord.xy-.5*iResolution.xy)/iResolution.y;\n    \n    vec3 C = vec3(1.);\n    C.y = ground(C.xz,1.);\n    \n    //vec3 camTarget = TARGET;\n    vec3 camTarget = C + vec3(0.,3.,0.);\n    vec3 pos = getCamPos(camTarget);\n    pos.y = max(pos.y, 1.05*ground(pos.xz,1.));\n    vec3 ray = getRay(st, pos,camTarget);\n\t\t\n    vec3 col = vec3(.0);\n    vec3 coldom = vec3(.0);\n    vec3 norm;\n    \n    float tg = INFINI;\n    vec2 ts;\n        \n    tg = traceGround(pos,ray);\n    \n    if(tg<INFINI){\t\t\t\t\t\t// Ground is touched\n        \n        vec3 p = pos + tg*ray;\n        p.y = ground(p.xz,tg);\t\t\t// recalculating p.y (vertical) to be more accurate on position\n\t\t\t\t\t\t\t\t\t\t// needed due to the fine details\n        norm = getGndNormal(p,tg);\n\n        col += PaintCrater(p,ray,tg, norm);\n        \n        float txg=1., txs=1.;\t\t\t\t\t\t\t// finally, adding shadows pre-calculated on the buffer A\n        if(max(abs(p.x),abs(p.z))<2000.){\t\t\t\t \n            \n            txg = groundShadows(p.xz);\n            \n            vec2 tss = sphere(p+.2*norm,C,R,LIGHT);\t\t// And finally to finally, adding the dome\n            if(tss.x<INFINI){\t\t\t\t\t\t\t// shadow, only the frame, as windows are \n                p += tss.x*LIGHT-C;\t\t\t\t\t\t// supposed to be partially transparent.\n                txs = .1+.8*dot(normalize(p),-LIGHT);\t// dot() is to simulate more thickness on the edges\n                txs *= .6-.6*frame(p);\n                //txs *= 1.-.8*frame(p+(tss.y-tss.x)*LIGHT);\n            }\n            \n            col *= min(txs,txg);\n\n    \t}\n    }\n \n    else col += skyCol(ray);\t\t\t\t\t\t// no hit = sky\n\n    \n    ts = sphere(pos,C,R,ray);\n    \n\tif(ts.x < tg){\t\t\t\t\t\t// Dome is touched\n        \n        vec3 p = pos + ts.x*ray;\n        coldom += DrawStruct(p,ray,C);\t// draw frame and color\n        \n        if(ts.y<tg){\t\t\t\t\t// draw the other side of the dome\n            p = pos + ts.y*ray;\t\t\t// visible by transparency\n            p-=C;\n            coldom = mix(coldom,vec3(-frame(p)),.2);\n            col*=.1;\n        }\n        \n    if(tg < ts.y) col = vec3(0.);\t// center of the dome is black\n    col = mix(col,coldom,0.6);\t\t// mixing sphere and color behind for the partial transparency\n    }\n    \n    fragColor = vec4(1.5*col,1.0);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "musicstream",
+                        "id": 21773,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/ilya2184/philip-glass-koyaanisqatsi"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI 3.141592653589793\n#define PIdiv2 1.57079632679489\n#define TwoPI 6.283185307179586\n#define INFINI 1000000.\n\n// Ground def\n#define STEP 6.\n#define maxHill 200.\n\n// Dome def\n#define R 10.\n//#define C vec3(0.,128.,0.)    // defined in main image\n#define WINTILE vec2(32.,16.)\n\n/*************************************/\n/*          GROUND CONTROL           */\n/*************************************/\n\t\t\t\t\t\t\t\t\t\t// if terrain is inappropriate, ie center hill too high\n\t\t\t\t\t\t\t\t\t\t// or dome on the back-side, or too much collisions cam-terrain\n\t\t\t\t\t\t\t\t\t\t// change the offset of the fbm, as random result depends on each\n\t\t\t\t\t\t\t\t\t\t// GPU.\n#define FBM_OFFSET vec2(-.5,.5)\t\t\n\n\n\n/*************************************/\n/*            CAM CONTROL            */\n/*************************************/\n\t\t\t\t\t\t\t\t\t\t\t\t// Select one of the time set below.\n\t\t\t\t\t\t\t\t\t\t\t\t// time depending on iTime\n\t\t\t\t\t\t\t\t\t\t\t\t// or time depending on mouse \n#define TIME_SET 1.5*iTime\n//#define TIME_SET iMouse.x/iResolution.x*280.\n\n\n\t\t\t\t\t\t\t// Uncomment FREE_CAM to have mouse controle\n\t\t\t\t\t\t\t// Change RAU value to set the distance to the visual center (target)\n//#define FREE_CAM\n\n#define RAU 25.\n\n/* centered on dome */\n//#define TARGET C + vec3(0.,3.,0.);\t// defined in main image\n\n/* centered on dome shadow */\n//#define TARGET vec3(380.,20.,380.);\n\n/* following crater cliff (in) */\n//#define TARGET vec3(800.*cos(.1*iTime)+300.,250.,800.*sin(.1*iTime));\n// * following crater cliff (out) */\n//#define TARGET vec3(1200.*cos(.1*iTime)+300.,250.,1200.*sin(.1*iTime));\n\n\n/********************************************************************/\n/********************************************************************/\n\n\n#define LIGHT vec3(-0.691714463866075,0.207514339159822,-0.691714463866075)\n\n\n\n\nfloat H2(in vec2 st) { \t\t\t\t\t\t\n    return fract(sin(dot(st,vec2(12.9898,8.233))) * 43758.5453123);\n}\n\nfloat smin( float a, float b, float k )\n{\n    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h);\n}\n\n/* linear step = poor smoothstep but faster */\nfloat linstep(float a, float b, float x){\n    return clamp((x-a)/(b-a),0.,1.);\n}\n\n\nfloat fbm(vec3 p){\n    p*= .0035;\n    vec2 uv = p.xz+FBM_OFFSET;\n\tfloat a = 1., Hz = 1., m = 1., h= p.y;\t\t\t\t\t\n    vec2 d = vec2(1.,0.);\n    for(float i=1.;i<=STEP; i++){\n        vec2 e = floor(uv*Hz), f = fract(uv*Hz);\n        f = smoothstep(0.,1.,f);\n        h += mix(\n            \tmix(H2(e),H2(e+d.xy),f.x)*a,\n            \tmix(H2(e+d.yx),H2(e+d.xx),f.x)*a,\n            \tf.y);\n        \n        a *= .2+.1*h+.05*i;\n        //a *= .5;\n        Hz *= 2.+.2*p.y;\n        m += a;\n    }\n    h/=m;\n    \n    h *= h;\n    \n    return h;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/*******************    buffer A    *********************/\n/*\t\t\t\t\t\t\t\t\t\t\t\t\t\t*/\n/*               Shadows pre-calculation                */\n/* The 4 channels are used to increase map resolution   */\n/* \t\t\t\t\t\t\t\t\t\t\t\t\t\t*/\n/********************************************************/\n\n\nfloat ground(vec2 p){\n    \n    float a = .000001*(p.x*p.x + p.y*p.y);\n    float h =smin(a*a,abs(1./a),.2)+.8/(50.*a+1.);\n    float m = fbm(vec3(p.x,maxHill*h,p.y));\n    return maxHill*(.4*h*m+.2*m+.4*h)+ texture(iChannel0,.00125*p.xy+.5).r;\n}\n\nvec3 getGndNormal(vec3 p){\n    vec2 e = vec2(.1,0.);\n\tfloat dx = ground(p.xz+e.xy) - p.y;\n    float dy = ground(p.xz+e.yx) - p.y;\n    return normalize(vec3(dx,-e.x,dy));    \n}\n\n\nfloat traceGround(in vec3 pos, in vec3 ray){\n    float t = 0.;\n    float dh = pos.y-ground(pos.xz);\n    if(dh<.1) return .0001;\n    for(int i=0; i<75;i++){\n        vec3 p = pos;\n        t += .9*dh;\n        p = pos+t*ray;\n        if(p.y > 1.6*maxHill && ray.y>=0.){\n            t = INFINI;\n            break;\n        }\n        dh = p.y-ground(p.xz);\n        if(dh<.1)break;\n    }\n    return t;\n}\n\n\nfloat shad(vec3 p){\n    \n        p.y = ground(p.xz);\n        vec3 norm = getGndNormal(p);\n        p -= .2*norm;\n        float t = traceGround(p,LIGHT);\n        if(t<INFINI) return .2;    \n        else return 1.;    \n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float check = floor(texelFetch(iChannel1,ivec2(fragCoord),0).x -.1);\t// checking if resolution has changed\n    if(check == iResolution.x){\t\t\t\t\t\t\t\t\t\t\t\t// in order to manage screen size change.\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t// if no change, just reading pre-calculated shadows\n        fragColor = texture(iChannel1,fragCoord/iResolution.xy);\t\t\t// stored in Buffer A\n    }\n\n    else{   \n        vec2 st = 2000.*fragCoord.xy/iResolution.xy;\t\t\t\t// if screen size has changed, bufferA size changed too \n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t// shadows must be recalculated.\n        vec3 p = vec3(st.x,0.,st.y);\n        fragColor.x = shad(p)+iResolution.x;\t\t\t\t\t\t// storing new resolution info\n\n        p.z = -p.z;\n        fragColor.y = shad(p);\n\n        p.x = -p.x;\n        fragColor.z = shad(p);\n\n        p.z = -p.z;\n        fragColor.w = shad(p);\n    } \n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

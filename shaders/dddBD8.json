@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697131283",
+            "description": "Doing some experiments with spectral rendering",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dddBD8",
+            "likes": 20,
+            "name": "Spectral rendered atmosphere",
+            "published": 3,
+            "tags": [
+                "atmosphere",
+                "pbr",
+                "spectral"
+            ],
+            "usePreview": 0,
+            "username": "robobo1221",
+            "viewed": 415
+        },
+        "renderpass": [
+            {
+                "code": "const float earthRadius = 2.0;\nconst float atmosphereOffset = 0.1;\nconst vec3 earthPosition = vec3(0.0, 0.0, 3.0);\n\nfloat PI = acos(-1.0);\n\nfloat bayer2(vec2 a){\n    a = floor(a);\n    return fract( dot(a, vec2(.5, a.y * .75)) );\n}\n\n#define bayer4(a)   (bayer2( .5*(a))*.25+bayer2(a))\n#define bayer8(a)   (bayer4( .5*(a))*.25+bayer2(a))\n#define bayer16(a)  (bayer8( .5*(a))*.25+bayer2(a))\n\nvec2 iSphere(in vec3 ro, in vec3 rd, in vec3 sph, in float rad) {\n\tvec3 oc = ro - sph;\n\tfloat b = dot(oc, rd);\n\tfloat c = dot(oc, oc) - rad*rad;\n\tvec2 t = vec2(b*b - c);\n\tif( t.x > 0.0) \n\t\treturn -b - sqrt(t) * vec2(1.0, -1.0);\n\treturn vec2(-1.0);\n\n}\n\nstruct spectralWave {\n\tfloat wavelength;\n\tfloat amp;\n};\n\t\nspectralWave createWave(float freq, float amp) {\n\treturn spectralWave(freq, amp);\n}\n\t\nvec3 calculateConeColor(spectralWave wave) {\n\tvec3 dist1 = (wave.wavelength - vec3(580.0, 520.0, 445.0)) / vec3(60.0, 50.0, 50.0);\n\tfloat dist2 = (wave.wavelength - 380.0) / 25.0;\n\t\n\treturn (exp(-dist1 * dist1) * vec3(0.92, 1.0, 0.95) + exp(-dist2 * dist2) * vec3(0.006, 0.0, 0.0)) * wave.amp;\n}\n\nfloat calculateDensity(vec3 worldPosition) {\n\treturn exp(-(length(worldPosition - earthPosition) - earthRadius) * 100.) * 2000000000000.0;\n}\n\nfloat calculateTransmittanceOverT(vec3 rayPosition, vec3 lightDir, float scatteringAmount) {\n\tconst int steps = 8;\n\tfloat stepLength = 0.01;\n\t\n\tfloat od = 0.0;\n\t\n\tfor (int i = 0; i < steps; i++) {\n\t\tod += calculateDensity(rayPosition) * stepLength;\n\t\trayPosition += lightDir * stepLength;\n\t\tstepLength *= 2.0;\n\t}\n\t\n\treturn exp(-od * scatteringAmount);\n}\n\nspectralWave rayleighScattering(vec3 origin, vec3 worldVector, vec3 lightDir, float wavelength, vec2 sphereEarth, vec2 sphereAtmo, float dither, float phase) {\n\tif (sphereAtmo.x <= 0.0) {\n\t\treturn createWave(wavelength, 0.0);\n\t}\n\t\n\tconst int steps = 10;\n\t\n\tvec3 startPos = origin + worldVector * max(sphereAtmo.x, 0.0);\n\tvec3 endPos = origin + worldVector * (sphereEarth.x > 0.0 ? sphereEarth.x : sphereAtmo.y);\n\t\n\tvec3 increment = (endPos - startPos) / float(steps);\n\tfloat stepSize = length(increment);\n\t\n\tvec3 rayPosition = startPos + increment * dither;\n\t\n\tfloat scatteringAmount = 1.0 / pow(wavelength, 4.0);\n\tfloat transmittence = 1.0;\n\tfloat scattering = 0.0;\n\t\n\tfor (int i = 0; i < steps; i++) {\n\t\tfloat depth = calculateDensity(rayPosition) * stepSize;\n\t\tfloat stepTransmittance = exp(-scatteringAmount * depth);\n\t\t\n\t\tscattering += (1.0 - stepTransmittance) * transmittence * calculateTransmittanceOverT(rayPosition, lightDir, scatteringAmount);\n\t\ttransmittence *= stepTransmittance;\n\t\t\n\t\trayPosition += worldVector * stepSize;\n\t}\n\t\n\treturn createWave(wavelength, scattering * phase);\t\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 uv = fragCoord/iResolution.xy;\n\n\tvec2 wPos = (uv * 2.0 - 1.0) * vec2(iResolution.x / iResolution.y, 1.0);\n\tvec3 worldVector = normalize(vec3(wPos, 1.0));\n\t\n\tvec3 color = vec3(0.0);\n\tvec3 bbColor = vec3(0.0);\n\tconst float minFreq = 400.0;\n\tconst float maxFreq = 650.0;\n\tconst float freqStep = 50.0;\n\tvec3 totalWeight = vec3(0.0);\n    \n    float rotation = iTime;\n    \n    if (iMouse.x > 1.0) {\n        rotation = (0.5 - iMouse.x / iResolution.x) * 2.0 * PI;\n    }\n\t\n\tvec3 lightDir = normalize(vec3(sin(rotation), 1.0, cos(rotation)));\n\tvec3 rayOrigin = vec3(0.0, 0.0, 0.0);\n\t\n\tvec2 sphereEarth = iSphere(rayOrigin, worldVector, earthPosition, earthRadius);\n\tvec2 sphereAtmo = iSphere(rayOrigin, worldVector, earthPosition, earthRadius + atmosphereOffset);\n\tfloat VoL = dot(lightDir, worldVector);\n\t\n\tfloat phase = (VoL * VoL + 1.0) / PI;\n\t\n\tfloat dither = bayer16(gl_FragCoord.xy);\n\n\tfor (float freq = minFreq; freq <= maxFreq; freq += freqStep) {\n\t\tvec3 currConeColor = calculateConeColor(createWave(freq, 1.0));\n\t\tvec3 weight = currConeColor;\n\t\ttotalWeight += weight;\n\t\tbbColor += calculateConeColor(rayleighScattering(rayOrigin, worldVector, lightDir, freq, sphereEarth, sphereAtmo, dither, phase)) * weight;\n\t}\n\n\tcolor = bbColor / totalWeight;\n\tcolor = pow(color, vec3(2.2));\n\tcolor *= 20.0;\n    color /= color + 1.0;\n\tcolor = pow(color, vec3(1.0 / 2.2));\n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

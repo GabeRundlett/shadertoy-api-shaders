@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1698673348",
+            "description": "Simple microscope (vertical) and telescope (horizontal) made from ball lenses.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "cdVfWK",
+            "likes": 4,
+            "name": "Ball scopes",
+            "published": 3,
+            "tags": [
+                "lens",
+                "optics"
+            ],
+            "usePreview": 0,
+            "username": "FordPerfect",
+            "viewed": 164
+        },
+        "renderpass": [
+            {
+                "code": "// Public Domain under http://unlicense.org, see link for details.\n\nconst float pi=3.14159265358979;\n\n// Refractive index.\n//   1.0        - vacuum\n//   1.000293   - air at 0 °C, 1 atm\n//   1.333      - water at 20 °C\n//   1.458      - fused quartz\n//   1.458..1.7 - typical glass\n//   2.417      - diamond\nconst float n=1.5;\n\n// Balls (position, radius).\n// AB is microscope, AC is telescope.\nvec4 A,B,C;\n\nvec3 ray_dir(vec3 camera,vec3 target,vec3 up,vec3 xyz)\n{\n    vec3 z=normalize(target-camera),x=normalize(cross(up,z)),y=cross(z,x);\n    return normalize(xyz.x*x+xyz.y*y+xyz.z*z);\n}\n\nvec3 sky(vec3 ro,vec3 rd)\n{\n    vec3 ret=vec3(0.0,0.25,0.5)+vec3(0.125,0.25,0.25)*exp(-3.5*max(rd.y,0.0));\n    float m=73.3;\n    vec2 v=vec2(atan(rd.z,rd.x)/pi,rd.y);\n    mat2 q=mat2(0.8,-0.6,0.6,0.8);\n    for(int i=0;i<8;++i)\n    {\n        vec2 c=floor(m*q*v);\n        c.x+=0.5*sin(1.7*c.y+float(i));c.y+=0.5*sin(3.7*c.x);\n        c.x+=0.5*sin(3.7*c.y);c.y+=0.5*sin(3.7*c.x+float(i));\n        c.x+=0.5*sin(7.3*c.y);c.y+=0.5*sin(7.3*c.x);\n        v=c*q/m;\n        v.y=clamp(v.y,-1.0,+1.0);\n        vec3 n=vec3(sqrt(1.0-v.y*v.y)*vec2(cos(pi*v.x),sin(pi*v.x)),v.y).xzy;\n        vec3 d=n-rd;\n        ret+=exp(-2.5+sin(3.7*float(i*i))-1e5*dot(d,d));\n        q=q*q;\n    }\n    return ret;\n}\n\nvec3 ground(vec3 ro,vec3 rd)\n{\n    vec3 v=(ro-(ro.y/rd.y)*rd);\n    vec2 xy=5.0*mat2(0.8,-0.6,0.6,0.8)*v.xz;\n    vec3 ret=vec3(0.0);\n    float K=16.0;\n    ret+=exp(-length(v.xz))*(1.0-pow(0.5+0.5*cos(K*v.x),16.0))*(1.0-pow(0.5+0.5*cos(K*v.z),16.0));\n    float r=0.0;\n    for(int i=0;i<5;++i)\n    {\n        r+=sin(xy.x)*sin(xy.y);\n        xy=mat2(1.1,0.5,-0.5,1.1)*xy+2.0*r*r;\n    }\n    ret+=vec3(0.25,0.5,0.125)+0.0625*vec3(-0.5,+1.0,0.0)*r*exp(-0.02*length(v-ro));\n    return ret;\n}\n\n// Ball lens.\n// See https://en.wikipedia.org/wiki/Lens#Lensmaker's_equation.\nfloat focal_length(float R,float n)\n{\n    return n*R/(2.0*(n-1.0));\n}\n\nfloat ray_sphere(vec3 ro,vec3 rd,vec3 c,float R)\n{\n    const float inf=uintBitsToFloat(0x7F800000u);\n    float p=dot(ro-c,rd),q=dot(ro-c,ro-c)-R*R,d=p*p-q;\n    if(d<0.0) return -inf;\n    float tm,tp;\n    if(p<0.0) {tm=q/(+sqrt(d)-p);tp=-p+sqrt(d);}\n    else {tm=-p-sqrt(d);tp=q/(-p-sqrt(d));};\n    return tm<0.0?(tp<0.0?-inf:tp):tm;\n}\n\nvec3 cast_ray_bg(vec3 ro,vec3 rd)\n{\n    if(rd.y>=0.0) return sky(ro,rd);\n    else return ground(ro,rd);\n}\n\nvec3 cast_ray(vec3 ro,vec3 rd)\n{\n    int count=4;\n    bool air=true;\n    vec3 ret=vec3(0.0);\n    float w=1.0;\n    for(int i=0;i<count;++i)\n    {\n        float tA=ray_sphere(ro,rd,A.xyz,A.w);\n        float tB=ray_sphere(ro,rd,B.xyz,B.w);\n        float tC=ray_sphere(ro,rd,C.xyz,C.w);\n        vec3 c=A.xyz;\n        float t=tA;\n        if(t<-1e-10||tB>1e-10&&tB<t) {t=tB;c=B.xyz;}\n        if(t<-1e-10||tC>1e-10&&tC<t) {t=tC;c=C.xyz;}\n        if(t<0.0) break;\n        ro=ro+t*rd;\n        vec3 normal=normalize(ro-c);\n        if(!air) normal=-normal;\n        // Since refract() doesn't do total internal reflection,\n        // we roll our own.\n        //float eta=(air?1.0/n:n);\n        float eta=(air?1.0/n:n);\n        float k=1.0-eta*eta*(1.0-dot(normal,rd)*dot(normal,rd));\n        if(k<0.0) rd=reflect(rd,normal);\n        else\n        {\n            // Only use BG for reflections, and only from air.\n            if(air)\n            {\n                // Schlick's approximation.\n                float r0=pow((n-1.0)/(n+1.0),2.0);\n                float r=r0+(1.0-r0)*pow(clamp(1.0-abs(dot(normal,rd)),0.0,1.0),5.0);\n                ret+=w*r*cast_ray_bg(ro,reflect(rd,normal));\n                w*=1.0-r;\n            }\n            rd=eta*rd-(eta*dot(normal,rd)+sqrt(k))*normal;\n            air=!air;\n        }\n        ro=ro+0.001*rd;\n    }\n    ret+=w*cast_ray_bg(ro,rd);\n    return ret;\n}\n\nvoid mainImage(out vec4 fragColor,in vec2 fragCoord)\n{\n    float rA=1.0,rB=1.0,rC=5.0;\n    float fA=focal_length(rA,n),fB=focal_length(rB,n),fC=focal_length(rC,n);\n    float h=1.25*fB;\n    float f=1.0/(1.0/fB-1.0/h);\n    float d=0.875*fA;\n    float H=h+f+d;\n    float R=fA*(2.5+sin(0.73*iTime));\n    float a=mix(-0.01,pi/2.0-0.001,smoothstep(-1.0,+1.0,sin(0.17*iTime)));\n    float D=fA+fC;\n    A=vec4(0.0,H,0.0,rA);\n    B=vec4(0.0,h,0.0,rB);\n    C=vec4(  D,H,0.0,rC);\n    vec3 ro=A.xyz+R*vec3(-cos(a),sin(a),0.1*sin(0.37*iTime)),ta=A.xyz;\n    vec3 rd=ray_dir(ro,ta,vec3(0.0,1.0,0.0),vec3(2.0*fragCoord-iResolution.xy,iResolution.y));\n    vec3 col=cast_ray(ro,rd);\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

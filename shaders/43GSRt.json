@@ -1,0 +1,64 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1720318266",
+            "description": "Implementing the optimized/improved Fresnel approximation from Niklas Hauber.\n\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "43GSRt",
+            "likes": 8,
+            "name": "Improved Fresnel Approx",
+            "published": 3,
+            "tags": [
+                "optimized",
+                "approximation",
+                "fresnel",
+                "schlick",
+                "niklas",
+                "hauber"
+            ],
+            "usePreview": 0,
+            "username": "BeardThings",
+            "viewed": 161
+        },
+        "renderpass": [
+            {
+                "code": "// Visualizing the optimized fresnel approximation from Niklas Hauber\n// Source: https://www.photometric.io/blog/improving-schlicks-approximation/\n\n// Top is Niklas Hauber\n// Bottom of the screen is Schlick (when using the mouse to visualize)\n\n// Move up and down using mouse.\n// Notice the dip in brightness along the edges of the surface.\n\n#define Roughness 0.2\n#define R0 vec3(1.0)\n#define SampleCount 128u\n#define TimeScale 0.1\n\nvec3 fresnel_Schlick(vec3 r0, vec3 n, vec3 i)\n{\n\tfloat a = 1.0f - dot(n, i);\n\treturn r0 + (1.0f - r0) * a*a*a*a*a;\n}\n\nvec3 fresnel_NiklasHauber(vec3 r0, vec3 n, vec3 i)\n{\n    float a = 1.0f - dot(n, i);\n    return r0 + (a - r0) * a*a*a*a;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy*2.-1.;\n    float aspect = iResolution.y / iResolution.x;\n    \n    float time = iTime * TimeScale;\n    mat3x3 vr = mat3x3(cos(time), -sin(time), 0.0,\n                        sin(time), cos(time), 0.0,\n                        0.0, 0.0, 1.0);\n    \n    vec3 v=vr*(vec3(0.,1.,0.)+vec3(uv.x,0.,0.)+vec3(0.,0.,uv.y*aspect));\n    vec3 o=vr*vec3(0.,-1.5,0.);\n    float r=0.5;\n\n    // Sphere intersection\n    float a=dot(v,v);\n    float b=2.*dot(v,o);\n    float c=dot(o,o)-r*r;\n    float d=b*b-4.*a*c;\n    \n    fragColor.rgb = texture(iChannel0, v.xzy).rgb;\n\n    if(d>=0.)\n    {\n        float t=(-b-sqrt(d))/(2.*a);\n        vec3 p = o+v*t;\n        vec3 n=normalize(p);\n        \n        v = -v; // Flip v, we want it to point away from our surface.\n        \n        mat3x3 b = basis_from_normal(n);\n        \n        vec3 lp = vec3(cos(iTime), sin(iTime), 0.5);\n        \n        vec3 F;\n        // Top\n        if(iMouse.y < fragCoord.y)\n        {\n            F = fresnel_NiklasHauber(R0, n, v);\n        }\n        // Bottom\n        else\n        {\n            F = fresnel_Schlick(R0, n, v);\n        }\n        \n        vec3 acc = vec3(0.0, 0.0, 0.0);\n\n        // Visualize fresnel on the left.\n        bool visualizeFresnel = uv.x < 0.0;\n        if(!visualizeFresnel)\n        {\n            for(uint i = 0u; i < SampleCount; i++)\n            {\n                vec2 r = hammersley2d(i, SampleCount);\n\n                vec3 h = b*ggxRandomHalfVector(v*b, r.x, r.y, Roughness);\n                vec3 l = reflect(-v,h);\n                float ldotn = max(dot(l, n), 0.0);\n                float vdotn = dot(v, n);\n                float vdoth = dot(v, h);\n                float hdotn = dot(h, n);\n                float roughness = Roughness;\n\n                float pdf = ggxPDF(Roughness, hdotn, vdoth);\n                vec3 brdf = ggxSmithCorrolatedBRDF(roughness, hdotn, vdotn, ldotn, F);\n\n                vec3 c = texture(iChannel0, l.xzy).rgb;\n                c = pow(c, vec3(2.2));\n                acc += c * brdf * ldotn / (pdf * float(SampleCount));\n            }\n\n            acc = pow(acc, vec3(1.0/2.2));\n        }\n        else\n        {\n            acc = F;\n        }\n        \n        fragColor.rgb=acc;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Placing all the BRDF integration utils here\n// Keeps the main shader space clear to highlight the point.\n\n#define Pi 3.14159265358979323846264338327\n\nfloat mad(float a, float b, float c) { return a * b + c; }\nfloat rcp(float a) { return 1.0f / a; }\n\nfloat ggxD(float roughnessSq, float hdotn)\n{\n\t// https://jcgt.org/published/0003/02/03/paper.pdf\n\tfloat hdotnSq = hdotn * hdotn;\n\tfloat t = mad(hdotnSq, roughnessSq - 1.0f, 1.0f);\n\treturn roughnessSq * rcp(t * t) / Pi;\n}\n\nvec3 ggxSmithCorrolatedBRDF(float roughness, float hdotn, float vdotn, float ldotn, vec3 fresnel)\n{\n\tvec3 F = fresnel;\n\n\t// Generalized form:\n\t/*float roughnessSq = roughness*roughness;\n\tfloat D = ggxD(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\tfloat maskingLambda = ggxLambda(roughnessSq, vdotn);\n\tfloat shadowingLambda = ggxLambda(roughnessSq, ldotn);\n\tfloat G = maskingShadowingCorrelatedG(maskingLambda, shadowingLambda);\n\treturn F * (G * D / (4.0f * vdotn * ldotn));*/\n\n\t// Shadowing Masking Simplified Form:\n\tfloat roughnessSq = roughness*roughness;\n\tfloat D = ggxD(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\n\t// Algebraically merged shadowingLambda and maskingLambda\n\tfloat t0 = vdotn * sqrt(mad(1.0f - roughnessSq, ldotn * ldotn, roughnessSq));\n\tfloat t1 = ldotn * sqrt(mad(1.0f - roughnessSq, vdotn * vdotn, roughnessSq));\n\tfloat simplifiedG = rcp(t0 + t1);\n\treturn F * (simplifiedG * D * 0.5f);\n}\n\nvec3 sphericalCapVNDFSampling(vec3 v, float r1, float r2)\n{\n\t// https://arxiv.org/pdf/2306.05044.pdf\n\t// sample a spherical cap in (-v.z, 1]\n\tfloat phi = 2.0f * Pi * r1;\n\tfloat z = mad((1.0f - r2), (1.0f + v.z), -v.z);\n\tfloat sinTheta = sqrt(clamp(1.0f - z * z, 0.0f, 1.0f));\n\tfloat x = sinTheta * cos(phi);\n\tfloat y = sinTheta * sin(phi);\n\tvec3 c = vec3(x, y, z);\n\t// compute halfway direction;\n\tvec3 h = c + v;\n\t// return without normalization (as this is done later)\n\treturn h;\n}\n\nvec3 ggxRandomHalfVector(vec3 view, float r1, float r2, float roughness)\n{\n\t// Sampling routine from https://hal.science/hal-01509746/document\n\t// https://jcgt.org/published/0007/04/01/paper.pdf\n\t// Improvement: https://arxiv.org/pdf/2306.05044.pdf\n\n\t// stretch view\n\tfloat roughnessSq = roughness*roughness;\n\tvec3 V = normalize(vec3(roughnessSq * view.x, roughnessSq * view.y, view.z));\n\n\t// float3 N = halfDiscVNDFSampling(V, r1, r2);\n\tvec3 N = sphericalCapVNDFSampling(V, r1, r2);\n\t// unstretch\n\tN = normalize(vec3(roughnessSq*N.x, roughnessSq*N.y, max(0.0f, N.z)));\n\treturn N;\n}\n\nfloat ggxLambda(float roughnessSq, float cosTheta)\n{\n\treturn 0.5f * (sqrt(roughnessSq * (rcp(cosTheta * cosTheta) - 1.0f) + 1.0f) - 1.0f);\n}\n\nfloat microfacetG(float lambda)\n{\n\treturn rcp(1.0f + lambda);\n}\n\nfloat ggxPDF(float roughness, float hdotn, float vdotn)\n{\n\t// https://jcgt.org/published/0007/04/01/paper.pdf\n\tfloat roughnessSq = roughness*roughness;\n\t// Base formulation is:\n\t// VNDF (Visible normal distribution function)\n\t// Dv = D*G1*v.h/v.n\n\t// PDF = Dv/(4*v.h)\n\t// Simplifying:\n\t// PDF = D*G1*v.h/(4*v.n*v.h)\n\t// PDF = D*G1/(4*v.n)\n\treturn ggxD(roughnessSq, hdotn) * microfacetG(ggxLambda(roughnessSq, vdotn)) / (4.0f * vdotn);\n}\n\n\n// http://holger.dammertz.org/stuff/notes_HammersleyOnHemisphere.html\nfloat radicalInverse_VdC(uint bits)\n{\n     bits = (bits << 16u) | (bits >> 16u);\n     bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);\n     bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);\n     bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);\n     bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);\n     return float(bits) * 2.3283064365386963e-10; // / 0x100000000\n}\n\nvec2 hammersley2d(uint i, uint N)\n{\n    return vec2(float(i)/float(N), radicalInverse_VdC(i));\n}\n\n// Orthonormal basis from Naive https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf\nmat3x3 basis_from_normal(vec3 n)\n{\n    vec3 i, j;\n    // If n is near the x - axis , use the y - axis . Otherwise use the x - axis .\n    if (n.x > 0.999 ) i = vec3(0.0, 1.0, 0.0 );\n    else i = vec3(1.0, 0.0, 0.0 );\n    i -= n * dot(i, n); // Make b1 orthogonal to n\n    i *= 1.0/sqrt(dot(i, i)); // Normalize b1\n    j = cross(n, i); // Construct b2 using a cross product\n\treturn mat3x3(i, j, n);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

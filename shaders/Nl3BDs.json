@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1663789837",
+            "description": "Raymarching 3D p-norm for varying p in [-1/2 .. 4]. Loops every 400 frames.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Nl3BDs",
+            "likes": 4,
+            "name": "P-Norm",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "pnorm"
+            ],
+            "usePreview": 0,
+            "username": "sedcore",
+            "viewed": 175
+        },
+        "renderpass": [
+            {
+                "code": "/* Sed - P-Norm - 2022 */\n\n/* GLSL adaptation of http://sedcore.eu.org/small/norm.c */\n/* comments were kept as is - useless c code removed */\n/* released in the public domain */\n/* not super efficient I guess */\n\n/* 16/9 aspect ratio expected - me too lazy to handle generic case */\n\n/* set this for full resolution (personally I like big pixels)\n * note that the computation time is the same in any case\n */\n//#define FULL_RESOLUTION\n\n/* 2022-09-07 */\n\n/* inspired by https://twitter.com/Marina_Costant/status/1560219380482539522 */\n\n/* gcc -Wall -o norm norm.c -lm -O3 -ffast-math -fomit-frame-pointer -march=native\n * ./norm > XX\n * ffmpeg -f rawvideo -s 640x360 -r 25 -pix_fmt bgra -i XX -vf palettegen palette.png\n * ffmpeg -f rawvideo -s 640x360 -r 25 -pix_fmt bgra -i XX -i palette.png -filter_complex paletteuse movie.gif\n */\n\n/* not realtime at all, set delta = 0.05 or higher for faster but uglier */\n/* or improve dig_t(): we look for the smallest t>1 for which norm() = 1,\n * if it exists of course\n */\n\n/* not super good comments, see norm_infinity.c for better */\n\nconst float M_PI = radians(180.);\n\nfloat norm(float p, float t, float x0, float y0, float z0, float x1, float y1, float z1)\n{\n  float x = x0 + t * (x1 - x0);\n  float y = y0 + t * (y1 - y0);\n  float z = z0 + t * (z1 - z0);\n  return   pow(abs(x), p)\n         + pow(abs(y), p)\n         + pow(abs(z), p);\n}\n\nfloat euclid(float t, float x0, float y0, float z0, float x1, float y1, float z1)\n{\n  float x = x0 + t * (x1 - x0);\n  float y = y0 + t * (y1 - y0);\n  float z = z0 + t * (z1 - z0);\n  return sqrt(x*x + y*y + z*z);\n}\n\nfloat dig_t(float p, float x0, float y0, float z0, float x1, float y1, float z1)\n{\n  float t0, t1;\n  float n0, n1;\n  float delta = .01;\n\n  /* norm is abs(x)^p + abs(y)^p + abs(z)^p\n   * we want norm = 1 (we want to be on the \"unit sphere\" of the norm)\n   * current ray is from (x0, y0, z0) to (x1,y1,z1)\n   * a point (x,y,z) is on the ray if there is t such that:\n   * (x,y,z) = t * ray\n   * for t=0 we decide to be at (x0,y0,z0)\n   * for t=1 we decide to be at (x1,y1,z1)\n   * so for generic point (x,y,z), we have:\n   * 0 x0  y0  z0\n   * 1 x1  y1  z1\n   * t x   y   z\n   * so:\n   * t = (x - x0) / (x1 - x0)\n   * same for y and z\n   * and so:\n   * x = x0 + t * (x1 - x0)\n   * y = y0 + t * (y1 - y0)\n   * z = z0 + t * (z1 - z0)\n   */\n\n  /* start at t = 1 and end at t = 1 + delta */\n  t0 = 1.;\n  n0 = norm(p, t0, x0, y0, z0, x1, y1, z1);\n  //if (n0 <= 1) { fprintf(stderr, \"bad start\\n\"); exit(1); }\n  t1 = t0 + delta;\n  n1 = norm(p, t1, x0, y0, z0, x1, y1, z1);\n  while ((   (n0 > 1. && n1 > 1.)\n          || (n0 < 1. && n1 < 1.))\n         && t1 < 5.) {\n    n0 = n1;\n    t0 = t1;\n    t1 += delta;\n    n1 = norm(p, t1, x0, y0, z0, x1, y1, z1);\n  }\n  if (t1 >= 5.) return 1000.;\n  return t1;\n}\n\n#define rotate_x(x, y, z, angle)    {          \\\n  float y2 = y * cos(angle) - z * sin(angle); \\\n  float z2 = z * cos(angle) + y * sin(angle); \\\n  y = y2;                                      \\\n  z = z2;                                      \\\n}\n\n#define rotate_y(x, y, z, angle)    {          \\\n  float x2 = x * cos(angle) - z * sin(angle); \\\n  float z2 = z * cos(angle) + x * sin(angle); \\\n  x = x2;                                      \\\n  z = z2;                                      \\\n}\n\nvec4 raytrace_norm(float x, float y, float frame)\n{\n  float x0 = 0., y0 = 0., z0 = 3., x1 = x, y1 = y, z1 = 2.;\n  float p;\n  float t;\n\n  /* rotate (x0,y0,z0) and (x1,y1,z1) */\n  float angle = 2. * M_PI * frame / 100.;\n\n  rotate_x(x0, y0, z0, -M_PI/7. * cos(2. * M_PI * frame / 80.));\n  rotate_x(x1, y1, z1, -M_PI/7. * cos(2. * M_PI * frame / 80.));\n\n  rotate_y(x0, y0, z0, angle);\n  rotate_y(x1, y1, z1, angle);\n\n  /* x0   y0\n   * x    y\n   * x1   y1\n   * (x-x0) / (x1-x0) = (y-y0) / (y1-y0)\n   * y = y0 + (x-x0) / (x1-x0) * (y1-y0)\n   */\n#define P3(x, x0, x1, y0, y1) ((y0) + ((x)-(x0)) / ((x1)-(x0)) * ((y1)-(y0)))\n  /* p in [1/2 .. 4] */\n  frame = mod(frame, 200.);\n  /* 1/2   1   2    4 */\n  if (frame < 50.)       p = P3(frame, 0., 50., 1./2., 1.);\n  else if (frame < 75.)  p = P3(frame, 50., 75., 1., 2.);\n  else if (frame < 100.) p = P3(frame, 75., 100., 2., 4.);\n  else if (frame < 125.) p = P3(frame, 100., 125., 4., 2.);\n  else if (frame < 150.) p = P3(frame, 125., 150., 2., 1.);\n  else                   p = P3(frame, 150., 200., 1., 1./2.);\n\n  vec4 blue = vec4(15, 17, 23, 0)/255.;\n  t = dig_t(p, x0, y0, z0, x1, y1, z1);\n  if (t == 1000.) return blue;\n\n  /* a palette based on distance from (0,0,0) to the point */\n  float d = euclid(t, x0, y0, z0, x1, y1, z1);\n  float g = P3(d, 0., 0.6, 125., 10.);\n  float rb = P3(d, 0., 0.6, 125., 10.);\n  float ra = P3(d, 0., 2., 0., 255.);\n  g = clamp(g, 0., 255.);\n  rb = clamp(rb, 0., 255.);\n  float w = clamp(P3(d, 1., 1.4, 0., 120.), 0., 255.);\n  return vec4(\n    max(clamp(ra+rb, 0., 255.), w),\n    max(g, w),\n    max(20., w),\n    0) / 255.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n#ifdef FULL_RESOLUTION\n  float x = fragCoord.x;\n  float y = fragCoord.y;\n  x -= iResolution.x / 2.;\n  y = iResolution.y / 2. - y;\n  x /= (iResolution.x / 160.);\n  y /= (iResolution.y / 90.);\n  float frame = iTime * 25.;\n  float scale = 1./100.;\n  float x0 = x * scale;\n  float y0 = y * scale;\n  fragColor = raytrace_norm(x0, y0, frame);\n#else\n  float x = P3(fragCoord.x, 0., iResolution.x, -80., 80.);\n  float y = P3(fragCoord.y, 0., iResolution.y, -45., 45.);\n  x = floor(x);\n  y = floor(y);\n  float frame = iTime * 25.;\n  float scale = 1./100.;\n  float x0 = x * scale;\n  float y0 = y * scale;\n  fragColor = raytrace_norm(x0, y0, frame);\n#endif\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

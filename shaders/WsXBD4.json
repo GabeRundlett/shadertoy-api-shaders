@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1588214279",
+            "description": "I started off with https://www.youtube.com/watch?v=PGtv-dBi2wE and tried adding some more shapes, a spinning camera, multiple lights, and soft shadows :)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WsXBD4",
+            "likes": 0,
+            "name": "A first raymarcher",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "CraftedCart",
+            "viewed": 395
+        },
+        "renderpass": [
+            {
+                "code": "// Tutorial videos\n// ===============\n// https://www.youtube.com/watch?v=PGtv-dBi2wE\n\n#define M_PI 3.1415926535897932384626433832795\n\nconst int MAX_MARCHING_STEPS = 100; // How many marching iterations should we do before giving up\nconst float MAX_MARCHING_DIST = 100.0; // How far should we march for before giving up and calling it \"sky\"\nconst float MARCHING_SURFACE_DIST = 0.01; // How close should we march towards some geometry before we consider it a hit\nconst float MAX_LIGHT_BOUNCES = 6.0; // How many times we should attempt to bounce light in shadowed areas before giving up\n\nconst vec3 WORLD_UP = vec3(0.0, 1.0, 0.0);\nconst vec3 VIEW_TARGET = vec3(0.0, 2.5, 0.0);\nconst float ZOOM_FAC = 1.0;\n\nconst vec3 COL_PINK = vec3(0.969, 0.659, 0.722);\nconst vec3 COL_BLUE = vec3(0.333, 0.804, 0.988);\n\n/** Given a point in 3D space, figure out how far away we are from the nearest piece of geometry */\nfloat getDistToGeom(vec3 point) {\n    float minDist = MAX_MARCHING_DIST;\n\n    // Sphere object\n    vec3 sphere1Pos = vec3(-2.0, 1.0, 0.0);\n    float sphere1Radius = 1.0;\n    float sphere1Dist = length(point - sphere1Pos) - sphere1Radius;\n    minDist = min(minDist, sphere1Dist);\n\n    // Sphere object\n    vec3 sphere2Pos = vec3(2.0, 0.5, 0.0);\n    float sphere2Radius = 0.5;\n    float sphere2Dist = length(point - sphere2Pos) - sphere2Radius;\n    minDist = min(minDist, sphere2Dist);\n\n    // Many sphere objects\n    float rot = sin(iTime * 2.0) * 0.5 + 0.5;\n    for (float i = 0.0; i < 2.0 * M_PI; i += M_PI / 6.0) {\n        // vec3 spherePos = vec3(cos(i * 4) + sin(iTime * 2 + i), 4 + sin(i * 4) + cos(iTime * 2 + i), sin(i));\n        vec3 spherePos = vec3(sin(iTime * 4.0 + i) * (1.0 - rot) + cos(iTime * 4.0 + i) * rot, 3.0 + cos(iTime + i), sin(iTime * 4.0 + i) * rot + cos(iTime * 4.0 + i) * (1.0 - rot));\n        float sphereRadius = 0.15;\n        float sphereDist = length(point - spherePos) - sphereRadius;\n        minDist = min(minDist, sphereDist);\n    }\n\n    // Ground plane distance can be calculated as just the point offset from the ground\n    float planeDist = point.y;\n    minDist = min(minDist, planeDist);\n\n    // Return whatever distance is closest to the point\n    return minDist;\n}\n\n/** Given a ray origin and ray direction, figure out how far the ray goes before hitting some geometry */\nfloat rayMarch(vec3 rayOrigin, vec3 rayDir) {\n    float distFromOrigin = 0.0;\n\n    for (int i = 0; i < MAX_MARCHING_STEPS; i++) {\n        vec3 currentPos = rayOrigin + rayDir * distFromOrigin;\n\n        float distToGeom = getDistToGeom(currentPos);\n        distFromOrigin += distToGeom; // March forward\n\n        // Check if we should exit the loop\n        if (distFromOrigin > MAX_MARCHING_DIST || distToGeom < MARCHING_SURFACE_DIST) break;\n    }\n\n    return distFromOrigin;\n}\n\n/** Given a point on a surface in 3D space, figure out its normal direction */\nvec3 getNormal(vec3 point) {\n    float dist = getDistToGeom(point);\n\n    return normalize(dist - vec3(\n                getDistToGeom(point - vec3(0.01, 0.0, 0.0)),\n                getDistToGeom(point - vec3(0.0, 0.01, 0.0)),\n                getDistToGeom(point - vec3(0.0, 0.0, 0.01))\n                ));\n}\n\n/** Gets the pixel color of a point in 3D space */\nfloat getLight(vec3 point, vec3 lightPos) {\n    vec3 lightDir = normalize(lightPos - point);\n    vec3 surfaceNorm = getNormal(point);\n\n    float diffuse = max(0.0, dot(lightDir, surfaceNorm));\n\n    // Now, let's raymarch towards our light source\n    // if it turns out we can't raymarch all the way to the light, that means we hit an object along the way\n    // meaning we should be in shadow\n\n    // Adjust the point so we don't start inside some geometry\n    bool rayEscaped = false;\n    for (float i = 0.0; i < MAX_LIGHT_BOUNCES; i++) {\n        vec3 pointAdj = point + surfaceNorm * MARCHING_SURFACE_DIST * 3.0;\n\n        float distTowardsLight = rayMarch(pointAdj, lightDir);\n        if (distTowardsLight < length(lightPos - point)) {\n            // We hit something - let's do a light bounce\n            vec3 hitPoint = pointAdj + lightDir * distTowardsLight;\n            vec3 hitNormal = getNormal(hitPoint);\n\n            float bounceMarchDist = rayMarch(hitPoint, hitNormal);\n            vec3 bouncePoint = hitPoint + hitNormal * bounceMarchDist;\n            vec3 bounceNorm = getNormal(bouncePoint);\n\n            diffuse *= pow(1.0 - (1.0 / MAX_LIGHT_BOUNCES), i);\n\n            point = bouncePoint;\n            surfaceNorm = bounceNorm;\n        } else {\n            rayEscaped = true;\n        }\n    }\n\n    // If a ray never made it to the light source, make it pitch black\n    if (!rayEscaped) {\n        diffuse = 0.0;\n    }\n\n    return diffuse;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    float ratio = iResolution.x / iResolution.y;\n    vec2 uv = fragCoord / iResolution.xy;\n\n    uv -= 0.5; // Move the origin to the middle of the screen\n    uv.x *= ratio; // Account for the aspect ratio\n\n    vec3 col = vec3(0.0, 0.0, 0.0);\n\n    vec3 rayOrigin = vec3(cos(iTime * 0.2) * 12.0, 1.5 + sin(iTime * 0.5), sin(iTime * 0.2) * 12.0); // Camera position\n\n    vec3 camForward = normalize(VIEW_TARGET - rayOrigin);\n    vec3 camRight = normalize(cross(WORLD_UP, camForward));\n    vec3 camUp = cross(camForward, camRight);\n\n    vec3 screenCenter = rayOrigin + camForward * ZOOM_FAC; // Figure out where the center of the screen is in 3D space\n    vec3 intersectPoint = screenCenter + (uv.x * camRight) + (uv.y * camUp);\n\n    vec3 rayDir = intersectPoint - rayOrigin;\n\n    float rayDist = rayMarch(rayOrigin, rayDir);\n    vec3 point = rayOrigin + rayDir * rayDist; // Get the point in 3D space\n\n    vec3 lightPos;\n    lightPos = vec3(0.0 + sin(iTime * 1.5) * 8.0, 5.0, 6.0 + cos(iTime * 1.5) * 8.0);\n    col += getLight(point, lightPos) * COL_BLUE * (sin(iTime * 0.3) + 1.0) * 0.5;\n\n    lightPos = vec3(0.0 + sin(iTime) * 2.0, 2.0, 6.0 + cos(iTime) * 2.0);\n    col += getLight(point, lightPos) * COL_PINK * (cos(iTime * 0.3) + 1.0) * 0.5;\n\n    // Output to screen\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

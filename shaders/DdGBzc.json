@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1698446148",
+            "description": "Generic outlines by computing second SDF at the closest point to first SDF. Not perfect as it uses numerical derivatives to compute the closest point, leading to floating-point precision errors, but pretty close!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DdGBzc",
+            "likes": 6,
+            "name": "Outline SDF with other SDF",
+            "published": 3,
+            "tags": [
+                "a"
+            ],
+            "usePreview": 0,
+            "username": "fishy",
+            "viewed": 207
+        },
+        "renderpass": [
+            {
+                "code": "// Generic outlines by computing second SDF at the closest point to first SDF.\n// Not perfect as it uses numerical derivatives to compute the closest point,\n// leading to floating-point precision errors, but pretty close!\n//\n// Outline shape switches between rounded box and star shape\n//\n// Next thing to try perhaps would be to use analytic normals. All SDF functions\n// made by iq (except the outlining function)\n\nfloat sdRoundedBox( in vec2 p, in vec2 b, in vec4 r )\n{\n    r.xy = (p.x>0.0)?r.xy : r.zw;\n    r.x  = (p.y>0.0)?r.x  : r.y;\n    vec2 q = abs(p)-b+r.x;\n    return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r.x;\n}\n\nfloat sdSegment( in vec2 p, in vec2 a, in vec2 b )\n{\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat dot2( in vec2 v ) { return dot(v,v); }\nfloat cro( in vec2 a, in vec2 b ) { return a.x*b.y - a.y*b.x; }\n\n// signed distance to a quadratic bezier\nfloat sdBezier( in vec2 pos, in vec2 A, in vec2 B, in vec2 C )\n{    \n    vec2 a = B - A;\n    vec2 b = A - 2.0*B + C;\n    vec2 c = a * 2.0;\n    vec2 d = A - pos;\n\n    float kk = 1.0/dot(b,b);\n    float kx = kk * dot(a,b);\n    float ky = kk * (2.0*dot(a,a)+dot(d,b))/3.0;\n    float kz = kk * dot(d,a);      \n\n    float res = 0.0;\n    float sgn = 0.0;\n\n    float p  = ky - kx*kx;\n    float q  = kx*(2.0*kx*kx - 3.0*ky) + kz;\n    float p3 = p*p*p;\n    float q2 = q*q;\n    float h  = q2 + 4.0*p3;\n\n    if( h>=0.0 ) \n    {   // 1 root\n        h = sqrt(h);\n        vec2 x = (vec2(h,-h)-q)/2.0;\n\n        vec2 uv = sign(x)*pow(abs(x), vec2(1.0/3.0));\n        float t = clamp( uv.x+uv.y-kx, 0.0, 1.0 );\n        vec2  q = d+(c+b*t)*t;\n        res = dot2(q);\n    \tsgn = cro(c+2.0*b*t,q);\n    }\n    else \n    {   // 3 roots\n        float z = sqrt(-p);\n        float v = acos(q/(p*z*2.0))/3.0;\n        float m = cos(v);\n        float n = sin(v)*1.732050808;\n        vec3  t = clamp( vec3(m+m,-n-m,n-m)*z-kx, 0.0, 1.0 );\n        vec2  qx=d+(c+b*t.x)*t.x; float dx=dot2(qx), sx = cro(c+2.0*b*t.x,qx);\n        vec2  qy=d+(c+b*t.y)*t.y; float dy=dot2(qy), sy = cro(c+2.0*b*t.y,qy);\n        if( dx<dy ) { res=dx; sgn=sx; } else {res=dy; sgn=sy; }\n    }\n    \n    return sqrt( res );\n}\n\nfloat sdStar( in vec2 p, in float r, in int n, in float m)\n{\n    // next 4 lines can be precomputed for a given shape\n    float an = 3.141593/float(n);\n    float en = 3.141593/m;  // m is between 2 and n\n    vec2  acs = vec2(cos(an),sin(an));\n    vec2  ecs = vec2(cos(en),sin(en)); // ecs=vec2(0,1) for regular polygon\n\n    float bn = mod(atan(p.x,p.y),2.0*an) - an;\n    p = length(p)*vec2(cos(bn),abs(sin(bn)));\n    p -= r*acs;\n    p += ecs*clamp( -dot(p,ecs), 0.0, r*acs.y/ecs.y);\n    return length(p)*sign(p.x);\n}\n\nfloat baseMap(vec2 uv)\n{\n    //return sdSegment(uv, vec2(-0.5, 0.2), vec2(0.5, 0));\n\tvec2 v0 = vec2(1.3,0.9)*cos(iTime*0.5 + vec2(0.0,5.0) );\n    vec2 v1 = vec2(1.3,0.9)*cos(iTime*0.6 + vec2(3.0,4.0) );\n    vec2 v2 = vec2(1.3,0.9)*cos(iTime*0.7 + vec2(2.0,0.0) );\n    return sdBezier(uv, v0, v1, v2);\n}\n\nmat2 rot(float r){ return  mat2(cos(r), -sin(r), sin(r), cos(r)); }\n\n\n// cursed macros to simulate functions as first-class types\n// pretty useful, I'll have to put these to use sometime else\n#define derivative(uv, eps, func) (vec2(func(uv + vec2(eps, 0)) - func(uv - vec2(eps, 0)), func(uv + vec2(0, eps)) - func(uv - vec2(0, eps)))/eps*0.5)\n#define closestPoint(uv, eps, func) (uv - derivative(uv, eps, func)*func(uv))\n\nfloat outlineMap(vec2 uv)\n{\n    if(int(iTime)/6 % 2 == 0)\n        return sdRoundedBox(uv, vec2(0.1), vec4(tanh(sin(iTime*3.1415926535)*3.0)*0.1));\n    return sdStar(uv, 0.1, 6, 2.0 + tanh(sin(iTime*3.1415926535)*3.0)*0.5);\n}\n\nfloat map(vec2 uv)\n{\n    vec2 cp = closestPoint(uv, 0.0001, baseMap);\n    return outlineMap(uv-cp);\n}\n\nvec3 colorSdf(vec2 uv, vec4 m, float px)\n{\n    #define PERIOD 200.\n    #define STR 0.2\n    #define STROKE_WIDTH 0.005\n    #define MOUSE_WIDTH 0.005\n    float d = map(uv);\n    float md = abs(map(m.xy));\n    vec3 col = mix(vec3(1.000,0.686,0.035), vec3(0.133,0.459,1.000), sign(d)*0.5+0.5);\n    col *= smoothstep(-px*PERIOD, px*PERIOD, cos(d*PERIOD))*STR+1.-STR;\n    col = mix(col, vec3(0), smoothstep(STROKE_WIDTH+px, STROKE_WIDTH-px, abs(d)));\n    if(m.z > 0.)\n    {\n        float mdc = smoothstep(px, -px, min(abs(\n                distance(m.xy, uv)-md+MOUSE_WIDTH)-MOUSE_WIDTH,\n                distance(m.xy, uv)-MOUSE_WIDTH*2.));\n        col = mix(col, vec3(0), mdc);\n    }\n    col /= d+1.;\n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord*2.-iResolution.xy)/iResolution.y;\n    vec4 m = vec4((iMouse.xy*2.-iResolution.xy)/iResolution.y, iMouse.zw);\n    float px = 1.5/iResolution.y;\n    \n    fragColor = vec4(colorSdf(uv, m, px),1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

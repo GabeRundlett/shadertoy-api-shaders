@@ -1,0 +1,118 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1701330339",
+            "description": "I was fiddling with the parameters of my latest and found it makes nice-ish auroras.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "DtcBRS",
+            "likes": 11,
+            "name": "Cosmic Aurora",
+            "published": 3,
+            "tags": [
+                "2d",
+                "abstract",
+                "bloom",
+                "green"
+            ],
+            "usePreview": 0,
+            "username": "space928",
+            "viewed": 465
+        },
+        "renderpass": [
+            {
+                "code": "// An abstract shader by Thomas M.\n// The bulk of the shader is in Buffer A so that temporal accumulation can be done.\n// This pass does the post processing (bloom, vignette, and dither)\n\n// Reduces blinear interpolation artifacts, and I think it looks nice\nconst float bloomNoise = 0.1;\n// Set to 1. if you want animated noise.\nconst float animateDither = 0.;\n\n#define rnd_off(o) (((hash23(vec3(fragCoord.x, fragCoord.y, fract(iTime*animateDither)))*2.-1.)+(hash23(vec3(fragCoord.x, fragCoord.y, fract(iTime*animateDither)+0.5798765))*2.-1.0))/iResolution.xy*pow(2.,o)*bloomNoise)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    vec3 col = texture(iChannel0, uv).rgb;\n    // Bloom based on mipmaps\n    vec3 bloom = vec3(0.);\n    bloom += textureLod(iChannel0, uv+rnd_off(1.), 1.).rgb*0.5;\n    bloom += textureLod(iChannel0, uv+rnd_off(2.), 2.).rgb*0.75;\n    bloom += textureLod(iChannel0, uv+rnd_off(3.), 3.).rgb*1.0;\n    bloom += textureLod(iChannel0, uv+rnd_off(4.), 4.).rgb*1.5;\n    bloom += textureLod(iChannel0, uv+rnd_off(5.), 5.).rgb*2.;\n    bloom += textureLod(iChannel0, uv+rnd_off(6.), 6.).rgb*2.5;\n    bloom += textureLod(iChannel0, uv+rnd_off(7.), 7.).rgb*3.0;\n    col += tanh(pow(bloom*0.5, vec3(2.)))*0.25;\n    \n    // Vignette inspired by: https://www.shadertoy.com/view/lsKSWR\n    vec2 u = uv*(1.-uv.yx);\n    float vignette = tanh(u.x*u.y*25.+0.05)*1.2;\n    col = pow(vignette*pow(col, vec3(2.)), vec3(1./2.));\n    \n    // Dither at the end\n    float dither = (hash12(fragCoord+fract(iTime*animateDither*0.733)) + hash12(fragCoord + 0.59374+fract(iTime*animateDither*0.733)) - 0.5)/255.;\n    col += dither;\n    \n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float dist = 200.; // Maximum blur distance\nconst vec2 dir = vec2(0.2, -1.); // Direction to blur in\nconst float gamma = 0.2; // Gamma to apply while blurring. (accentuates the highlights)\nconst float thresh = 0.6; // Highlight threshold (used as the stopping point for the blur)\nconst vec3 jitter = vec3(0.1, 0.0, 0.3); // Amount of jitter applied to the motion blur in x and y; the z component jitters the threshold\nconst vec3 loss = vec3(0.004, 0.004, 0.001); // Subtract a bit from each iteration of the blur to darken trails\nconst float frameBlending = 100.; // Set this really long for nothern-lights-esque graphics\nconst float speed = 0.01; // How fast the secondary texture scrolls\n\nvec3 colMap(vec3 col)\n{\n    float lum = dot(col, vec3(0.3, 0.6, 0.1));\n    const vec3 dark = vec3(0.03, 0.001, 0.06);\n    const vec3 mid2 = vec3(0.15, 0.45, 0.35);\n    const vec3 mid1 = vec3(0.45, 0.15, 0.35);\n    const vec3 light2 = vec3(0.3, 1.0, 0.55);\n    const vec3 light1 = vec3(1.0, 0.3, 0.55);\n    float t = sin((col.r/col.b)*5.+iTime*speed*10.)*0.5+0.5;\n    vec3 mid = mix(mid1, mid2, t);\n    vec3 light = mix(light1, light2, t);\n    return (mix(dark, mix(mid, light, clamp(lum*3.-1., 0., 1.)), clamp(lum*3., 0., 1.)));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // Vertical blur of the image\n    vec3 col = pow(texture(iChannel0, uv).rgb, vec3(gamma));\n    float sum = 1.;\n    for(float i = 0.; i < dist; i += 1.)\n    {\n        vec2 rnd = (hash23(vec3(uv+iTime*vec2(3., 1.67), i+fract(iTime)))*2.-1.)*jitter.xy;\n        vec2 suv = uv + (dir+rnd) * i / iResolution.xy;\n        vec3 samp = pow(texture(iChannel0, suv).rgb, vec3(gamma));\n        vec3 sampb = pow(texture(iChannel1, suv-dir*iTime*speed).rgb, vec3(gamma)).rgb;\n        samp = (samp+sampb)/2.;\n        // Stop when we reach a highlight, this gives the highlights nice long trails\n        if(dot(samp, vec3(0.3, 0.6, 0.1)) > pow(thresh+jitter.z*rnd.x, gamma))\n            break;\n        col += samp * (1.-loss * i)*0.95;\n        sum += 1.;\n    }\n    col /= sum;\n    // We blur with gamma to accentuate the highlights, we  undo the gamma here\n    col = pow(col, vec3(1./gamma));\n    \n    // Pretty colours\n    col = colMap(col);\n    \n    // Temporal accumulation\n    vec4 prev = texture(iChannel3, fragCoord/iResolution.xy);\n    vec2 prevRes = texelFetch(iChannel3, ivec2(0), 0).xy;\n    if(abs(dot(prevRes - 1./iResolution.xy, vec2(1.))) < 0.0005)\n    {\n        //float dither = (hash12(fragCoord) + hash12(fragCoord + 0.59374) - 0.5)/255.;\n        col = mix(prev.xyz, col, 1./frameBlending);\n    }\n    if (fragCoord-0.5 == vec2(0.0))\n        col = vec3(1./iResolution.xy, 0.);\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Hash functions taken from:\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n\n}\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

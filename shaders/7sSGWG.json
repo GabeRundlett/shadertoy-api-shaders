@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1617902931",
+            "description": "Fixing the seam on procedural UVs, and exposing underlying differences in how derivatives are calculated for both the in shader derivative functions and the hardware texture mip calculation.\n\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7sSGWG",
+            "likes": 14,
+            "name": "atan UV seam correction",
+            "published": 3,
+            "tags": [
+                "derivatives",
+                "dfdx",
+                "mip"
+            ],
+            "usePreview": 0,
+            "username": "bgolus",
+            "viewed": 1242
+        },
+        "renderpass": [
+            {
+                "code": "// Seam Correction for atan() Based Procedural UVs\n\n// When using atan() for uvs, there's a hard discontinuity at some point where the value\n// jumps from 0.0 to 1.0 in one pixel. This discontinuity causes the GPU to think it needs\n// to show the entire texture between those two pixels, and thus drops to the smallest mip\n// level. This causes a visible seam along the discontinuity. Marco Tarini proposed a\n// method that solved this for a similar problem case of UV mapping on a mesh with no \n// vertex seam, and instead using two offset UV sets with the discontinuity in different\n// places. Then pick the UV set with the smallest derivatives using fwidth().\n//\n// http://vcg.isti.cnr.it/~tarini/no-seams/\n// \n// This method works well, but makes two assumptions about how derivatives work.\n//\n//   A) It assumes the fwidth() function is returning coarse derivatives that are constant\n//     for the entire pixel quad.\n//\n//   B) It assumes the hardware's mip level calculation also uses those same derivatives.\n//\n// One or both of these assumptions are no longer true for modern GPUs.\n//\n// =======================================================================================\n//\n// This shader shows off Tarini's original fwidth() based approach, as well as two\n// alternatives that make use of in quad communication.\n//\n// =======================================================================================\n//\n// 0 - No correction, the seam in all it's glory.\n//\n//\n// 1 - Tarini's original fwidth() based method\n//\n// This works on desktop Nvidia and AMD GPUs when running WebGL via ANGLE. Direct3D spec\n// requires base derivative functions to use coarse derivatives, and Nvidia & AMD GPUs\n// both currently use coarse derivatives for the mip level calculation.\n//\n// This will still show a seam on any device that's running WebGL natively and which\n// defaults to fine derivatives. This means it fails on most modern GPUs, desktop or mobile.\n//\n//\n// 2 - emulated coarse derivatives\n//\n// Uses in quad communication to emulate coarse derivatives. Works regardless of if the\n// dFdx/dFdy functions default to coarse or fine derivatives, but still requires the GPU\n// to use coarse derivatives for the mip level calculation.\n//\n// Works on desktop Nvidia and AMD GPUs when running WebGL natively or via ANGLE. May work\n// on some mobile GPUs if they still use coarse derivatives for mip level calculation.\n//\n// This can still show a seam on any GPUs that don't use coarse derivatives for the mip\n// level calculation. This includes Apple's Bionic & M1 GPUs, Mali GPUs, and possibly\n// others.\n//\n//\n// 3 - full quad derivatives\n//\n// Uses in quad communication to get the derivatives for all 4 pixels in the pixel quad.\n// Then selects the worst x and y derivatives for the entire quad and uses those for the\n// fwidth() equivalent. Should work on all known hardware.\n// \n// Could show seams if in shader derivatives default to coarse but the mip level\n// calculation uses the full quad. L̶u̶c̶k̶i̶l̶y̶ ̶I̶ ̶d̶o̶n̶'̶t̶ ̶y̶e̶t̶ ̶k̶n̶o̶w̶ ̶o̶f̶ ̶a̶n̶y̶ ̶h̶a̶r̶d̶w̶a̶r̶e̶ ̶t̶h̶a̶t̶ ̶d̶o̶e̶s̶.\n//\n// edit: Oh no! Mali defaults to coarse shader derivatives but uses full quad derivs for\n// mip calculations! None of these will work on Mali GPUs.\n\n#define PI 3.141592\n#define TAU (PI * 2.0)\n\n// #define FORCE_METHOD 2\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 screen_uv = fragCoord/iResolution.xy;\n    \n    screen_uv -= 0.5;\n        \n    vec2 pos = screen_uv * 2.0;\n    #if !defined(FORCE_METHOD)\n    pos.x += screen_uv.x > 0.0 ? -0.5 : 0.5;\n    pos.y += screen_uv.y > 0.0 ? -0.5 : 0.5;\n    #endif\n    \n    if (iResolution.x > iResolution.y)\n        pos.x *= iResolution.x / iResolution.y;\n    else\n        pos.y *= iResolution.y / iResolution.x;\n        \n    float angle = fract(iTime * 0.1) * TAU;\n    float s = sin(angle);\n    float c = cos(angle);\n    mat2 rotMatrix = mat2(c, -s, s, c);\n    pos = rotMatrix * pos;\n    \n    // -0.5 to 0.5 range\n    float phi = atan(pos.y, pos.x) / TAU;\n    // 0.0 to 1.0 range\n    float phi_frac = fract(phi);\n    \n    // scaled and offset to where the artifact is most obvious\n    float theta = length(pos) * 0.3 + 0.8; \n    \n    // get derivatives for phi and phi_frac\n    float phi_dx = dFdx(phi);\n    float phi_dy = dFdy(phi);\n\n    float phi_frac_dx = dFdx(phi_frac);\n    float phi_frac_dy = dFdy(phi_frac);\n        \n    // in quad position\n    ivec2 pixel_quad_pos = ivec2(fragCoord) % 2;\n    \n    // derivative direction within the quad\n    vec2 quad_dir = vec2(pixel_quad_pos) * 2.0 - 1.0;\n\n    // get derivatives the \"other\" pixel column / row in the quad\n    float phi_dxy = dFdx(phi - phi_dy * quad_dir.y);\n    float phi_dyx = dFdy(phi - phi_dx * quad_dir.x);\n\n    float phi_frac_dxy = dFdx(phi_frac - phi_frac_dy * quad_dir.y);\n    float phi_frac_dyx = dFdy(phi_frac - phi_frac_dx * quad_dir.x);\n    \n    #if !defined(FORCE_METHOD)\n    int method = (screen_uv.x > 0.0 ? 1 : 0) + (screen_uv.y < 0.0 ? 2 : 0);\n    #else\n    int method = FORCE_METHOD;\n    #endif\n    \n    vec2 uv;\n    if (method == 0)\n    {\n        // do nothing special, just show the seam in all its glory\n        \n        uv = vec2(phi, theta);\n    }\n    else if (method == 1)\n    {\n        // tarini's original fwidth based approach\n        \n        float phi_fw = fwidth(phi);\n        float phi_frac_fw = fwidth(phi_frac);\n    \n        uv = vec2(\n            phi_fw - 0.0001 < phi_frac_fw ? phi : phi_frac,\n            theta\n        );\n    }\n    else if (method == 2)\n    {\n        // coarse derivative emulation using in quad communication\n        \n        // check which column / row in the quad this is and use alternate\n        // derivatives if it's not the column / row coarse would use\n        if (pixel_quad_pos.x == 1)\n        {\n            phi_dy = phi_dyx;\n            phi_frac_dy = phi_frac_dyx;\n        }\n        if (pixel_quad_pos.y == 1)\n        {\n            phi_dx = phi_dxy;\n            phi_frac_dx = phi_frac_dxy;\n        }\n        \n        // fwidth using emulated coarse derivatives\n        float phi_fw = abs(phi_dx) + abs(phi_dy);\n        float phi_frac_fw = abs(phi_frac_dx) + abs(phi_frac_dy);\n    \n        uv = vec2(\n            phi_fw - 0.0001 < phi_frac_fw ? phi : phi_frac,\n            theta\n        );\n    }\n    else if (method == 3)\n    {\n        // get worst pair of x & y derivatives from the full quad using in quad communication\n    \n        // fwidth using worst derivatives in the quad\n        float phi_fw = max(abs(phi_dx), abs(phi_dxy))\n                     + max(abs(phi_dy), abs(phi_dyx));\n            \n        float phi_frac_fw = max(abs(phi_frac_dx), abs(phi_frac_dxy))\n                          + max(abs(phi_frac_dy), abs(phi_frac_dyx));\n    \n        uv = vec2(\n            phi_fw - 0.0001 < phi_frac_fw ? phi : phi_frac,\n            theta\n        );\n    }\n    \n    fragColor = texture(iChannel0, uv).rrrr;\n    \n    // quadrant number\n    #if defined(FORCE_METHOD)\n    vec2 num_uv = fragCoord/iResolution.xy * 20.0;\n    #else\n    vec2 num_uv = fract(fragCoord/iResolution.xy * 2.0) * 10.0;\n    #endif\n    if (iResolution.x > iResolution.y)\n        num_uv.x *= iResolution.x / iResolution.y;\n    else\n        num_uv.y *= iResolution.y / iResolution.x;\n    num_uv += vec2(0.8, -0.25);\n    \n    float num = PrintValue(num_uv, float(method), 1., 0.);\n    fragColor += num;\n    \n    #if !defined(FORCE_METHOD)\n    // quadrant lines    \n    fragColor *= smoothstep( 0.5, 2.0, abs(fragCoord.x - iResolution.x * 0.5));\n    fragColor *= smoothstep( 0.5, 2.0, abs(fragCoord.y - iResolution.y * 0.5));\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float DigitBin( const int x )\n{\n    return x==0?480599.0:x==1?139810.0:x==2?476951.0:x==3?476999.0:x==4?350020.0:x==5?464711.0:x==6?464727.0:x==7?476228.0:x==8?481111.0:x==9?481095.0:0.0;\n}\n\nfloat PrintValue( vec2 vStringCoords, float fValue, float fMaxDigits, float fDecimalPlaces )\n{       \n    if ((vStringCoords.y < 0.0) || (vStringCoords.y >= 1.0)) return 0.0;\n    \n    bool bNeg = ( fValue < 0.0 );\n\tfValue = abs(fValue);\n    \n\tfloat fLog10Value = log2(abs(fValue)) / log2(10.0);\n\tfloat fBiggestIndex = max(floor(fLog10Value), 0.0);\n\tfloat fDigitIndex = fMaxDigits - floor(vStringCoords.x);\n\tfloat fCharBin = 0.0;\n\tif(fDigitIndex > (-fDecimalPlaces - 1.01)) {\n\t\tif(fDigitIndex > fBiggestIndex) {\n\t\t\tif((bNeg) && (fDigitIndex < (fBiggestIndex+1.5))) fCharBin = 1792.0;\n\t\t} else {\t\t\n\t\t\tif(fDigitIndex == -1.0) {\n\t\t\t\tif(fDecimalPlaces > 0.0) fCharBin = 2.0;\n\t\t\t} else {\n                float fReducedRangeValue = fValue;\n                if(fDigitIndex < 0.0) { fReducedRangeValue = fract( fValue ); fDigitIndex += 1.0; }\n\t\t\t\tfloat fDigitValue = (abs(fReducedRangeValue / (pow(10.0, fDigitIndex))));\n                fCharBin = DigitBin(int(floor(mod(fDigitValue, 10.0))));\n\t\t\t}\n        }\n\t}\n    return floor(mod((fCharBin / pow(2.0, floor(fract(vStringCoords.x) * 4.0) + (floor(vStringCoords.y * 5.0) * 4.0))), 2.0));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

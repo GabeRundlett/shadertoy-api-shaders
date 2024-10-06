@@ -1,0 +1,91 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1612926785",
+            "description": "Ever dreamed of generating distance fields by brute force?",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wt3BzB",
+            "likes": 16,
+            "name": "3D Distance Field Buffering",
+            "published": 3,
+            "tags": [
+                "3d",
+                "distancefield",
+                "sdf",
+                "buffering",
+                "storage"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 255
+        },
+        "renderpass": [
+            {
+                "code": "/*\nAfter lots of things going wrong I finally have this working!\nThe distance field can be generated and stored in Buffer A and then\nloaded during raymarching. I think it might be useful for expensive\ndistance fields. Perhaps 3D fluid simulations? The resolution is\npretty limited right now. I'll have to try filling up all color\nchannels to get maximum storage (up to 4x more!).\n*/\n\n// filt 0: no filter\n// filt 1: trilinear\n// filt 2: tricubic\n#define fetch(p) texelFetch(iChannel0, ivec2(_322(p, SIZE, RESOLUTION, iChannelResolution[0].xy)), 0).r\nfloat sampleDistanceField(in vec3 p, in int filt) {\n    vec3 halfSize = 0.5 * SIZE;\n    if (all(lessThan(abs(p), halfSize))) {\n        vec3 sp = mod(p + halfSize, SIZE) - halfSize;\n        if (filt == 0) {\n            return fetch(sp);\n        }\n\n        else {\n            vec3 UNIT = SIZE / RESOLUTION;\n            vec3 cell = floor(sp / UNIT) * UNIT;\n            vec3 local = fract(sp / UNIT);\n\n            if (filt == 2) local *= local * (3.0 - 2.0 * local);\n\n            float ldb = fetch(cell);\n            float rdb = fetch(cell + vec3(UNIT.x, 0.0, 0.0));\n            float lub = fetch(cell + vec3(0.0, UNIT.y, 0.0));\n            float rub = fetch(cell + vec3(UNIT.xy, 0.0));\n            float ldf = fetch(cell + vec3(0.0, 0.0, UNIT.z));\n            float rdf = fetch(cell + vec3(UNIT.x, 0.0, UNIT.z));\n            float luf = fetch(cell + vec3(0.0, UNIT.yz));\n            float ruf = fetch(cell + UNIT);\n\n            return mix(mix(mix(ldb, rdb, local.x), mix(lub, rub, local.x), local.y),\n                       mix(mix(ldf, rdf, local.x), mix(luf, ruf, local.x), local.y), local.z);\n        }\n    }\n\n    vec3 q = abs(p) - halfSize + 0.25;\n    float bbox = max(q.x, max(q.y, q.z));\n    return bbox;\n}\n\nfloat mapScene(in vec3 p) {\n    return sampleDistanceField(p, 1);\n}\n\nvec3 getNormal(in vec3 p) {\n    vec3 e = vec3(0.05, 0.0, 0.0); // Cheap smoothing effect (kind of like a box blur on the distance field)\n    return normalize(vec3(mapScene(p + e.xyy) - mapScene(p - e.xyy),\n                          mapScene(p + e.yxy) - mapScene(p - e.yxy),\n                          mapScene(p + e.yyx) - mapScene(p - e.yyx)));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n\n    vec2 mouse = vec2(0.0);\n    if (iMouse.z > 0.0) mouse = (iMouse.xy - center) / iResolution.y * 3.14;\n\n    vec2 uv = (fragCoord - center) / iResolution.y;\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n\n    // Ray and light direction\n    vec3 ro = vec3(0.0, 0.0, 5.0);\n    vec3 rd = normalize(vec3(uv, -1.0));\n    vec3 l = vec3(-0.58, 0.58, 0.58);\n\n    // Rotate with mouse\n    float cy = cos(mouse.x), sy = sin(mouse.x);\n    float cp = cos(mouse.y), sp = sin(mouse.y);\n\n    ro.yz *= mat2(cp, -sp, sp, cp);\n    ro.xz *= mat2(cy, -sy, sy, cy);\n    rd.yz *= mat2(cp, -sp, sp, cp);\n    rd.xz *= mat2(cy, -sy, sy, cy);\n\n    // Intersect bbox to prevent raymarching artifacts\n    float t = iBox(ro, rd, SIZE * 0.49); // The box has to be a bit smaller to prevent artifacts\n    if (t > 0.0) {\n        vec3 p = ro + rd * t;\n        if (mapScene(p) > 0.0) {\n            for (int i=0; i < 100; i++) {\n                vec3 p = ro + rd * t;\n                float d = mapScene(p);\n                if (d < 0.001) {\n                    vec3 n = getNormal(p);\n                    fragColor.rgb += max(0.2, dot(n, l));\n                    break;\n                }\n\n                if (t > 100.0) {\n                    break;\n                }\n\n                t += d;\n            }\n        }\n\n        else {\n            vec3 n = getNormal(p);\n            fragColor.rgb += max(0.2, dot(n, l));\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// RESOLUTION is the number of distance samples, SIZE is the space it maps to\n#define RESOLUTION vec3(45.0)\n#define SIZE vec3(3.5)\n\nvec3 _223(in vec2 p2D, in vec3 size3D, in vec3 res3D, in vec2 res2D) {\n    p2D = floor(p2D);\n    float p1D = p2D.y * res2D.x + p2D.x;\n    float x = mod(p1D, res3D.x);\n    float y = mod(p1D - x, res3D.x * res3D.y) / res3D.x;\n    float z = (p1D - x - y * res3D.x) / res3D.x / res3D.y;\n    return vec3(x, y, z) / res3D * size3D - 0.5 * size3D;\n}\n\nvec2 _322(in vec3 p3D, in vec3 size3D, in vec3 res3D, in vec2 res2D) {\n    p3D = floor(p3D / size3D * res3D + 0.5 * res3D);\n    float p1D = p3D.z * res3D.x * res3D.y + p3D.y * res3D.x + p3D.x;\n    float x = mod(p1D, res2D.x);\n    float y = (p1D - x) / res2D.x;\n    return vec2(x, y);\n}\n\n// Box intersector from https://www.shadertoy.com/view/ld23DV\nfloat iBox(in vec3 ro, in vec3 rd, in vec3 b) {\n    vec3 m = 1.0 / rd;\n    vec3 n = m * ro;\n    vec3 k = abs(m) * b;\n    vec3 t1 = -(k + n);\n    vec3 t2 = +(k - n);\n    float tN = max(max(t1.x, t1.y), t1.z);\n    float tF = min(min(t2.x, t2.y), t2.z);\n    if (tN > tF || tF < 0.0) tN = -1.0;\n    return tN;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Hashes from \"Hash without Sine\" by Dave_Hoskins (https://www.shadertoy.com/view/4djSRW)\nvec3 Hash13(in float x) {\n   vec3 p3 = fract(x * vec3(0.1031, 0.103, 0.0973));\n   p3 += dot(p3, p3.yzx + 33.33);\n   return fract((p3.xxy + p3.yzz) * p3.zyx); \n}\n\nfloat Hash11(in float x) {\n    x = fract(x * 0.1031);\n    x *= x + 33.33;\n    x *= x + x;\n    return fract(x);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    ivec2 iFragCoord = ivec2(fragCoord);\n    if (iFrame == 0) {\n        fragColor = vec4(1000000.0, 0.0, 0.0, 1.0);\n    }\n\n    if (iFrame > 0) {\n        fragColor = texelFetch(iChannel0, iFragCoord, 0);\n\n        if (iFrame % 5 == 0) {\n            vec3 p = _223(fragCoord, SIZE, RESOLUTION, iResolution.xy);\n            for (float i=0.0; i < 1.0; i++) {\n                float id = (iTime + i) * 1000.0;\n                vec3 pos = Hash13(id) * SIZE - 0.5 * SIZE;\n                float shape = Hash11(id + 473.847);\n\n                float size = Hash11(id) * 0.5;\n                vec3 q = abs(p - pos) - size;\n                float newShape = max(q.x, max(q.y, q.z));\n                if (shape > 0.333) {\n                    newShape = length(p - pos) - size;\n                }\n\n                if (shape > 0.666) {\n                    newShape = length(vec2(length(p.xy - pos.xz) - size, p.z - pos.y)) - 0.5 * size;\n                }\n\n                fragColor.r = min(fragColor.r, newShape);\n            }\n\n            if (int(iTime) % 10 == 0) fragColor.r = 1000000.0;\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1582227170",
+            "description": "things",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wlVSz1",
+            "likes": 0,
+            "name": "Intersection of SDFs",
+            "published": 3,
+            "tags": [
+                "sdf"
+            ],
+            "usePreview": 0,
+            "username": "MyGoodSir",
+            "viewed": 208
+        },
+        "renderpass": [
+            {
+                "code": "/**\n *Shader written by Joseph Adrian\n *2/18/2020\n *\n *My objective here was just to learn more about ray marching, GLSL, and implicit geometry\n *As it turns out, this method of rendering can do some nifty stuff.\n */\n\nconst int MAX_STEPS = 250;\nconst float MAX_DIST = 100.0;\nconst float MIN_DIST = 0.0;\nconst float EPSILON = 0.0001;\n\n\n//performs modulus division on a global 3D position vector and returns its position relative to the center of it's local subspace\n//(the effect is similar to subdividing all of 3D space into regular chunks and making them all copies of the chunk centered about\n//the origin, however the actual operation that takes place below just translates a vector based on the remainder when it is \n//divided bt the nearest multiple of a given displacement vector)\nvec3 repeat( vec3 pos, float offset )\n{\n    return mod(pos + offset * 0.5, offset) - offset * 0.5;\n}\n\n//signed distance function for a sphere\nfloat sphereSDF(vec3 pos, float rad)\n{\n    return length(pos) - rad;\n}\n\n//signed distance function for a box\nfloat boxSDF(vec3 pos, vec3 lwh)\n{\n    vec3 x = abs(pos) - lwh;\n    return length(max(x,0.0)) + min(max(x.x,max(x.y,x.z)),0.0);\n}\n\n//signed distance function for the combination of all objects in the scene\nfloat sceneSDF(vec3 pos)\n{\n    \n    float plane = dot(pos, normalize(vec3(0.0, 1.0, 0.0)))-1.5*sin(0.5*iTime);\n    //vec3 lwh = vec3(0.20, 0.15, 0.45);\n    float d = max(sphereSDF(pos, 1.5), plane);\n    return d;\n}\n\n//returns the shortest distance from the camera to the closest surface\nfloat sd2s(vec3 cam, vec3 marchDirection, float start, float end)\n{\n    float depth = start;\n    for(int i = 0; i < MAX_STEPS; i++)\n    {\n        float dist = sceneSDF(cam + depth * marchDirection);\n        if(dist < EPSILON){\n            return depth;\n        }\n        depth+=dist;\n        if(depth >= end){\n            return end;\n        }\n    }\n    return end;\n}\n\n//returns the direction vector for the ray that extends from this pixel\nvec3 rayDirection(float fov, vec2 size, vec2 fragCoord)\n{\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan( radians(fov) / 2.0);\n    return normalize(vec3(xy,-z));\n}\n\n//estimate surface normal using the gradient of the signed distance function\nvec3 approxNormal(vec3 p)\n{\n    return normalize(vec3(\n        \t\t\tsceneSDF(vec3(p.x + EPSILON, p.y, p.z)) - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)),\n                    sceneSDF(vec3(p.x, p.y + EPSILON, p.z)) - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)),\n                    sceneSDF(vec3(p.x, p.y, p.z + EPSILON)) - sceneSDF(vec3(p.x, p.y, p.z - EPSILON))\n        \t\t\t));\n\n}\n/**\n * cDiff = diffuse color\n * cSpec = specular color\n * cAmb = ambient color\n * a = alpha\n * lPos = light position\n * nct = intensity of light\n *\n *returns the shade of color that a light contributes to the surface at a given position\n *\n */\nvec3 phongLightContrib(vec3 cDiff, vec3 cSpec, float a, vec3 pos, \n                       vec3 camPos, vec3 lPos, vec3 nct) {\n    \n    vec3 normal = approxNormal(pos);\n    vec3 light = normalize(lPos - pos);\n    vec3 view = normalize(camPos - pos);\n    vec3 reflection = normalize(reflect(-light, normal));\n    \n    float dotLN = dot(light, normal);\n    float dotRV = dot(reflection, view);\n    \n    //if dotLN is less than 0 then there is no light on this part of the surface\n    if(dotLN < 0.0){\n        return vec3(0.0, 0.0, 0.0);\n    }\n    \n    //light reflecting away from camera, so only apply diffuse lighting\n    if(dotRV < 0.0){\n        return nct * (cDiff * dotLN);\n    }\n    return nct * (cDiff * dotLN + cSpec * pow(dotRV, a));\n    \n    \n}\n\n//calculates frag color after light sources are accounted for\nvec3 phongLighting(vec3 cAmb, vec3 cDiff, vec3 cSpec, float a, vec3 pos, vec3 camPos){\n    \n    const vec3 AL = 0.5 * vec3(1.0, 1.0, 1.0);//AL = Ambient Light\n    vec3 color = AL * cAmb;\n    \n    vec3 pL1 = vec3(4.0 * sin(iTime),//light 1 position\n                    2.0,\n                    4.0 * cos(iTime));\n    vec3 nctL1 = vec3(0.4, 0.4, 0.4);//light 1 intensity\n    \n    color += phongLightContrib(cDiff, cSpec, a, pos, camPos, pL1, nctL1);\n    \n    \n    vec3 pL2 = vec3(2.0 * sin(0.37 * iTime),//light 2 position\n                    2.0 * cos(0.37 * iTime),\n                    2.0);\n    vec3 nctL2 = vec3(0.4, 0.4, 0.4); //light 2 intensity\n    \n    color += phongLightContrib(cDiff, cSpec, a, pos, camPos, pL2, nctL2);\n    \n    return color;\n}\n\n\n//main function\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    \n    float fov = 90.0;\n    \n    vec3 dir = rayDirection(fov, iResolution.xy, fragCoord);\n\tvec3 cam = vec3(0.0, 0.0, 5.0);\n    float dist = sd2s(cam, dir, MIN_DIST, MAX_DIST);\n    \n    //case if ray does not hit a surface\n    if(dist > MAX_DIST - EPSILON)\n    {\n        fragColor = vec4(0.0, 0.0, 0.0, 0.0);\n        return;\n    }\n    vec3 point = cam + dist * dir;\n    vec3 cAmb = vec3(0.3, 0.3, 0.5);\n    vec3 cDiff = vec3(0.2, 0.2, 0.8);\n    vec3 cSpec = vec3(1.0, 1.0, 1.0);\n    float alpha = 10.0;\n    \n    vec3 color = phongLighting(cAmb, cDiff, cSpec, alpha, point, cam);\n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

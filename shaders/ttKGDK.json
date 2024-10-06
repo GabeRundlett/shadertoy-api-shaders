@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1579950851",
+            "description": "My first attempt to do somthing 3d-ish.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ttKGDK",
+            "likes": 2,
+            "name": "Noise  isosurface",
+            "published": 3,
+            "tags": [
+                "noise"
+            ],
+            "usePreview": 0,
+            "username": "hiogawa",
+            "viewed": 337
+        },
+        "renderpass": [
+            {
+                "code": "//\n// - Thin isosurfaces of 3d noise as emission source\n// - Beer-Lambert model of absorption\n//\n\n#define M_PI 3.14159\n\nfloat SCALE_TIME = 0.15;\n\n// Emission source\nfloat NOISE_SCALE = 2.0;\nfloat NOISE_NUM_OCTAVES = 6.0;\nfloat ISOSURFACE_VALUE_HALF_WIDTH = 0.03;\nfloat NUM_ISOSURFACE_SIDES = 2.0;\n\n\n// Volume\nfloat VOLUME_DEPTH = 0.2;\nfloat VOLUME_NUM_SAMPLES = 6.0;\nfloat EMISSION_SCALE = 0.2;\nvec3 EMISSION_COLOR = vec3(0.0, 1.0, 1.0);\n\n\n//\n// Noise\n//\n\nfloat hash31(vec3 v) {\n  vec3 u = vec3(1234.5, 5432.1, 5678.9);\n  return fract(sin(dot(v, u) * 2357.0) * 56789.0);\n}\n\nfloat hash41(vec4 v) {\n  vec4 u = vec4(1234.5, 5432.1, 5678.9, 3456.7);\n  return fract(sin(dot(v, u) * 2357.0) * 56789.0);\n}\n\nvec2 hash32(vec3 v) {\n  return vec2(hash31(v), hash41(vec4(v, 1.0)));\n}\n\nvec3 hashGradient3(vec3 v) {\n  vec2 p = hash32(v);\n\n  // Usual spherical sampling\n  // Prob([0, theta] \\sub [0, pi]) = (1 - cos(theta)) / 2\n  float theta = acos(1.0 - 2.0 * p[0]);\n  float phi = 2.0 * M_PI * p[1];\n\n  return vec3(\n    sin(theta) * cos(phi),\n    sin(theta) * sin(phi),\n    cos(theta)\n  );\n}\n\nfloat mix2(float f00, float f10, float f01, float f11, vec2 uv) {\n  return mix(mix(f00, f10, uv[0]), mix(f01, f11, uv[0]), uv[1]);\n}\n\nfloat mix3(\n    float f000, float f100, float f010, float f110,\n    float f001, float f101, float f011, float f111,\n    vec3 v) {\n  float fxy0 = mix2(f000, f100, f010, f110, v.xy);\n  float fxy1 = mix2(f001, f101, f011, f111, v.xy);\n  return mix(fxy0, fxy1, v.z);\n}\n\nfloat gradientNoise3(vec3 v) {\n  vec3 vi = floor(v);\n  vec3 vf = v - vi;\n  float f000 = dot(hashGradient3(vi + vec3(0.0, 0.0, 0.0)), vf - vec3(0.0, 0.0, 0.0));\n  float f100 = dot(hashGradient3(vi + vec3(1.0, 0.0, 0.0)), vf - vec3(1.0, 0.0, 0.0));\n  float f010 = dot(hashGradient3(vi + vec3(0.0, 1.0, 0.0)), vf - vec3(0.0, 1.0, 0.0));\n  float f110 = dot(hashGradient3(vi + vec3(1.0, 1.0, 0.0)), vf - vec3(1.0, 1.0, 0.0));\n  float f001 = dot(hashGradient3(vi + vec3(0.0, 0.0, 1.0)), vf - vec3(0.0, 0.0, 1.0));\n  float f101 = dot(hashGradient3(vi + vec3(1.0, 0.0, 1.0)), vf - vec3(1.0, 0.0, 1.0));\n  float f011 = dot(hashGradient3(vi + vec3(0.0, 1.0, 1.0)), vf - vec3(0.0, 1.0, 1.0));\n  float f111 = dot(hashGradient3(vi + vec3(1.0, 1.0, 1.0)), vf - vec3(1.0, 1.0, 1.0));\n  vec3 vf_smooth = smoothstep(vec3(0.0), vec3(1.0), vf);\n  float t = mix3(f000, f100, f010, f110, f001, f101, f011, f111, vf_smooth);\n  // Normalize via upper/lower bound = +- 2 / sqrt(3) ~= 1.15\n  return (t / 1.15 + 1.0) * 0.5;\n}\n\nfloat noise(vec3 v, float n) {\n  float result = 0.0;\n  for (float i = 0.0; i < n; i++) {\n    float p = pow(2.0, i);\n    result += (gradientNoise3(v * p) / p);\n  }\n  result /= (pow(2.0, n) - 1.0) / (pow(2.0, n - 1.0));\n  return result;\n}\n\n//\n// Misc\n//\n\nfloat smoothBump(float fac, float bump, float half_width) {\n  return 1.0 - smoothstep(0.0, half_width, abs(fac - bump));\n}\n\n//\n// Main\n//\n\nvoid mainImage(out vec4 frag_color, vec2 frag_coord) {\n  vec2 uv =  frag_coord / iResolution.y;\n  float t = SCALE_TIME * iTime;\n\n  // Compute \"intensity\" by summing each layers\n  float fac_total = 0.0;\n  for (float i = 0.0; i < VOLUME_NUM_SAMPLES; i++) {\n    float z = i / VOLUME_NUM_SAMPLES * VOLUME_DEPTH;\n\n    // Noise\n    float fac_noise = noise(vec3(NOISE_SCALE * uv, z + t), NOISE_NUM_OCTAVES);\n    fac_noise = smoothstep(0.0, 1.0, fac_noise); // tonemap\n\n    // Pickup isosurfaces\n    float fac = 0.0;\n    fac += smoothBump(fac_noise, 0.5, ISOSURFACE_VALUE_HALF_WIDTH);\n    for (float j = 1.0; j <= NUM_ISOSURFACE_SIDES; j++) {\n      fac += smoothBump(fac_noise, 0.5 + 4.0 * j * ISOSURFACE_VALUE_HALF_WIDTH, ISOSURFACE_VALUE_HALF_WIDTH);\n      fac += smoothBump(fac_noise, 0.5 - 4.0 * j * ISOSURFACE_VALUE_HALF_WIDTH, ISOSURFACE_VALUE_HALF_WIDTH);\n    }\n\n    // Attenuate by depth\n    fac_total += exp(- z) * fac;\n  }\n\n\n  frag_color = vec4(fac_total * EMISSION_SCALE * EMISSION_COLOR, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

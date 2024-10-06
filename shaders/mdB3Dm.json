@@ -1,0 +1,245 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667704317",
+            "description": "playing with Gijs scene\nsee previous work by FabriceNeyret\nhttps://shadertoyunofficial.wordpress.com/#splatting-thousands-of-particles-voronoi-particle-tracking\nand rory618 https://www.shadertoy.com/view/lsKBzt",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "mdB3Dm",
+            "likes": 9,
+            "name": "voroboid swarm",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "simulation",
+                "particles",
+                "art",
+                "boids"
+            ],
+            "usePreview": 0,
+            "username": "ufffd",
+            "viewed": 247
+        },
+        "renderpass": [
+            {
+                "code": "// #define DEBUG\n#define returnCol3(col) {fragColor=vec4(col,1.); return;}\n#define returnCol4(col) {fragColor=vec4(col); return;}\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n    vec2 uv = fragCoord/R.xy;\n    #ifdef DEBUG\n      vec2 muv = iMouse.xy/R.xy;\n      if (muv.x>uv.x && muv.y>uv.y) \n          returnCol3(vec3(1.))\n      if (muv.x>uv.x) returnCol4(texture(ch0,uv))\n      if (muv.y>uv.y) returnCol4(texture(ch1,uv))       \n    #endif\n    \n    fragColor = texture(iChannel2,uv);\n\n    ivec4 ids = getClosest(ivec2(fragCoord));\n\n    vec2  p1 = getParticle(ids.x).xy;\n    vec2  p2 = getParticle(ids.y).xy;\n    float r = dot(fragCoord-(p1+p2)/2.,normalize(p2-p1));\n    \n    fragColor.rgb = vec3(smoothstep(0.,.7,fragColor.r));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// boid settings\nconst int PARTICLES = 10000; // 50000\nfloat seperation_min = 0.01;   // 0.1\nfloat seperation_max = 1.0;\nfloat alignment_min = 0.001; // 0.1\nfloat alignment_max = .5;\nfloat cohesion_min = 0.0001;  // 0.001\nfloat cohesion_max = 0.001;\nfloat speed_min = 0.3;       // 0.5\nfloat speed_max = 0.8;\n\n#define ANIM_SPEED .025\n#define TIMER ANIM_SPEED*iTime\n\n// shorthands\n#define ch0 iChannel0\n#define ch1 iChannel1\n#define R iResolution\n\n// particle data interface\n//   rewritten to defines \n#define getClosest(xy) ivec4(texelFetch(ch1, xy, 0))\n#define locFromID(id) ivec2(id%(int(R.x)),id/(int(R.x)))\n#define getParticle(id) texelFetch(ch0, locFromID(id), 0)\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\n#define key(k,mode) ( texelFetch( iChannel3, ivec2(k,mode), 0 ).x > .5 )\n#define keyDown(k) key(k,0)\n#define KEY_SPACEBAR 32\n\n#define PI 3.14159",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// simulation\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n    ivec2 iFragCoord = ivec2(fragCoord);\n    \n    int id = iFragCoord.x + iFragCoord.y*int(R.x);\n    if(id>=PARTICLES) return; \n    \n    vec4 prev = texelFetch( ch0, ivec2(fragCoord), 0 );\n    vec2 pos = prev.xy;\n    vec2 vel = prev.zw;\n     \n    // reset pattern\n    if(iFrame==0 || keyDown(KEY_SPACEBAR)){\n        float h1 = hash(id);\n        float h2 = hash(int(h1*41343.));\n        pos = vec2(h1,h2)*R.xy;\n    }\n    \n    float timer = fract(TIMER);\n    int cycle = int(TIMER);\n\n    vec2 force = vec2(0);\n    \n    if(iMouse.z > 0.){\n        vec2 delta = pos-iMouse.xy;\n        float dis = length(delta);\n        force -= delta/(dis*dis*dis) * 100.;\n    } else {\n        vec2 delta = pos-R.xy/2.;\n        float dis = length(delta);\n        vec2 p1 = delta-vec2(R.x/4.,0.);\n        vec2 p2 = delta+vec2(R.x/4.,0.);\n        float d1 = length(p1);\n        float d2 = length(p2);\n        \n        if(timer<0.007||timer>.66) {\n            // force -= delta/(dis*dis*dis) * 100.;\n            force -= p1/(d1*d1*d1) * 100.;\n            force -= p2/(d2*d2*d2) * 100.;\n        }\n    }\n    \n    // set boid values for the current cycle\n    //   min-max set in COMMON\n    float seperation = mix(\n        seperation_min,\n        seperation_max,\n        hash(cycle    ));\n    float cohesion = mix(\n        cohesion_min,\n        cohesion_max,\n        hash(cycle+100));\n    float alignment = mix(\n        alignment_min,\n        alignment_max,\n        hash(cycle+200));\n    float speed = mix(\n        speed_min,\n        speed_max,\n        hash(cycle+100));\n\n    ivec4 closest = getClosest(ivec2(pos));\n    for(int i = 0; i < 4; i++){\n        int cid = closest[i];\n        if(cid==id) continue;\n\n        vec4 part = getParticle(cid);\n        vec2 delta = part.xy-pos;\n        float dis = length(delta);\n        force += -delta /(dis*dis*dis) * seperation;\n\n        force += delta * cohesion;\n\n        force += (part.zw-vel)/(dis+1.) * alignment;\n    }\n\n    vec2 dis = max(R.xy-pos, vec2(1));\n    force -= 1./(dis*dis)*20.;\n         dis = max(pos, vec2(1));\n    force += 1./(dis*dis)*20.;\n\n    vel += force;\n\n    vel = normalize(vel)* speed; \n    \n    pos += vel;\n    \n    fragColor = vec4(pos,vel);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// particle storage?\nfloat distance2Particle(int id, vec2 fragCoord){\n    if(id==-1) return 1e20;\n    vec2 delta = getParticle(id).xy-fragCoord;\n    return dot(delta, delta);\n}\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_){\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n   \tivec2 iFragCoord = ivec2(fragCoord);\n\n    ivec4 new = ivec4(-1);\n    vec4 dis = vec4(1e20);\n\n    ivec4 old   = getClosest( iFragCoord + ivec2( 0, 0) );            \n    ivec4 east  = getClosest( iFragCoord + ivec2( 1, 0) );\n\tivec4 north = getClosest( iFragCoord + ivec2( 0, 1) );\n    ivec4 west  = getClosest( iFragCoord + ivec2(-1, 0) );\n    ivec4 south = getClosest( iFragCoord + ivec2( 0,-1) );\n    ivec4[5] candidates = ivec4[5](old, east, north, west, south); \n    \n    for(int i=0; i<5; i++){\n        for(int j=0; j<4; j++){\n            int id = candidates[i][j];\n            float dis2 = distance2Particle(id, fragCoord);\n            insertion_sort( new, dis, id, dis2 );\n        }\n    }\n    \n    for(int k = 0; k < 1; k++){\n        float h = hash(\n            iFragCoord.x + \n            iFragCoord.y*int(R.x) + \n            iFrame*int(R.x*R.y) +\n            k\n        );\n        int p = int(h*float(PARTICLES));\n        insertion_sort(new, dis, p, distance2Particle(p, fragCoord) );\n    }\n    \n    fragColor = vec4(new); \n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec2 ratioZoom(in vec2 uv, in vec2 R, in float k) {\n    uv -= 0.5;\n    uv *= vec2(1.,R.x/R.y);\n    uv *= 1.-k;\n    uv /= vec2(1.,R.x/R.y);\n    uv += 0.5;\n    return uv;\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n    fragColor = vec4(0);\n    \n    float timer = fract(TIMER);\n    int cycle = int(TIMER);\n\n    ivec4 ids = getClosest(ivec2(fragCoord));\n\n    const int glow = 6;\n    float dots = 0.;\n    for(int i = 0; i < glow; i++){\n        int id = ids[i];\n        vec2 pos = getParticle(id).xy;\n        float d = distance(fragCoord,pos);\n        dots += 1./(pow(d+.5,2.)); // draw dots\n    }\n    // feedback uvs\n    float zoomer = pow(sin(timer*PI+PI/2.),5.);\n    zoomer *= 0.002;\n    vec2 luv = fragCoord/R.xy;\n    luv = ratioZoom(luv,R.xy,zoomer);\n    vec4 last = texture(iChannel2,luv);\n    float b = mix(dots,last.r,.99);\n    b = clamp(b,0.,1.);\n    b = mix(b,dots,dots*dots*dots);\n    fragColor = vec4(vec3(b),1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

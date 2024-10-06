@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1645370911",
+            "description": "Simple inflate offsetting based on a similar method to the elongation operation mentioned in article: https://iquilezles.org/articles/distfunctions/distfunctions.htm",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NsffWj",
+            "likes": 3,
+            "name": "Inflate/Deflate 3d SDF",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "distancefield",
+                "sdf",
+                "distance",
+                "inflate"
+            ],
+            "usePreview": 0,
+            "username": "erratac",
+            "viewed": 310
+        },
+        "renderpass": [
+            {
+                "code": "float dot2( in vec2 v ) { return dot(v,v); }\nmat2 Rot(float a) {\n    float s=sin(a), c=cos(a);\n    return mat2(vec2(c, -s), vec2(s, c));\n}\n\n// This operation is based on the technique of elongation \n// https://iquilezles.org/articles/distfunctions\n\n// This does not create a true distance field, but does not distort the field too much.\n// If the shape is centered on the origin the distortion works well.\n// If the shape is concave however, this will not work well.\n// Note that just like the elongation method it produces zero length gradient in the center region\n// This can break boolean operations like intersection and subtraction.\nvec3 inflate(vec3 p, float r) {\n    float pl = length(p);\n    vec3 n = p / pl;\n    return p - n * clamp(pl, -r, r);\n}\n\nfloat sdOctahedron( vec3 p, float s)\n{\n  p = abs(p);\n  float m = p.x+p.y+p.z-s;\n  vec3 q;\n       if( 3.0*p.x < m ) q = p.xyz;\n  else if( 3.0*p.y < m ) q = p.yzx;\n  else if( 3.0*p.z < m ) q = p.zxy;\n  else return m*0.57735027;\n    \n  float k = clamp(0.5*(q.z-q.y+s),0.0,s); \n  return length(vec3(q.x,q.y-s+k,q.z-k)); \n}\nfloat sdSphere(vec3 p, float r) {\n    return length(p) - r;\n}\n\nfloat map( in vec3 p ) {\n    mat2 rot = Rot(iTime);\n    const float scale = 0.6;\n\n    float d = 1e10;\n    \n    \n    {\n        vec3 p2 = p + vec3(-1.0, 0, 0);      \n        p2.xz = p2.xz * rot;\n        \n        p2 /= scale;\n\n        float factor = (sin(iTime) + 0.6) * 0.3;\n\n        p2 = inflate(p2, factor);\n\n        d = min(sdOctahedron(p2, 0.5) * scale, d);\n    }\n    {\n        vec3 p2 = p + vec3(1.0, 0, 0);      \n        p2.xz = p2.xz * rot;\n        \n        p2 /= scale;\n\n        float factor = (sin(iTime) + 0.6) * 0.3;\n\n        p2 = inflate(p2, factor);\n        \n        \n        float d1 = sdSphere(p + vec3(1.0, 0, 0), 0.47);\n        float d2 = sdOctahedron(p2, 0.5) * scale;\n\n        d = min(max(d1,-d2), d);\n    }\n\n    return d;\n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal( in vec3 pos )\n{\n    vec2 e = vec2(1.0,-1.0)*0.5773;\n    const float eps = 0.0005;\n    return normalize( e.xyy*map( pos + e.xyy*eps ) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx*eps ) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy*eps ) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx*eps ) );\n}\n    \n#if HW_PERFORMANCE==0\n#define AA 1\n#else\n#define AA 3\n#endif\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // camera\n\tvec3 ro = vec3( 0.0, 0.2, -2.0 );\n    vec3 ta = vec3( 0.0, 0.0, 0.0 );\n    // camera matrix\n    vec3 ww = normalize( ta - ro );\n    vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0) ) );\n    vec3 vv =          ( cross(uu,ww));\n    \n    // render\n    vec3 tot = vec3(0.0);\n    \n    #if AA>1\n    for( int m=0; m<AA; m++ )\n    for( int n=0; n<AA; n++ )\n    {\n        // pixel coordinates\n        vec2 o = vec2(float(m),float(n)) / float(AA) - 0.5;\n        vec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n        #else    \n        vec2 p = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;\n        #endif\n\n\t    // create view ray\n        vec3 rd = normalize( p.x*uu + p.y*vv + 1.5*ww );\n\n        // raymarch\n        const float tmax = 5.0;\n        float t = 0.0;\n        for( int i=0; i<256; i++ )\n        {\n            vec3 pos = ro + t*rd;\n            float h = map(pos);\n            if( h<0.0001 || t>tmax ) break;\n            t += h;\n        }\n        \n    \n        // shading/lighting\t\n        vec3 col = vec3(0.0);\n        if( t<tmax )\n        {\n            vec3 pos = ro + t*rd;\n            vec3 nor = calcNormal(pos);\n            float dif = clamp( dot(nor,vec3(0.57703)), 0.0, 1.0 );\n            float amb = 0.5 + 0.5*dot(nor,vec3(0.0,1.0,0.0));\n            col = vec3(0.2,0.3,0.4)*amb + vec3(0.8,0.7,0.5)*dif;\n        }\n\n        // gamma        \n        col = sqrt( col );\n\t    tot += col;\n    #if AA>1\n    }\n    tot /= float(AA*AA);\n    #endif\n\n\tfragColor = vec4( tot, 1.0 );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,92 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697312887",
+            "description": "Finally implemented XPBD!\nWatch this amazing video: https://youtube.com/watch?v=jrociOAYqxA\n\n* Drag to move the tail\n\n* Long ish compile time (22 seconds for me), so be patient\n\n* Does not work well on my phone, presumably because of 16-bit floats.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ds3fDM",
+            "likes": 14,
+            "name": "XPBD Rope",
+            "published": 3,
+            "tags": [
+                "2d",
+                "simulation",
+                "solver",
+                "physics",
+                "rope",
+                "xpbd"
+            ],
+            "usePreview": 1,
+            "username": "beans_please",
+            "viewed": 299
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // Don't display the bottom row\n    if (frag_coord.y < 1.)\n    {\n        frag_col = vec4(0);\n        return;\n    }\n\n    // Output buffer A\n    vec3 col = texelFetch(iChannel0, ivec2(frag_coord), 0).xyz;\n    col = pow(col, vec3(1. / 2.2));\n    frag_col = vec4(col, 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Particle\nstruct particle_t\n{\n    vec2 pos;\n    vec2 pos_prev;\n    vec2 vel;\n    float inv_mass;\n    bool no_gravity;\n};\n\n// Constants\nconst float eps = .0001;\nconst float damp = .4;\nconst float rest_dist = .11;\n\n// Particles\nconst int n_particles = 10;\nparticle_t p[n_particles];\n\n// UV stuff\nfloat px2uv;\nvec2 screen_to_uv(vec2 coord)\n{\n    return px2uv * (coord - .5 * iResolution.xy);\n}\n\nbool is_initializing()\n{\n    return iFrame < 2 || iTime < .02;\n}\n\nvoid load_particles()\n{\n    for (int i = 0; i < n_particles; i++)\n    {\n        vec4 data = texelFetch(iChannel0, ivec2(i, 0), 0);\n        p[i].pos = data.xy;\n        p[i].vel = data.zw;\n        p[i].inv_mass = (i == 0 ? 0. : 1.);\n        p[i].no_gravity = (i == 0);\n    }\n}\n\nvoid output_particle(in particle_t p, out vec4 frag_col)\n{\n    frag_col = vec4(p.pos, p.vel);\n}\n\nconst int n_constraints = n_particles;\nfloat constraint_err(int constraint_idx, out float inv_stiffness)\n{\n    // Distance constraints\n    if (constraint_idx < (n_particles - 1))\n    {\n        inv_stiffness = 1. / 1000.;\n        return distance(\n            p[constraint_idx].pos,\n            p[constraint_idx + 1].pos\n        ) - rest_dist;\n    }\n    // Mouse constraint\n    else if (constraint_idx == (n_particles - 1))\n    {\n        inv_stiffness = 1. / 100.;\n        \n        if (iMouse.z < .5)\n            return 0.;\n        \n        vec2 uv_mouse = screen_to_uv(iMouse.xy);\n        return distance(uv_mouse, p[n_particles - 1].pos);\n    }\n    return 0.;\n}\n\nfloat constraint_err(int constraint_idx)\n{\n    float useless;\n    return constraint_err(constraint_idx, useless);\n}\n\nvec2 constraint_err_grad(int constraint_idx, int particle_idx)\n{\n    // Base constraint error without any modifications\n    float base_err = constraint_err(constraint_idx);\n    \n    // Make a copy of the particle's position\n    vec2 base_pos = p[particle_idx].pos;\n    \n    // Nudge the particle slightly in the X axis, then,\n    // re-evaluate the constraint error, and take the\n    // difference of the new error and the base error.\n    p[particle_idx].pos = base_pos + vec2(eps, 0);\n    float grad_x = constraint_err(constraint_idx) - base_err;\n    \n    // Same as above, with the Y axis\n    p[particle_idx].pos = base_pos + vec2(0, eps);\n    float grad_y = constraint_err(constraint_idx) - base_err;\n    \n    // Reset the particle's position\n    p[particle_idx].pos = base_pos;\n    \n    // Return the gradient\n    return vec2(grad_x, grad_y) / eps;\n}\n\nvoid solve_constraints(float dt)\n{\n    for (int constraint_idx = 0; constraint_idx < n_constraints; constraint_idx++)\n    {\n        // Calculate lambda\n        float inv_stiffness;\n        float numer = -constraint_err(constraint_idx, inv_stiffness);\n        float denom = inv_stiffness / (dt * dt);\n        for (int i = 0; i < n_particles; i++)\n        {\n            denom += p[i].inv_mass * len_sqr(\n                constraint_err_grad(constraint_idx, i)\n            );\n        }\n        if (denom == 0.) continue;\n        float lambda = numer / denom;\n        \n        // Update the particles\n        for (int i = 0; i < n_particles; i++)\n        {\n            p[i].pos +=\n                lambda\n                * p[i].inv_mass\n                * constraint_err_grad(constraint_idx, i);\n        }\n    }\n}\n\nfloat sd_segment(vec2 p, vec2 a, vec2 b)\n{\n    // Slope and intercept\n    float temp = b.x - a.x;\n    if (temp == 0.) temp = 1e-9;\n    float slope = (b.y - a.y) / temp;\n    float intercept = a.y - slope * a.x;\n    \n    // Should we use the endpoints or the line?\n    if (min(dot(p - a, b - a), dot(p - b, a - b)) < 0.)\n    {\n        // Distance from the endpoints\n        return min(distance(p, a), distance(p, b));\n    }\n    else\n    {\n        // Distance from the line\n        return abs(slope * p.x - p.y + intercept) / sqrt(slope * slope + 1.);\n    }\n}\n\nvoid mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // UV (2D world position of the current pixel)\n    px2uv = 2. / min(iResolution.x, iResolution.y);\n    vec2 uv = screen_to_uv(frag_coord);\n    \n    // Get the current values from the last frame\n    load_particles();\n    \n    // Use the bottom row for data and simulation\n    if (frag_coord.y < 1.)\n    {\n        int curr_idx = int(floor(frag_coord.x));\n        \n        if (curr_idx >= n_particles)\n            return;\n\n        // Initial values\n        if (is_initializing())\n        {\n            particle_t p;\n            p.pos = vec2(\n                float(curr_idx) * rest_dist,\n                .72\n            );\n            p.vel = vec2(0);\n            output_particle(p, frag_col);\n            \n            return;\n        }\n\n        // Delta time\n        float actual_dt = min(iTimeDelta, .02);\n\n        // Substeps\n        const int n_steps = 50;\n        float dt = actual_dt / float(n_steps);\n\n        // Step forward\n        for (int i = 0; i < n_steps; i++)\n        {\n            // Iterate through the particles\n            for (int j = 0; j < n_particles; j++)\n            {\n                // Gravity\n                const vec2 gravity = vec2(0, -9.81);\n                if (!p[j].no_gravity)\n                    p[j].vel += dt * gravity;\n                \n                // Dampen velocity\n                p[j].vel *= exp(-damp * dt);\n                \n                // Make a backup of the position\n                p[j].pos_prev = p[j].pos;\n                \n                // Position\n                p[j].pos += dt * p[j].vel;\n            }\n            \n            // Solve constraints\n            solve_constraints(dt);\n            \n            // Update the velocities\n            for (int j = 0; j < n_particles; j++)\n            {\n                p[j].vel = (p[j].pos - p[j].pos_prev) / dt;\n            }\n        }\n\n        // Output\n        output_particle(p[curr_idx], frag_col);\n\n        return;\n    }\n    \n    // Background color\n    vec3 col = vec3(0, .02, .07);\n    \n    // Don't render anything while initializing\n    if (is_initializing())\n    {\n        frag_col = vec4(col, 1);\n        return;\n    }\n\n    // Draw line segments connecting the particles\n    {\n        float min_dist = 1e9;\n        for (int i = 0; i < (n_particles - 1); i++)\n        {\n            min_dist = min(min_dist, sd_segment(uv, p[i].pos, p[i + 1].pos));\n        }\n        \n        const float thickness = .01;\n        col = mix(\n            col,\n            vec3(1),\n            .25 * remap01(min_dist, thickness, thickness - px2uv)\n        );\n    }\n\n    // Draw dots on the particles\n    {\n        float min_dist = 1e9;\n        for (int i = 0; i < n_particles; i++)\n        {\n            min_dist = min(min_dist, dist_sqr(uv, p[i].pos));\n        }\n        min_dist = sqrt(min_dist);\n        \n        const float radius = .03;\n        col = mix(\n            col,\n            vec3(1, .75, .1),\n            remap01(min_dist, radius, radius - px2uv)\n        );\n    }\n\n    frag_col = vec4(col, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*_________________ Math Utils ________________*/\n\n#define PI 3.1415926535897932384626433832\n#define TAU 6.283185307179586476925286766\n#define PI_OVER_2 1.57079632679489661923132169163\n\n#define FUNC_LERP(T) \\\nT lerp(T a, T b, float t) \\\n{ \\\n    return a + t*(b-a); \\\n}\n\n#define FUNC_WRAP(T) \\\nT wrap(T inp, float start, float end) \\\n{ \\\n    return start + mod(inp - start, end - start); \\\n}\n\n#define FUNC_REMAP(T) \\\nT remap(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    return out_start + ((out_end - out_start) / (inp_end - inp_start)) * (inp - inp_start); \\\n}\n\n#define FUNC_REMAP_CLAMP(T) \\\nT remap_clamp(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    T t = clamp((inp - inp_start) / (inp_end - inp_start), 0.0, 1.0); \\\n    return out_start + t * (out_end - out_start); \\\n}\n\n#define FUNC_REMAP01(T) \\\nT remap01(T inp, float inp_start, float inp_end) \\\n{ \\\n    return clamp((inp - inp_start) / (inp_end - inp_start), 0.0, 1.0); \\\n}\n\n#define FUNC_LEN_SQR(T) \\\nfloat len_sqr(T inp) \\\n{ \\\n    return dot(inp, inp); \\\n}\n\n#define FUNC_DIST_SQR(T) \\\nfloat dist_sqr(T a, T b) \\\n{ \\\n    a -= b; \\\n    return dot(a, a); \\\n}\n\nFUNC_LERP(float)\nFUNC_LERP(vec2)\nFUNC_LERP(vec3)\nFUNC_LERP(vec4)\n\nFUNC_WRAP(float)\nFUNC_WRAP(vec2)\nFUNC_WRAP(vec3)\nFUNC_WRAP(vec4)\n\nFUNC_REMAP(float)\nFUNC_REMAP(vec2)\nFUNC_REMAP(vec3)\nFUNC_REMAP(vec4)\n\nFUNC_REMAP_CLAMP(float)\nFUNC_REMAP_CLAMP(vec2)\nFUNC_REMAP_CLAMP(vec3)\nFUNC_REMAP_CLAMP(vec4)\n\nFUNC_REMAP01(float)\nFUNC_REMAP01(vec2)\nFUNC_REMAP01(vec3)\nFUNC_REMAP01(vec4)\n\nFUNC_LEN_SQR(vec2)\nFUNC_LEN_SQR(vec3)\nFUNC_LEN_SQR(vec4)\n\nFUNC_DIST_SQR(vec2)\nFUNC_DIST_SQR(vec3)\nFUNC_DIST_SQR(vec4)\n\n/*____________________ End ____________________*/\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

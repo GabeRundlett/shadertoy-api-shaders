@@ -1,0 +1,94 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1685279655",
+            "description": "Analytic direct lighting in 2D. Sky integral taken from https://www.shadertoy.com/view/NttSW7 but otherwise made from scratch. It's interactive! Try dragging around the end points of the line segments. It doesn't handle intersecting lines properly.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "dlcXR4",
+            "likes": 113,
+            "name": "Analytic Direct Lighting",
+            "published": 3,
+            "tags": [
+                "2d",
+                "lighting",
+                "shadows",
+                "area",
+                "penumbra",
+                "soft",
+                "analytic",
+                "direct"
+            ],
+            "usePreview": 0,
+            "username": "fad",
+            "viewed": 2016
+        },
+        "renderpass": [
+            {
+                "code": "// Analytic direct lighting in 2D. Sky integral taken from\n// https://www.shadertoy.com/view/NttSW7 but otherwise made from\n// scratch. It's interactive! Try dragging around the end points of the\n// line segments. It doesn't handle intersecting lines properly.\n\nstruct LineSegment {\n    vec2 p0;\n    vec2 p1;\n    vec3 emissiveColor;\n};\n\nLineSegment[N] segments;\nfloat angles[2 * N];\n\nvoid sortAngles() {\n    for (int i = 0; i < N; ++i) {\n        for (int j = 0; j < 2; ++j) {\n            int k = 2 * i + j;\n            vec2 p = j == 0 ? segments[i].p0 : segments[i].p1;\n            float angle = mod(atan(p.y, p.x), 2.0 * PI);\n            int l = k - 1;\n            \n            while (l >= 0 && angle < angles[l]) {\n                angles[l + 1] = angles[l];\n                l -= 1;\n            }\n            \n            angles[l + 1] = angle;\n        }\n    }\n}\n\nvec3 integrateRadiance(LineSegment a, vec2 angle) {\n    return (angle[1] - angle[0]) * a.emissiveColor;\n}\n\nvec3 integrateSkyRadiance_(vec2 angle) {\n    float a1 = angle[1];\n    float a0 = angle[0];\n    \n    // https://www.shadertoy.com/view/NttSW7\n    const vec3 SkyColor = vec3(0.2,0.5,1.);\n    const vec3 SunColor = vec3(1.,0.7,0.1)*10.;\n    const float SunA = 2.0;\n    const float SunS = 64.0;\n    const float SSunS = sqrt(SunS);\n    const float ISSunS = 1./SSunS;\n    vec3 SI = SkyColor*(a1-a0-0.5*(cos(a1)-cos(a0)));\n    SI += SunColor*(atan(SSunS*(SunA-a0))-atan(SSunS*(SunA-a1)))*ISSunS;\n    return SI / 6.0;\n}\n\nvec3 integrateSkyRadiance(vec2 angle) {\n    if (angle[1] < 2.0 * PI) {\n        return integrateSkyRadiance_(angle);\n    }\n    \n    return integrateSkyRadiance_(vec2(angle[0], 2.0 * PI)) + integrateSkyRadiance_(vec2(0.0, angle[1] - 2.0 * PI));\n}\n\nint findIndex(float angle) {\n    mat2 m;\n    m[1] = vec2(cos(angle), sin(angle));\n    int bestIndex = -1;\n    float bestU = 1e10;\n    \n    for (int i = 0; i < N; ++i) {\n        m[0] = segments[i].p0 - segments[i].p1;\n        vec2 tu = inverse(m) * segments[i].p0;\n        if (tu == clamp(tu, vec2(0.0), vec2(1.0, bestU))) {\n            bestU = tu.y;\n            bestIndex = i;\n        }\n    }\n    \n    return bestIndex;\n}\n\nvec3 calculateFluence() {\n    vec3 fluence = vec3(0.0);\n    \n    for (int i = 0; i < 2 * N; ++i) {\n        vec2 a;\n        a[0] = angles[i];\n        \n        if (i + 1 < 2 * N) {\n            a[1] = angles[i + 1];\n        } else {\n            a[1] = angles[0] + 2.0 * PI;\n        }\n        \n        if (a[0] == a[1]) {\n            continue;\n        }\n        \n        int j = findIndex((a[0] + a[1]) / 2.0);\n        \n        if (j == -1) {\n            fluence += integrateSkyRadiance(a);\n        } else {\n            fluence += integrateRadiance(segments[j], a);\n        }\n    }\n    \n    return fluence;\n}\n\nfloat sdf(LineSegment l, vec2 p) {\n    vec2 pa = p-l.p0, ba = l.p1-l.p0;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nvec4 blendOver(vec4 top, vec4 bottom) {\n    float a = top.a + bottom.a * (1.0 - top.a);\n    return vec4((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a , a);\n}\n\nvoid drawSDF(inout vec4 dst, vec4 src, float sdf) {\n    dst = blendOver(vec4(src.rgb, src.a * clamp(1.5 - abs(sdf), 0.0, 1.0)), dst);\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    for (int i = 0; i < N; ++i) {\n        segments[i].p0 = getPoint(2 * i + 0) - fragCoord;\n        segments[i].p1 = getPoint(2 * i + 1) - fragCoord;\n        segments[i].emissiveColor = vec3(0.0);\n    }\n    \n    segments[10].emissiveColor = vec3(1.0, 0.1, 0.3);\n    segments[11].emissiveColor = vec3(0.1, 0.6, 0.9);\n    \n    sortAngles();\n    vec3 fluence = calculateFluence();\n    fragColor = vec4(1.0 - 1.0 / pow(1.0 + fluence, vec3(3.0)), 1.0);\n    fragColor.a = 1.0;\n    \n    for (int i = 0; i < N; ++i) {\n        drawSDF(\n            fragColor, \n            vec4(3.0 * pow(segments[i].emissiveColor, vec3(1.0 / 2.2)), 1.0),\n            sdf(segments[i], vec2(0.0))\n        );\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This buffer just handles the interactive geometry.\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    int i = int(fragCoord.x) + int(iResolution.x) * int(fragCoord.y);\n    \n    if (i >= numPoints) {\n        return;\n    }\n    \n    if (iFrame == 0) {\n        fragColor.xy = vec2[](\n            vec2(0.2, 0.8),\n            vec2(0.35, 0.8),\n            vec2(0.45, 0.8),\n            vec2(0.7, 0.8),\n            vec2(0.6, 0.8),\n            vec2(0.6, 0.5),\n            vec2(0.7, 0.8),\n            vec2(0.7, 0.5),\n            vec2(0.6, 0.5),\n            vec2(0.65, 0.5),\n            vec2(0.8, 0.35),\n            vec2(0.8, 0.15),\n            vec2(0.8, 0.15),\n            vec2(0.2, 0.15),\n            vec2(0.2, 0.15),\n            vec2(0.2, 0.8),\n            vec2(0.6, 0.15),\n            vec2(0.6, 0.35),\n            vec2(0.8, 0.35),\n            vec2(0.65, 0.35),\n            vec2(0.7, 0.2),\n            vec2(0.75, 0.22),\n            vec2(0.625, 0.55),\n            vec2(0.6875, 0.52),\n            vec2(0.6, 0.35),\n            vec2(0.65, 0.35)\n        )[i] * iResolution.xy;\n        fragColor.z = 0.0;\n        return;\n    }\n    \n    int bestIndex = -1;\n    float bestDist = 1e10;\n    \n    if (iMouse.z > 0.0) {\n        for (int j = 0; j < numPoints; ++j) {\n            vec4 data = getPointData(j);\n            \n            if (data.z > 0.0) {\n                bestIndex = j;\n                break;\n            }\n            \n            vec2 p = data.xy;\n            float d = distance(p, iMouse.xy);\n            \n            if (d < min(CONTROL_RADIUS, bestDist) && iMouse.w > 0.0) {\n                bestIndex = j;\n                bestDist = d;\n            }\n        }\n    }\n    \n    if (i == bestIndex) {\n        vec4 data = getPointData(i);\n        \n        if (data.z <= 0.0) {\n            fragColor.zw = iMouse.xy;\n        } else {\n            fragColor.zw = data.zw;\n        }\n        \n        fragColor.xy = getPoint(i) + iMouse.xy - fragColor.zw;\n        fragColor.zw = iMouse.xy;\n    } else {\n        fragColor.xy = getPoint(i);\n        fragColor.zw = vec2(0.0);\n    }\n    \n    if (i == 25) {\n        vec2 a = getPoint(24);\n        vec2 b = fragColor.xy;\n        float r = distance(a, b);\n        float t = (0.5 - 0.5 * cos(iTime)) * PI;\n        fragColor.xy = a + r * vec2(cos(t), sin(t));\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const int numPoints = 26;\nconst int N = numPoints / 2;\n\n#define CONTROL_RADIUS (max(iResolution.x, iResolution.y) * 0.05)\nconst float PI = 3.14159265;\n\n#ifndef HW_PERFORMANCE\nuniform sampler2D iChannel0;\nuniform vec4 iResolution;\n#endif\n\nvec4 getPointData(int i) {\n    return texelFetch(iChannel0, ivec2(i % int(iResolution.x), i / int(iResolution.x)), 0);\n}\n\nvec2 getPoint(int i) {\n    return texelFetch(iChannel0, ivec2(i % int(iResolution.x), i / int(iResolution.x)), 0).xy;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

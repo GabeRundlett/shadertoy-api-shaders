@@ -1,0 +1,41 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1601302826",
+            "description": "My first public post on Shadertoy!\n\nIf someone could answer one or more of the questions in the source code, that'd be great.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wstyRB",
+            "likes": 10,
+            "name": "Ray vs Support Function",
+            "published": 3,
+            "tags": [
+                "raycast",
+                "minkowski",
+                "mpr",
+                "hull",
+                "gjk",
+                "supportfunction"
+            ],
+            "usePreview": 0,
+            "username": "encypruon",
+            "viewed": 649
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nThis shader uses 2D-GJK to test if a ray intersects the\nshape described by a support function. On intersection\nGJK returns a triangle inside the shape. Every corner of\nthe triangle is on the surface. The triangle is then\n\"refined\" iteratively in order to find a triangle that\nis as close as possible to the point of intersection.\nThe resulting triangle is used to estimate depth and\nnormal of the intersection.\n\nThe refining process is probably similar to MPR, but I'm\nnot quite sure since I haven't been able to get my hands\non the graphics gems book.\n\nThis might be useful for (continuous) collision detection.\n\nQuestions:\n- With few refining iterations estimated normals\n\tare completely wrong in some places, seemingly\n\tat random. Why is this and is there a better\n\tway to circumvent this than using more iterations?\n- What other approaches are there to this problem?\n- Is there a name for this algorithm?\n\n*/\n\nconst float PI = 3.14159;\n\nvec2 rot90(vec2 x)\n{\n    return vec2(-x.y, x.x);\n}\n\nmat3 rot;\nmat3 rotInv;\nvec3 offset;\nfloat time;\n\nvec3 supMax(vec3 d, vec3 a, vec3 b)\n{\n    return dot(d,a) > dot(d,b) ? a : b;\n}\n\nvec3 supNgon(vec3 d, float n)\n{\n\n    float a = atan(d.y, d.x);\n    float f = PI * 2. / n;\n    a = (floor(a/f)+.5)*f;\n    return vec3(cos(a), sin(a), .0);\n}\n    \n\n\n// Support function. Returns point furthest in x direction\nvec3 support(vec3 x)\n{\n    const float n = 4.;\n    int tp = int(fract(time/n) * n);\n    //tp = 3;\n    vec3 res;\n   \tx = rot * x;\n    \n    // A bunch of shapes:\n    \n    if (tp == 0) // Convex hull of triangle, pentagon and circle\n   \t\tres = supMax(\n            x,\n            supMax(\n                x,\n                supNgon(x, 3.) * .5 + vec3(.0,.0,.5), // triangle in xy-plane\n                supNgon(x, 5.) * .5 + vec3(.0,.0,.0) // pentagon in xy-plane\n        \t),\n            vec3(0., normalize(x.yz)*.2 + vec2(0.,-.3)) // circle in yz-plane\n        );\n    else if (tp == 1) // cube\n        res = sign(x)*.4;\n   \telse if (tp == 2)\n        res = supMax( // Hull of circle and square\n            x,\n            vec3(normalize(x.xy)*.2, .5), // circle in xy-plane\n            vec3(sign(x.xy)*.3, -.5) // square in xy-plane\n        );\n    else if (tp == 3) // Cube with rounded corners/edges\n        res =\n            sign(x)*.3 + // cube\n            normalize(x)*.2; // sphere\n    \n    return rotInv * res + offset;\n}\n\n\n// Casts ray in -z direction, estimates depth and normal\nbool rayVsSupport(out float depth, out vec3 normal)\n{\n    // abcd is simplex, dir is direction\n    // Tris should be CCW in xy-plane\n    vec3 a, b, c, d, dir, tmp;   \n    \n    // 2D GJK in xy-plane\n    \n    // Find any support point\n    a = support(vec3(1., 0., 0.));\n    if (a.x <= 0.)\n        return false;\n    \n    // Construct line to support point in opposite direction\n    b = support(vec3(-a.xy, 0.));\n    if (dot(-a.xy, b.xy) <= 0.)\n        return false;\n    \n    // Construct triangle with third support point\n    dir = vec3(rot90(b.xy-a.xy), 0.);\n    if (dot(dir.xy, a.xy) >= 0.)\n    {\n        dir.xy *= -1.;\n        tmp = a; a = b; b = tmp;\n    }\n    c = support(dir);\n    if (dot(c.xy, dir.xy) <= 0.)\n        return false;\n    \n    for (int i = 0;; ++i)\n    {\n        // No intersection found?\n        if (i == 6) return false;\n        \n        // Select side of triangle that has origin on outside\n        if (dot(dir.xy = rot90(c.xy-a.xy), c.xy) < 0.)\n            b = c;\n        else if (dot(dir.xy = rot90(b.xy-c.xy), c.xy) < 0.)\n            a = c;\n        else break; // Origin in triangle -> intersection!\n        \n        // Construct new triangle on chosen side\n        c = support(dir);    \n        if (dot(c.xy, dir.xy) <= 0.)\n            return false;\n    }\n    \n    // Refine triangle to get it close to the intersection point\n    // This is probably similar to MPR.\n    \n    // More iterations => fewer poorly estimated normals\n    //for (int i = 0; i < int(fract(time)*16.); ++i)\n    for (int i = 0; i < 20; ++i)\n    {\n\t\t// Find support in direction of triangle normal\n        // Results in tetraeder abcd\n        dir = normalize(cross(b-a, c-a));\n        d = support(dir);\n        \n        // Stop when close enough\n        // Lower threshold decreases precision but doesn't\n        // \tappear to increase number of \"outliers\"\n        if (dot(dir, d) - dot(dir, a) < 0.001)\n            break;\n\n        // xd = origin left of xd line\n        bool ad = dot(rot90(d.xy-a.xy), d.xy) > 0.;\n        bool bd = dot(rot90(d.xy-b.xy), d.xy) > 0.;\n        bool cd = dot(rot90(d.xy-c.xy), d.xy) > 0.;\n\t\t\n        // Choose triangle that intersects z-axis furthest in z direction\n        if (ad && !bd) c = d;\n        else if (bd && !cd) a = d;\n        else if (cd && !ad) b = d;\n        else break; // Should not happen\n\n\t}\n    \n    // Checks if triangle is very \"thin\"\n    // Uncommenting this appears to drop all poorly estimated normals\n    // but also some other parts\n    // if (length(cross(b-a, c-a))*24. < pow(length(b-a) + length(c-b) + length(a-c), 2.))\n    //    return false;\n    \n    normal = normalize(cross(b-a, c-a));\n    depth = a.z + dot(a.xy, normal.xy)/normal.z;\n    return true;\n}\n\nmat3 rotAx(int ax, float a)\n{\n    mat3 m = mat3(\n    \t1., 0., 0.,\n        0., 1., 0.,\n        0., 0., 1.\n    );\n    ax = (ax + 1) % 3;\n   \tint ax2 = (ax + 1) % 3;\n    float c = cos(a), s = sin(a);\n    m[ax][ax] = c; m[ax2][ax] = s;\n    m[ax][ax2] = -s; m[ax2][ax2] = c;\n    return m;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n \n    rot = rotAx(0, iTime*0.85) * rotAx(1, iTime*0.61);\n    rotInv = inverse(rot);\n    \n    offset = vec3((fragCoord-iResolution.xy*.5)*1.5/iResolution.y, 0.);\n    \n    time = iTime/1.;\n    \n    float depth = 0.;\n    vec3 normal;\n    if (rayVsSupport(depth, normal))\n    \tfragColor = fragCoord.x > (iMouse.x == 0. ? iResolution.x*.5 : iMouse.x) ? //fract(time) < .5 ?\n        \tvec4(normal.x*.5+.5, normal.y*.5+.5, .5, 1.0)\n        \t: vec4(vec3(pow(depth*.75+.5, 2.)), 1.0);\n   \telse\n        fragColor = vec4(vec3(0.), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

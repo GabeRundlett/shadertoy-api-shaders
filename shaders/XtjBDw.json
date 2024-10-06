@@ -1,0 +1,182 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1516109402",
+            "description": "mean(f(texture)) != f(mean(texture)) if f non linear.\n-> f = shading, f = cmap  not easy to filter.\nHere: solution we proposed in [url]https://hal.inria.fr/hal-00765799[/url]\nLeft to right:  Cmap, grey text, naive, reference, our.     Mouse.y = LOD",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XtjBDw",
+            "likes": 8,
+            "name": "filtering colormapped textures",
+            "published": 3,
+            "tags": [
+                "textures",
+                "filtering",
+                "colormap",
+                "integration",
+                "gpmipmap",
+                "nonlinear"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 925
+        },
+        "renderpass": [
+            {
+                "code": "// --- filtering of colormap(texture), after article https://hal.inria.fr/hal-00765799\n// idea: estimate mean,sigma of the grey texture pixel footprint, and use prefiltered Cmap(mean,sigma)\n// The same idea applies to other non-linear f(texture), like shading(displacement), etc,\n// to fast tweak of Cmap in scene, to procedural textures (if stat can be estimated), etc.\n// Same for correct filtering of specular on bumps: https://www.shadertoy.com/view/wlXXRn\n\n// alas, MIPmap of rectangles is totally wrong on Windows/Angle and not totally ol on OpenGL.\n\n// Attention: a posteriori bi/trilinear filtering adds other approximations.\n//#define T(ch,U,z)  textureLod(ch, (U)/R, float(z))\n  #define T(ch,U,z)  texelFetch(ch, ivec2(U)/(1<<z), z)\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy, M = iMouse.xy;\n    if (length(M)<10.) M.y = R.y*(.5+.5*sin(iTime));  // auto-demo if no mouse\n    \n    int z = int(10.*M.y/R);                           // mouse.y tune LOD\n    float  x = U.x/R.x*1.03 - .03;\n    U.x = mod( U.x*1.03 - .03*R.x, R.x/4. );          // same texture portion in each set\n    M = T(iChannel1, U, z).xy;\n\n    float m  = M.x,                                   // mean(texture(footprint))\n          s  = sqrt(M.y-m*m);                         // stddev(texture(footprint))\n\n    O =   x < .00 ? T(iChannel0, vec2(.5,U.y), 0)     // color map\n        : x < .01 ? vec4(1)\n        : x < .24 ? vec4(m)                           // greyscale texture\n      //: x < .24 ? vec4(s*4.)                        // show stddev\n        : x < .25 ? vec4(1)\n        : x < .49 ? T(iChannel0, vec2(.5,m*R.y), 0)   // naive filtering cmap(mean(texture))\n        : x < .50 ? vec4(1)\n        : x < .74 ? T(iChannel3, U, z)                // reference filtering mean(cmap(texture))\n        : x < .75 ? vec4(1)\n        :           T(iChannel0, vec2(s,m)*R.y, 0);   // our filtering cmap(mean(text),stddev(text))\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// --- I(0,y) = given colormap.  I(sigma,avg) = prefiltered colormap (gaussian filter)\n\n#define T(U)  texelFetch(iChannel0, ivec2(U), 0)\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy;\n    float h = iResolution.y;\n    if (abs(T(0).a) != R.x) {                           // init or resize\n        if (U.x==.5) {                                  // --- set color map here\n         // O = vec4( floor( U.y*3./h)/2. );\n            O = floor( (.5+.5*sin(6.28*U.y/h*vec4(4,7,35,0)/4.) )*10.)/10.;\n            if (U.y==.5) O.a = -R.x;                    // triggers filtering\n        }\n        return;\n    }\n    \n    O = texelFetch(iChannel0, ivec2(U), 0);\n    \n    if (T(0).a < 0.)                                    // Cmap just refreshed: recomputer filtering\n    if (U==vec2(.5)) O.a = R.x;\n    else if ( U.x >= 1. && U.x <= R.y/3. ) {            // --- construct filtered Cmaps\n        float s = 0.;\n        for (float y = floor(U.y-h); y <= U.y; y++) {\n            float d = U.y-y, \n                  v = y/(U.x-.5), w = exp(-.5*v*v);     // filtering kernel\n            O += texelFetch(iChannel0, ivec2(0,d), 0) * w;\n          //O += texelFetch(iChannel0, ivec2(iFrame-1,d), 0) * w; // pyramidal version\n            s += w;\n        }\n        O /= s;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// --- compute order 1 and order 2 grey level moments of the textur \n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    U /= iResolution.xy;\n    O.x = texture(iChannel0,U).x;   // MIPmap will give local E(x)\n    O.y = O.x*O.x;                  // MIPmap will give local E(x²)\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// --- reference filtering: apply cmap then MIPmap = filter f(texture)\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy;\n    U /= R;\n    float v = texture(iChannel1,U).x;\n    \n    O = textureLod(iChannel0,vec2(.5/R.x,v),0.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

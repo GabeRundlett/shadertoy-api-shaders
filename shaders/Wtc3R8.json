@@ -1,0 +1,173 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1575525203",
+            "description": "Game Blood Material PBR\nFor mobile Real Time PBR material.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wtc3R8",
+            "likes": 13,
+            "name": "Game Blood Material PBR",
+            "published": 3,
+            "tags": [
+                "blood",
+                "pbr",
+                "ggx"
+            ],
+            "usePreview": 0,
+            "username": "834144373",
+            "viewed": 1762
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\t\"Game Blood Material PBR\" by 834144373 (Mr.Zhu) \n\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n\tBufferA: Pre-calculate BRDF\n\tBufferB: StructBuffer for store textures\n\n\tReference:\n\t\t[1] Mobile Real Shading in Unreal Engine 4\n\t\t[2] https://learnopengl.com/PBR/Theory\n\t\t[3] https://en.wikipedia.org/wiki/Physically_based_rendering\n\n\tAbout HDR IBL PBR:\n\t   \"Mobile Real Time PBR\" https://www.shadertoy.com/view/tdGXzK \n\n*/\n\n//----------------Mouse Drag-------------\nvec2 MouseDragRead(){\n    #define MouseTex iChannel0\n    #define Scale 32767.\n\tuvec2 data = floatBitsToUint(GetValue(MouseTex,MOUSE_COORD).zw);\n\tvec4 MousePos = vec4(unpackSnorm2x16(data.x),unpackSnorm2x16(data.y))*Scale,tmpMousePos = vec4(MousePos.xy,0.,0.);\n    iMouse.z>0. ? tmpMousePos.xy+=tmpMousePos.zw=iMouse.xy-iMouse.zw : tmpMousePos.xy=MousePos.xy+=MousePos.zw;\n    return tmpMousePos.xy;\n}\n//---------------------------------------\nmat3 lookAt(vec3 pos, vec3 focus) {\n    mat3 mat;\n    mat[2] = normalize(focus - pos);\t\t\t\n    mat[0] = normalize(cross(mat[2], vec3(0, 1, 0)));\n    mat[1] = normalize(cross(mat[0], mat[2]));\n    return mat;\n}\n\n//-----------------RayMarch-------------------\nfloat sphere(vec3 pos,float r){\n\treturn length(pos)-r;\n}\nfloat cube(vec3 pos,vec3 size,float r){\n\treturn length(max(abs(pos)-size,0.)) - r;\n}\nfloat map(vec3 pos){\n    return min(1.,cube  (pos-vec3(0.,-0.5, 0.),vec3(3.5,0.05,3.5),0.01));\n}\nvec3 normal(vec3 pos){\n\tconst vec2 e = vec2(0.001,0.);\n    return normalize(\n    \tvec3(\n        \tmap(pos + e.xyy),\n            map(pos + e.yxy),\n            map(pos + e.yyx)\n        )-map(pos)\n    );\n}\nstruct IntersectInfo{\n\tvec3 surface;\n\tvec3 normal;\n    float distance;\n};\nIntersectInfo raymarch(vec3 pos,vec3 dir){\n\tIntersectInfo info;\n    info.distance = 1.;\n    float d = 0.;\n    for(int i=0;i<64;i++){\n\t\tinfo.surface = pos+dir*info.distance;\n        d = map(info.surface);\n\t\tinfo.distance += d;\n        if(d < 0.02||info.distance>31.) break;\n    }\n    info.surface += d*dir;\n\tinfo.normal = normal(info.surface);\n    return info;\n}\n//---------------------------------------------\nstruct LightInfo{\n\tvec3 pos;\n    vec3 emit;\n};\nLightInfo[] lights = LightInfo[](\n    LightInfo(vec3(3.,4.,3.),vec3(1.)*80.),\n    LightInfo(vec3(0.,34.,0.),vec3(1.,0.5,0.6)*1300.)\n);\nstruct Material{\n\tvec3 albedo;\n    vec3 diffuseColor;\n    float metallic;\n\tfloat roughness;\n}; \n//---------------------------------------------\nvec3 PBRShading(Material mat,vec3 surface,float ao,vec3 N_dir,vec3 V_dir){\n    vec3 F0 = mix(vec3(0.04),mat.albedo,mat.metallic);\n    vec3 R_dir = reflect(-V_dir,N_dir);\n    \n    float NoV = max(0.,dot(N_dir,V_dir));\n    vec3 lightCol = vec3(0);\n    //Here just point light\n    for(int i=0;i<lights.length();i++){\n        LightInfo light = lights[i];\n        vec3 L_Direction = light.pos - surface;\n    \tvec3 L_dir = normalize(L_Direction);\n        vec3 H_dir = normalize(L_dir + V_dir);\n        float HoV = max(0.,dot(H_dir,V_dir));\n        float NoL = max(0.,dot(N_dir,L_dir));\n        float atten = 1./dot(L_Direction,L_Direction);\n        vec3 radiance = light.emit * atten;\n        //Cook-Torrance BRDF Lighting\n        float D = DistributionGGX(N_dir,H_dir,mat.roughness);\n        float G = GeometrySmith(N_dir,V_dir,L_dir,mat.roughness,false);\n        vec3  F = fresnelSchlick(HoV,F0);\n        vec3 specular = (F*D*G)/max(4.*NoV*NoL, 0.001);\n        \n        vec3 K_LightSpeclular = F;\n    \tvec3 K_LightDiffuse = (1.-K_LightSpeclular) * (1.-mat.metallic);\n\t\tlightCol += (K_LightDiffuse*mat.diffuseColor*I_PI + specular)*radiance*NoL;\n    }\n    return lightCol;\n}\n\n//--------------Struct Buffer Texture----------\nstruct StructBuffer{\n    vec3 imgA;\n    vec3 imgB;\n    vec3 imgC;\n    vec3 imgD;\n    mediump vec2 other;\n};\nStructBuffer GetStructBuffer(vec4 data){\n\tStructBuffer Buffer;\n    uvec4 stream = floatBitsToUint(data);\n    vec4 imgAllData[3];\n    for(int i=0;i<3;i++){\n    \timgAllData[i] = vec4((uvec4(stream[i])>>ivec4(24,16,8,0))&0xFFu)/255.;\n    }\n    mat4x3 imgStream = mat4x3(imgAllData[0],imgAllData[1],imgAllData[2]);\n    Buffer.imgA = imgStream[0];\n    Buffer.imgB = imgStream[1];\n    Buffer.imgC = imgStream[2];\n    Buffer.imgD = imgStream[3];\n    Buffer.other = unpackHalf2x16(stream.w);\n\treturn Buffer;\n}\nStructBuffer TexturesSampler(sampler2D _buffer,vec2 uv){\n\treturn GetStructBuffer(texture(_buffer,uv));\n}\n\nvoid mainImage(out vec4 C, in vec2 U) {\n    vec2 mouse = (MouseDragRead()/R + vec2(0.6,-0.15))*_2PI;\n    vec2 uv = U/R;\n    vec3 pos = vec3(6.*cos(mouse.x), 5., 6.*sin(mouse.x));\n    vec3 dir = lookAt(pos, vec3(0)) * normalize(vec3((U+U-R)/R.y, 2.5));\n\tIntersectInfo march = raymarch(pos,dir);\n    if(march.distance < 30.){\n        vec2 texCoord = (march.surface.xz+3.5)/7.; \n        StructBuffer texs = TexturesSampler(iChannel1,texCoord);\n        vec3 tex = texs.imgA;\n        vec3 normal = ToTangentSpace(march.normal,texs.imgB*2.-1.);\n        Material mat;\n        mat.albedo = vec3(1.);\n        mat.diffuseColor = vec3(1,0,0);\n        mat.metallic = clamp(1.-texs.imgC.g-.2,0.,1.);\n        mat.roughness = clamp(mix(tex.r,texs.imgD.r,(cos(iTime*0.2)+1.)*0.5),0.,0.6)*min(1.,length(march.surface.xz/2.));\n        C.rgb = PBRShading(mat,march.surface,1.,normal,-dir);\n    }\n    C.rgb = HDR(C.rgb,2.2);\n    C.rgb = pow(C.rgb,vec3(1./2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define R iResolution.xy\nconst ivec3[3] ID_xyz = ivec3[](ivec3(2,1,0),ivec3(0,2,1),ivec3(0,1,2));\nconst vec2[3] SCACLE_COEF = vec2[](vec2(3,1),vec2(1,3),vec2(3,3));\nconst ivec2 RESIZE_COORD= ivec2(0,0);\nconst ivec2 MOUSE_COORD = ivec2(1,1);\nvec4 GetValue(sampler2D _tex,ivec2 coord){return texelFetch(_tex,coord,0);}\nbool IsCoord(ivec2 iU,ivec2 coord){return all(equal(iU,coord));}\n\n//--------------Simple Math----------------\n#define    PI 3.1415926\n#define  _2PI 6.2831853\n#define  I_PI 0.3183098 /* 1/pi    */\n#define I_2PI 0.1591549 /* 1/(2pi) */\n\nfloat POW5(float a){\n\tfloat b = a * a;\n    return b*b*a;\n}\n//----------------------------------------------\nvec2 rotate(vec2 dir, float angle){\n    vec2 rot;\n    rot.x = dir.x*cos(angle) - dir.y*sin(angle);\n    rot.y = dir.x*sin(angle) + dir.y*cos(angle);\n    return rot;\n}\nvoid frisvad(in vec3 n, out vec3 f, out vec3 r){\n    if(n.z < -0.999999) {\n        f = vec3(0.,-1,0);\n        r = vec3(-1, 0, 0);\n    }\n    else{\n    \tfloat a = 1./(1.+n.z);\n    \tfloat b = -n.x*n.y*a;\n    \tf = vec3(1. - n.x*n.x*a, b, -n.x);\n    \tr = vec3(b, 1. - n.y*n.y*a , -n.y);\n    }\n}\nmat3 CoordBase(vec3 n){\n\tvec3 x,y;\n    frisvad(n,x,y);\n    return mat3(x,y,n);\n}\nvec3 ToOtherSpaceCoord(mat3 otherSpaceCoord,vec3 vector){\n\treturn vector * otherSpaceCoord;\n}\nvec3 ToTangentSpace(vec3 normal,vec3 vector){\n\treturn ToOtherSpaceCoord(CoordBase(normal),vector);\n}\n//--------------Mouse Drag Struct---------\nstruct MouseControlInfo{\n\tvec2 position;\n    bool dataLock;\n};\n    \n//--------------For Pre-Calculate & Light----------------\nfloat RadicalInverse(uint bits) {\n    bits = (bits << 16u) | (bits >> 16u);\n    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);\n    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);\n    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);\n    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);\n    return float(bits) * 2.3283064365386963e-10f;\n}\nvec2 Hammersley(uint i, uint N) {\n    return vec2(float(i) / float(N), RadicalInverse(i));\n}\nvec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness){\n    float a = roughness*roughness;\n\t\n    float phi = 2.0 * PI * Xi.x;\n    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a*a - 1.0) * Xi.y));\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n\t\n    // from spherical coordinates to cartesian coordinates\n    vec3 H;\n    H.x = cos(phi) * sinTheta;\n    H.y = sin(phi) * sinTheta;\n    H.z = cosTheta;\n\t\n    // from tangent-space vector to world-space sample vector\n    vec3 up        = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);\n    vec3 tangent   = normalize(cross(up, N));\n    vec3 bitangent = cross(N, tangent);\n\t\n    vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;\n    return normalize(sampleVec);\n} \n//the Schlick model\nfloat GeometrySchlickGGX_IBL(float NdotV, float roughness){\n    float a = roughness;\n    float k = (a * a) / 2.0;\n    \n    float nom   = NdotV;\n    float denom = NdotV * (1.0 - k) + k;\n    return nom / denom;\n}\nfloat GeometrySchlickGGX_LIGHT(float NdotV, float roughness){\n    float r = (roughness + 1.0);\n    float k = (r*r) / 8.0;\n    \n    float nom   = NdotV;\n    float denom = NdotV * (1.0 - k) + k;\n    return nom / denom;\n}\nfloat GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness,bool PRE_CALCULATE_IBL){\n    float NdotV = max(dot(N, V), 0.0);\n    float NdotL = max(dot(N, L), 0.0);\n    float ggx1,ggx2;\n    if(PRE_CALCULATE_IBL){\n    \tggx2 = GeometrySchlickGGX_IBL(NdotV, roughness);\n    \tggx1 = GeometrySchlickGGX_IBL(NdotL, roughness);\n    }\n    else{\n\t\tggx2 = GeometrySchlickGGX_LIGHT(NdotV, roughness);\n    \tggx1 = GeometrySchlickGGX_LIGHT(NdotL, roughness);\n    }\n    return ggx1 * ggx2;\n}\nfloat DistributionGGX(vec3 N, vec3 H, float roughness){\n    float a = roughness*roughness;\n    float a2 = a*a;\n    float NdotH = max(dot(N, H), 0.0);\n    float NdotH2 = NdotH*NdotH;\n\n    float nom   = a2;\n    float denom = (NdotH2 * (a2 - 1.0) + 1.0);\n    denom = PI * denom * denom;\n\n    return nom / denom;\n}\n\n//Schlick Fresnel\nvec3 fresnelSchlick(float cosTheta, vec3 F0){\n    return F0 + (1.0 - F0) * POW5(1.0 - cosTheta);\n}\n//Schlick’s Fresnel Approximation by Spherical Gaussian approximation\nvec3 fresnelSchlickApproximation(float costheta, vec3 F0){\n\treturn F0 + (1.-F0)*exp2((-5.55473*costheta-6.98316)*costheta);\n}\nvec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness){\n    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);\n}\n\n//------------------Post Process---------------\n\n//from Blender Eevee math function\nvec3 Tonemap(vec3 color,float gamma,float luma){\n    vec3 c = exp(-1.0 / (2.72 * color + 0.15));\n    c = pow(c, vec3(1.0 / (gamma * luma)));\n    return c;\n}\nvec3 HDR(vec3 color,float gamma) {\n    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));\n    return mix(color, Tonemap(color,gamma, luma), 1.0 - luma);\n}\n\n//-----------------------Sampler----------------------\nivec2 iU_Mirror(sampler2D _tex,ivec2 iU,int lod){\n\tivec2 size = textureSize(_tex,lod);\n    return abs(((iU/size)&1)*(size-1)-(iU%size));\n}\nvec3 TexelFetch_Mirror(sampler2D _tex,ivec2 iU,int lod){\n    return texelFetch(_tex,iU_Mirror(_tex,abs(iU),0),lod).rgb;\n}\n//------------------------PBR Texture Filters--------------------------\n//from my \"StructBuffer\" https://www.shadertoy.com/view/Mtyyzd\nfloat GetLuminance(vec3 col){\n\treturn dot(col,vec3(0.2126729,0.7151522,0.0721750));\n}\n/*\n\tReference:\n\thttps://web.eecs.umich.edu/~sugih/courses/eecs487/lectures/26-BumpMap+ProcTex.pdf\n\thttps://squircleart.github.io/shading/normal-map-generation.html\n\tTangent Space Normal Maps\n\tNote: I just use forward finite difference enough for fast\n*/\n#define GetTextureLuminance(_Tex,uv) GetLuminance(texture(_Tex,uv).rgb)  \nvec3 FastNormalFilter(sampler2D _tex,vec2 uv,float strength,vec2 offset){\n\tvec3 e = vec3(offset,0.);\n    float p00 = GetTextureLuminance(_tex,uv);\n    float p10 = GetTextureLuminance(_tex,uv + e.xz);\n    float p01 = GetTextureLuminance(_tex,uv + e.zy);\n    /* Orgin calculate \n    vec3 ab = vec3(1.,0.,p10-p00);\n    vec3 ac = vec3(0.,1.,p01-p00);\n    vec3 n = cross(ab,ac);\n    n.z *= (1.-strength);\n    return normalize(n);\n\t*/\n\tvec2 dir = p00-vec2(p10,p01);\n    return -normalize(vec3(dir,1.-strength));\n}\nvec3 SuperFastNormalFilter(sampler2D _tex,vec2 uv,float strength){\n    float p00 = GetTextureLuminance(_tex,uv);\n    return normalize(vec3(-dFdx(p00),-dFdy(p00),1.-strength));\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//--------------Pre-calculate BRDF--------------\n//-------------------------Mouse Drag------------------------\nMouseControlInfo MouseDragWriteRead(out vec2 Store,ivec2 iU){\n    #define MouseTex iChannel0\n    #define Scale 32767.\n\tuvec2 data = floatBitsToUint(GetValue(MouseTex,MOUSE_COORD).zw);\n\tmediump vec4 MousePos = vec4(unpackSnorm2x16(data.x),unpackSnorm2x16(data.y))*Scale,tmpMousePos = vec4(MousePos.xy,0.,0.);\n    iMouse.z>0. ? tmpMousePos.xy+=tmpMousePos.zw=iMouse.xy-iMouse.zw : tmpMousePos.xy=MousePos.xy+=MousePos.zw;\n    MouseControlInfo info;\n    info.position = tmpMousePos.xy;\n    info.dataLock = IsCoord(iU,MOUSE_COORD);\n    if(info.dataLock)Store=uintBitsToFloat(uvec2(packSnorm2x16(fract(MousePos.xy/Scale)),packSnorm2x16(tmpMousePos.zw/Scale)));\n    return info;\n}\n//-------------------------\nvec2 IntegrateBRDF(float NdotV,float roughness){\n   // roughness *= roughness;\n    vec3 V;\n    V.x = sqrt(1.0 - NdotV*NdotV);\n    V.y = 0.0;\n    V.z = NdotV;\n    float brdf_accum = 0.0;\n    float fresnel_accum = 0.0;\n    vec3 N = vec3(0.0, 0.0, 1.0);\n    const uint SAMPLE_COUNT = 1024u;\n    for(uint i = 0u; i < SAMPLE_COUNT; ++i){\n        vec2 Xi = Hammersley(i, SAMPLE_COUNT);\n        vec3 H  = ImportanceSampleGGX(Xi, N, roughness);\n        vec3 L  = normalize(2.0 * dot(V, H) * H - V);\n        float NdotL = max(L.z, 0.0);\n        float NdotH = max(H.z, 0.0);\n        float VdotH = max(dot(V, H), 0.0);\n        if(NdotL > 0.0){\n            float G = GeometrySmith(N, V, L, roughness,true);\n            float G_Vis = (G * VdotH) / (NdotH * NdotV);\n            float Fc = pow(1.0 - VdotH, 5.0);\n            brdf_accum += (1.0 - Fc) * G_Vis;\n            fresnel_accum += Fc * G_Vis;\n        }\n    }\n    brdf_accum /= float(SAMPLE_COUNT);\n    fresnel_accum /= float(SAMPLE_COUNT);\n    return vec2(brdf_accum, fresnel_accum);\n}\n\nvoid mainImage( out vec4 C, in vec2 U )\n{\n\tivec2 iU = ivec2(U);\n    //resize\n    vec2 pre_size = GetValue(iChannel0,RESIZE_COORD).zw;\n    vec2 size = vec2(textureSize(iChannel0,0));\n    if(size.x == pre_size.x){\n        C = texelFetch(iChannel0,iU,0);\n       \tMouseControlInfo mouseInfo = MouseDragWriteRead(C.zw,iU);\n    }\n    else{\n    \t//pre-calculate 2DLUT BRDF \n        vec2 uv = U/R;\n        C.xy = IntegrateBRDF(uv.x,uv.y);\n        //store Resolution\n        if(IsCoord(iU,RESIZE_COORD)){\n            C.zw = R;\n        }\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//from my \"StructBuffer\" https://www.shadertoy.com/view/Mtyyzd\n//--------------Store Struct Buffer-------------------\nstruct StructBuffer{\n    vec3 imgA;\n    vec3 imgB;\n    vec3 imgC;\n    vec3 imgD;\n    mediump vec2 other;\n};\nvec4 StoreStructBuffer(StructBuffer buffer){\n    mat3x4 stream = mat3x4(buffer.imgA,buffer.imgB,buffer.imgC,buffer.imgD);\n    vec4 store;\n    /*------store.xyz all RGB 8bits images--------*/\n    for(int i=0;i<3;i++){\n    \tuvec4 data = (uvec4(stream[i]*255.+.5)&0xFFu)<<ivec4(24,16,8,0);\n        store[i] = uintBitsToFloat(data.x|data.y|data.z|data.w);\n    }\n    /*-----store.w other 2x16bits float values------*/ \n    store.w = uintBitsToFloat(packHalf2x16(buffer.other));\n    return store;\n}\n//----------------------------------------------------\nvoid mainImage( out vec4 C, in vec2 U )\n{\n    ivec2 iU = ivec2(U);\n    vec2 uv = U/R;\n    StructBuffer Buffer;\n    vec3 Texcolor = texture(iChannel2,uv).rgb;\n    vec3 Luminance = vec3(GetLuminance(Texcolor));\n    Buffer.imgA = mix(texture(iChannel0,uv).rgb,texture(iChannel2,uv).rgb,0.3);\n    Buffer.imgB = FastNormalFilter(iChannel1,uv*2.,0.9,1./R)/2.+0.5;\n    Buffer.imgC = Luminance;\n    Buffer.imgD = texture(iChannel1,uv).rgb;\n    Buffer.other = U/R;\n    C = StoreStructBuffer(Buffer);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

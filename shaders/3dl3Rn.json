@@ -1,0 +1,189 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1544725070",
+            "description": "ultimate MIPmap is used to count stat for 6 RGBA intensity values in a row per frame.\nSo full 256 values per channel tested in 0.7\".\n( Using CubeMap to avoid the MIPmap horrible bugs on non-pow2 textures )",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3dl3Rn",
+            "likes": 9,
+            "name": "loopless histogram",
+            "published": 3,
+            "tags": [
+                "short",
+                "histogram",
+                "loopless",
+                "gpmipmap",
+                "gpcubemaps"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 741
+        },
+        "renderpass": [
+            {
+                "code": "// cubeMap: See motivations in Common. Spoiler: MIPmap on non-pow2 texture is totally bugged.\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy;\n    //O = 5000.*textureLod(iChannel2, vec2(U.x,.5)/R,0.); return;\n\n    O = texelFetch(iChannel2, ivec2(1), 0); // scaling\n    float s = max(O.r,max(O.g,O.b));\n    O = step( U.y/R.y,  // --- display histogram\n              texture(iChannel2, vec2(.5+(U.x-.5)*256./R.x,.5)/R) / s\n            );       \n    \n    U = 2.*U/R - 1.;    // --- display video top right\n    if ( U.x > 0. && U.y > 0.) O += texture(iChannel1, U);\n  //if ( U.x > 0. && U.y > 0.) O += texture(iChannel0, F0(U));\n\n    U.x++;              // --- display 6 cubeMap faces top left\n    if ( U.x < 1. && U.y > 0.) {\n        ivec2 I = ivec2( U *= vec2(3,2) );\n        U = fract(U);\n        O += .2+ 8.* texture( iChannel0, CMindex(I.x+3*I.y,U));\n        U = floor(U*R/vec2(3,2)/2.); if (U.x*U.y==0.) O-= .2;\n     }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Why using cubeMaps ?\n// - 6 textures in 1\n// - 1024 x 1024. Meaning:  MIPmap no longer bugged !\n//   ( MIPmap on non-pow2 is bugged on linux, and horribly bugged on Windows ).\n// All the G.P.MIPmap algo are now at hand ! https://www.shadertoy.com/results?query=gpmipmap\n//\n// Still, attention: - only half-floats are stored. \n//                   - 6Mpix whatever windowsize.\n\nint faceID(vec3 D) {            // --- get face ID\n    vec3 A = abs(D); // seek for max direction: i = invmax(abs(D[i]))\n    int i = 0; \n    float      M = A.x; \n    if (A.y>M) M = A.y, i = 1;\n    if (A.z>M) M = A.z, i = 2;\n    return i + 3* int(D[i]<0.); // --- faceID\n}\n\nvec3 faceDir(int f) {           // --- vector pointing to faceID f\n    vec3 D = vec3(0);\n    D[f%3] = f<3 ? 1. : -1.;\n    return D;\n}\n\nvec3 CMindex(int f, vec2 U) {   // --- indexing (u,v) on face f\n    U = 2.*U-1.;\n    return f==0 ? vec3( 1,-U).xzy       : f==1 ? vec3( 1,U).yxz : f==2 ? vec3( 1,U.x,-U.y).yzx\n          :f==3 ? vec3(-1,U.x,-U.y).xzy : f==4 ? vec3(-1,U.x,-U.y).yxz : vec3(-1,-U).yzx;\n\n// access to faces 0,1,2. Use -F0,-F1,-F2 for the 3 others.\n// ( deprecated, + bad orientation for -F. Prefer CMindex. )\n#define F0(U) vec3( 1 , 1.-2.*(U).yx )           // to index the 6 faces\n#define F1(U) vec3( 2.*(U).x-1. , 1 , 2.*(U).y -1. )\n#define F2(U) vec3( 2.*(U).x-1. , 1. -2.*(U).y , 1 )\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// --- prepare 6 RGBA slices of the histogram.\n// principle : masks source by target intensity value ( one per cubeMap face).\n//             Ultimate MIPmap = count.\n// future: Store 4 by face. \n//         Note than faces.a could store 2(x4) more RGB.\n//         -> Full histogram could thus be computed in 8 frames.\n\nvoid mainCubemap( out vec4 O, vec2 U, vec3 C, vec3 D )\n{\n  //O = vec4(.5+.5*D,0); U = U/1024. - 1./vec2(4,8); O -= .01/dot(U,U); return;\n  //int f = faceID(D); O = vec4(f&1,f&2,f&4,0); return;\n \n    O = vec4( equal( ivec4( 255.* texture(iChannel0, U/iResolution.xy)),\n                     ivec4( ( faceID(D) + iFrame*6 ) % 258 ) ) );\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// --- source to be analyzed\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    O = texture(iChannel0, U/iResolution.xy );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 12,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/e81e818ac76a8983d746784b423178ee9f6cdcdf7f8e8d719341a6fe2d2ab303.webm"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// --- histogram ( updated every 0.7 sec ) \n// ultimate MIPmap of cubeMap = count for these 6 intensity values\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    O = U.y ==.5 && int(U.x)/6 == (iFrame-1) % (258/6) \n        ? textureLod(iChannel0, CMindex(int(U.x)%6 ,U/iResolution.xy), 99.) // *256./1024.\n      //? textureLod(iChannel0, faceDir(int(U.x)%6), 99.) // *256./1024.\n        : texelFetch(iChannel1, ivec2(U), 0 ); \n    \n    if ( U == vec2(1.5) ) { // for scaling graph, store max in vec2(1.5)\n        O -= O;\n        for (float x = 0.; x < 256.; x++ )\n            O = max(O, texelFetch(iChannel1, ivec2(x,0), 0 ));\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

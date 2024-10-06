@@ -1,0 +1,96 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1527953814",
+            "description": "City in the sky. Kind of fan art for a game I've worked on :) ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4dcfDX",
+            "likes": 37,
+            "name": "City in the sky",
+            "published": 3,
+            "tags": [
+                "clouds",
+                "volumetric",
+                "city",
+                "pie"
+            ],
+            "usePreview": 0,
+            "username": "kuvkar",
+            "viewed": 1786
+        },
+        "renderpass": [
+            {
+                "code": "/**\n\tWanted to try out rendering a city with a radial layout procedurally, and rendering clouds is always fun :)\n\tTechnically there is just one box that is being rendered for the buildings, with different properties for each tile.\n\tThe way I wrote the space mirroring could have been simpler and I realized that when I was finished with it, \n\tso it is what it is :) Anyway it could be useful for other purposes as well. \n\t\n\tIn case you want to see how it looks, I have it in a unlisted shader https://www.shadertoy.com/view/MstfDj\n\n\tI tried to make the clouds as light weight as possible without sacrificing too much visual quality,\n\tso I ended up jittering the step size for each step randomly, which does decent job at removing the banding artefacts\n\t(though they are still visible but not horrible)\n\n\tif you haven't yet heard of the directional derivate go check it out \n\t(https://iquilezles.org/articles/derivative)\n\tit's a must for realtime volumetric rendering.\n\n\n*/\n\n#define PI 3.14159265358\n#define TAU (PI*2.)\n#define RESOLUTION 120.\n#define C_RES 40.\n#define CITY_RADIUS 49.\n\n#define NOTHING 0.\n#define ROAD_RADIAL 1.\n#define ROAD_VERTICAL 2.\n#define BUILDING 3.\n#define FLOOR 4.\n#define BOTTOM 5.\n#define ROAD_CROSSROAD 6.\n\n#define DEPTH_MAX 99999.\n#define MISS vec3(1000000.)\n#define CITY_SCALE .1\n#define CLOUD_PLANE_HEIGHT 2.\n\nmat3 rotx(float a) { mat3 rot; rot[0] = vec3(1.0, 0.0, 0.0); rot[1] = vec3(0.0, cos(a), -sin(a)); rot[2] = vec3(0.0, sin(a), cos(a)); return rot; }\nmat3 roty(float a) { mat3 rot; rot[0] = vec3(cos(a), 0.0, sin(a)); rot[1] = vec3(0.0, 1.0, 0.0); rot[2] = vec3(-sin(a), 0.0, cos(a)); return rot; }\nmat3 rotz(float a) { mat3 rot; rot[0] = vec3(cos(a), -sin(a), 0.0); rot[1] = vec3(sin(a), cos(a), 0.0); rot[2] = vec3(0.0, 0.0, 1.0); return rot; }\nfloat rand(vec2 co) { return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }\n\nvec3 cityOffset = vec3(.0);\n\n// https://iquilezles.org/articles/distfunctions\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 d = abs(p) - b;\n  return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));\n}\n\n// https://iquilezles.org/articles/distfunctions\nfloat sdCappedCylinder( vec3 p, vec2 h )\n{\n  vec2 d = abs(vec2(length(p.xz),p.y)) - h;\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nvec4 tex3d( sampler2D tex, in vec3 p, in vec3 n )\n{\n    p *= 2.0;\n    vec4 color = abs(n.z) * texture(tex, p.xy) + abs(n.x) * texture(tex, p.yz) + abs(n.y) * texture(tex, p.xz);\n    return clamp(color/1.4, 0.0, 1.0);\n}\n\n\nvec3 traceSphere(in vec3 ro, in vec3 rd, float r, out float t1, out float t2)\n{\n    t1=t2=-1.0;\n    vec3 x = ro + rd * (dot(normalize(-ro), rd)) * length(ro);\n    float disc = r*r-dot(x, x);\n    if (disc < 0.0) return MISS;\n    disc=sqrt(disc);\n    vec3 p=x-disc*rd;\n    t1=length(p-ro);t2=t1+disc*2.;\n    return p;\n}\n\nvec3 tracePlane(in vec3 o, in vec3 d, in vec3 n, float D)\n{\n    float a = dot(n, d);\n    if(a > 0.0) return MISS;\n    float t = ((-dot(n, o) + D) / a);\n    return o + t * d;\n}\n\nfloat getCloud(in vec3 rp)\n{\n    rp.x += iTime * .6;\n    float scl = .007;\n    rp *= scl;\n    float d = 0.;\n    for (float i = 1.0; i <= 3.0; i = i + 1.0)\n    {\n        d += texture(iChannel3, rp * pow(2.0, i)).r * pow(0.5, i);\n    }\n    d = max(d - 0.1, 0.0); \n    d += smoothstep(0.01, -0.02, rp.y);\n    d = clamp(d, 0.0, 1.0);\n    return max(0., (d-.35))/.65 * smoothstep(scl * CLOUD_PLANE_HEIGHT, scl * CLOUD_PLANE_HEIGHT - scl * 1., rp.y) * 1.;\n}\n\n\n#define EPS 1.\n\nvoid traceClouds(in vec3 rp, in vec3 rd, inout vec4 color, float depth)\n{\n    if(rd.y > 0.0)\n    {\n        return;\n    }\n    vec3 _ro = rp;\n    bool hit = false;\n    float rnd = rand(rp.xz);\n    rp = tracePlane(rp, rd, vec3(0.0, 1.0, 0.0), CLOUD_PLANE_HEIGHT);\n    \n    vec3 ro = rp;\n    vec3 ld = normalize(vec3(.0, -1.0, .0));\n    float dens = 0.;\n    vec4 clouds = vec4(.0);\n    float dist = 0.;\n    for (int i = 0; i < 64; ++i)\n    {\n        dens = getCloud(rp);\n        \n        // directional derivate for sun and sky coloring\n        float toSun = clamp((getCloud(rp +ld*EPS) - dens) / EPS, 0., 1.0);\n        float toSky = clamp((getCloud(rp + vec3(.0, -1.0, .0) * EPS) - dens) / EPS, 0., 1.0);\n        \n        // wrap the skylight around a bit\n        float wrap = .6;\n        toSky = (toSky + wrap) / (1.0 + wrap);\n        \n        // dark for dense parts, whiter for non-dense\n        vec4 cloudCol = mix(vec4(1., 1., 1., dens), vec4(.0, .0, .0, dens), clamp(dens, 0.0, 1.0));\n        // lighting from sun\n        cloudCol.rgb = mix(cloudCol.rgb, vec3(.2, .3, .0), toSun);\n        \n        // sky \n        vec3 skyCol = vec3(.3, .5, 1.0);\n        cloudCol.rgb += mix(vec3(.0), skyCol, toSky * .8);\n        \n        cloudCol.rgb = clamp(cloudCol.rgb, 0.0, 1.0);\n        \n        // mix colors\n        clouds.rgb = mix(clouds.rgb, cloudCol.rgb, (1.0 - clouds.a) * cloudCol.a);\n\t\t\n        // accumulate alpha\n        clouds.a += max(0.001, (1.0 - clouds.a) * cloudCol.a);\n        \n        if(dist > 60.0) break;\n        \n        if(clouds.a > 1.) break;\n        \n        // step ray forward with a bit of jittering to get rid of banding\n        // taking longer steps at distance\n\t    float rnd = rand(rp.xz);\n        float stp = (.5 + rnd * rnd *.1) * log(2.+max(0.0, -20. + dist * 1.5));\n        dist += stp;\n        rp += rd  * stp;\n        if (dot(_ro - rp, _ro - rp) > depth * depth) break;\n        \n    }\n    color = mix(color, clouds, clouds.a);\n}\n\n\nvec4 uv2radial(in vec2 uv)\n{\n    float len = length(uv);\n\t// radius of cocenctric circle\n    float radius = max(0.0001, floor(len * C_RES) / C_RES);\n    float angle = PI + atan(uv.y, uv.x); // 0..2PI\n    \n    // amount of cells in circle\n    float res = radius * RESOLUTION;\n\t\t\n    // cell ID\n    float cellId = (floor(angle * res / TAU)) / res;\n    \n    // coordinates in the cell\n    // in range 0..1 for each axis.\n   \tfloat aMod = mod(angle, TAU / res) * res;\n    return vec4(aMod * (1./TAU), mod(len, 1.0 / C_RES) * C_RES, cellId, radius);\n}\n\n\nvec2 getCellId(in vec4 radialData)\n{\n    float radialId = floor(radialData.z * 157.);\n    float radiusId = mod(floor(radialData.w * C_RES), 4.);\n    return vec2(radialId, radiusId);\n}\n\nvec2 cellIdFromPosition(in vec3 rp)\n{\n    vec2 uv = rp.xz*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    return getCellId(radialUv);\n}\n\n\nfloat map(in vec3 rp)\n{\n    rp += cityOffset;\n    if(rp.y < 0.) return rp.y;\n    \n    vec2 uv = rp.xz*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    vec2 radId = getCellId(radialUv);\n    \n    if(dot(rp.xz, rp.xz) < CITY_RADIUS)\n\t    uv = radialUv.xy - .5;\n    \n    float id = rand(radialUv.zz);\n    float h = smoothstep(.7, 0., radialUv.w);\n    float buildingH = 1.5 * h * id + .2;\n    float buildingW1 = .45 - id*.2;\n    float buildingW2 = .45 - id*.3;\n    \n    if(radId.x == 0. || radId.y == 0.) { buildingH = 0.001; buildingW1 = .5;buildingW2 = .5; }\n    float m = sdBox(vec3(uv, rp.y), vec3(buildingW1, buildingW2, buildingH ));\n    \n\treturn m;\n}\n\n\nvec3 grad(in vec3 rp)\n{\n    vec2 off = vec2(0.00001, 0.0);\n    vec3 g = vec3(map(rp + off.xyy) - map(rp - off.xyy),\n                  map(rp + off.yxy) - map(rp - off.yxy),\n                  map(rp + off.yyx) - map(rp - off.yyx));\n    return normalize(g);\n}\n    \nmat3 lookat(vec3 from, vec3 to)\n{\n    vec3 f = normalize(to - from);\n    vec3 r = normalize(cross(f, vec3(0.0, 1.0, 0.0)));\n    vec3 u = cross(r, f);\n    return mat3(r, u, f);\n}\n\n\nstruct Hit\n{\n    float mat;\n    float depth;\n    vec3 normal;\n    vec3 pos;\n};\n\nHit noHit()\n{\n    Hit h;\n    h.mat = NOTHING;\n    h.depth = DEPTH_MAX;\n    h.normal = vec3(0.0, 1.0, 0.0);\n    h.pos = vec3(0.0);\n    return h;\n}\n\nfloat mapShadow(in vec3 rp, in vec3 toLight)\n{\n    float s = 1.;\n    float dst = .05;\n    for (int i = 0; i < 20; ++i)\n    {\n    \trp += toLight * dst;\n        s = min(s, map(rp) / dst);\n    }\n    return max(s, 0.);\n}\n\nfloat mapAO(in vec3 rp, in vec3 n)\n{\n    float res = 1.;\n    float stp = 0.1;\n    rp += n * stp;\n    float dist = map(rp);\n    res = clamp(dist/stp, 0.0, 1.0);\n    return res;\n}\n\nfloat mapCityBottom(in vec3 rp)\n{\n    rp += cityOffset;\n    float h = 1.8;\n    float d =  sdCappedCylinder(rp + vec3(0.0, -.35+  h * 1.2, 0.0), vec2(7.4, h));\n    return d;\n}\n\nvec3 gradCityBottom(in vec3 rp)\n{\n    vec2 off = vec2(0.001, 0.0);\n    vec3 g = vec3(mapCityBottom(rp + off.xyy) - mapCityBottom(rp - off.xyy),\n                  mapCityBottom(rp + off.yxy) - mapCityBottom(rp - off.yxy),\n                  mapCityBottom(rp + off.yyx) - mapCityBottom(rp - off.yyx));\n    return normalize(g);\n}\n\nvoid traceCityBottom(in vec3 rp, in vec3 rd, inout Hit prevHit)\n{\n    \n    vec3 ro = rp;\n    Hit hit = noHit();\n    rp = tracePlane(rp, rd, vec3(0.0, 1.0, 0.0), -cityOffset.y);\n    if (rp == MISS) return;\n    \n    float material = NOTHING;\n    for (int i = 0; i < 20; ++i)\n    {\n        float dist = mapCityBottom(rp);\n        rp += max(0.001, dist) * rd;\n        if(dist < 0.0)\n        {\n            material = BOTTOM;\n            break;\n        }\n    }\n    \n    if(material != NOTHING)\n    {\n        float depth = length(ro-rp);\n        if(depth > prevHit.depth) return;\n        \n        hit.mat = material;\n        hit.depth = depth;\n        hit.pos = rp;\n        hit.normal = gradCityBottom(rp);\n        prevHit = hit;\n    }\n    \n}\n\nvoid traceCity(in vec3 rp, in vec3 rd, inout Hit prevHit)\n{\n    vec3 ro = rp;\n    rp = tracePlane(rp, rd, vec3(0.0, 1.0, 0.0), 1. - cityOffset.y);\n    if(rp == MISS) return;\n    \n    Hit hit = noHit();\n    float dist = 0.;\n    float travelled = 0.;\n    float material = NOTHING;\n    \n    for (int i = 0; i < 200; ++i)\n    {\n        dist = map(rp);\n        float stp = max(0.001, dist * .17);\n        \n        if(dist < 0.)\n        {\n            material = BUILDING;\n            break;\n        }\n        \n        travelled += stp;\n        \n        rp += rd * stp;\n        \n        if(rp.y < -cityOffset.y)\n        {\n            rp = tracePlane(ro, rd, vec3(0.0, 1.0, 0.0), -cityOffset.y);\n            dist = 0.;\n            material = FLOOR;\n            break;\n        }\n        \n    }\n\t\n    if(dot(rp.xz + cityOffset.xz, rp.xz + cityOffset.xz) > CITY_RADIUS * 1.1) material = NOTHING;\n    \n    if(material != NOTHING)\n    {\n        \n        if(dist != 0.0)\n        {\n            for (int i = 1; i < 5; ++i)\n            {\n                rp += rd * dist * pow(.5, float(i));\n                dist = map(rp);\n            }\n        }\n        \n        float depth = length(ro-rp);\n        if(depth > prevHit.depth) return;\n        \n        hit.normal = grad(rp);\n\t    hit.depth = depth;\n        \n        vec2 cellId = cellIdFromPosition(rp + cityOffset);\n        \n        if(cellId.x == 0.) material = ROAD_RADIAL;\n        if(cellId.y == 0.) material = ROAD_VERTICAL;\n        if(cellId.x + cellId.y == 0.) material = ROAD_CROSSROAD;\n        \n        \n\t\thit.mat = material;\n    \thit.pos = rp;\n        prevHit = hit;\n    }\n}\n\n\nstruct Material\n{\n\tfloat refl;\n    vec3 albedo;\n};\n\n    \nvec3 getRoadTexVertical(in vec3 rp)\n{\n    rp += cityOffset;\n    vec2 uv = rp.xz*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    vec3 col = vec3(.05);\n    col.rgb += smoothstep(0.3, 0.5, abs(radialUv.y - .5));\n    col.rg += smoothstep(0.08, 0., abs(radialUv.y - .5)) * step(0., radialUv.x - .5);\n    return col;\n}\n\nvec3 getRoadTexCrossroad(in vec3 rp)\n{\n    rp += cityOffset;\n    vec2 uv = rp.xz*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    vec3 col = vec3(.05);\n    col.rg += smoothstep(0.08, 0., abs(radialUv.x - .5)) * step(0., radialUv.y - .5);\n    return col;\n}\n\nvec3 getRoadTexRadial(in vec3 rp)\n{\n    rp += cityOffset;\n    vec2 uv = rp.xz*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    vec3 col = vec3(.05);\n    col.rgb += smoothstep(0.4, 0.5, abs(radialUv.x - .5));\n    col.rg += smoothstep(0.08, 0., abs(radialUv.x - .5)) * step(0., radialUv.y - .5);\n    return col;\n}\n\nMaterial getMaterial(in Hit hit)\n{\n    Material material;\n\tmaterial.refl = 0.;\n    \n    vec2 uv = (hit.pos.xz + cityOffset.xz)*CITY_SCALE;\n    vec4 radialUv = uv2radial(uv);\n    \n    if(hit.mat == FLOOR)\n    {\n        material.refl = .0;\n\t\tmaterial.albedo = texture(iChannel2, hit.pos.xz + cityOffset.xz).rgb; \n    }\n    \n    if(hit.mat == ROAD_RADIAL) \n    {\n        material.refl = .1;\n        material.albedo = getRoadTexRadial(hit.pos);\n    }\n\n    if(hit.mat == ROAD_CROSSROAD) \n    {\n        material.refl = .1;\n        material.albedo = getRoadTexCrossroad(hit.pos);\n    }\n    \n    if(hit.mat == ROAD_VERTICAL) \n    {\n        material.refl = .1;\n        material.albedo = getRoadTexVertical(hit.pos);\n    }\n    \n    if(hit.mat ==  BUILDING)\n    {\n        vec3 col =  tex3d(iChannel0, hit.pos + cityOffset, hit.normal).rgb;\n        vec3 final_col = vec3(.0);\n        vec2 radId = getCellId(radialUv);\n        float rnd = rand(radId);\n\t\tfloat idColor = clamp(.35 + rnd * .5, 0., 1.);\n        \n        float baseColorId = mod(floor(rnd * 10.), 3.);\n        vec3 albedo = vec3(.1, .7, .7);\n        if(baseColorId == 1.) albedo = vec3(.7, 0.9, 0.5);\n        if(baseColorId == 2.) albedo = vec3(0.4, .3, .3);\n        \n        material.albedo = albedo * idColor;\n        material.refl = smoothstep(0.5, 0.75, col.r) * max(0.0, dot(hit.normal.zx, hit.normal.zx)) + .1 ;\n    }\n    \n    if(hit.mat ==  BOTTOM)\n    { \n        material.albedo = tex3d(iChannel2, hit.pos+ cityOffset, hit.normal).rgb;\n        material.refl =  0.;\n    }\n    \n   return material;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = ((fragCoord.xy - iResolution.xy*.5) / iResolution.xy)*vec2(1.0, iResolution.y/iResolution.x);\n    vec2 im = 4. * ((iMouse.xy / iResolution.xy) - vec2(0.5));\n    fragColor = vec4(0.0);\n    \n\t// setup camera    \n    vec3 rd = normalize(vec3(uv, 1.0));\n    vec3 rp = vec3(0.0, .5, -17.0);\n    vec3 _rp = rp;\n    \n    if(iMouse.z > 0.)\n    {\n        rp = roty(im.x) * rp;\n        rp.y = (rotx(-.5 + im.y * .2) *_rp).y;\n    }\n    else\n    {\n        float T = iTime * .25;\n        rp = roty(sin(T * .1)) * rp;\n        rp.y = (-rotx(cos(T * .05) * .2 + .5) *_rp).y;\n        rp.z -= sin(T * .4) * 10.;\n    }\n    \n    vec3 ro = rp;\n    rd = lookat(rp, vec3(0.0, -2.0, 0.0)) * rd;\n\n\t// draw city    \n    cityOffset += vec3(sin(iTime * 1.) * .15, sin(iTime * .4) * .5, cos(iTime * .2) * .35);\n\tHit data = noHit();\n    traceCityBottom(ro, rd, data);\n    traceCity(ro, rd, data);\n    \n    fragColor.rgb = textureLod(iChannel1, rd, 5.).rgb;\n    \n    \n    if(data.mat != NOTHING)\n    {\n        vec3 ld = normalize(vec3(-1.0, 3.5, 1.0));\n        float d = max(0.6, dot(ld, data.normal));\n        Material mat = getMaterial(data);\n       \tvec3 col = mat.albedo * d;\n       \n        vec3 refl_col = clamp(texture(iChannel1, reflect(rd, data.normal)).rgb * mat.refl, 0.0, 15.0);\n\t\tcol += refl_col;\n        col *= .7 + .3 * mapShadow(data.pos + data.normal * .01, ld);\n        col *= .7 + .3 * mapAO(data.pos, data.normal);\n        fragColor.rgb = col;\n    } \n    \n    traceClouds(ro, rd, fragColor, data.depth);\n\t// contrast    \n    fragColor = smoothstep(0.0, 1.0, fragColor);\n    // gamma\n    fragColor.rgb = pow(fragColor.rgb, vec3(1.0 / 2.2));\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

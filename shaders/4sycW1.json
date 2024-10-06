@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1521735848",
+            "description": "Figured out how to use gradient stored in a signed distance texture to reduce aliasing. Has this been done before? \n\nCW from top left: raw texture, smoothing with LOD 1, LOD 1.5, and finally my method (blue). Use mouse to compare! (Best in fullscreen)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4sycW1",
+            "likes": 8,
+            "name": "SDF texture smoothing attempt",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "texture",
+                "font",
+                "smoothing"
+            ],
+            "usePreview": 1,
+            "username": "mattz",
+            "viewed": 1359
+        },
+        "renderpass": [
+            {
+                "code": "/* \"distance texture smoothing\" by mattz\n   License Creative Commons Attribution 3.0 (CC BY 3.0) Unported License.\n\n   UPDATE: This was close, but not correct. Things work better in\n   https://www.shadertoy.com/view/4sVyWh\n \n   Thought of a new (to me at least) way of performing\n   nonlinear filtering to clean up signed distance textures with\n   gradient information -- but then it turned out to basically boil\n   down to \"apply Gaussian blur\". Oh well :(\n\n   See https://www.shadertoy.com/view/llcXRl for documentation about\n   the font texture.\n\n */\n\n//////////////////////////////////////////////////////////////////////\n// return vec3 based on max z coordinate\n\nvec3 zmax(vec3 a, vec3 b) {\n    return a.z > b.z ? a : b;\n}\n\n//////////////////////////////////////////////////////////////////////\n// (potentially smoothed) distance to character in SDF font texture\n\nconst int METHOD_RAW    = 0;\nconst int METHOD_LOD1   = 1;\nconst int METHOD_LOD15   = 2;\nconst int METHOD_SMOOTH = 3;\n\nvec3 font2d_dist(vec2 tpos, float size, vec2 offset, int method) {\n\n    vec2 uv = tpos/size;\n    \n    const float glyph_scl = 1./16.;\n    vec2 font_uv = (uv+offset+0.5)*glyph_scl;\n    \n    vec3 k;\n    \n    if (method < METHOD_SMOOTH) {\n        \n        const float lods[3] = float[3](0., 1., 1.5);\n        k = textureLod(iChannel0, font_uv, lods[method]).yzw - 127.0/255.0;\n        \n    } else {\n        \n        // Ok, so given a signed distance and a gradient, every pixel\n        // in an SDF texture \"knows\" the position of the closest point\n        // on the boundary (zero isocontour) -- to get there, just march\n        // away from the pixel center position along the gradient by\n        // the signed distance.\n        //\n        // So if the signed distance field has value dA and gradient gA\n        // at pixel location A, the closest point on the boundary to A\n        // is given by:\n        //\n        //   pA = A + dA * gA\n        //\n        // (Assuming that gA is a unit vector -- in practice, we need to \n        // normalize it if it was stashed in a texture.)\n        //\n        // Now the trick is that we can use the information from pixel A to\n        // obtain an independent estimate for the distance to the boundary\n        // at some nearby pixel B = A + delta, as shown below:\n        //\n        //       ----> delta\n        // \n        //     +---+---+\n        //     | A | B |    \n        //     +--\\+---+\n        //         \\  \n        //          \\ \n        //           * pA = A + dA * gA\n        //\n        // Neglecting sign for a moment, we can make the approximation that\n        //  \n        //   dB ~= | B - pA |\n        //       = | B - A + dA * gA |\n        //       = | delta + dA * gA |\n        //\n        // So far, this seems a little dumb. We have successfully obtained an\n        // estimate of the distance at B that is probably *worse* than the \n        // value that was originally stored in the distance texture.\n        //\n        // The magic happens when we vary pixel A across a small window  \n        // surrounding pixel B and average together all of the estimates\n        // using Gaussian-ish weights. Some locations of A will overestimate\n        // the distance, and some locations will underestimate it, but the \n        // result will be a good bit smoother than the original aliased\n        // texture.\n\t\t//\n        // It does tend to knock off corners a bit more than I'd like, but\n        // curve segments and long slopes look much better than just\n        // low-pass filtering the distance texture.\n        \n        const float w[3] = float[3](1., 3., 1.);\n\n        float dsum = 0.;\n        float wsum = 0.;\n\n        for (int i=0; i<3; ++i) {\n            for (int j=0; j<3; ++j) {\n\n                vec2 delta = vec2(i-1, j-1);\n\n                vec3 kij = textureLod(iChannel0,\n                                      font_uv - delta  / iChannelResolution[0].xy, 0.).yzw - 127.0/255.0;\n                \n                kij.y = -kij.y;\n                \n                float dA = kij.z;\n                vec2 gA = normalize(kij.xy + 1e-5);\n\n                float wij = w[i]*w[j];\n\n                if (i == 1 && j == 1) { \n                    \n                    // at center point, B=A and delta=0\n                    k = kij; \n                    dsum += wij * dA;\n                    \n                } else {\n\n                    // neighboring point case\n                    const float f = 0.05;\n                    \n                    // Turns out I had an incorrect scaling factor in this \n                    // computation before and I was grossly underweighting\n                    // delta inside this calculation. To accurately implement\n                    // the comments above, you would want f = 1., but that\n                    // looks horrible at corners.\n                    //\n                    // Note when f = 0, this is basically just doing a Gaussian\n                    // blur of the distance function itself.\n                    //\n                    // To be honest I'm not sure the extra math is adding that\n                    // much beyond just doing the blur :(                    \n                    \n                    dsum += wij * length( f*delta*glyph_scl - dA * gA ) * sign(dA);                    \n                    \n                }\t                \n                \n                wsum += wij;\n\n            }\n        }\n\n        k.z = dsum / wsum;\n        \n    }\n        \n    vec2 box = abs(uv)-vec2(0.5, 0.5);\n    \n    vec3 d = zmax(vec3(sign(uv.x), 0., box.x), \n                  vec3(0., sign(uv.y), box.y));\n    \n    return zmax(d, k) * size;\n    \n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    bool use_mouse = max(iMouse.z, iMouse.w) > 0.;\n    int cidx = int(mod(iTime, 27.)) + 64;\n    if (cidx == 64) { cidx = 29; }\n\n    const bool screenshot_mode = false;\n    \n    float scl;\n    vec2 p, m;\n    \n    if (screenshot_mode) {\n       \n        scl = .7 / iResolution.y;\n        p = (fragCoord - 0.5*iResolution.xy) * scl;\n        m = fragCoord - 0.5*iResolution.xy;\n\n    } else if (use_mouse) {\n        \n        scl = 1. / iResolution.y;\n        p = (fragCoord - 0.5*iResolution.xy) * scl;\n        m = fragCoord - iMouse.xy;\n        \n    } else {\n        \n        scl = 2.0 / iResolution.y;\n        p = (fragCoord - 0.25*iResolution.xy) * scl;\n        m = fragCoord - 0.5*iResolution.xy;\n\n        vec2 repeat = 0.5*iResolution.xy * scl;    \n        p -= floor(p/repeat + 0.5) * repeat;\n    \n    }    \n\n    int method;\n\n    vec3 bgcolor = vec3(1);\n    vec3 fgcolor = vec3(0);\n    \n    if (m.x < 0.) {\n        if (m.y < 0.) {\n            method = METHOD_SMOOTH;\n            bgcolor = vec3(0.9, 0.95, 1);\n        } else {\n            method = METHOD_RAW;\n            bgcolor = vec3(1, 0.9, 0.9);\n        }\n    } else {\n        if (m.y < 0.) {\n            method = METHOD_LOD15;\n            bgcolor = vec3(0.9, 1, 0.95);\n        } else {\n            method = METHOD_LOD1;\n            bgcolor = vec3(1, 0.95, 0.9);\n\n        }\n    }\n    \n    ivec2 offs = ivec2(cidx % 16, 15 - cidx / 16);\n\n    vec3 gd = font2d_dist(p, 1.0, vec2(offs), method);\n    vec3 color = mix(fgcolor, bgcolor, smoothstep(-.5*scl, .5*scl, gd.z));\n    \n    float mdist = min(abs(m.x), abs(m.y));\n    color = mix(color, vec3(0.7), smoothstep(1., 0., mdist-.5));\n    \n    fragColor = vec4(color, 1);\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

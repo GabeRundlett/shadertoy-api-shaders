@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1642222446",
+            "description": "I found a nice way to raytrace a wire box in three passes. It is actually non-euclidian, but all the \"portals\" line up to create the illusion of being normal. Dunno if there's a more elegant method for raytracing this shape out there. Has mouse controls.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NsXcRS",
+            "likes": 8,
+            "name": "Simple raytraced wire box",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "cube",
+                "box"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 297
+        },
+        "renderpass": [
+            {
+                "code": "#define FDIST 0.5\n#define THICKNESS 0.25\n#define PI 3.1415926\n\n// raytrace a 2D box with outgoing normal\nvec2 box2d(in vec2 ro, in vec2 rd, in vec2 r, out vec2 no) {\n    vec2 dr = 1.0/rd;\n    vec2 n = ro * dr;\n    vec2 k = r * abs(dr);\n    \n    vec2 pout =  k - n;\n    vec2 pin =  - k - n;\n    float tout = min(pout.x, pout.y);\n    float tin = max(pin.x, pin.y);\n    no = -sign(rd) * step(pout.xy, pout.yx);\n    return vec2(tin, tout);\n}\n\n// Raytrace box, returns (t_in, t_out) and incident normal\nvec2 box(in vec3 ro, in vec3 rd, in vec3 r, out vec3 no) {\n    vec3 dr = 1.0/rd;\n    vec3 n = ro * dr;\n    vec3 k = r * abs(dr);\n    \n    vec3 pout =  k - n;\n    vec3 pin =  - k - n;\n    float tout = min(pout.x, min(pout.y, pout.z));\n    float tin = max(pin.x, max(pin.y, pin.z));\n    no = -sign(rd) * step(pin.zxy, pin.xyz) * step(pin.yzx, pin.xyz);\n    return vec2(tin, tout);\n}\n\n//raytrace a wirebox\nvec2 wirebox_anim(in vec3 eye, in vec3 rd, in float r, in float thickness, out vec3 no) {\n    float modtime = mod(iTime, 6.);\n    vec2 t = box(eye, rd, vec3(r), no);\n    \n    if (t.y > t.x) {\n        //trace the inner walls by tracing infinite rectangular shafts in each face, then repeating once for the inner walls\n        vec3 ro = eye + t.x * rd;\n        for (int i=0; i<2; ++i) {\n            float thickness_curr = mix(1., thickness, smoothstep(0., 1., modtime - float(i)));\n            thickness_curr = mix(thickness_curr, 1., smoothstep(0., 1., modtime - 5.));\n            //transform the ray into tangent space to intersect it with a shaft perpendicular to the normal\n            mat2x3 invproj = mat2x3(no.zxy, no.yzx);\n            mat3x2 proj = transpose(invproj);\n            vec2 n2;\n            vec2 t2 = box2d(proj * ro, proj * rd, vec2(r-thickness_curr), n2);\n            if (t2.x > 0. || t2.y < 0.) {\n                break;\n            }\n            t.x += t2.y;\n            ro = eye + t.x * rd;\n            no = invproj * n2;\n        }\n            \n        //visualize clipping on/off (remove this part if using, obviously)\n        float inftime = atanh(clamp(-modtime+3., 0., 1.));\n        t.y = t.y + inftime*inftime;\n    }\n    return t;\n}\n\n//raytrace a wirebox (clean version without animations)\n/*\nvec2 wirebox(in vec3 eye, in vec3 rd, in float r, in float thickness, out vec3 no) {\n    vec2 t = box(eye, rd, vec3(r), no);\n    \n    if (t.y > t.x) {\n        //trace the inner walls by tracing infinite rectangular shafts in each face, then repeating once for the inner walls\n        vec3 ro = eye + t.x * rd;\n        for (int i=0; i<2; ++i) {\n            //transform the ray into tangent space to intersect it with a shaft perpendicular to the normal\n            mat2x3 invproj = mat2x3(no.zxy, no.yzx);\n            mat3x2 proj = transpose(invproj);\n            vec2 n2;\n            vec2 t2 = box2d(proj * ro, proj * rd, vec2(r-thickness), n2);\n            if (t2.x > 0. || t2.y < 0.) {\n                break;\n            }\n            t.x += t2.y;\n            ro = eye + t.x * rd;\n            no = invproj * n2;\n        }\n    }\n    return t;\n}*/\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-0.5*iResolution.xy)/iResolution.x;\n\tfloat ang = iTime * 0.5;\n    \n    vec3 eye;\n    if (iMouse.z > 0.) {\n        float mouseY = (1.0-1.15*iMouse.y/iResolution.y) * 0.5 * PI;\n        float mouseX =  -(iMouse.x/iResolution.x) * 2. * PI;\n        eye = 4.*vec3(cos(mouseX) * cos(mouseY), sin(mouseX) * cos(mouseY), sin(mouseY));\n    } else {\n        eye = 4.*vec3(cos(ang), sin(ang), 0.3 * sin(ang/0.70752)+.3);\n    }\n    vec3 w = -normalize(eye);\n    vec3 u = normalize(cross(w, vec3(0., 0., 1.)));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(u*uv.x + v*uv.y + FDIST * w);\n    \n    //trace the outer box\n    vec3 n;\n    \n    vec2 t = wirebox_anim(eye, rd, 1., THICKNESS, n);\n    float objmask = step(0., t.y-t.x);\n    \n    //trace the floor\n    float tfloor = -(eye.z + 2.)/rd.z;\n    float floormask = step(0., tfloor);\n    vec3 bgcol = floormask * vec3(.5, .7, .8);\n    if (floormask > 0.5) {\n        //floor shadow\n        vec3 lightdir = normalize(vec3(-.3, -.5, -1.));\n        vec3 floorpt = eye + tfloor * rd;\n        vec3 ns;\n        vec2 ts = wirebox_anim(floorpt, lightdir, 1., THICKNESS, ns);\n        bgcol *= step(ts.y, ts.x);\n    }\n    \n    vec3 col = mix(bgcol, n*.5 + .5, objmask);\n    fragColor = vec4(mix(col, vec3(0.5, 0.1, 0.), objmask * clamp(1.-exp(-t.x/10.), 0., 1.)), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,206 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1676183641",
+            "description": "Not so much as a toy as a tool to help us (me) to make toys. I really wanted something like this when I was working on my last shader.\n\n*drag vertex to move*\n*click edge to add vertex*\n*shift-click vertex to delete*\n*space to hide/show vertex positions* \n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "dtBSDw",
+            "likes": 41,
+            "name": "Polygon SDF Modelling Tool",
+            "published": 3,
+            "tags": [
+                "2d",
+                "mouse",
+                "interactive",
+                "sdf",
+                "model",
+                "polygon",
+                "tool",
+                "editor"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 531
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2023\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  Polygon SDFs are very expressive, allowing us to create any shape we want. But\n//  modelling with them directly in ShaderToy is difficult. When you're just staring\n//  at an array of numbers, it's hard to know which vertex you're even modifying, let\n//  alone what new number to punch in. This shader seeks to create a functional workflow\n//  for creating polygons for use in shaders. Really, this is the shader I wished I had\n//  when I was working on this other shader with lots of polygon art:\n//  \n//    Celtic Knots Zoo: Wood Carving     https://shadertoy.com/view/DlX3Ds\n//  \n//  HOW TO USE:\n//\n//    * Click the vertices to move them around\n//    * Click on an edge to create a new vertex\n//    * Shift-click a vertex to remove it\n//    * Alt-click to toggle selection of a vertex\n//    * Left and right arrow to change the selected vertex, backspace to delete it\n//    * Drag anywhere else to select vertices in a rectangle\n//       - Drag all selected vertices together to reposition them\n//       - Press backspace to delete all selected vertices\n//    * Press the \"A\" key to select all vertices\n//    * When you're done, copy all the vertex coordinates into an array in your shader.\n//       - Low tech method is to type them by hand into the shadertoy editor.\n//       - I've had some success using \"P\" to hide polygon render, then saving out\n//         the image and loading it into OCR software e.g.: https://www.onlineocr.net/\n//    * Use iq's polygon SDF function with it: https://www.shadertoy.com/view/wdBXRW\n//    * Use the min and max values as an optional bounding box.\n//    * To save your work, fork this shader (privately please) and copy your vertices\n//      into INIT_VERT_POS_ARRAY in the Common tab. Then you can resume editing where\n//      you left off if need be.\n//\n//  Should this shader exist? I'm not sure. There's probably a way to do this in 17\n//  lines using JavaScript or something. But I don't know JavaScript. There are probably\n//  better free tools for this already on the web, but I tried to find one and everything\n//  I came across seemed way too powerful for this purpose. Maybe someone reading this\n//  will point me to the correct tool to use for this, and if that's the only outcome of\n//  this shader it will still be time well spent.\n//\n//  One reason for this shader to exist is that it's meant to be used to make shaders\n//  on this platform, so we can customize it to improve its usability for that purpose.\n//  Toward that end, any suggestions for improvement are very welcome!\n// \n//  Here's some ideas I had for improvements, I'll gladly implement these if anyone\n//  would be interested in using them:\n//\n//    * Other rendering styles...would it be helpful to render the polygon itself as a\n//      simple solid or wireframe model? Shaded somehow?\n//    * Rotate vertices button? If you want a different vertex in the first slot without\n//      changing the shape.\n//    * Some kind of way to get the numbers out of the shader other than typing them in by\n//      hand. Maybe...a QR code?\n//    * More advanced editing tools? This is meant to be a light weight editor but maybe\n//      there are some key tools missing?\n//    * Different basis? (0...8 is pretty convenient to work in for example)\n//\n//  Buffer A computes the vertex positions and neighbors\n//  Buffer B handles persistent state data\n//\n//  Update 2/12/23: Added multi-selection! Drag to select multiple verts, alt-click to\n//    toggle selection, key \"A\" to select all verts. All selected verts can be dragged.\n//  Update 2/12/23: Fixed multi-selection delete.\n//  Update 2/13/23: Display vertices in glsl format.\n//  Update 2/13/23: Added a cat polygon example (enable in the common tab then rewind\n//    the shader).\n//\n// ---------------------------------------------------------------------------------------\n\n// https://iquilezles.org/articles/distfunctions2d/\nfloat sdPolygon(int num, vec2 p)\n{\n    float d = dot(p-fxGetVertex(0),p-fxGetVertex(0));\n    float s = 1.0;\n    for( int i=0, j=num-1; i<num; j=i, i++ )\n    {\n        // distance\n        vec2 e = fxGetVertex(j) - fxGetVertex(i);\n        vec2 w =    p - fxGetVertex(i);\n        vec2 b = w - e*clamp( dot(w,e)/dot(e,e), 0.0, 1.0 );\n        d = min( d, dot(b,b) );\n\n        // winding number from http://geomalgorithms.com/a03-_inclusion.html\n        bvec3 cond = bvec3( p.y>=fxGetVertex(i).y, \n                            p.y <fxGetVertex(j).y, \n                            e.x*w.y>e.y*w.x );\n        if( all(cond) || all(not(cond)) ) s=-s;  \n    }\n    \n    return s*sqrt(d);\n}\n\n// you know it, you love it, the SDF debug color\nvec3 sdfDebugColor(float d)\n{\n    vec3 col = (d>0.0) ? vec3(0.9,0.6,0.3) : vec3(0.65,0.85,1.0);\n\tcol *= 1.0 - exp(-6.0*abs(d));\n\tcol *= 0.8 + 0.2*cos(140.0*d);\n\treturn mix( col, vec3(1.0), 1.0-smoothstep(0.0,0.015,abs(d)) );\n}\n\n// From FabriceNeyret2's iResolution, iDate, iMouse, etc: https://shadertoy.com/view/llySRh\n\n//     First only determine the valid char id at cur pixel \n//     then call the draw char once at the end.\nint char_id = -1; vec2 char_pos, dfdx, dfdy; vec4 char_color; vec4 cur_color;\nvoid char(vec2 p, int c) {\n    vec2 dFdx = dFdx(p/16.), dFdy = dFdy(p/16.);\n    if ( p.x>.25&& p.x<.75 && p.y>.0&& p.y<1. )  // normal char box\n        char_id = c, char_pos = p, dfdx = dFdx, dfdy = dFdy, char_color = cur_color;\n}\n\nvec4 draw_char() {\n    int c = char_id; vec2 p = char_pos;\n    return c < 0 \n        ? vec4(0,0,0,1e5)\n        : textureGrad( iChannel2, p/16. + fract( vec2(c, 15-c/16) / 16. ), \n                       dfdx, dfdy );\n}\n\n\nvoid pInt(vec2 p, float n) {\n    if (n < 0.) \n    {\n        char(p - vec2(-1,0), 45 );\n        n = -n;\n    }\n    for (float i = 3.; i>=0.; i--) \n    {\n        n /=  9.999999; // 10., // for windows :-(\n        char(p - .5*vec2(i,0), 48+ int(fract(n)*10.) );\n    }\n}\n\nint CAPS=0;\n#define low CAPS=32;\n#define caps CAPS=0;\n#define spc  U.x-=.5;\n#define C(c) spc char(U,64+CAPS+c);\n\n// print some 2D coords to the screen with brackets around them\nvoid pCoords(vec2 U, vec2 c, bool comma)\n{\n    C(-24); if (c.x < 0.) spc; C(-18); spc; pInt(U, c.x * 10000.); spc; spc; spc; C(-20); if (c.y < 0.) spc;\n    C(-18); spc; pInt(U, c.y * 10000.); spc; spc; spc; C(-23); if (comma) { C(-20); }\n}\n\nvoid mainImage(out vec4 O, vec2 u)\n{   \n    fxState state = fxGetState();\n    vec2 p = (u - .5*iResolution.xy)/iResolution.y;\n    \n    // render the old vertices while we're in the process of adding or removing one\n    int numVerts = state.numVerts;\n    if (state.grabAction == ACTION_ADD) numVerts--;\n    if (state.grabAction == ACTION_DELETE) numVerts += countBits(state.selectedVerts);\n    \n    // render polygon\n    O = vec4(0);\n    \n    if (state.renderPoly)\n    {\n        // distance to polygon\n        float d = sdPolygon(numVerts, p);\n        O.xyz = sdfDebugColor(d);\n    }\n    \n    cur_color = vec4(1);\n    vec2 U0 = p - vec2(-iResolution.x/iResolution.y * .5, .425);\n    U0 *= TEXT_SIZE;\n    vec2 U = U0;\n    \n    // render Verts: XXXX\n    C(22); low C(5); C(18); C(20); C(19); caps C(-6); spc; spc; pInt(U, float(state.numVerts));    \n    if (state.renderVerts)\n    {\n        U = U0 + vec2(0, 1.5);\n        low C(22); C(5); C(3); caps C(-14); C(27); C(29); spc; low C(22); C(5); C(18); C(20); C(19); spc; caps C(-3); spc;\n        low C(22); C(5); C(3); caps C(-14); C(27); C(29); C(-24)\n    }\n    U = U0 + vec2(-1, 2.5);\n    \n    const float THICKNESS = .005;\n\n    vec2 mins = vec2(1e6);\n    vec2 maxs = vec2(-1e6);\n    for (int i = 0; i < numVerts; ++i)\n    {\n        vec2 pos = fxGetVertex(i);\n        mins = min(mins, pos);\n        maxs = max(maxs, pos);\n        \n        if (state.renderVerts || !state.renderPoly)\n        {\n            bool selected = isUvec4BitSet(state.selectedVerts, i);\n            \n            // render red circles\n            if (state.renderPoly)\n            {\n                float d = distance(pos, p);\n                vec4 dotColor = selected ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1);\n                O = mix(O, dotColor, smoothstep(1. / iResolution.y, 0., abs(d - MAX_GRAB_DIST) - THICKNESS));\n            }\n\n            // render coordinates\n            vec2 coord = vec2(float(i / LINES) * -9.5, i % LINES);\n            cur_color = selected ? vec4(0, 1, 0, 1) : vec4(1);\n            pCoords(U + vec2(coord), pos, i < numVerts - 1);\n        }\n    }\n\n    cur_color = vec4(1);\n    \n    if (state.renderVerts)\n    {\n        vec2 coord = vec2(1. + float(numVerts / LINES) * -9.5, numVerts % LINES);\n        U += vec2(coord);\n        C(-23); C(-5);\n    }\n    \n    // render Min: [X, X]\n    U = U0 - vec2(6.5, 0);\n    C(13); low C(9); C(14); caps C(-6); spc\n    pCoords(U, mins, true);\n    \n    // render Max: [X, X]\n    U -= vec2(9.5, 0);\n    C(13); low C(1); C(24); caps C(-6); // Max\n    pCoords(U, maxs, false);\n    \n    //O -= draw_char().xxxx;\n    char_pos += vec2(-.025, .025);\n    O = mix(O, vec4(0), draw_char().xxxx);\n    char_pos += vec2(.05, -.05);\n    O = mix(O, char_color, draw_char().xxxx);\n    \n    // render selection rectangle\n    if (state.grabAction == ACTION_SELECT)\n    {\n        vec2 m = (iMouse.xy - .5 * iResolution.xy) / iResolution.y;\n        vec2 boxCenter = (m + state.grabOffset) * .5;\n        vec2 boxExtents = abs(m - state.grabOffset) * .5;\n        float bd = sdBox(p - boxCenter, boxExtents);\n        O = mix(O, vec4(1), smoothstep(1. / iResolution.y, 0., abs(bd - MAX_GRAB_DIST) - THICKNESS));\n    }\n    \n    O.a = 1.;\n    //O = texture(iChannel2, u / iResolution.xy);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const int LINES = 18;\nconst int MAX_VERTICES = LINES * 4; // how many do you really need?\nconst float TEXT_SIZE = 23.; // scales the text\nconst float MAX_GRAB_DIST = .02; // size of handles on vertices\n\n#if 1 // set to zero to enable cat example polygon\n// fork this shader and copy your polygon here to save it for more editing later\nconst int NUM_INIT_VERTS = 4;\nconst vec2[NUM_INIT_VERTS] INIT_VERT_POS_ARRAY = vec2[](\n    vec2(-.25,  .25),\n    vec2(-.25, -.25),\n    vec2( .25, -.25),\n    vec2( .25,  .25)\n);\n#else\nconst int NUM_INIT_VERTS = 57;\n\nvec2 INIT_VERT_POS_ARRAY[NUM_INIT_VERTS] = vec2[](\n    vec2(-.3611,  .1611), vec2(-.3748,  .0705), vec2(-.3729, -.0289), vec2(-.4263, -.0861), vec2(-.4640, -.2351), vec2(-.4420, -.3109),\n    vec2(-.3769, -.3278), vec2(-.3503, -.2880), vec2(-.3791, -.2880), vec2(-.3518, -.1545), vec2(-.2936, -.3289), vec2(-.2351, -.3362),\n    vec2(-.2011, -.3026), vec2(-.2353, -.3362), vec2(-.2709, -.1860), vec2(-.1916, -.0790), vec2( .0180, -.1125), vec2(-.0540, -.3109),\n    \n    vec2(-.0357, -.3959), vec2( .0530, -.4028), vec2( .0489, -.3514), vec2( .0291, -.3061), vec2( .1292, -.1678), vec2( .2382, -.2473),\n    vec2( .3710, -.3797), vec2( .4420, -.3817), vec2( .4310, -.3225), vec2( .3911, -.3030), vec2( .3255, -.2074), vec2( .2513, -.0338),\n    vec2( .2753,  .0660), vec2( .3159,  .1415), vec2( .3485,  .1585), vec2( .3798,  .1663), vec2( .4114,  .1841), vec2( .4189,  .2119),\n    \n    vec2( .4240,  .2313), vec2( .4046,  .2503), vec2( .3738,  .2729), vec2( .3463,  .3034), vec2( .2622,  .3149), vec2( .2183,  .3624),\n    vec2( .2025,  .3515), vec2( .2064,  .2763), vec2( .1760,  .2200), vec2( .1222,  .1638), vec2(-.0029,  .1504), vec2(-.3013,  .1993),\n    vec2(-.3589,  .2386), vec2(-.3894,  .3087), vec2(-.3850,  .3777), vec2(-.4273,  .4373), vec2(-.4629,  .4355), vec2(-.4795,  .4097),\n    \n    vec2(-.4372,  .3537), vec2(-.4327,  .2703), vec2(-.4004,  .1993)\n);\n#endif\n\n    \n// returns the location of the vertex within the vertex buffer corresponding with the input id \nivec2 fxLocFromIDInternal(int width, int id)\n{\n    return ivec2(id % width, id / width);\n}\n\n#define fxLocFromID(X, Y) fxLocFromIDInternal(int(iResolution.x), X)\n\n// get the vertex corresponding to the input id\nvec2 fxGetVertexImpl(sampler2D sampler, int resolutionWidth, int id)\n{\n    return texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id), 0).xy;\n}\n\nvec4 fxSaveVertex(vec2 v)\n{    \n    return vec4(v, 0, 0);\n}\n\n#define fxGetVertex(X) fxGetVertexImpl(iChannel0, int(iResolution.x), X)\n\n// user actions\n#define ACTION_NONE 0\n#define ACTION_DRAG 1\n#define ACTION_DELETE 2\n#define ACTION_ADD 3\n#define ACTION_SELECT 4\n\n// persistent state (managed in buffer B)\nstruct fxState\n{\n    uvec4 selectedVerts;\n    vec2 grabOffset;\n    vec2 lastMouse;\n    int grabAction;\n    int numVerts;\n    bool renderVerts;\n    bool renderPoly;\n};\n\nfxState fxGetStateInternal(sampler2D sampler)\n{\n    vec4 data0 = texelFetch(sampler, ivec2(0), 0);\n    vec4 data1 = texelFetch(sampler, ivec2(0, 1), 0);\n    vec4 data2 = texelFetch(sampler, ivec2(0, 2), 0);\n    \n    fxState state;\n    state.selectedVerts = floatBitsToUint(data0);\n    state.grabOffset = data1.xy;\n    state.grabAction = int(data1.z);\n    state.renderVerts = data1.w != 0.;\n    state.numVerts = int(data2.x);\n    state.lastMouse = data2.yz;\n    state.renderPoly = data2.w != 0.;\n    return state;\n}\n\n#define fxGetState() fxGetStateInternal(iChannel1)\n\nvec4 fxPutState(fxState state, ivec2 ifc)\n{\n    if (ifc == ivec2(0))\n        return vec4(uintBitsToFloat(state.selectedVerts));\n    else if (ifc == ivec2(0, 1))\n        return vec4(state.grabOffset, state.grabAction, state.renderVerts ? 1. : 0.);\n    else\n        return vec4(state.numVerts, state.lastMouse, state.renderPoly ? 1. : 0.);\n}\n\nbool fxIsStatePixel(ivec2 ifc) { return ifc == ivec2(0) || ifc == ivec2(0, 1) || ifc == ivec2(0, 2); }\n\nfloat length2(vec2 v) { return dot(v, v); }\nfloat square(float x) { return x * x; }\n\nfloat fxLinePointDist2(vec2 a, vec2 b, vec2 p, out float h)\n{\n    p -= a, b -= a;\n    h = clamp(dot(p, b) / dot(b, b), 0., 1.);// proj coord on line\n    return length2(p - b * h); // squared dist to segment\n}\n\n#define keyClick(ascii)   ( texelFetch(iChannel3,ivec2(ascii,1),0).x > 0.)\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n// delete vertex\n#define KEY_SHIFT 16\n\n// hide show vertex positions\n#define KEY_SPACE 32\n\n// change selected vertex\n#define KEY_LEFT 37\n#define KEY_RIGHT 39\n\n// delete selected vertex\n#define KEY_DELETE 8\n\n// select all vertices\n#define KEY_A 65\n\n// toggle-select\n#define KEY_ALT 18\n\n// hide polygon\n#define KEY_P 80\n\n// counts the number of bits set to 1 in a uint\nint countBits(uint n)\n{\n    int count = 0;\n    while (n != 0u)\n    {\n        n &= (n - 1u);\n        count++;\n    }\n    return count;\n}\n\n// counts the number of bits set to 1 in a uvec4\nint countBits(uvec4 v)\n{\n    return countBits(v.x) + countBits(v.y) + countBits(v.z) + countBits(v.w);\n}\n\n// computes the highest set bit index in a uint\nint log2int(uint n)\n{\n    int bits = 0;\n\n    if (n > 0xffffu)\n    {\n        n >>= 16u;\n        bits = 16;\n    }\n\n    if (n > 0xffu)\n    {\n        n >>= 8u;\n        bits += 8;\n    }\n\n    if (n > 0xfu)\n    {\n        n >>= 4u;\n        bits += 4;\n    }\n\n    if (n > 0x3u)\n    {\n        n >>= 2u;\n        bits += 2;\n    }\n\n    if (n > 0x1u)\n    {\n        bits += 1;\n    }\n    \n    return bits;\n}\n\nint log2int(uvec4 v)\n{\n    if (v[3] != 0u) return log2int(v[3]) + 96;\n    if (v[2] != 0u) return log2int(v[2]) + 64;\n    if (v[1] != 0u) return log2int(v[1]) + 32;\n    return log2int(v[0]);\n}\n\nbool isUvec4BitSet(uvec4 v, int b)\n{\n    return (v[b/32] & (1u << (b % 32))) != 0u;\n}\n\nuvec4 setUvec4Bit(int b)\n{\n    uvec4 v = uvec4(0);\n    v[b/32] = (1u << (b % 32));\n    return v;\n}\n\n// https://iquilezles.org/articles/distfunctions2d/\nfloat sdBox( in vec2 p, in vec2 b )\n{\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Handle vertex positions\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage(out vec4 O, vec2 u)\n{\n    ivec2 ifc = ivec2(u);\n    int id = ifc.x + ifc.y * int(iResolution.x);\n\n    if (id>=MAX_VERTICES) return;\n\n    vec2 v;\n    if (iFrame == 0)\n    {\n        // init vertices\n        if (id < NUM_INIT_VERTS) v = INIT_VERT_POS_ARRAY[id];\n    }\n    else\n    {\n        fxState state = fxGetState();\n        bool selected = isUvec4BitSet(state.selectedVerts, id);\n        vec2 m = (iMouse.xy - .5*iResolution.xy) / iResolution.y;\n        \n        // support mouse drag and vertex add\n        if (state.grabAction == ACTION_ADD && selected)\n        {\n            v = state.grabOffset + m;\n        }\n        else if (state.grabAction == ACTION_DRAG && selected)\n        {\n            v = fxGetVertex(id) + m - state.lastMouse;\n        }\n        else\n        {\n            if (id > state.numVerts) return;\n            \n            // slide the vertices if we're adding or deleting\n            if (state.grabAction == ACTION_DELETE)\n            {\n                for (int i = 0; i <= id; ++i)\n                    if (isUvec4BitSet(state.selectedVerts, i)) ++id;\n            }\n            else if (state.grabAction == ACTION_ADD)\n            {\n                if (id >= log2int(state.selectedVerts)) --id;\n            }\n            \n            v = fxGetVertex(id);\n        }\n    }\n    \n    O = fxSaveVertex(v);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Management of persistent state data\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage(out vec4 O, vec2 u)\n{\n   \tivec2 ifc = ivec2(u);\n    if (!fxIsStatePixel(ifc)) return;\n    \n    fxState state = fxGetState();\n\n    if (iFrame == 0)\n    {\n        // reset\n        state.selectedVerts = uvec4(0);\n        state.grabOffset = vec2(0);\n        state.grabAction = ACTION_NONE;\n        state.numVerts = NUM_INIT_VERTS;\n        state.renderVerts = true;\n        state.renderPoly = true;\n    }\n    else\n    {\n        if (state.grabAction == ACTION_DELETE)\n        {\n            // recover from delete action\n            state.grabAction = ACTION_NONE;\n            state.selectedVerts = uvec4(0);\n        }\n        \n        if (state.grabAction == ACTION_ADD) state.grabAction = ACTION_DRAG; // convert add into drag\n\n        if (iMouse.z > 0. && (state.grabAction == ACTION_DRAG ||\n                              state.grabAction == ACTION_NONE ||\n                              state.grabAction == ACTION_SELECT))\n        {\n            vec2 m = (iMouse.xy - .5 * iResolution.xy) / iResolution.y;\n            if (state.grabAction == ACTION_SELECT)\n            {\n                // handle rectangle selection\n                vec2 boxCenter = (m + state.grabOffset) * .5,\n                     boxExtents = abs(m - state.grabOffset) * .5;\n                \n                state.selectedVerts = uvec4(0);\n                for (int i = 0; i < state.numVerts; ++i)\n                {\n                    if (sdBox(fxGetVertex(i) - boxCenter, boxExtents) <= MAX_GRAB_DIST) state.selectedVerts |= setUvec4Bit(i);\n                }\n            }\n            else if (iMouse.w > 0.) // new click\n            {\n                int closestEdge = -1; // the edge we are closest to\n                vec2 closestOffset; // the offset from the mouse to the closest point on the closest edge\n\n                for (int i = 0; i < state.numVerts; ++i)\n                {\n                    vec2 v = fxGetVertex(i);\n                    if (length2(m - v) < square(MAX_GRAB_DIST))\n                    {\n                        // we've clicked a vertex\n                        if (keyDown(KEY_SHIFT) && state.numVerts > 2)\n                        {\n                            // handle shift-click (delete)\n                            state.selectedVerts = setUvec4Bit(i);\n                            state.numVerts--;\n                            state.grabAction = ACTION_DELETE;\n                        }\n                        else\n                        {\n                            // handle click-select and drag\n                            bool selected = isUvec4BitSet(state.selectedVerts, i);\n                            state.grabAction = ACTION_DRAG;\n\n                            if (keyDown(KEY_ALT))\n                            {\n                                // handle alt-click (toggle selection)\n                                if (selected)\n                                    state.selectedVerts &= ~setUvec4Bit(i);\n                                else\n                                    state.selectedVerts |= setUvec4Bit(i);\n                            }\n                            else\n                            {\n                                // re-seat selection if clicked vertex was not selected\n                                if (!selected) state.selectedVerts = setUvec4Bit(i);\n                            }\n                        }\n                    }\n\n                    // compute the distance to the closest point on this edge\n                    vec2 nv = fxGetVertex((i + 1) % state.numVerts);\n                    float h, ld2 = fxLinePointDist2(v, nv, m, h);\n                    if (ld2 <= square(MAX_GRAB_DIST))\n                    {\n                        closestEdge = i;\n                        closestOffset = v + (nv - v) * h - m;\n                    }\n                }\n\n                if (state.grabAction == ACTION_NONE &&\n                    closestEdge >= 0 &&\n                    state.numVerts < MAX_VERTICES &&\n                    !keyDown(KEY_SHIFT))\n                {\n                    // if no vertex was clicked, add but an edge was, add a vertex here\n                    state.grabOffset = closestOffset;\n                    state.selectedVerts = setUvec4Bit(closestEdge + 1);\n                    state.numVerts++;\n                    state.grabAction = ACTION_ADD;\n                }\n                \n                if (state.grabAction == ACTION_NONE)\n                {\n                    // missed all verts and edges, start a multi-selection rectangle\n                    state.grabOffset = m;\n                    state.grabAction = ACTION_SELECT;\n                }\n            }\n            \n            state.lastMouse = m;\n        }\n        else\n        {\n            // mouse released...reset action\n            state.grabAction = ACTION_NONE;\n        }\n    }\n    \n    int selVert = log2int(state.selectedVerts); // rotate selected vert\n    if (keyClick(KEY_LEFT)) state.selectedVerts = setUvec4Bit((selVert + state.numVerts - 1) % state.numVerts);\n    if (keyClick(KEY_RIGHT)) state.selectedVerts = setUvec4Bit((selVert + 1) % state.numVerts);\n    if (keyClick(KEY_DELETE))\n    {\n        int vertsToDelete = countBits(state.selectedVerts);\n        if (state.numVerts - vertsToDelete > 1)\n        {\n            state.grabAction = ACTION_DELETE; // delete selected vert\n            state.numVerts -= vertsToDelete;\n        }\n    }\n    if (keyClick(KEY_A)) state.selectedVerts = uvec4(-1u); // select all\n    if (keyClick(KEY_SPACE)) state.renderVerts = !state.renderVerts; // hide/show verts\n    if (keyClick(KEY_P)) state.renderPoly = !state.renderPoly; // hide/show verts\n\n    O = fxPutState(state, ifc);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

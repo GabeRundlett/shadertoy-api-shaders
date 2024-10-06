@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1669220680",
+            "description": "Left : total number of fbm loops executed during the whole raymarching\nBlue (low values) to Red (high values)\nSlide the panel with the mouse !",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "msXSR2",
+            "likes": 32,
+            "name": "Even faster fbm terrain gen.",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "terrain",
+                "fast",
+                "gradient",
+                "planet",
+                "fog",
+                "performance",
+                "optimization",
+                "quick",
+                "computation",
+                "tips",
+                "techniques"
+            ],
+            "usePreview": 0,
+            "username": "kishimisu",
+            "viewed": 657
+        },
+        "renderpass": [
+            {
+                "code": "/* A new attempt at fast fbm terrain raymarching  \n   combining multiple techniques I've learned so far:\n   \n   - Break the fbm loop early if the point is located above the current noise\n     value to prevent unecessary noise calculations. (BREAK_EARLY) \n     \n   - Increase the minimum distance considered as a surface hit the further\n     away from the camera the point is. (RELAXATION)\n     \n   - Calculate only a smaller amount of fbm layers when raymarching\n     shadows. (SHADOW_FBM_LAYERS)\n     \n   - I also tried to use a simpler and faster noise function as seen in\n     this shader: https://www.shadertoy.com/view/NscGWl. \n     However, the terrain gets sharper so I decided to use a mix of this \n     new noise and value noise: for the first 4 fbm layers (the ones that \n     are computed most frequently), I use this fast noise but for the \n     later layers I use value noise. This is a good compromise\n     between performance and nice terrain shape. (FAST_LAYERS)\n     \n   - Finally I added a visual improvement thanks to @Dave_Hoskins's comment,\n     the step size for the normal calculation increases with the distance in\n     order to reduce aliasing artefacts (REDUCE_ALIASING)\n     \n   Left panel: total number of fbm loops executed during the whole raymarching\n   (blue: low values, red: high values). Slide with the mouse.\n*/\n\n// Set to 0 to disable all optimizations (except FAST_LAYERS that changes the terrain)\n// On my machine the improvement is pretty huge, 40fps vs 20fps.\n\n#define OPTIMIZE 1       // <-- Change this to compare the performances\n\n// Total number of fbm layers\n// Increase this to make your fps drop\n\n#define FBM_LAYERS 10\n\n// Number of layers that will use the fast noise function\n// instead of value noise (in addition to the first layer)\n\n#define FAST_LAYERS 3\n\n// Visual improvement only: reduce aliasing in the distance\n\n#define REDUCE_ALIASING 1\n\n#if OPTIMIZE\n    // Break out of the fbm loop when possible\n    #define BREAK_EARLY       1\n    // Number of layers computed while raymarching shadows\n    #define SHADOW_FBM_LAYERS 5\n    // Min. Surface distance increase\n    #define RELAXATION        0.2\n#else\n    // Default parameters (no optimization)\n    #define BREAK_EARLY       0\n    #define SHADOW_FBM_LAYERS FBM_LAYERS\n    #define RELAXATION        0.\n#endif\n\nfloat total_fbm_loop_count = 0.; \n\nfloat fastnoise2(vec2 p) {\n    return (sin(p.x)-cos(p.y))*.5+.5;\n}\n\nfloat fbm(vec2 p, float h, int layers) {\n    float n = fastnoise2(p); // The first layer is calculated with fast noise\n    float a = 1.;\n    \n    for (int i = 0; i < layers; i++) {\n#if BREAK_EARLY  \n        if (h > n + a*2.) break; // Break early if the point is above the noise\n#endif \n        \n        p *= 2.; a *= .5;\n        total_fbm_loop_count++;\n   \n        if (i < FAST_LAYERS) // Fast calculations for the first layers\n            n -= a*abs(fastnoise2(p)-n);\n        else                 // Value noise for the last layers\n            n -= a*noise2(p);      \n    } \n    \n    return n;\n}\n\nfloat map(vec3 p, int layers) {\n    p.y *= .8;\n    p.y -= .6;\n    float terrain = p.y - fbm(p.xz*.5, p.y, layers);\n    \n    return terrain;\n}\n\n#define MAX_ITERATIONS 100.\n#define MAX_DISTANCE 100.\n#define EPSILON 0.001\n\nvec3 getNormal(vec3 p, float d) {\n    vec2 e = vec2(1.0,-1.0)*0.5773*0.0025;\n    \n#if REDUCE_ALIASING\n    e *= d; // Increase the step size with the distance to reduce aliasing\n#endif\n\n    return normalize(e.xyy*map(p + e.xyy, FBM_LAYERS) + e.yyx*map(p + e.yyx, FBM_LAYERS) + \n\t\t\t\t\t e.yxy*map(p + e.yxy, FBM_LAYERS) + e.xxx*map(p + e.xxx, FBM_LAYERS));\n}\n\nfloat getShadow(vec3 ro, vec3 rd, float maxt) {\n    float t = 0.1, res = 1., k = 10.;\n    for (float i = 0.; i < MAX_ITERATIONS; i++) {\n        vec3 p = ro + t*rd;\n        // Use a smaller number of fbm terrain layers for the shadow\n        float d = map(p, SHADOW_FBM_LAYERS);\n        res = min(res, k*d/t);\n        t += d*1.;\n        if (t > maxt) return res;\n        if (d < EPSILON) return 0.;\n    }\n    return 0.;\n}\n\n#define rot(a) mat2(cos(a), -sin(a), sin(a), cos(a))\nvoid initRayOriginAndDirection(vec2 uv, inout vec3 ro, inout vec3 rd) {\n    vec2 m = iMouse.z == 0. ? vec2(.5) : iMouse.xy/iResolution.xy*2.-1.; \n    ro = vec3(0., 3., 3.);\n    ro.zx *= rot(iTime*.1); \n    vec3 f = normalize(vec3(0.,1.,0.)-ro), r = normalize(cross(vec3(0,1,0), f));\n    rd = normalize(f + uv.x*r + uv.y*cross(f, r));\n}\n\nvoid mainImage(out vec4 O, in vec2 F) {\n    vec2 uv = (2.*F - iResolution.xy)/iResolution.y;\n    vec3 p, ro, rd, col = vec3(1.);\n    float t = 0., d;\n\n    initRayOriginAndDirection(uv, ro, rd);\n        \n    for (float i = 0.; i < MAX_ITERATIONS; i++) {\n        p = ro + t*rd;\n        d = map(p, FBM_LAYERS);\n        t += d > 0. ? d*.9 : d*.2;\n        // EPSILON is the minimum surface distance considered as a hit.\n        // We increase it the further away as we don't need as much details\n        if (abs(d) < EPSILON*(1. + t*RELAXATION) || t > MAX_DISTANCE) break;\n    }\n    \n    float phi = 0.32 * 6.28, the = -0.00 * 3.14 + 1.27;\n    vec3 lightDir = normalize(vec3(sin(the)*sin(phi), cos(the), sin(the)*cos(phi)));\n    vec3 skyColor = vec3(1.2,.8,.3);\n    \n    if (t < MAX_DISTANCE) {\n        vec3 n = getNormal(p - rd*EPSILON*4., t);\n        float sunLight    = max(.0, dot(n, lightDir));\n        float sunShadow   = max(.0, getShadow(p + n*EPSILON*4., lightDir, MAX_DISTANCE));\n        float skyLight    = max(.0, n.y);\n        float bounceLight = max(.0, dot(n, -lightDir));\n        float spec        = max(.0, dot((rd + n)/2., lightDir));\n        \n        col *= 1.0*vec3(1.,1.,.8) * sunLight * sunShadow;\n        col += 0.1*skyColor * skyLight;\n        col += 0.1*vec3(.4,.2,0.) * bounceLight;\n        col += 0.8*vec3(1.)*pow(spec, 4.);\n    }\n         \n    float groundFog = min(.5-ro.y/rd.y, t) - (0.1-ro.y)/rd.y;\n    if (groundFog > 0.) {\n        col = mix(vec3(1.,.8,.6), col, exp(-groundFog));\n    }\n    \n    vec3 fog = exp2(-t*0.05*vec3(1,1.8,4)); \n    col = mix(clamp(skyColor - vec3(1.,1.5,2.)*abs(rd.y)*.7, vec3(0.), vec3(1.)), col, fog);   \n    \n    col = pow(col, vec3(.4545));\n    \n    float mp = iMouse.z == 0. ? -smoothstep(0., 3., iTime)*.6+cos(iTime*3.)*.04 : 3.55*(iMouse.x/iResolution.x-.5);\n    if (uv.x < mp) col = palette(0.014 * total_fbm_loop_count / float(FBM_LAYERS));\n       \n    O = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Value noise - https://www.shadertoy.com/view/lsf3WH\nfloat hash(vec2 p) {\n    p  = 50.0*fract( p*0.3183099 + vec2(0.71,0.113));\n    return fract( p.x*p.y*(p.x+p.y) );\n}\nfloat noise2( in vec2 p ) {\n    vec2 i = floor( p );\n    vec2 f = fract( p );\n\tvec2 u = f*f*(3.0-2.0*f);\n    return mix( mix( hash( i + vec2(0.0,0.0) ), \n                     hash( i + vec2(1.0,0.0) ), u.x),\n                mix( hash( i + vec2(0.0,1.0) ), \n                     hash( i + vec2(1.0,1.0) ), u.x), u.y);\n}\n\n// Heatmap color palette - https://www.shadertoy.com/view/wlGcWG\nvec3 palette( float h ) {\n    vec3 col =    vec3(0.0,0.3,1.0);\n    col = mix(col,vec3(1.0,0.8,0.0),smoothstep(0.33-0.2,0.33+0.2,h));\n    col = mix(col,vec3(1.0,0.0,0.0),smoothstep(0.66-0.2,0.66+0.2,h));\n    col.y += 0.5*(1.0-smoothstep(0.0,0.2,abs(h-0.33)));\n    col *= 0.5 + 0.5*h;\n    return col;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

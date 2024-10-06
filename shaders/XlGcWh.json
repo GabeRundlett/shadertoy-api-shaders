@@ -1,0 +1,85 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1536012335",
+            "description": "These shaders are my implementation of the ray/path tracer described in the book \"Raytracing in one weekend\" by Peter Shirley. I have tried to follow the code from his book as much as possible.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XlGcWh",
+            "likes": 10,
+            "name": "RIOW 1.11: Defocus Blur",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "ray",
+                "tracer",
+                "one",
+                "in",
+                "path",
+                "weekend"
+            ],
+            "usePreview": 0,
+            "username": "reinder",
+            "viewed": 4541
+        },
+        "renderpass": [
+            {
+                "code": "// Raytracing in one weekend, chapter 11: Defocus Blur. Created by Reinder Nijhoff 2018\n// Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/XlGcWh\n//\n// These shaders are my implementation of the raytracer described in the (excellent) \n// book \"Raytracing in one weekend\" [1] by Peter Shirley (@Peter_shirley). I have tried \n// to follow the code from his book as much as possible, but I had to make some changes \n// to get it running in a fragment shader:\n//\n// - There are no classes (and methods) in glsl so I use structs and functions instead. \n//   Inheritance is implemented by adding a type variable to the struct and adding ugly \n//   if/else statements to the (not so overloaded) functions.\n// - The scene description is procedurally implemented in the world_hit function to save\n//   memory.\n// - The color function is implemented using a loop because it is not possible to have a \n//   recursive function call in glsl.\n// - Only one sample per pixel per frame is calculated. Samples of all frames are added \n//   in Buffer A and averaged in the Image tab.\n//\n// You can find the raytracer / pathtracer in Buffer A.\n//\n// = Ray tracing in one week =\n// Chapter  7: Diffuse                           https://www.shadertoy.com/view/llVcDz\n// Chapter  9: Dielectrics                       https://www.shadertoy.com/view/MlVcDz\n// Chapter 11: Defocus blur                      https://www.shadertoy.com/view/XlGcWh\n// Chapter 12: Where next?                       https://www.shadertoy.com/view/XlycWh\n//\n// = Ray tracing: the next week =\n// Chapter  6: Rectangles and lights             https://www.shadertoy.com/view/4tGcWD\n// Chapter  7: Instances                         https://www.shadertoy.com/view/XlGcWD\n// Chapter  8: Volumes                           https://www.shadertoy.com/view/XtyyDD\n// Chapter  9: A Scene Testing All New Features  https://www.shadertoy.com/view/MtycDD\n//\n// [1] http://in1weekend.blogspot.com/2016/01/ray-tracing-in-one-weekend.html\n//\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec4 data = texelFetch(iChannel0, ivec2(fragCoord),0);\n    fragColor = vec4(sqrt(data.rgb/data.w),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Raytracing in one weekend, chapter 11: Defocus Blur. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/XlGcWh\n//\n// These shaders are my implementation of the raytracer described in the (excellent) \n// book \"Raytracing in one weekend\" [1] by Peter Shirley (@Peter_shirley). I have tried \n// to follow the code from his book as much as possible.\n//\n// [1] http://in1weekend.blogspot.com/2016/01/ray-tracing-in-one-weekend.html\n//\n\n#define MAX_FLOAT 1e5\n#define MAX_RECURSION (16+min(0,iFrame))\n\n#define LAMBERTIAN 0\n#define METAL 1\n#define DIELECTRIC 2\n\n//\n// Hash functions by Nimitz:\n// https://www.shadertoy.com/view/Xt3cDn\n//\n\nuint base_hash(uvec2 p) {\n    p = 1103515245U*((p >> 1U)^(p.yx));\n    uint h32 = 1103515245U*((p.x)^(p.y>>3U));\n    return h32^(h32 >> 16);\n}\n\nfloat g_seed = 0.;\n\nfloat hash1(inout float seed) {\n    uint n = base_hash(floatBitsToUint(vec2(seed+=.1,seed+=.1)));\n    return float(n)*(1.0/float(0xffffffffU));\n}\n\nvec2 hash2(inout float seed) {\n    uint n = base_hash(floatBitsToUint(vec2(seed+=.1,seed+=.1)));\n    uvec2 rz = uvec2(n, n*48271U);\n    return vec2(rz.xy & uvec2(0x7fffffffU))/float(0x7fffffff);\n}\n\nvec3 hash3(inout float seed) {\n    uint n = base_hash(floatBitsToUint(vec2(seed+=.1,seed+=.1)));\n    uvec3 rz = uvec3(n, n*16807U, n*48271U);\n    return vec3(rz & uvec3(0x7fffffffU))/float(0x7fffffff);\n}\n\n//\n// Ray trace helper functions\n//\n\nfloat schlick(float cosine, float ior) {\n    float r0 = (1.-ior)/(1.+ior);\n    r0 = r0*r0;\n    return r0 + (1.-r0)*pow((1.-cosine),5.);\n}\n\nbool modified_refract(const in vec3 v, const in vec3 n, const in float ni_over_nt, \n                      out vec3 refracted) {\n    float dt = dot(v, n);\n    float discriminant = 1. - ni_over_nt*ni_over_nt*(1.-dt*dt);\n    if (discriminant > 0.) {\n        refracted = ni_over_nt*(v - n*dt) - n*sqrt(discriminant);\n        return true;\n    } else { \n        return false;\n    }\n}\n\nvec2 random_in_unit_disk(inout float seed) {\n    vec2 h = hash2(seed) * vec2(1.,6.28318530718);\n    float phi = h.y;\n    float r = sqrt(h.x);\n\treturn r * vec2(sin(phi),cos(phi));\n}\n\nvec3 random_in_unit_sphere(inout float seed) {\n    vec3 h = hash3(seed) * vec3(2.,6.28318530718,1.)-vec3(1,0,0);\n    float phi = h.y;\n    float r = pow(h.z, 1./3.);\n\treturn r * vec3(sqrt(1.-h.x*h.x)*vec2(sin(phi),cos(phi)),h.x);\n}\n\n//\n// Ray\n//\n\nstruct ray {\n    vec3 origin, direction;\n};\n\n//\n// Material\n//\n\nstruct material {\n    int type;\n    vec3 albedo;\n    float v;\n};\n\n//\n// Hit record\n//\n\nstruct hit_record {\n    float t;\n    vec3 p, normal;\n    material mat;\n};\n\nbool material_scatter(const in ray r_in, const in hit_record rec, out vec3 attenuation, \n                      out ray scattered) {\n    if(rec.mat.type == LAMBERTIAN) {\n        vec3 rd = normalize(rec.normal + random_in_unit_sphere(g_seed));\n        scattered = ray(rec.p, rd);\n        attenuation = rec.mat.albedo;\n        return true;\n    } else if(rec.mat.type == METAL) {\n        vec3 rd = reflect(r_in.direction, rec.normal);\n        scattered = ray(rec.p, normalize(rd + rec.mat.v*random_in_unit_sphere(g_seed)));\n        attenuation = rec.mat.albedo;\n        return true;\n    } else if(rec.mat.type == DIELECTRIC) {\n        vec3 outward_normal, refracted, \n             reflected = reflect(r_in.direction, rec.normal);\n        float ni_over_nt, reflect_prob, cosine;\n        \n        attenuation = vec3(1);\n        if (dot(r_in.direction, rec.normal) > 0.) {\n            outward_normal = -rec.normal;\n            ni_over_nt = rec.mat.v;\n            cosine = dot(r_in.direction, rec.normal);\n            cosine = sqrt(1. - rec.mat.v*rec.mat.v*(1.-cosine*cosine));\n        } else {\n            outward_normal = rec.normal;\n            ni_over_nt = 1. / rec.mat.v;\n            cosine = -dot(r_in.direction, rec.normal);\n        }\n        \n        if (modified_refract(r_in.direction, outward_normal, ni_over_nt, refracted)) {\n\t        reflect_prob = schlick(cosine, rec.mat.v);\n        } else {\n            reflect_prob = 1.;\n        }\n        \n        if (hash1(g_seed) < reflect_prob) {\n            scattered = ray(rec.p, reflected);\n        } else {\n            scattered = ray(rec.p, refracted);\n        }\n        return true;\n    }\n    return false;\n}\n\n//\n// Hitable, for now this is always a sphere\n//\n\nstruct hitable {\n    vec3 center;\n    float radius;\n};\n\nbool hitable_hit(const in hitable hb, const in ray r, const in float t_min, \n                 const in float t_max, inout hit_record rec) {\n    // always a sphere\n    vec3 oc = r.origin - hb.center;\n    float b = dot(oc, r.direction);\n    float c = dot(oc, oc) - hb.radius * hb.radius;\n    float discriminant = b * b - c;\n    if (discriminant < 0.0) return false;\n\n\tfloat s = sqrt(discriminant);\n\tfloat t1 = -b - s;\n\tfloat t2 = -b + s;\n\t\n\tfloat t = t1 < t_min ? t2 : t1;\n    if (t < t_max && t > t_min) {\n        rec.t = t;\n        rec.p = r.origin + t*r.direction;\n        rec.normal = (rec.p - hb.center) / hb.radius;\n\t    return true;\n    } else {\n        return false;\n    }\n}\n\n//\n// Camera\n//\n\nstruct camera {\n    vec3 origin, lower_left_corner, horizontal, vertical, u, v, w;\n    float lens_radius;\n};\n\ncamera camera_const(const in vec3 lookfrom, const in vec3 lookat, const in vec3 vup, \n                    const in float vfov, const in float aspect, const in float aperture, \n                    const in float focus_dist) {\n    camera cam;    \n    cam.lens_radius = aperture / 2.;\n    float theta = vfov*3.14159265359/180.;\n    float half_height = tan(theta/2.);\n    float half_width = aspect * half_height;\n    cam.origin = lookfrom;\n    cam.w = normalize(lookfrom - lookat);\n    cam.u = normalize(cross(vup, cam.w));\n    cam.v = cross(cam.w, cam.u);\n    cam.lower_left_corner = cam.origin  - half_width*focus_dist*cam.u -half_height*focus_dist*cam.v - focus_dist*cam.w;\n    cam.horizontal = 2.*half_width*focus_dist*cam.u;\n    cam.vertical = 2.*half_height*focus_dist*cam.v;\n    return cam;\n}\n    \nray camera_get_ray(camera c, vec2 uv) {\n    vec2 rd = c.lens_radius*random_in_unit_disk(g_seed);\n    vec3 offset = c.u * rd.x + c.v * rd.y;\n    return ray(c.origin + offset, \n               normalize(c.lower_left_corner + uv.x*c.horizontal + uv.y*c.vertical - c.origin - offset));\n}\n\n//\n// Color & Scene\n//\n\nbool world_hit(const in ray r, const in float t_min, \n               const in float t_max, out hit_record rec) {\n    rec.t = t_max;\n    bool hit = false;\n    \n\tif (hitable_hit(hitable(vec3(0,0,-1),.5),r,t_min,rec.t,rec))        hit=true,rec.mat=material(LAMBERTIAN,vec3(.1,.2,.5),0.);\n\tif (hitable_hit(hitable(vec3(0,-100.5,-1),100.),r,t_min,rec.t,rec)) hit=true,rec.mat=material(LAMBERTIAN,vec3(.8,.8,0),0.);\n\tif (hitable_hit(hitable(vec3(1,0,-1),.5),r,t_min,rec.t,rec))        hit=true,rec.mat=material(METAL     ,vec3(.8,.6,.2),0.);\n\tif (hitable_hit(hitable(vec3(-1,0,-1),.5),r,t_min,rec.t,rec))       hit=true,rec.mat=material(DIELECTRIC,vec3(0),1.5);\n\tif (hitable_hit(hitable(vec3(-1,0,-1),-.45),r,t_min,rec.t,rec))     hit=true,rec.mat=material(DIELECTRIC,vec3(0),1.5);\n    \n    return hit;\n}\n\nvec3 color(in ray r) {\n    vec3 col = vec3(1);  \n\thit_record rec;\n    \n    for (int i=0; i<MAX_RECURSION; i++) {\n    \tif (world_hit(r, 0.001, MAX_FLOAT, rec)) {\n            ray scattered;\n            vec3 attenuation;\n            if (material_scatter(r, rec, attenuation, scattered)) {\n                col *= attenuation;\n                r = scattered;\n            } else {\n                return vec3(0);\n            }\n\t    } else {\n            float t = .5*r.direction.y + .5;\n            col *= mix(vec3(1),vec3(.5,.7,1), t);\n            return col;\n    \t}\n    }\n    return vec3(0);\n}\n\n//\n// Main\n//\n\nvoid mainImage( out vec4 frag_color, in vec2 frag_coord ) {\n    if (ivec2(frag_coord) == ivec2(0)) {\n        frag_color = iResolution.xyxy;\n    } else {\n        g_seed = float(base_hash(floatBitsToUint(frag_coord)))/float(0xffffffffU)+iTime;\n\n        vec2 uv = (frag_coord + hash2(g_seed))/iResolution.xy;\n        float aspect = iResolution.x/iResolution.y;\n        vec3 lookfrom = vec3(3,3,2);\n        vec3 lookat = vec3(0,0,-1);\n        \n        camera cam = camera_const(lookfrom, lookat, vec3(0,1,0), 20., aspect, 2., distance(lookfrom,lookat));\n        ray r = camera_get_ray(cam, uv);\n        vec3 col = color(r);\n        \n        if (texelFetch(iChannel0, ivec2(0),0).xy == iResolution.xy) {        \n\t        frag_color = vec4(col,1) + texelFetch(iChannel0, ivec2(frag_coord), 0);\n        } else {        \n\t        frag_color = vec4(col,1);\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

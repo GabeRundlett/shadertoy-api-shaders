@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587807672",
+            "description": "Third step towards building a renderer for https://youtu.be/BtYKDamqo2I?t=334\nMouse click/drag to adjust focal distance.\n\nStep one: https://www.shadertoy.com/view/td2cDy\nStep two: https://www.shadertoy.com/view/tsjyWV",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wdXfzN",
+            "likes": 5,
+            "name": "Glitter Depth of Field",
+            "published": 3,
+            "tags": [
+                "dof",
+                "glitter"
+            ],
+            "usePreview": 0,
+            "username": "qwert33",
+            "viewed": 651
+        },
+        "renderpass": [
+            {
+                "code": "\n\nfloat focalPlane; // along the z-axis\n\n#define TAU 6.28318530718\n#define PI TAU/2.\n\nfloat hash13(in vec3 p) {\n    /*\n\tp  = fract(p * .103177);\n    p += dot(p, p.yzx + 1.91979);\n    return fract((p.x + p.y) * p.z);\n\t*/\n    // This hash is slightly cheaper.\n    return fract(sin(dot(p, vec3(12.9898,78.233,7.279237))) * 43758.5453);\n}\n\n// How many cells around the central_cell we check for ellipses.\n#define SAMPLE_RADIUS 2\nconst float num_layers = 50.;\nconst float depth_of_field = 30.; // the distance between in-focus and having a blurRadius of 1.\n\n/*\n// Debugging things.\nconst vec3 default_debug = vec3(-100, -20, -10);\nconst vec3 orange = vec3(1., .5, 0.);\nconst vec3 cornflowerblue = vec3(100./255., 149./255., 237./255.);\nvec3 debug = default_debug;\n*/\n\nfloat monochrome(vec2 uv) {\n    \n    const float cell_wd = 6.0;\n    vec2 central_cell_center = floor((uv+.5*cell_wd) / cell_wd) * cell_wd;\n    \n\tfloat hashTime = iTime + 100.;  // Don't want thing to be synchonous when the shader starts    \n    \n    float acc = 0.;\n    // Painters algorithm.\n    for (float z = 1.0; z>=-0.001; z -= 1./num_layers) {\n        vec2 shifted_central_cell_center = central_cell_center + cell_wd * vec2(\n            hash13(vec3(10.2, 1.13, z)),\n            hash13(vec3(20.3, 2.34, z))\n        );\n        \n        int j;\n        for (int i = -SAMPLE_RADIUS; i<=SAMPLE_RADIUS; ++i) {\n            for (j = -SAMPLE_RADIUS; j<=SAMPLE_RADIUS; ++j) {\n                vec2 cell_center = shifted_central_cell_center + cell_wd*vec2(ivec2(i,j));\n              \t//cell_center = round(cell_center);\n                //cell_center = round(cell_center);\n\n                float hash_z = 10. * z;\n                vec2 cell_hash_pos = cell_center + vec2(1030., 0);\n                float blurRadius = depth_of_field*abs((z+.5*hash13(vec3(cell_hash_pos, ++hash_z))) - focalPlane);\n\n                float yaw = .1*hashTime + TAU * hash13(vec3(cell_hash_pos, ++hash_z));\n                float angular_speed = 3. + hash13(vec3(cell_hash_pos, ++hash_z));\n                vec2 angular_vel = angular_speed * vec2(cos(yaw), sin(yaw));\n                float pitch = length(angular_vel) * hashTime * 0.6;\n                vec2 a = normalize(angular_vel);  // axis of rotation - major axis of projected ellipse.\n                //vec2 b = vec2(-a.y, a.x) * cos(pitch);  // minor axis\n                vec2 ab = vec2(1., abs(cos(pitch)));\n                vec2 extended_ab = ab + vec2(blurRadius);\n\n                mat2 rot = mat2(a.x, -a.y,\n                                a.y, a.x);\n\n                vec3 normal = vec3(0.0, sin(pitch), cos(pitch));\n                mat3 rot3 = mat3(a.x, -a.y, 0.,\n                                 a.y, a.x, 0.,\n                                 0., 0., 1.);\n                normal = rot3 * normal;\n                const vec3 LIGHT_DIR = normalize(vec3(1.5, -1.0, 2.0));\n                float light_per_area = \n                    .2 + // ambient\n                    100.0 * smoothstep(.98, .99, abs(dot(normal, LIGHT_DIR)));  // cheap (wrong-ish) specular\n                float total_light = light_per_area * ab.x * ab.y;  // total amount of light emitted by this object towards all pixels.\n                // Have a random offset from the cell_center.\n                vec2 ellipse_center = cell_center + (.5*cell_wd - ab.x) * vec2(\n                    sin(hashTime * (.01 + .06*hash13(vec3(cell_hash_pos, ++hash_z)))),\n                    cos(hashTime * (.01 + .06*hash13(vec3(cell_hash_pos, ++hash_z))))\n                );\n                vec2 ellipse_uv = uv - ellipse_center;   \n\n                //float sd = sdEllipse(transpose(rot)*inner_uv, extended_ab);\n                //float sd = sdEllipsoidApproximated(transpose(rot)*inner_uv, extended_ab);\n                float sd = length(rot*ellipse_uv / extended_ab) - 1.;  // Signed distance approximation only accurate for values near zero.\n                float proportional_area = extended_ab.x * extended_ab.y;\n                float edge_blurryness = 0.1/length(extended_ab);\n                float is_in_ellipse = smoothstep(edge_blurryness, -edge_blurryness, sd);\n                \n                \n                float opacity = is_in_ellipse * ab.x / extended_ab.x;\n                //acc = mix(acc, total_light / proportional_area, opacity);\n                //if (opacity > .9) debug=orange;\n                acc *= 1.-(opacity*opacity*opacity*opacity*opacity);  // haax to allow dark in-focus objects in front of blurry backgrounds.\n                acc += opacity * total_light / proportional_area;\n            }\n        }\n    }\n\treturn acc;\n}\n\nvec2 project(vec2 pixel) {\n    vec2 uv = pixel/iResolution.xy - vec2(0.5);\n    uv.x *= iResolution.x / iResolution.y;\n    return uv *50.;\n}\n\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n    focalPlane = (iMouse.xy == vec2(0.))? .7 : iMouse.x/iResolution.x;\n    vec3 light = vec3(.1,.2,.9) * monochrome(project(fragCoord));\n    light = 1. - exp(-2. * light); // Simulate exposure\n    fragColor = vec4(light, 1.0);\n    //if (debug != default_debug) fragColor.rgb = debug;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

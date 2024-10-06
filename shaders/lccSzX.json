@@ -1,0 +1,94 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1714347728",
+            "description": "A material that do light bending, wow !\nstill with a lambert BRDF tho.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lccSzX",
+            "likes": 6,
+            "name": "A light bending Material",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "raymarching",
+                "light",
+                "pathtracing",
+                "box",
+                "blackhole",
+                "cornell",
+                "fluorescent"
+            ],
+            "usePreview": 0,
+            "username": "Cewein",
+            "viewed": 305
+        },
+        "renderpass": [
+            {
+                "code": "// Shader made by Maximilien \"Cewein\", Feel free to use it as long as you reference it\n// Actual code is in Buffer A\n//                                                                           \n// \n///////////////////\n//\n// This shader define a ligth bending material, this could be apply to any signed distance field.\n// it require the computation of the distance field and the \"normal\" at each step of the raymarching\n// algorithm therefore is migth be intence in computation\n//\n// A paper will follow the finding here.\n//\n// Version 1.0 - 28/04/2024\n//\n///////////////////\n//\n// Possible improvement :\n// - better controle over the ligth bending\n// - could denoising even work here ?\n// - better sampling ?\n// - find why there is an artefact\n//\n\n\n///// TONEMAPPING OPERATION /////\n\n// linear white point\nconst float W = 1.2;\n\nfloat reinhard_curve (float x) {\n\treturn x / (1.0 + x);\n}\n\nvec3 reinhard(vec3 x) {\n    float w = reinhard_curve(W);\n    return vec3(\n        reinhard_curve(x.r),\n        reinhard_curve(x.g),\n        reinhard_curve(x.b)) / w;\n}\n\n///// MAIN IMAGE /////\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n\n    vec3 col = texture( iChannel0, uv ).xyz;\n    col /= texture( iChannel0, uv ).w;\n\n    //tone mapping\n    col = reinhard(col);\n\n    \n    fragColor = vec4(col, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI atan(1.0)*4.0\n\n///// COMMUN /////\n\nfloat saturate (float x)\n{\n    return min(1.0, max(0.0,x));\n}\nvec3 saturate (vec3 x)\n{\n    return min(vec3(1.,1.,1.), max(vec3(0.,0.,0.),x));\n}\n\nmat2 rot(in float a)\n{\n    a *= 0.0174533;\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, -s, s, c);\n}\n\n///// STRUCT /////\n\nstruct hitPayload\n{\n    vec3 orig;\n    vec3 hitPos;\n    vec3 dir;\n    vec3 normal;\n    int matIndex;\n    int nbStep;\n    float dist;\n    float totalDist;\n};\n\nstruct material\n{\n    vec3 albedo;\n    float metalness;\n    float roughness;\n    float IOR;\n};\n\n///// SPECTRAL TO RGB /////\n\n// --- Spectral Zucconi --------------------------------------------\n// By Alan Zucconi\n// Based on GPU Gems: https://developer.nvidia.com/sites/all/modules/custom/gpugems/books/GPUGems/gpugems_ch08.html\n// But with values optimised to match as close as possible the visible spectrum\n// Fits this: https://commons.wikimedia.org/wiki/File:Linear_visible_spectrum.svg\n// With weighter MSE (RGB weights: 0.3, 0.59, 0.11)\nvec3 bump3y (vec3 x, vec3 yoffset)\n{\n\tvec3 y = vec3(1.,1.,1.) - x * x;\n\ty = saturate(y-yoffset);\n\treturn y;\n}\nvec3 spectral_zucconi (float w)\n{\n    // w: [400, 700]\n\t// x: [0,   1]\n\tfloat x = saturate((w - 400.0)/ 300.0);\n\n\tconst vec3 cs = vec3(3.54541723, 2.86670055, 2.29421995);\n\tconst vec3 xs = vec3(0.69548916, 0.49416934, 0.28269708);\n\tconst vec3 ys = vec3(0.02320775, 0.15936245, 0.53520021);\n\n\treturn bump3y (\tcs * (x - xs), ys);\n}\n\n\n///// SDF FUNCION /////\n\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat sdDeathStar( vec3 p2, float ra, float rb, float d )\n{\n  // sampling independent computations (only depend on shape)\n  float a = (ra*ra - rb*rb + d*d)/(2.0*d);\n  float b = sqrt(max(ra*ra-a*a,0.0));\n\t\n  // sampling dependant computations\n  vec2 p = vec2( p2.x, length(p2.yz) );\n  if( p.x*b-p.y*a > d*max(b-p.y,0.0) )\n    return length(p-vec2(a,b));\n  else\n    return max( (length(p            )-ra),\n               -(length(p-vec2(d,0.0))-rb));\n}\n\nfloat sdRoundedCylinder( vec3 p, float ra, float rb, float h )\n{\n  vec2 d = vec2( length(p.xz)-2.0*ra+rb, abs(p.y) - h );\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0)) - rb;\n}\n\nvec3 opRep( in vec3 p, in vec3 c)\n{\n    return mod(p+0.5*c,c)-0.5*c;\n}\n\nfloat opSmoothSubtraction( float d1, float d2, float k )\n{\n    float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );\n    return mix( d2, -d1, h ) + k*h*(1.0-h);\n}\n\n// Repeat around the origin by a fixed angle.\n// For easier use, num of repetitions is use to specify the angle.\nfloat pModPolar(inout vec2 p, float repetitions) {\n\tfloat angle = 2.0*PI/repetitions;\n\tfloat a = atan(p.y, p.x) + angle/2.;\n\tfloat r = length(p);\n\tfloat c = floor(a/angle);\n\ta = mod(a,angle) - angle/2.;\n\tp = vec2(cos(a), sin(a))*r;\n\t// For an odd number of repetitions, fix cell index of the cell in -x direction\n\t// (cell index would be e.g. -5 and 5 in the two halves of the cell):\n\tif (abs(c) >= (repetitions/2.0)) c = abs(c);\n\treturn c;\n}\n\n///// RANDOM FUNCTION /////\n\n//quick and poor function\nfloat frand(vec2 st)\n{\n    highp float a = 12.9898;\n    highp float b = 78.233;\n    highp float c = 43758.5453;\n    highp float dt= dot(st.xy ,vec2(a,b));\n    highp float sn= mod(dt,3.14);\n    return fract(sin(sn) * c);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\n\n///// SAMPLING FUNCTION ////\n\nvec3 cosineWeightedhemisphereSampling(vec3 normal, vec2 uv)\n{\n    //cosine Weighted hemisphere Sampling\n    float a = 1.0 - 2.0*frand(uv.xy);\n    float b = sqrt(1.0 - a*a);\n    float phi = 2.0*PI*frand(-uv.yx);\n    \n    vec3 dir = vec3(0.0);\n\n    dir.x = normal.x + b*cos(phi);\n    dir.y = normal.y + b*sin(phi);\n    dir.z = normal.z + a;\n    \n    return dir;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define MAX_STEP 200\n#define MAX_DIST 1000.0\n\n\n///// RAY MARCHING FUNCTION /////\n\n// this is where ve define the ligh bending geometry\nvec2 mapLigthBending(vec3 pos)\n{\n    vec3 mpos = pos - vec3(0.0,1.6,0.0);\n    \n    mpos.xy *= rot(-30.0);\n    \n    //outside sphere\n    float dstar = sdDeathStar(mpos,0.8,0.75,1.3);\n    vec2 dm = vec2(dstar,0.5); \n    \n    //little blob sphere\n    float blob = length(mpos - vec3(0.75,0.0,0.0)) - 0.15;\n\n    dm.x = min(dm.x,blob);\n    \n    return dm;\n}\n\n//Map the model for displaying BxDF\nvec2 mapModel(vec3 pos)\n{\n    \n    vec2 dm = mapLigthBending(pos);\n\n    \n    vec3 mpos = pos - vec3(0.0,1.6,0.0);\n    \n    mpos.xy *= rot(-30.0);\n    \n    //interior sphere\n    float interiorSphere = length(mpos) - 0.7;\n    \n    if(dm.x > interiorSphere) dm.y = 3.5;\n    dm.x = min(dm.x,interiorSphere);\n    \n    \n    //baseplate\n    float miniBox = sdBox(pos - vec3(0.0,0.5,2.0), vec3(0.5));\n    miniBox = min(sdBox(pos - vec3(2.0,0.5,0.0), vec3(0.5)),miniBox);\n    miniBox = min(sdBox(pos - vec3(0.0,0.5,-2.0), vec3(0.5)),miniBox);\n    miniBox = min(sdBox(pos - vec3(-2.0,0.5,0.0), vec3(0.5)),miniBox);\n    float roundCyl = sdRoundedCylinder(pos, 1.0, 0.25, 0.25 );\n    \n    float pedestal = opSmoothSubtraction(miniBox, roundCyl, 0.15);\n    \n    \n    if(dm.x > pedestal) dm.y = 1.5;\n    dm.x = min(dm.x,pedestal);\n    \n    mpos = pos;\n    \n    float rep = pModPolar(mpos.xz,15.0);\n    \n    mpos -= vec3(5.0,0.0,0.0);\n    \n    float box = sdBox(mpos, vec3(0.25,1.5,0.25));\n    \n    if(dm.x > box) dm.y = 3.5;\n    dm.x = min(dm.x,box);\n    \n    return dm;\n}\n\n//Map the whole scene\nvec2 map(vec3 pos)\n{\n    vec2 dm = vec2(0.0,1.5);\n    \n    dm = mapModel(pos);\n    \n    float ground = pos.y-0.001;\n    if( dm.x > ground) dm.y = 2.5;\n    dm.x = min(dm.x,ground);\n    \n    return dm;\n}\n\nvec3 getLBDirection(vec3 pos)\n{\n    vec2 e = vec2(1.0,-1.0)*0.0001;\n    return -normalize( e.xyy*mapLigthBending( pos + e.xyy ).x + \n\t\t\t\t\t  e.yyx*mapLigthBending( pos + e.yyx ).x + \n\t\t\t\t\t  e.yxy*mapLigthBending( pos + e.yxy ).x + \n\t\t\t\t\t  e.xxx*mapLigthBending( pos + e.xxx ).x );\n}\n\n// Raymarching loop to trace the path of a ray in the scene\nhitPayload trace(hitPayload p) {\n    // Initialize ray distance\n    p.dist = 0.0;\n    p.totalDist = 0.0;\n\n\n    // Iterate through a fixed number of steps\n    for (int i = 0; i < MAX_STEP; i++) {\n        // Calculate position along the ray\n        p.hitPos = p.orig + p.dist * p.dir;\n        \n        // Get distance to nearest object and debugging information\n        vec2 tmp = map(p.hitPos);\n        vec2 tmpLB = mapLigthBending(p.hitPos);\n        \n        // If ray is very close to an object, return hitPayload\n        if (tmp.x < 0.0001)\n            return p;\n            \n        vec3 LBD = getLBDirection(p.hitPos);\n        \n        p.orig = p.hitPos;\n        p.dir = mix(p.dir,LBD,smoothstep(1.0,-8.0,tmpLB.x));\n        p.dir = normalize(p.dir);\n        \n        // Update hitPayload with current step information\n        p.nbStep = i;\n        p.dist = tmp.x;\n        p.totalDist += tmp.x;\n        p.matIndex = int(tmp.y);\n\n        // Terminate loop if ray travels beyond maximum distance\n        if (p.totalDist > MAX_DIST) {\n            p.matIndex = -1; // Set material to -1 to indicate no intersection\n            break;\n        }\n    }\n    \n    // Return final hitPayload after raymarching\n    return p;\n}\n\n\n///// SHADING FUNCTION /////\n\nvec3 calcNormal(vec3 pos)\n{\n    vec2 e = vec2(1.0,-1.0)*0.00001;\n    return normalize( e.xyy*map( pos + e.xyy ).x + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx ).x + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy ).x + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx ).x );\n}\n\n// Get the maetrial of the scene of the scene\n// To change the material structur go in Commun tab\n// by default the is albedo, IOR, metalness and rougthness\nmaterial getMaterial(hitPayload p)\n{\n    // Calculate base color using sky gradient\n    vec3 color = vec3(1.0) * 1.0;\n    //vec3 color = vec3(0.5, 0.7, 1.0) - max(p.dir.y, 0.0) * 0.75;\n\n    // Initialize material with default values\n    material mat = material(color, 0.0, 1.0, 1.0);\n    \n    //outside of the shpere\n    if(p.matIndex == 0)\n        mat.albedo = vec3(0.0);\n    \n    //base of the model\n    if(p.matIndex == 1)\n        mat.albedo = vec3(1.0,0.35,0.10);\n    \n    //floor\n    if(p.matIndex == 2)\n    {\n    \n        float zoom=.5;  \n        p.hitPos.xz=fract( p.hitPos.xz*zoom)*2.;\n        if(floor(p.hitPos.x)>.5==floor(p.hitPos.z)>.5)\n            mat.albedo = vec3(0.6);\n        else\n            mat.albedo = vec3(0.8);\n    }\n    \n    //inside of the sphere\n    if(p.matIndex == 3)\n    {\n        mat.albedo = vec3(0.4);\n    }\n\n    return mat;\n}\n\n\n///// RENDERING FUNCTION /////\n\nvec3 BRDFLambert(material mat, hitPayload p)\n{\n    //Lambert BRDF : bdrf * dot(n,rd) / pdf;\n    float pdf = dot(p.normal,p.dir)/PI;\n    vec3 brdf = mat.albedo/PI;\n    return brdf * dot(p.normal,p.dir) * (1.0/pdf);\n}\n\nmat4 getInvViewMatrix(vec3 ro, vec3 at)\n{\n    vec3 ww = normalize(at-ro); //front\n    vec3 uu = normalize(cross(ww, vec3(0.0,1.0,0.0))); // rigth;\n    vec3 vv = normalize(cross(uu,ww)); // up;\n    \n    return mat4(uu,0.,\n                vv,0.,\n                -ww,0.,\n                0.,0.,0.,1.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (2.*fragCoord-iResolution.xy - 1.0)/iResolution.y;\n    \n    //jitter\n    uv += (dFdy(uv.x)+dFdy(uv.y)) * hash23(vec3(mod(iTime+1.0,10.0) * uv.x, iTimeDelta*uv.y, float(iFrame)));\n    \n    //init camera\n    float angle = 15.0*iMouse.x/iResolution.x;\n    float height= 2.0*iMouse.y/iResolution.y;\n    \n    //if screen has not been clicked yet\n    if(iMouse.x == 0.0 )\n    {\n        angle = 12.85;\n        height = 0.70;\n\n    }\n    \n    //camera parameter\n    vec3 ro = vec3(3.0 * cos(angle), 4.0*height, 3.0 * sin(angle));\n    vec3 at = vec3(0.0,0.55,0.0);\n    vec3 rd = normalize(getInvViewMatrix(ro,at) * vec4(uv,-1.5,1.0)).xyz;\n    \n    //Using a struct make the code cleaner and\n    //will also shorten many function \n    hitPayload p = hitPayload(\n        ro, //postion aka origin at first\n        ro,\n        rd,\n        vec3(0.0),\n        -1, \n        0,\n        0.0,\n        0.0\n    );\n\n    \n    //global illumination bounces\n    vec3 energy = vec3(1.0);\n    vec3 color = vec3(0.0);\n    float spp = 1.0;\n    vec2 id = vec2(1.0);\n    \n    vec3 hitPos = vec3(0.0);\n    \n    //pathtracing loop\n    for(int i = 0; i <5; i++)\n    {\n        //preform ray-marching\n        p = trace(p);\n        \n        //compute normal and get color\n        p.normal = calcNormal(p.hitPos);\n        material mat = getMaterial(p);\n\n        //lambert BRDF\n        energy = energy * BRDFLambert(mat, p);\n        \n        \n        //bail out early hif it the sky\n        if(p.matIndex < 0)\n        {\n            color = max(vec3(0.0),energy);\n            break;\n        }\n        \n        //compute new bounce\n        p.dir = normalize(cosineWeightedhemisphereSampling(p.normal, uv + iTimeDelta + mod(iTime,30.0)));\n        p.orig = p.hitPos + p.normal*0.0001;\n\n    }\n\n\n    if(iMouse.z < 0.0 || iMouse.x == 0.0)\n    {\n        uv = fragCoord.xy/iResolution.xy;\n        spp += texture( iChannel0, uv ).w;\n        color += texture( iChannel0, uv).xyz;\n    }\n\n    \n    fragColor = vec4(color,spp);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

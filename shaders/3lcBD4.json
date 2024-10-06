@@ -1,0 +1,173 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1612706849",
+            "description": "Demonstration of cascaded separable blur, a type of blur that gets exponentially thicker with each cascade. A \"cascade\" is doing a 3x3 average and the result is fed into the next \"cascade\" which is doing the same thing, but with a wider sampling radius.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3lcBD4",
+            "likes": 3,
+            "name": "Fast Cascaded Separable Blur",
+            "published": 3,
+            "tags": [
+                "blur",
+                "fast",
+                "separable"
+            ],
+            "usePreview": 0,
+            "username": "spawner64",
+            "viewed": 507
+        },
+        "renderpass": [
+            {
+                "code": "// Fast Cascaded Separable Blur\n//\n// Demonstration of cascaded separable blur, a type of blur that gets exponentially thicker with each cascade.\n// A \"cascade\" is doing a 3 x 3 average per pixel (implemented as separable is just 6 samples per pixel) and the\n// result is fed into the next \"cascade\" which is doing the same 3 x 3 average per pixel, but with a wider\n// sampling radius (3 multiplied by radius of last cascade).\n//\n// Why / how does it work?\n//\n// First cascade is gathering 3 x 3 pixels on a radius of 1, so the actual neighbour pixels. Implemented as\n// separable 2-pass x & y blur, we can get the same result for 3 + 3 = 6 samples.\n//\n// The second cascade is gathering 3 x 3 pixels on a radius of 3 (last cascade radius * 3), but the pixels it\n// averages are themselves a 3 x 3 average (from first cascade), therefore the result is similar to performing\n// a 9x9 average on a go or a 2-pass 9 + 9 = 18 samples. However, until now we've used only 6 + 6 samples, so\n// 12 samples in total and got the result of a 2-pass 9 + 9 samples average. 12 vs 18 is surely an improvement,\n// but not that much at this point.\n//\n// The third cascade is also gathering 3 x 3 pixels, but on a radius of 9 (last cascade radius * 3), but the\n// pixels it averages are themselves 3 x 3 average (first cascade) of 3 x 3 average (second cascade), therefore\n// the result is similar with performing a 27 x 27 average in one go or a 2-pass 27 + 27 = 54 samples separable\n// blur. However, keep in mind that so far we've been using 3 cascades * 6 samples per cascade = 18 samples and got\n// the same result as performing a 54 samples average. 54 / 18 = 3X faster. It gets better.\n//\n// Cascade 4:\n// Another 3 + 3 samples for a total 4 cascades * 6 samples per cascade = 24 samples so far.\n// Equivalent to:\n// - Direct convolution: 81 x 81 samples.\n// - Separable x & y blur: 81 + 81 = 162 samples.\n// Performance ratio: 162 / 24 = 6.75X.\n//\n// Cascade 5:\n// Another 3 + 3 samples for a total 5 cascades * 6 samples per cascade = 30 samples so far.\n// Equivalent to:\n// - Direct convolution: 243 x 243 samples.\n// - Separable x & y blur: 243 + 243 = 486 samples.\n// Performance ratio: 486 / 30 = 16.2X!\n//\n// We don't have enough buffers to continue the cascading, but if we would keep cascading even further, we would get:\n//\n// Cascade 6:\n// Another 3 + 3 samples for a total 6 cascades * 6 samples per cascade = 36 samples so far.\n// Equivalent to:\n// - Direct convolution: 729 x 729 samples.\n// - Separable x & y blur: 729 + 729 = 1458 samples.\n// Performance ratio: 1458 / 36 = 40.5X!!\n//\n// Cascade 7:\n// Another 3 + 3 samples for a total 7 cascades * 6 samples per cascade = 42 samples so far.\n// Equivalent to:\n// - Direct convolution: 2187 x 2187 samples.\n// - Separable x & y blur: 2187 + 2187 = 4374 samples.\n// Performance ratio: 4374 / 42 = 104.1X!!!\n//\n// We're not even going to cascade 8, as it's clear at this point that the thickness of the obtained blur increases\n// exponentially (X3) with every added cascade for a cost of just another 6 samples. Also, the performance ratio to regular\n// 2-pass separable x & y blur is increasing exponentially.\n//\n// Here's an overview:\n//\n// +-----------+------------------------+-----------------------------------+-------------------+\n// | Cascade # | Total Cascaded Samples | Equivalent Separable Blur Samples | Performance Ratio |\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         1 +                      6 +                                 6 +            1.00 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         2 +                     12 +                                18 +            1.50 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         3 +                     18 +                                54 +            3.00 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         4 +                     24 +                               162 +            6.75 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         5 +                     30 +                               486 +           16.20 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         6 +                     36 +                              1458 +           40.50 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         7 +                     42 +                              4374 +          104.14 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n// |         8 +                     48 +                             13122 +          273.37 X +\n// +-----------+------------------------+-----------------------------------+-------------------+\n//\n// Conclusion:\n//\n// With the proposed blur solution, the cost increases linearly (num_cascades * 6 samples), but the thickness of the\n// blur increases exponentially (3 ^ num_cascades).\n//\n// The resulting blur is indeed a box blur, but since it's so cheap, the entire process can be repeated. However, since\n// a second run will result in even thicker blur, it's likely that a lower number of cascades would be required to reach\n// the same blur thickness. Running the process a third time produces a blur so smooth, that it closely approximates the\n// gaussian blur. Again, since the third run could have even less cascades and given the performance ratio to regular\n// x & y separable blur (104 times faster with 7 cascades), running the process 3 times is still extremely fast.\n//\n// ------------------------------------------------------------------------- //\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenSpaceUV = fragCoord.xy;\n    vec2 normalizedSpaceUV = screenSpaceUV / iResolution.xy;\n    vec2 texelSize = 1.0 / iResolution.xy;\n    float blurSize = BLUR_ANIMATION_FUNCTION(iTime);\n    vec3 col = vec3(0);\n    if (normalizedSpaceUV.x > 0.5) {\n        col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_3 * blurSize); // simulates less cascades for a smoother blur\n    } else {\n        col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_5 * blurSize);\n    }\n    fragColor = vec4(col, 1.0);\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ------------------------------------------------------------------------- //\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenSpaceUV = fragCoord.xy;\n    vec2 normalizedSpaceUV = screenSpaceUV / iResolution.xy;\n    vec2 texelSize = 1.0 / iResolution.xy;\n    float blurSize = BLUR_ANIMATION_FUNCTION(iTime);\n    vec3 col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_1 * blurSize);\n    fragColor = vec4(col, 1.0);\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 29,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/3405e48f74815c7baa49133bdc835142948381fbe003ad2f12f5087715731153.ogv"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ------------------------------------------------------------------------- //\n\n#define PI     (3.14159265359)\n#define TWO_PI (6.28318530718)\n\n// ------------------------------------------------------------------------- //\n\n#define SAMPLE_RGBA(sampler, coord) (texture((sampler), (coord)))\n#define SAMPLE_RGB(sampler, coord) (SAMPLE_RGBA((sampler), (coord)).rgb)\n\n// ------------------------------------------------------------------------- //\n\n#define BLUR_SIZE_CASCADE_1 (1.0)   // 3 ^ 0\n#define BLUR_SIZE_CASCADE_2 (3.0)   // 3 ^ 1\n#define BLUR_SIZE_CASCADE_3 (9.0)   // 3 ^ 2\n#define BLUR_SIZE_CASCADE_4 (27.0)  // 3 ^ 3\n#define BLUR_SIZE_CASCADE_5 (81.0)  // 3 ^ 4\n// #define BLUR_SIZE_CASCADE_6 (243.0) // 3 ^ 5\n// ...\n// ...\n// #define BLUR_SIZE_CASCADE_N (3 ^ (N - 1)) // 3 ^ (N - 1)\n\n// ------------------------------------------------------------------------- //\n\n// CONFIGURABLE\n#define BLUR_ANIMATION_FREQUENCY (0.25)\n\n// CONFIGURABLE\n//#define BLUR_ANIMATION_FUNCTION(time) (getAnimatedBlurSizeLinear(time))\n#define BLUR_ANIMATION_FUNCTION(time) (getAnimatedBlurSizeSmooth(time))\n//#define BLUR_ANIMATION_FUNCTION(time) (getAnimatedBlurSizeSmoother(time))\n//#define BLUR_ANIMATION_FUNCTION(time) (getAnimatedBlurSizeSmoothest(time))\n\n// ------------------------------------------------------------------------- //\n\nvec4 floatToColor(float value) {\n    return vec4(value, value, value, 1.0);\n}\n\n// ------------------------------------------------------------------------- //\n\nvec3 sample3x3RGB(sampler2D sampler, vec2 normalizedSpaceUV, vec2 texelSize) {\n    // 3x3 convolution (average)\n    // can be implemented as separable with an extra buffer for a total of 6 samples instead of 9\n\n    vec3 result = vec3(0);\n\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(-texelSize.x, -texelSize.y));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(-texelSize.x,  0.0        ));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(-texelSize.x, +texelSize.y));\n\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2( 0.0        , -texelSize.y));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2( 0.0        ,  0.0        ));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2( 0.0        , +texelSize.y));\n\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(+texelSize.x, -texelSize.y));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(+texelSize.x,  0.0        ));\n    result += SAMPLE_RGB(sampler, normalizedSpaceUV + vec2(+texelSize.x, +texelSize.y));\n\n    result *= 0.111111111; // 1.0 / 9.0\n\n    return result;\n}\n\n// ------------------------------------------------------------------------- //\n\nfloat getSineTangentSpace(float frequency, float time) {\n    return sin(time * frequency * TWO_PI);\n}\n\nfloat getSineUnitSpace(float frequency, float time) {\n    return getSineTangentSpace(frequency, time) * 0.5 + 0.5;\n}\n\n// ------------------------------------------------------------------------- //\n\nfloat getAnimatedBlurSizeLinear(float time) {\n    return getSineUnitSpace(BLUR_ANIMATION_FREQUENCY, time);\n}\n\nfloat getAnimatedBlurSizeSmooth(float time) {\n    return smoothstep(0.0, 1.0, getAnimatedBlurSizeLinear(time));\n}\n\nfloat getAnimatedBlurSizeSmoother(float time) {\n    return smoothstep(0.0, 1.0, getAnimatedBlurSizeSmooth(time));\n}\n\nfloat getAnimatedBlurSizeSmoothest(float time) {\n    return smoothstep(0.0, 1.0, getAnimatedBlurSizeSmoother(time));\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ------------------------------------------------------------------------- //\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenSpaceUV = fragCoord.xy;\n    vec2 normalizedSpaceUV = screenSpaceUV / iResolution.xy;\n    vec2 texelSize = 1.0 / iResolution.xy;\n    float blurSize = BLUR_ANIMATION_FUNCTION(iTime);\n    vec3 col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_2 * blurSize);\n    fragColor = vec4(col, 1.0);\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ------------------------------------------------------------------------- //\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenSpaceUV = fragCoord.xy;\n    vec2 normalizedSpaceUV = screenSpaceUV / iResolution.xy;\n    vec2 texelSize = 1.0 / iResolution.xy;\n    float blurSize = BLUR_ANIMATION_FUNCTION(iTime);\n    vec3 col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_3 * blurSize);\n    fragColor = vec4(col, 1.0);\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ------------------------------------------------------------------------- //\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenSpaceUV = fragCoord.xy;\n    vec2 normalizedSpaceUV = screenSpaceUV / iResolution.xy;\n    vec2 texelSize = 1.0 / iResolution.xy;\n    float blurSize = BLUR_ANIMATION_FUNCTION(iTime);\n    vec3 col = sample3x3RGB(iChannel0, normalizedSpaceUV, texelSize * BLUR_SIZE_CASCADE_4 * blurSize);\n    fragColor = vec4(col, 1.0);\n}\n\n// ------------------------------------------------------------------------- //",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

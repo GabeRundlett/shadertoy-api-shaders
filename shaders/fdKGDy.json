@@ -1,0 +1,176 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1632119061",
+            "description": "Custom mandelbox by loicvdb. https://shadertoy.com/view/3t3GWH mixed with a nice cube map sky thingy someone kindly made. Luscious colours, thanks whoever you are, I forget",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "fdKGDy",
+            "likes": 19,
+            "name": "Psynthetika",
+            "published": 3,
+            "tags": [
+                "fractal",
+                "gi",
+                "dof",
+                "bloom",
+                "depthoffield",
+                "ao",
+                "mandelbox"
+            ],
+            "usePreview": 0,
+            "username": "xenn",
+            "viewed": 589
+        },
+        "renderpass": [
+            {
+                "code": "\n// Fork of \"Weird mandelbox\" by loicvdb. https://shadertoy.com/view/3t3GWH\n// 2021-06-06 02:02:38\n\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\nvec3 bloom(float scale, float threshold, vec2 fragCoord){\n    float logScale = log2(scale)+1.0;\n    \n    vec3 bloom = vec3(0);\n    for(int y = -1; y <= 1; y++)\n        for(int x = -1; x <= 1; x++)\n            bloom += textureLod(iChannel0, (fragCoord+vec2(x, y) * scale)/iResolution.xy, logScale).rgb;\n    \n    return max(bloom/9.0 - vec3(threshold), vec3(0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    vec3 col = texelFetch(iChannel0, ivec2(fragCoord), 0).rgb;\n    \n    vec3 bloomSum = bloom(.1 * iResolution.y, .9, fragCoord) * .2\n        \t\t  + bloom(.2 * iResolution.y, .5, fragCoord) * .2;\n    \n    fragColor = vec4(ACESFilm(col + bloomSum), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define MaxSteps 64\n#define MaxShadowSteps 16\n#define AmbientLightSteps 8\n#define MaxDist 2.0\n#define MinDist .015\n#define GIStrength .3\n#define AOStrength .52\n\nvec3 CamPos = vec3(0, 0, -17.);\nvec3 CamRot = vec3(0);\nfloat CamFocalLength = 01.5;\n\nvec3 LightDir;\nvec3 LightColor = vec3(.7, .5, .3) * 10.;\nfloat LightRadius = .05;\n\nfloat Scale = 2.25;\nfloat Radius = .25;\nint Iterations = 9;\nmat3 Rotation;\n\nfloat distanceEstimation(vec3 position){\n    position *= Rotation;\n\tvec4 scalevec = vec4(Scale, Scale, Scale, abs(Scale)) / Radius;\n\tfloat C1 = abs(Scale-1.0), C2 = pow(abs(Scale), float(1-Iterations));\n\tvec4 p = vec4(position.xyz, 1.0), p0 = vec4(position.xyz, 1.0);\n\tfor (int i=0; i< Iterations; i++) {\n    \tp.xyz = clamp(p.xyz, -1.0, 1.0) * 2.0 - p.xyz;\n    \tp.xyzw *= clamp(max(Radius/dot(p.xyz, p.xyz), Radius), 0.0, 1.0);\n        if(i < 2) p.xyz *= Rotation;\n    \tp.xyzw = p*scalevec + p0;\n\t}\n\treturn (length(p.xyz) - C1) / p.w - C2;\n}\n\nvec3 normalEstimation(vec3 pos, float dist){\n  vec2 k = vec2(dist, 0);\n  return normalize(vec3(distanceEstimation(pos + k.xyy),\n\t  \t\t\t\t\tdistanceEstimation(pos + k.yxy),\n  \t\t\t\t\t\tdistanceEstimation(pos + k.yyx))\n\t\t\t\t - vec3(dist));\n}\nvec3 normalEstimation(vec3 pos){\n  float dist = distanceEstimation(pos);\n  return normalEstimation(pos, dist);\n}\n\nvec3 backgroundColor(vec3 dir){\n    return texture(iChannel0, dir).rgb;\n}\n\n//blurred cubemap for ambient lighting\nvec3 backgroundColorHemi(vec3 dir){\n    return textureLod(iChannel0, dir, 9.5).rgb;\n}\n\nvec3 directLight(vec3 pos, vec3 normal){\n    float dotLight = -dot(normal, LightDir);\n    if(dotLight < 0.0) return vec3(0);\n    vec3 pos0 = pos;\n    float minAngle = LightRadius;\n    for(int i = 0; i < MaxShadowSteps; i++){\n        float dist = distanceEstimation(pos);\n        if(dist > MaxDist) break;\n        if(dist < MinDist) return vec3(0.0);\n        pos -= LightDir * dist * 3.0;\t//goes 3 times faster since we don't need details\n        minAngle = min(asin(dist/length(pos-pos0)), minAngle);\n    }\n    return LightColor * dotLight * clamp(minAngle/LightRadius, .0, 1.0);\n}\n\nvec3 ambientLight(vec3 pos){\n    vec3 pos0 = pos;\n    float dist0 = distanceEstimation(pos);\n    vec3 normal = normalEstimation(pos).xyz, gi, al = vec3(0.0);\n    float ao = 1., dist = dist0;\n    for(int i = 0; i < AmbientLightSteps; i++){\n        float expectedDist = dist * (1. + .8);\n        dist = distanceEstimation(pos);\n        float weight = AOStrength*(1.-float(i)/float(AmbientLightSteps));\t//more weight to first samples\n        ao *= pow(clamp(dist/expectedDist, 0., 1.0), weight);\n        normal = normalize(normalEstimation(pos, dist)+1.5*normal); //\"smoothed\" normal to avoid artifacts\n        pos += normal * .8*dist; //slightly shorter to avoid artifacts\n        al += backgroundColorHemi(normal);\n        if(i == 6 || i == 13) gi += ao*directLight(pos, normal); // two GI samples\n    }\n    gi *= GIStrength/2.0;\n    return gi + al/float(AmbientLightSteps) * ao;\n}\n\nbool trace(inout vec3 pos, in vec3 dir, out vec3 n){\n    for(int i = 0; i < MaxSteps; i++){\n        float dist = distanceEstimation(pos);\n        if(dist > MaxDist) break;\n        if(dist < MinDist){\n            n = normalEstimation(pos);\n            for(int j = 0; j < 3; j++){\n                dist = distanceEstimation(pos) - 2.*MinDist;\n        \t\tpos += dist * dir;\n            }\n            return true;\n        }\n        pos += dir * dist;\n    }\n    return false;\n}\n\n\nvec4 rayTrace(vec3 pos, vec3 dir){\n    for(int i = 0; i < 5; i++){ //to get to a distance inferior to MaxDist\n        float dist = distanceEstimation(pos);\n        pos += dist * dir;\n        if(dist < MaxDist) break;\n    }\n    vec3 n;\n    if(!trace(pos, dir, n))\n        return vec4(backgroundColor(dir), 20.0);\n    return vec4(directLight(pos, n)+ambientLight(pos), length(CamPos - pos));\n}\n\nmat3 rotationMatrix(vec3 rotEuler){\n    float c = cos(rotEuler.x), s = sin(rotEuler.x);\n    mat3 rx = mat3(1, 0, 0, 0, c, -s, 0, s, c);\n    c = cos(rotEuler.y), s = sin(rotEuler.y);\n    mat3 ry = mat3(c, 0, -s, 0, 1, 0, s, 0, c);\n    c = cos(rotEuler.z), s = sin(rotEuler.z);\n    mat3 rz = mat3(c, -s, 0, s, c, 0, 0, 0, 1);\n    \n    return rz * rx * ry;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    float time = iTime + 43.;\n    \n    //fractal animation\n    Rotation = rotationMatrix(vec3(time, time*.7, time*.4)*.2);\n    Scale += sin(time*.5)*.25;\n    Radius += cos(time) *.25;\n    \n    //light animation\n    LightDir = normalize(vec3(sin(time*.6), -1, cos(time*.6)));\n    \n    //camera animation\n    CamRot.z = sin(time*.4)*.2;\n    \n    vec2 uv = (fragCoord-iResolution.xy/2.0) / iResolution.y;\n    vec3 rayDir = normalize(vec3(uv, CamFocalLength)) * rotationMatrix(CamRot);\n\n    fragColor = rayTrace(CamPos, rayDir);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    vec3 skyCol = vec3(80,180,255)/ 255.0;\n    vec3 horizonCol = vec3(255,255,255)/ 255.0;\n    vec3 groundCol = vec3(0,0,35)/ 255.0;\n    \n    vec3 sunCol = vec3(1.0, 1.0, 1.0);\n    float sunSize = 0.0005;\n    float sunBlur = 0.0025;\n    float sunScatter = 0.25;\n    \n    vec3 moonCol = vec3(1.0, 1.0, 1.0);\n    float moonSize = 0.00025;\n    float moonGlow = 0.05;\n    float moonShadow = 0.5;\n    float starSize = 0.04;\n    \n    vec3 sunPos = _sunPos(iTime); \n    vec3 moonPos = _moonPos(iTime);\n    vec3 sunDir = normalize(sunPos - rayOri); \n    vec3 moonDir = normalize(moonPos - rayOri); \n    float pitch =  0.5 + rayDir.y * 0.5;\n    \n    // sky\n    // -----------------------------------------------------------\n    vec3 col = skyCol;\n    horizonCol = mix (vec3(255,55,0)/ 255.0, vec3(255,255,255)/ 255.0, smoothstep(-0.5, 0.75, sunPos.y));\n    horizonCol = mix (vec3(55,155,155)/ 255.0, horizonCol, smoothstep(-0.5, 0.0, sunPos.y));        \n    col = mix(horizonCol, col, smoothstep(0.4, 0.8, pitch));    \n    col = mix(groundCol, col, smoothstep(0.49, 0.5, pitch));\n    \n    // sun\n    // ------------------------------------------------------------\n    sunCol = mix(vec3(255,85,0)/ 255.0, vec3(255,255,255)/ 255.0, max(0.0, min(1.0, smoothstep(-0.4, 0.8, sunPos.y))));\n    float sun = dot(sunDir, rayDir);    // return [-1,1] based on angle \n    sunSize += sunSize * 100.0 * (1.0-smoothstep(-0.8, 0.11, sunPos.y)); // scale sun based on height\n    float sunDisk = smoothstep((1.0 - sunSize) - sunSize*2.0, 1.0 - sunSize, sun); // define sun disk\n    sunScatter = smoothstep((1.0 - sunSize) - sunScatter, 1.0 - sunSize, sun) *  smoothstep(-0.8, 0.2, sunPos.y); \n    float sunGlow = smoothstep((1.0 - sunSize) - sunBlur, 1.0 - sunSize, sun);\n\n    float haloSize = 0.02;\n    float sunHalo = smoothstep(0.9999 - haloSize, 0.9999, sun);\n    sunHalo = mix(0.055, 0.05, fract(sunHalo*2.) );\n\n    //float angle = acos( dot(sunDir, rayDir) / (length(sunDir)*length(rayDir)) );\n    //float sunFlare = smoothstep((1.0 - sunSize*2.0) - 0.05*smoothstep(0.0, 3.14*.25,angle*10.) , 1.0 - sunSize*2.0, sun);\n    float horizonMask = smoothstep( -0.2, 0.05, rayDir.y); // mask sun along horizon\n    sunDisk *= smoothstep( -0.05, 0.025, rayDir.y);\n    sunGlow *= smoothstep( -0.05, 0.025, rayDir.y);\n    sunHalo *= smoothstep( -0.2, 0.05, rayDir.y); // mask sun along horizon\n    \n    col = mix(col, sunCol, sunScatter*.25);\n    col = mix(col, sunCol, sunGlow*.5);\n    col += sunDisk + sunScatter*.05 + sunGlow*.05;\n    col += vec3(sunHalo*6.0, 0.0,0.0);\n\n    // night\n    // ------------------------------------------------------------\n    col *= max(0.35, min(1.0, smoothstep(-1.0, 0.0, sunPos.y)));\n    \n    // stars\n    // ------------------------------------------------------------\n    float starNoise = random3D( rayDir, vec3(0.5,0.1,7.0+ iTime*0.001));\n    vec2 starCoords = vec2(fract(rayDir.x * 50.0), fract(rayDir.y * 50.0) );  \n    float stars = step(0.6, starCoords.y) * (1.0-step(0.6 + starSize, starCoords.y)) * step(0.3, starCoords.x) * (1.0- step(0.3 + starSize, starCoords.x));\n    stars *= smoothstep(-0.01, 0.00, rayDir.y);\n    col += stars * pow(starNoise, 3.0) * (1.0-max(0.0, min(1.0, smoothstep(-1.0, 0.0, sunPos.y))));\n       \n    horizonMask = smoothstep( -0.01, 0.01, rayDir.y); // mask sun along horizon\n    // moon\n    // -------------------------------------------------------------\n    float moon = dot(moonDir, rayDir);\n    moonShadow = mix(-0.05, -0.0, moonShadow);\n    moonShadow = dot(vec4(rotY(moonShadow)*vec4(moonDir,1.0)).xyz, rayDir);\n    float moonDisk = smoothstep(1.0-moonSize-0.00025, 1.0-moonSize, moon); \n    moonShadow = smoothstep(1.0-moonSize*2.0-0.00025, 1.0-moonSize*2.0, moonShadow); \n    moonDisk *= (1.0 - moonShadow*.995) * horizonMask  * smoothstep(0.0, 0.3, moonPos.y);    \n    col = mix(col, moonCol, moonDisk);\n    col += moonDisk;\n    \n    moonGlow = smoothstep(1.0-moonSize-moonGlow, 1.0-moonSize, moon) * horizonMask  * smoothstep(0.0, 0.3, moonPos.y); \n    col = mix(col, moonCol, moonGlow*.025) ; \n    \n    \n    // Output to cubemap\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "//first DoF pass\n\n#define Aperture .05\n#define DoFClamping .35\n#define DoFSamples 32\n\n#define dir normalize(vec2(1.0, 1.0))\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    \n    //autofocus\n    float focalDistance = texture(iChannel0, vec2(.5), 5.0).a;\n    \n    vec4 col = vec4(0);\n    float samples = 0.0, dr, influence, depth;\n    vec2 d;\n    vec4 p;\n    for(int i = 0; i < DoFSamples; i++){\n        d = dir * float(2*i-DoFSamples)/float(DoFSamples) * DoFClamping;\n        p = texture(iChannel0, (fragCoord + d*iResolution.y*Aperture)/iResolution.xy);\n        dr = min(abs(p.a-focalDistance)/p.a, DoFClamping);\n        influence = clamp((dr - length(d))*iResolution.y*Aperture + .5, 0.0, 1.0) / (dr*dr+.001);\n        col += influence * p;\n        samples += influence;\n    }\n    \n    col /= samples;\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//second DoF pass\n\n#define Aperture .05\n#define DoFClamping .35\n#define DoFSamples 32\n\n#define dir normalize(vec2(1.0, -1.0))\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    \n    //autofocus\n    float focalDistance = texture(iChannel0, vec2(.5), 5.0).a;\n    \n    vec4 col = vec4(0);\n    float samples = 0.0, dr, influence, depth;\n    vec2 d;\n    vec4 p;\n    for(int i = 0; i < DoFSamples; i++){\n        d = dir * float(2*i-DoFSamples)/float(DoFSamples) * DoFClamping;\n        p = texture(iChannel0, (fragCoord + d*iResolution.y*Aperture)/iResolution.xy);\n        dr = min(abs(p.a-focalDistance)/p.a, DoFClamping);\n        influence = clamp((dr - length(d))*iResolution.y*Aperture + .5, 0.0, 1.0) / (dr*dr+.001);\n        col += influence * p;\n        samples += influence;\n    }\n    \n    col /= samples;\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float _viewDepth = -1.;\n\nvec3 _sunPos (float time)\n{\ntime = time * 2.5;\n    // cos(time*0.25)*0.85, sin(time*0.25)*0.6-0.2, 0.0\n    return vec3(-0.6+sin(time*0.2), cos(time*0.2), sin(time*0.2) );       \n}\n\nvec3 _moonPos (float time)\n{\n    time = time * 2.5;\n    time -= 5.;\n    return vec3(-2.0+sin(time*0.2)*1.5, cos(time*0.2), sin(time*0.2) );          \n}\n\n\n// interpolation\nfloat gaussianInterpol (float t, float a, float b, float c)\n{\n    // a - amplitude, b - center pos, c - frequency\n    return a * exp(-(t-b)*(t-b) / (2.0*c*c));\n   \n}\n\n// fractal noise\n\nfloat random3D(vec3 xyz, vec3 dir)\n{\n    float val = dot(xyz, dir);\n    return fract(30.0 * sin(val));\n}\n\n\n// transformations\n\nmat4 rotX(float angle)\n{\n    mat4 rotMatrix = mat4\n    (\n        vec4( 1.0,        0.0,        0.0, 0.0),\n        vec4( 0.0, cos(angle), sin(angle), 0.0),\n        vec4( 0.0,-sin(angle), cos(angle), 0.0),\n        vec4( 0.0,        0.0,        0.0, 1.0)\n    );\n    \n    return rotMatrix; \n}\n\nmat4 rotY(float angle)\n{\n    mat4 rotMatrix = mat4\n    (\n        vec4( cos(angle), 0.0, -sin(angle), 0.0),\n        vec4(        0.0, 1.0,         0.0, 0.0),\n        vec4( sin(angle), 0.0,  cos(angle), 0.0),\n        vec4(        0.0, 0.0,         0.0, 1.0)\n    );\n    \n    return rotMatrix; \n}\n\nmat4 rotZ(float angle)\n{\n    mat4 rotMatrix = mat4\n    (\n        vec4( cos(angle), sin(angle), 0.0, 0.0),\n        vec4(-sin(angle), cos(angle), 0.0, 0.0),\n        vec4(        0.0,        0.0, 1.0, 0.0),\n        vec4(        0.0,        0.0, 0.0, 1.0)\n    );\n    \n    return rotMatrix; \n}\n\n// math utils\nfloat magnitude(vec3 a)\n{\n    return sqrt(a.x*a.x + a.y*a.y + a.z*a.z);\n}\n\nvec3 normalized(vec3 a)\n{\n    return a/length(a);\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

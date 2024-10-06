@@ -1,0 +1,133 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587569863",
+            "description": "Usage :\n- Uncomment #define ANIMATED_TEXTURE in Common to see a phase-shifted LRPN animation \n- Mouse X   : changing isotropic roughness\n- Mouse Y   : changing LOD Bias",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "WdXfRn",
+            "likes": 9,
+            "name": "LEAN/LEADR mapping",
+            "published": 3,
+            "tags": [
+                "ndf",
+                "beckmann",
+                "lean",
+                "leadr",
+                "prefiltering"
+            ],
+            "usePreview": 0,
+            "username": "H4w0",
+            "viewed": 860
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================\n//= LEAN / LEADR Mapping\n//=======================================================\n//== Ressources :\n//== *- 2013 - Filtering Distributions of Normals for Shading Antialiasing\n//== \tby J. Dupuy, E. Heitz, J-C Iehl, P. Poulin, F. Neyret & V. Ostromoukhov \n//== *- 2010 - LEAN mapping\n//==  \tby M. Olano & D. Baker\n//==\n//== demo : https://www.shadertoy.com/view/wlXXRn by FabriceNeyret2\n//==\n//=======================================================\n//== Code :\n//== *- Common   : Tangent math + Plane intersection + a dirty-tiled-LRPN-version \n//== *- Buffer A : Return the slope of a height field (texture(iChannel3) or procedure)\t  \t\t\t\t\n//== *- Buffer B : Compute the 2nd moments -> ( slope.x^2 ; slope.y^2 , slope.x * slope.y )\n//==\n//== *- Image \t : LEAN/LEADR using Shifted Anisotropic Beckmann NDF \t\t\t\t\n//==\n//== Usage :\n//== *- Uncomment #define ANIMATED_TEXTURE in Common to see a phase-shifted LRPN animation \n//== *- Mouse X   : changing isotropic roughness\n//== *- Mouse Y   : changing LOD Bias\n//== \n//=======================================================\n\n//-----------------------------------------------------------------------------\n//-- Constants ----------------------------------------------------------------\nconst vec4  UNIT_PLANE     \t= vec4(0.,1.,0.,0.);\n\nconst float LIGHT_INTENSITY = 5.;\nconst vec3  LIGHT_DIRECTION = normalize(vec3(0.,0.1,1.));\nconst vec3  BACKGROUND_GREY = vec3(0.2);\n\n//-------------------------------------------------------------------------------\n//-- Beckmann Shifted Anisotropic distribution ----------------------------------\n//-------------------------------------------------------------------------------\nfloat p22_beckmann_shifted(\tfloat x, float y, vec2 mean,\n                        \tfloat sigma_x, float sigma_y, float rho)\n{\n    x -= mean.x;\n    y -= mean.y;\n    float x_sqr = x*x;\n    float y_sqr = y*y;\n    float sigma_x_sqr = sigma_x*sigma_x;\n    float sigma_y_sqr = sigma_y*sigma_y;\n    float rho_sqr = rho*rho;\n\n    return( \n            exp( -( 1.f /( 2.f*(1.f-rho_sqr))) * ((x_sqr/sigma_x_sqr) + (y_sqr/sigma_y_sqr) - ((2.f*rho*x*y)/(sigma_x*sigma_y))) )\n    / //----------------------------------------------------------------------------------------------------\n                        ( 2.f * m_pi * sigma_x * sigma_y * sqrt(1.f - rho_sqr) )\n    );\n}\n\nfloat ndf_beckmann_shifted(\tvec3 omega_h, vec2 mean,\n                            float sigma_x, float sigma_y, float rho)\n{\n    float slope_x = - (omega_h.x/omega_h.z);\n    float slope_y = - (omega_h.y/omega_h.z);\n    float cos_theta = cos_theta(omega_h);\n    float cos_2_theta = cos_theta * cos_theta;\n    float cos_4_theta = cos_2_theta * cos_2_theta;\n    float beckmann_p22 = p22_beckmann_shifted(slope_x,slope_y,mean, sigma_x,sigma_y,rho);\n    return(\n                beckmann_p22\n    / //---------------------------\n                cos_4_theta\n    );\n}\n\nfloat lambda_beckmann_shifted(\tvec3 omega, vec2 mean, \n                                float sigma_x, float sigma_y, float rho)\n{\n    float lambda \t= 0.f;\n    float cos_phi \t= cos_phi(omega);\n    float sin_phi \t= sin_phi(omega);\n    float tan_theta = tan_theta(omega);\n    float sigma_sqr = cos_phi*cos_phi * sigma_x*sigma_x \n                    + sin_phi*sin_phi * sigma_y*sigma_y\n                    + 2.f*cos_phi*sin_phi * rho*sigma_x*sigma_y;\n\n    float sigma     = sqrt(sigma_sqr); \n    \n    float cot_theta  = 1.f / tan_theta;\n    float mu_phi     = cos_phi*mean.x + sin_phi*mean.y;\n    float nu         = (cot_theta - mu_phi) / (sigma * m_sqrt_2);\n    \n    if(nu < 1.6f)\n        lambda = (1.f - 1.259f*nu + 0.396f*nu*nu) / (3.535f*nu + 2.181f*nu*nu); \n    return(lambda);\n}\n\n\n//-----------------------------------------------------------------------------\n//-- Fresnel ------------------------------------------------------------------\nvec3 fresnel_schlick(in float wo_dot_wh, in vec3 F0)\n{\n    return F0 + (1. - F0) * pow(1. - wo_dot_wh, 5.);\n}\n\n//-----------------------------------------------------------------------------\n//-- World Functions ----------------------------------------------------------\nfloat \tget_light_intensity()            { return LIGHT_INTENSITY; }\nvec3 \tget_light_direction()            { return LIGHT_DIRECTION; }\nvec3 \tget_background_color(in vec3 rd) { return BACKGROUND_GREY; }\n\n//-----------------------------------------------------------------------------\n//-- Main ---------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{      \n    vec2 screen_coords = ( 2.*gl_FragCoord.xy - iResolution.xy ) / iResolution.y;\n    vec3 ro = vec3( 0., 1. , -3. );\n    vec3 rd = compute_camera_ray_direction(screen_coords,ro,vec3(0.),0.);\n\t\n    vec2  mouse \t= clamp(iMouse.xy / iResolution.xy ,0.,1.);\n    float m_alpha \t= clamp( 0.2  + mouse.x , 0., 0.6 ); \n\tfloat m_lod \t= clamp( 0.01 + mouse.y , 0., 1.0 ) * 5.;\n    \n    \n    vec3  color \t= get_background_color(rd);\n    float plane_hit = plane_get_hit(ro,rd,UNIT_PLANE);\n    \n    if(plane_hit > 0.0) \n    {\n        vec3\tP = ro + plane_hit * rd;\n        vec3    N = plane_get_normal(P,UNIT_PLANE);\n    #ifdef ANIMATED_TEXTURE\n        vec2 \tT = plane_get_texcoords(P,0.2);\n    #else\n        vec2 \tT = plane_get_texcoords(P,1.);\n    #endif\n        \n        vec3    L = get_light_direction();\n        vec3    V = -rd;\n\n        mat3 TBN    = orthonormal_basis(N);\n        mat3 TBN_t  = transpose(TBN);\n        vec3 wo \t= normalize(TBN_t * V);\n        vec3 wi \t= normalize(TBN_t * L);\n        vec3 wg \t= normalize(TBN_t * N); // ( should be (0,0,1)^t )\n        vec3 wh \t= normalize(wo+wi);\t\t// ( could check it not zero)\n        \n        vec2 slope \t\t= texture(iChannel0,T,m_lod).rg;\n    \tvec3 moments \t= texture(iChannel1,T,m_lod).rgb;\n    \n       \t/* Square roughness mapping */\n        float base_alpha = m_alpha*m_alpha;\n        /* converting base alpha in rms roughness convention */\n        float base_sigma = base_alpha * m_i_sqrt_2; \n              \n  \t\t/* Retrieve covariance matrix elements (eq. 9) */\n        /** Bivariate Normal Distribution covariance matrix : \n\t\t * \n\t\t * |     sigma_x^2       rho*sigma_x*sigma_y |\n\t\t * | rho*sigma_x*sigma_y      sigma_y^2      |\n\t\t * \n\t\t */\n        \n        float sigma_x_sqr = base_sigma*base_sigma + (moments.x - slope.x*slope.x);\n        float sigma_y_sqr = base_sigma*base_sigma + (moments.y - slope.y*slope.y);\n        float cor_x_y = moments.z - slope.x*slope.y;\n                \n        float sigma_x = sqrt(sigma_x_sqr);\n        float sigma_y = sqrt(sigma_y_sqr);\n        float rho = cor_x_y / (sigma_x * sigma_y);\n        rho = clamp(rho,-0.999,0.999);\n        \n        if(screen_coords.x > 0.) //naive version\n        {\n        \tsigma_x = base_sigma;\n        \tsigma_y = base_sigma;\n         \trho \t= 0.;   \n        }\n        \n        float h_dot_v = clamp(dot(wo,wh),0.,1.);\n        float n_dot_l = clamp(dot(wg,wi),0.,1.);\n        \n        float projected_area = 1. / dot( vec3(-slope.x,-slope.y,1) , wo);\n        float lambda_wo = lambda_beckmann_shifted(wo,slope,sigma_x,sigma_y,rho);\n        float lambda_wi = lambda_beckmann_shifted(wi,slope,sigma_x,sigma_y,rho);\n        float D = ndf_beckmann_shifted(wh,slope,sigma_x,sigma_y,rho);\n        float G = 1. / (1. + lambda_wo + lambda_wi);\n         \n\t\tvec3 F  = fresnel_schlick(h_dot_v,vec3(1.022, 0.782, 0.344));\n        vec3 BRDF = 0.25 * projected_area * (D * F * G) ;\n        \n        color = n_dot_l * get_light_intensity() * vec3(BRDF);\n    }\n    \n    fragColor = vec4(pow(color.rgb,vec3(0.4545)),1.);\n    \n\tif(screen_coords.x <= 0.01 && screen_coords.x >= -0.01) \n        fragColor = vec4(1.,0.,0.,1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//#define ANIMATED_TEXTURE\n\n//-----------------------------------------------------------------------------\n//-- Constants ----------------------------------------------------------------\nconst uint  LRPN_GLOBAL_SEED = 0u;\n//-----------------------------------------------------------------------------\n//-- Constants ----------------------------------------------------------------\nconst float m_pi        = 3.14159265359;           /* MathConstant: PI          */\nconst float m_2_pi      = 6.28318530718;           /* MathConstant: PI*2       \t*/\nconst float m_i_pi      = 0.31830988618;           /* MathConstant: 1 / PI   \t*/\nconst float m_sqrt_2    = 1.41421356237;           /* MathConstant: sqrt(2)    \t*/\nconst float m_i_sqrt_2  = 0.70710678119;           /* MathConstant: 1/sqrt(2)   */\n\nconst float m_eps_3f    = 0.001;            \nconst float m_eps_4f    = 0.0001;            \n\n//-----------------------------------------------------------------------------\n//-- Tangent Space Maths (PBRT) -----------------------------------------------\nfloat cos_theta(const vec3 w)       {return w.z;}\nfloat cos_2_theta(const vec3 w)     {return w.z*w.z;}\nfloat sin_2_theta(const vec3 w)     {return max(0.f, 1.f - cos_2_theta(w));}\nfloat sin_theta(const vec3 w)       {return sqrt(sin_2_theta(w));}\nfloat tan_theta(const vec3 w)       {return sin_theta(w) / cos_theta(w);}\nfloat cos_phi(const vec3 w)         {return (sin_theta(w) == 0.f) ? 1.f : clamp(w.x / sin_theta(w), -1.f, 1.f);}\nfloat sin_phi(const vec3 w)         {return (sin_theta(w) == 0.f) ? 0.f : clamp(w.y / sin_theta(w), -1.f, 1.f);}\nfloat cos_2_phi(const vec3 w)       {return cos_phi(w) * cos_phi(w);}\nfloat sin_2_phi(const vec3 w)       {return sin_phi(w) * sin_phi(w);} \n\n//-----------------------------------------------------------------------------\n//-- Ray ----------------------------------------------------------------------\nvec3 compute_camera_ray_direction(in vec2 screen_coordinates, in vec3 origin, in vec3 target, float cr )\n{\n\tvec3 cw = normalize(target-origin);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv =          ( cross(cu,cw) );\n    return mat3( cu, cv, cw )*normalize(vec3(screen_coordinates,2.0));\n}\n\n\n//-----------------------------------------------------------------------------\n//-- Plane Intersection Functions ---------------------------------------------\nfloat plane_get_hit(in vec3 ro, in vec3 rd, in vec4 plane)\n{\n    return -(dot(ro,plane.xyz)+plane.w)/dot(rd,plane.xyz);\n}\n\nvec3 plane_get_normal(in vec3 pos, in vec4 plane)\n{\n    return(normalize(plane.xyz));\n}\n\nvec2 plane_get_texcoords(in vec3 pos, in float factor)\n{\n    return(pos.xz*factor);\n}\n\n//-----------------------------------------------------------------------------\n//-- Orthonormal Basis Function -----------------------------------------------\nmat3 orthonormal_basis(in vec3 n)\n{\n    vec3 f,r;\n    if(n.z < -0.999999)\n    {\n        f = vec3(0 , -1, 0);\n        r = vec3(-1, 0, 0);\n    }\n    else\n    {\n        float a = 1./(1. + n.z);\n        float b = -n.x*n.y*a;\n        f = normalize(vec3(1. - n.x*n.x*a, b, -n.x));\n        r = normalize(vec3(b, 1. - n.y*n.y*a , -n.y));\n    }\n    return( mat3(f,r,n) );\n}\n\n\n//--------------------------------------------------------------------------------------------------------\n//-- Pseudo Random Number Generation ---------------------------------------------------------------------  \n// From Texton Noise Source Code provided by Arthur Leclaire et al. \n// https://www.idpoisson.fr/galerne/texton_noise/index.html\n// Sourced ::\n/* \n * From http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/\n * Same strategy as in Gabor noise by example\n * Apply hashtable to create cellseed\n * Use a linear congruential generator as fast PRNG\n */\n\nuint  wang_hash(uint seed)                                          {seed=(seed^61u)^(seed>>16u);seed*=9u;seed=seed^(seed>>4u);seed*=668265261u;seed=seed^(seed>>15u);return(seed);}\nuint  cell_seed(const in ivec2 c, const in uint offset)             {const uint period=1024u;uint s=((uint(c.y)%period)*period+(uint(c.x)%period))*period+offset; if(s==0u){s = 1u;}return(s);}\nuint  myrand(inout uint p)                                          {p^=(p<<13u);p^=(p>>17u);p^=(p<<5u);return p;}\nfloat myrand_uniform_0_1(inout uint p)                              {return float(myrand(p))/float(4294967295u);}\nfloat myrand_uniform_m_M(inout uint p, in float mi, in float ma)    {return mi + (myrand_uniform_0_1(p) * (ma - mi));}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Normal Mapping Function -----------------------------------------------------------------------------  \nvec3 normal_map_from_slope(float dx, float dy) // using partial derivatives\n{\n    float norm = length(vec3(dx,dy,1.0));\n    float nx = -dx / norm; \n    float ny = -dy / norm; \n    float nz = 1.0 / norm; \n    return 0.5 + 0.5 * vec3(nx,ny,nz);\n}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Gaussian Window Function ----------------------------------------------------------------------------  \nfloat gaussian(in vec2 st, in float c, in vec2 mu, in mat2 sig)\n{\n    vec2 p = st-mu;\n    float body = -0.5*dot(p,inverse(sig)*p);\n    return c*exp(body);\n}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Local Random Phase Noise ----------------------------------------------------------------------------\nvec3 local_random_phase_noise(\n        in vec2  texcoords,\n        in float resolution,\n        in int   cosines,\n        in vec2  range_frequency,\n        in vec2  range_orientation,\n    \tin float time\n    )\n{\n    vec2  scaled_coords = texcoords * resolution;\n    vec2  cell_coords   = fract(scaled_coords);\n    vec2  cell_index    = floor(scaled_coords);\n    \n    ivec2 cell_ID;\n    uint  prng, seed;\n    \n    vec3  lrpn   = vec3(0.);\n    float weight = 1. / float(cosines);\n    mat2  sigma  = mat2( (1.33*1.33)/m_2_pi );\n\n    for (int m=-1; m<=+1; m++)\n    for (int n=-1; n<=+1; n++)\n    {\n        cell_ID.x = int(cell_index.x) + m;\n        cell_ID.y = int(cell_index.y) + n;\n        cell_ID.x = int(mod(float(cell_ID.x),resolution));\n        cell_ID.y = int(mod(float(cell_ID.y),resolution));\n        seed = cell_seed(cell_ID,LRPN_GLOBAL_SEED);\n        prng = wang_hash(seed);\n\n        vec2 xy = cell_coords - vec2(m,n) - vec2(0.5);\n        float d = dot(xy,xy);\n        \n        float sum_of_cosines    = 0.; \n        float sum_of_partial_x  = 0.; \n        float sum_of_partial_y  = 0.; \n        for(int k=0; k<cosines; k++)\n        {\n            float fr = myrand_uniform_m_M(prng,range_frequency.x,range_frequency.y) * resolution;   // Scaled Frequency \n            float or = myrand_uniform_m_M(prng,range_orientation.x,range_orientation.y);            // Orientation\n            //float ph = m_pi*(myrand_uniform_0_1(prng)*2.-1.);                                       // Phase\n            float ph = time;\n            float ff = m_2_pi * dot(xy, fr * vec2(cos(or),sin(or)) );                               // Oriented Frequency\n            \n            sum_of_cosines   += cos(ff+ph);\n            sum_of_partial_x += -m_2_pi * fr * cos(or) * sin(ff+ph);\n            sum_of_partial_y += -m_2_pi * fr * sin(or) * sin(ff+ph); \n        }\n\n        lrpn += gaussian(xy, 1., vec2(0.0), sigma) * weight * vec3(sum_of_cosines, sum_of_partial_x, sum_of_partial_y);\n    }\n    return vec3(lrpn); // vec3(Noise, Partial X, Partial Y); \n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//--------------------------------------------------------------------------------------------------------\n//-- User Parameters -------------------------------------------------------------------------------------  \nconst int   LRPN_COSINES     = 10;\nconst float LRPN_RESOLUTION  = 10.0;\nconst float LRPN_SLOPE_SCALE = 0.1;\n//--------------------------------------------------------------------------------------------------------\n//-- Main ------------------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 texcoords = fragCoord.xy / iResolution.xy;\n    vec2 mouse = clamp(iMouse.xy / iResolution.xy, 0., 1.);\n\n    float Dx = 0.;\n    float Dy = 0.;\n    \n#ifdef ANIMATED_TEXTURE\n    vec2  F = vec2(0.5,0.6);    //~ Frequecy range [fmin;fmax]\n    vec2  O = vec2(0.,m_pi);   \t//~ Orientation range [omin;omax]\n    float R = LRPN_RESOLUTION;  //~ Grid resolution\n    int   K = LRPN_COSINES;     //~ Number of cosines\n\n    vec3  lrpn = local_random_phase_noise(texcoords,R,K,F,O,iTime);\n    Dx = lrpn.y * LRPN_SLOPE_SCALE;\n    Dy = lrpn.z * LRPN_SLOPE_SCALE;\n#else\n\tfloat H_00 = dot(vec3(0.333),texelFetch(iChannel3,(ivec2(fragCoord) + ivec2(0,0))%textureSize(iChannel3,0), 0).rgb)*5.; \n    float H_01 = dot(vec3(0.333),texelFetch(iChannel3,(ivec2(fragCoord) + ivec2(0,1))%textureSize(iChannel3,0), 0).rgb)*5.; \n    float H_10 = dot(vec3(0.333),texelFetch(iChannel3,(ivec2(fragCoord) + ivec2(1,0))%textureSize(iChannel3,0), 0).rgb)*5.; \n    \n    Dx = H_00 - H_01;\n    Dy = H_00 - H_10;\n#endif\n    \n    \n    fragColor.rgb = vec3(vec2(Dx,Dy),0.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//--------------------------------------------------------------------------------------------------------\n//-- Main ------------------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 texcoords = fragCoord.xy / iResolution.xy;\n    vec2 slope =  texture(iChannel0,texcoords).rg;\n    fragColor.rgb = vec3(slope.x*slope.x, slope.y*slope.y, slope.x*slope.y);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

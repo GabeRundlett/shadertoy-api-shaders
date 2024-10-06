@@ -1,0 +1,134 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1677959978",
+            "description": "Various R2 Sequence implementations, log/log relative integration error over samples\nSee Common for tweakables\n\n\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "csdGWX",
+            "likes": 10,
+            "name": "R2 Sequence Integration Errors",
+            "published": 3,
+            "tags": [
+                "roberts",
+                "hash",
+                "goldenratio",
+                "lowdiscrepancy",
+                "weyl",
+                "quasirandom"
+            ],
+            "usePreview": 0,
+            "username": "MartyMcFly",
+            "viewed": 470
+        },
+        "renderpass": [
+            {
+                "code": "// Analyzing the convergence properties of several implementations\n// of the ubiquitous \"R2\" or Roberts Quasirandom Sequence\n//\n// Takeaways:\n// \n// -  it does not matter which version you use for < 1000 samples\n// -  my complementary variant increases this by 2-3x by just swapping the coefficients\n// -  if your platform does not support integers natively, use my sectored version\n//    which can handle up to 1 million indices\n// -  when numerical stability is relevant and you need even more samples, use uint32 based version\n//    \n// Notes on each variant:\n// \n// -  RED the error of the canonical variant turns around at some point\n//    due to decreasing float precision\n//\n// -  YELLOW my variant with complementary coefficients (1-coeff) is as expected, 2-3x\n//    better, but suffers from the same problems beyond a certain point\n//\n// -  GREEN my variant that splits the computation into sectors delays this problem by\n//    several orders of magnitude, and the approach can be used multiple times.\n//    if the platform does not support integers, this version can be used.\n//\n// -  all integer based variants vastly outperform themfor very high indices, \n//    but show identical precision in the lower areas.\n//\n// -  PINK/BLUEGREEN jaybird's integer roundoff based versions reach a plateau eventually\n//    \n// -  BLUE my integer overflow based version continues to improve beyond the plateau that\n//    the previous integer variants reach\n\nvoid mainImage(out vec4 o, in vec2 vpos)\n{    \n    vec2 uv = vpos/iResolution.xy;\n    vec3 color = vec3(1.0);\n    \n    //graph lines\n    for(float dec = -20.0; dec < 20.0; dec++)\n    for(float s = 1.0; s < 10.0; s++)\n    {\n        float d = abs(uv.x - remap_log_x(pow(10.0, dec) * s)) * iResolution.x;\n        color *= smoothstep(0.0, 1.0, d);        \n        d = abs(uv.y - remap_log_y(pow(10.0, dec) * s)) * iResolution.y;\n        color *= smoothstep(0.0, 1.0, d); \n    }    \n    color = mix(color, vec3(1.0), 0.6);\n    \n    //overlay scatter plot\n    color *= texture(iChannel0, uv).rgb;   \n    o = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define NUM_SAMPLES_PER_FRAME      50000 //starts slower to have a denser plot in the low areas\n#define INTEGRAL                   1 //0 : triangle area (0.5)   1 : pi\n#define NUM_SEEDS_TO_TRY           100 //we compute avg error across N seeds (max: framebuffer height!!)\n\nint inside_integral(vec2 v)\n{\n#if INTEGRAL == 1\n    return length(v) <= 1.0 ? 1 : 0; //quarter circle\n#else \n    return v.x <= v.y ? 1 : 0;\n#endif\n}\n\nfloat get_error(ivec2 count)\n{\n    float ratio = float(count.x) / float(count.y);\n    //float ratio = 1.0 + float(count.x - count.y)/float(count.y);\n#if INTEGRAL == 1\n    float ideal = 3.14159265359 / 4.0;  //we compute quarter circle only         \n#else  \n    float ideal = 0.5;  \n#endif\n    float error = abs(ratio - ideal) / ideal;\n    return error;\n}\n\n//this is so the graph isn't sparse at the start, easier this way\n//than spitting out data increasingly rarer to have uniform spacing \n//in log plot lmao\nint get_iteration_count(int framecount)\n{\n    return min(framecount * framecount + 1, NUM_SAMPLES_PER_FRAME); \n}\n\nfloat remap_log_x(float v)\n{\n    float minv = 0.0;\n    float maxv = 11.0;\n    float log10v = log2(v)/log2(10.0);    \n    return (log10v - minv)/(maxv - minv);\n}\n\nfloat remap_log_y(float v)\n{\n    float minv = -9.0;\n    float maxv = 0.0;\n    float log10v = log2(v)/log2(10.0);    \n    return (log10v - minv)/(maxv - minv);\n}\n\n\n//\n// Various R2 sequence implementations, most of them mine except @jaybird's integer roundoff version\n//\n\n//original as described by Dr. Roberts and implemented a gazillion times on shadertoy\nvec2 r2_canonical(in uint idx, in vec2 seed)\n{    \n    return fract(seed + float(idx) * vec2(0.7548776662467, 0.569840290998));\n}\n\n//PG22: complementary coefficients, yields mirrored pattern but runs into precision issues later\nvec2 r2_comp(in uint idx, in vec2 seed)\n{\n    return fract(seed + float(idx) * vec2(0.245122333753, 0.430159709002));\n}\n\n//PG23: splits index into sectors, computes first index per sector\n//      and adds the rest. Increases usable index range by a factor w\nvec2 r2_sectored(in uint idx, in vec2 seed)\n{\n     uint w = 1024u;     \n     vec2 phi = vec2(0.245122333753, 0.430159709002); //original phis   \n     //using these in place of regular R2 gives every w-th index\n     //these can also be precomputed in case of constant seed\n     vec2 phi_skip_w = fract(seed + float(w) * phi); \n     \n     //computing first index per block (i/w is small), then adding the remaining\n     //in-block index (i%w is again small)\n     return fract(fract(float(idx/w) * phi_skip_w + seed) + float(idx%w) * phi + seed);\n}\n\n//PG23: uses unsigned integer overflow instead of fract, should produce\n//      same precision for every possible index. Requires proper uint support\nvec2 r2_overflow(in uint idx, in vec2 seed)\n{\n    uvec2 useed = uvec2(seed * exp2(32.0));   \n    uvec2 phi = uvec2(3242174889u, 2447445413u);\n    return vec2(phi * idx + useed) * exp2(-32.0);    \n}\n\n// found here: https://www.shadertoy.com/view/4dtBWH\n// uses integers to avoid round-off (apparently same method as above except using 2^24 as range)\nvec2 r2_roundoff(in uint idx, in vec2 seed)\n{ \n    int i = int(idx);     \n    return fract(seed + vec2(i * 12664745, i * 9560333) * exp2(-24.0));\t\n}\n\n// same as above, trying my complementary coefficients which have less rounding error when\n// converting to integer\nvec2 r2_roundoff_new(in uint idx, in vec2 seed)\n{ \n    int i = int(idx);  \n    return fract(seed + vec2(i * 4112470, i * 7216882) * exp2(-24.0));    \n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//  BufferA evaluates the various functions, tests whether\n//  the resulting value lies inside a defined area or not\n//  and stores this value.\n\nivec2 get_count(int p, int seed_id)\n{\n    if(iFrame == 0) return ivec2(0);\n    vec2 t = texelFetch(iChannel0, ivec2(p, seed_id), 0).xy;\n    return ivec2(floatBitsToInt(t.x), floatBitsToInt(t.y));\n}\n\nvoid mainImage(out vec4 o, in vec2 vpos)\n{    \n    int func_id = int(vpos.x);\n    //running the same computation with different seeds\n    //to increase robustness against correlation with signal\n    //which tells us better which function is best\n    int seed_id = int(vpos.y); \n    \n    if(func_id > 10 || seed_id > NUM_SEEDS_TO_TRY)  {o = vec4(0.0); return;}    \n    \n    //why not reuse the function for evenly distributed seeds lmao\n    vec2 seed = r2_comp(uint(seed_id), vec2(0.5));\n    \n    int num_samples = get_iteration_count(iFrame);\n    //x = count inside integral area, y = total\n    ivec2 count = get_count(func_id, seed_id);    \n    \n    for(int j = 0; j < num_samples; j++)\n    {\n        uint idx = uint(count.y);      \n        \n        vec2 t = vec2(0.0);        \n        if(func_id == 0) t = r2_canonical(idx, seed);\n        if(func_id == 1) t = r2_comp(idx, seed);\n        if(func_id == 2) t = r2_sectored(idx, seed);\n        if(func_id == 3) t = r2_overflow(idx, seed); \n        if(func_id == 4) t = r2_roundoff(idx, seed);\n        if(func_id == 5) t = r2_roundoff_new(idx, seed); \n        \n        count.x += inside_integral(t); \n        count.y++;\n    }  \n    \n    o.x = intBitsToFloat(count.x); \n    o.y = intBitsToFloat(count.y); \n    o.zw = vec2(0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//  BufferB calculates the relative error of the results\n//  averaged across several seed values and plots it progressively\n\nivec2 get_count(int p, int seed_id)\n{\n    if(iFrame == 0) return ivec2(0);\n    vec2 t = texelFetch(iChannel0, ivec2(p, seed_id), 0).xy;\n    return ivec2(floatBitsToInt(t.x), floatBitsToInt(t.y));\n}\n\nvec3 graphcolor(int func)\n{\n    if(func == 0) return vec3(1.0, 0.0, 0.0); //RED       orig\n    if(func == 1) return vec3(1.0, 1.0, 0.0); //YELLOW    complementary\n    if(func == 2) return vec3(0.0, 0.7, 0.0); //GREEN     sectored\n    if(func == 3) return vec3(0.0, 0.0, 1.0); //BLUE      uint based\n    if(func == 4) return vec3(1.0, 0.0, 1.0); //MAGENTA   roundoff\n    return vec3(0.0, 0.5, 0.5);      //DARK BLUE/GREEN    roundoff new coefficients\n}\n\nvoid mainImage(out vec4 o, in vec2 vpos)\n{    \n    vec2 uv = vpos / iResolution.xy;\n    vec3 color = texture(iChannel1, uv).rgb;\n    if(iFrame <2) color = vec3(1.0);\n    \n    float x = float(get_count(0, 0).y);//float(NUM_SAMPLES_PER_FRAME * iFrame);\n    x = remap_log_x(x);    \n\n    for(int func = 0; func <= 5; func++)\n    {    \n        float error = 0.0;\n        //average error across starting seeds\n        for(int s = 0; s < NUM_SEEDS_TO_TRY; s++)\n        {\n            //x = inside integral, y = total\n            ivec2 count = get_count(func, s);       \n            error += get_error(count);            \n        }\n        \n        error /= float(NUM_SEEDS_TO_TRY);        \n        \n        float y = remap_log_y(error);        \n        vec2 p = vec2(x, y) - uv;\n        p *= iResolution.xy;  \n        \n        color = mix(color, min(color, graphcolor(func)), smoothstep(2.0, 1.0, length(p)));\n\n    }\n    \n    o = vec4(color, 1.0);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

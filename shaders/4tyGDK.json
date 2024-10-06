@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1477095351",
+            "description": "Ray vs infinite layers of infinite concentric circles.\nContinuation of https://www.shadertoy.com/view/MlK3zt\nMouse drag to camera look.\nDark color falloff is just to make it easier to see the different layers not to hide max distance of intersection!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4tyGDK",
+            "likes": 2,
+            "name": "Ray Traced Concentric Circles",
+            "published": 3,
+            "tags": [
+                "raytrace"
+            ],
+            "usePreview": 1,
+            "username": "demofox",
+            "viewed": 980
+        },
+        "renderpass": [
+            {
+                "code": "/*\n    By Alan Wolfe\n    http://blog.demofox.org\n\n\tAnalytical solve for ray vs infinite layers of infinite concentric circles.\n\n\tContinuation of:\n    https://www.shadertoy.com/view/MlK3zt\n    and sebbi's:\n    https://www.shadertoy.com/view/lly3Rc\n\n\tThis looks pretty decent for the most part, but actually doesn't always work unfortunately.\n\tintersecting against the inner circle has variable thickness, so can return false positive hits.\n\tMore importantly, when not using modulus, maximum uv step is based on camera angle.\n\tmax uv step defines minimum thickness, so looking edge on, on a plane makes for super huge minimum thickness ):\n\tset SEE_FAIL to 1 to see it failing.\n\n*/\n\n#define DARKEN_OVER_DISTANCE 1  // This makes it easier to see the different layers in a static image, not to hide a max distance.\n\n#define SEE_FAIL 0 // Set this to 1 to see a fail case of this shader\n\nconst float c_cameraDistance\t= 6.0;\nconst float c_cameraViewWidth\t= 24.0;\n\nconst float c_pi = 3.14159265359;\nconst float c_twoPi = c_pi * 2.0;\n\n// Hash without sine from https://www.shadertoy.com/view/4djSRW\n#define HASHSCALE1 .1031\n//----------------------------------------------------------------------------------------\n//  1 out, 1 in...\nfloat hash11(float p)\n{\n\tvec3 p3  = fract(vec3(p) * HASHSCALE1);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n//============================================================\nfloat binarySign (float v)\n{\n    return step(0.0, v) * 2.0 - 1.0;\n}\n\n//============================================================\n// returns t\n// circle xy = position, z = radius\n// Adapted from \"real time collision detection\" IntersectRaySphere()\nfloat RayIntersectCircle (in vec2 rayPos, in vec2 rayDir, in vec3 circle)\n{\n    // rayDir isn't normalized, so normalize it but remember it's length\n    float rayLen = length(rayDir);\n    rayDir = normalize(rayDir);\n\n\tvec2 m = rayPos - circle.xy;\n\tfloat b = dot(m, rayDir);\n\tfloat c = dot(m, m) - circle.z*circle.z;\n\t\n\t// Exit if the ray is outside the circle and pointing away from the circle\n\tif (c > 0.0 && b > 0.0)\n\t\treturn -1.0;\n\n\tfloat discr = b*b - c;\n\n\t// A negative discriminant means it missed the sphere\n\tif (discr < 0.0)\n\t\treturn -1.0;\n\n\tfloat t = -b - sqrt(discr);\n\tif (t < 0.0)\n\t\tt = -b + sqrt(discr);\n\n\treturn t / rayLen;\n}\n\n//============================================================\nfloat NumberStepsFunction_Circle (vec2 current, vec2 stepValue)\n{\n   \n    const float c_circleRadiusStep = 4.0;\n    const float c_circleWidth = 2.0;\n    const float c_circleHalfWidth = c_circleWidth * 0.5;\n   \n    // find out how far we are from the center of the circles\n\tfloat currentDist = length(current);\n    \n    // find the distance of the circle more inward than where we are, and more outward.\n    float innerDistance = floor(currentDist / c_circleRadiusStep) * c_circleRadiusStep + c_circleHalfWidth;\n    float outerDistance = ceil(currentDist / c_circleRadiusStep) * c_circleRadiusStep - c_circleHalfWidth;\n    \n    // don't show the inner most circle, as we want something to look at!\n    if (currentDist < c_circleRadiusStep)\n        innerDistance = 0.0;        \n    \n    // if we are already inside the shape, no steps need to be taken\n    if (currentDist < innerDistance || currentDist > outerDistance)\n        return 0.0;\n    \n    // else, if our stepValue is nearly zero, it will take infinitely long, so return a large number\n    if (length(stepValue) < 0.00001)\n        return 1000000.0;\n        \n    // Test our ray against both inner and outer circles to see which we hit first.\n    // If the ray is going outwards (dot(current, stepValue) >= 0), we technically only need to test the outer circle.\n    // But, if the ray is going inwards, it could hit either.\n    // No harm in testing against both though.\n    float outerSteps = RayIntersectCircle(current, stepValue, vec3(0.0, 0.0, outerDistance));\n    \n    // if we are pointing towards the inner most circle, ignore it, so we have something to look at\n\tif (currentDist < c_circleRadiusStep)\n        return ceil(outerSteps);\n\n    // else find the number of steps to the inner circle\n    float innerSteps = RayIntersectCircle(current, stepValue, vec3(0.0, 0.0, innerDistance));    \n    \n   \t// return the first valid intersection if there is one\n    if (innerSteps < 0.0 && outerSteps < 0.0)\n        return 0.0;\n    \n    if (innerSteps < 0.0)\n        return ceil(outerSteps);\n    \n    if (outerSteps < 0.0)\n        return ceil(innerSteps);\n    \n    return ceil(min(innerSteps, outerSteps));\n}\n\n//============================================================\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // set up the camera\n    vec3 cameraPos;\n    vec3 rayDir;\n    {\n        vec2 percent = (fragCoord / iResolution.xy) - vec2(0.5,0.5);  \n        \n        // calculate where our camera should be, by smoothstep interpolating between points over distance\n        float envelope = min(1.0, iTime / 4.0);\n        float ztarget =  iTime;\n        float lastAngle = hash11(floor(ztarget / 8.0)) * c_twoPi;\n        float nextAngle = hash11(ceil(ztarget / 8.0)) * c_twoPi;\n        vec2 lastxytarget = vec2(cos(lastAngle), sin(lastAngle)) * 6.0;\n        vec2 nextxytarget = vec2(cos(nextAngle), sin(nextAngle)) * 6.0;\n        float blend = smoothstep(0.0, 1.0, fract(ztarget / 8.0));\n        vec2 xytarget = mix(lastxytarget, nextxytarget, blend) * envelope;\n        vec3 offset = vec3(xytarget, ztarget);\n       \n        float angleX = 0.0;\n        float angleY = 0.0;\n\n        if (iMouse.z > 0.0) {\n            vec2 mouse = iMouse.xy / iResolution.xy;\n            angleX = 3.14 + 6.28 * mouse.x;\n            angleY = (mouse.y - 0.5) * 3.14;//(mouse.y * 3.90) - 0.4;\n        }\n        \n        #if SEE_FAIL\n        \tfloat failz = mod(iTime * 2.0, 2.0) < 1.0 ? 0.01 : 0.99;\n        \toffset = vec3(-6.5, 0.0, failz);\n        \tangleX -= 5.25;\n        #endif\n\n        vec3 cameraFwd\t= (vec3(sin(angleX)*cos(angleY), sin(angleY), cos(angleX)*cos(angleY)));           \n        vec3 cameraRight = normalize(cross(vec3(0.0,1.0,0.0),cameraFwd));\n        vec3 cameraUp = normalize(cross(cameraFwd, cameraRight));\n\n        cameraPos = vec3(0.0, 0.0, -1.0) + offset;\n        vec3 cameraTarget = vec3(0.0, 0.0, 0.0) + offset;\n\n        float cameraViewHeight\t= c_cameraViewWidth * iResolution.y / iResolution.x;\n        vec3 rayTarget = cameraPos +  cameraFwd * c_cameraDistance + cameraRight * c_cameraViewWidth * percent.x + cameraUp * cameraViewHeight * percent.y;\n        rayDir = normalize(rayTarget - cameraPos);\n    }\n\n    // modulus camera z to simplify math, since it just repeats endlessly on z axis anyways\n\tcameraPos.z = fract(cameraPos.z);   \n    \n    // If ray facing negative on z axis, just flip direction and invert where we are in the cube on the z axis.\n    // Now we only have to deal with positive z directions.\n    if (rayDir.z < 0.0) {\n        rayDir *= -1.0;\n        cameraPos.xy *= -1.0;\n        cameraPos.z = 1.0 - cameraPos.z;\n    }\n        \n    // calculate the 3d position of the first ray hit, as a place to start our uv raytrace.\n    float intersection1Distance = (1.0 - cameraPos.z) / rayDir.z;\n    vec3 intersection1 = (cameraPos + rayDir * intersection1Distance);\n     \n    // Calculate how much the uv changes when stepping along the z axis one unit.\n    // We need to know this to know if the uvs are going positive or negative and by how much, on each axis.\n    vec2 uvStep = rayDir.xy / rayDir.z;\n          \n    // calculate how many steps it takes to hit something on the X and Y axis and take whichever hits first.\n    float steps = NumberStepsFunction_Circle(intersection1.xy, uvStep);    \n        \n    // calculate how far it is to the intersection we found\n    float dist = (1.0 - cameraPos.z) / rayDir.z + steps / rayDir.z;\n    \n    #if DARKEN_OVER_DISTANCE\n\tfloat tint = clamp(1.0 - dist / 15.0, 0.0, 1.0);\n    #else\n    float tint = 1.0;\n    #endif\n    \n    // calculate the hit point\n    vec3 hitPoint = cameraPos + rayDir * dist;\n    vec2 uv = hitPoint.xy;\n    \n    // sample the texture\n\tfragColor = vec4(texture(iChannel0, uv).rgb * tint, 1.0);    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

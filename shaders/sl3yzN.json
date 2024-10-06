@@ -1,0 +1,275 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1659356881",
+            "description": "testing screen space GI  (infinite bounces) for deferred rendering.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "sl3yzN",
+            "likes": 7,
+            "name": "Test SSGI (infinite bounces)",
+            "published": 3,
+            "tags": [
+                "gi",
+                "ssgi"
+            ],
+            "usePreview": 0,
+            "username": "romax9lahin",
+            "viewed": 727
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    vec2 uv = fragCoord/iResolution.xy;    \n    \n    fragColor.rgb = texture(iChannel3, uv).rgb;\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// All code here is by Zavie (https://www.shadertoy.com/view/4sfGDB#)\n\n/*\n\nThis shader is an attempt at porting smallpt to GLSL.\n\nSee what it's all about here:\nhttp://www.kevinbeason.com/smallpt/\n\nThe code is based in particular on the slides by David Cline.\n\nSome differences:\n\n- For optimization purposes, the code considers there is\n  only one light source (see the commented loop)\n- Russian roulette and tent filter are not implemented\n\nI spent quite some time pulling my hair over inconsistent\nbehavior between Chrome and Firefox, Angle and native. I\nexpect many GLSL related bugs to be lurking, on top of\nimplementation errors. Please Let me know if you find any.\n\n--\nZavie\n\n*/\n\n// Play with the following value to change quality.\n// You want as many samples as your GPU can bear. :)\n#define MAXDEPTH 4\n\n// Uncomment to see how many samples never reach a light source\n//#define DEBUG\n\n// Not used for now\n#define DEPTH_RUSSIAN 2\n\n#define PI 3.14159265359\n#define DIFF 0\n#define SPEC 1\n#define REFR 2\n#define NUM_SPHERES 9\n\nfloat seed = 0.;\nfloat rand() { return fract(sin(seed++)*43758.5453123); }\n\nstruct PixelInfo { vec3 pos, norm; };\nstruct Ray { vec3 o, d; };\nstruct Sphere {\n\tfloat r;\n\tvec3 p, e, c;\n\tint refl;\n};\n\nSphere lightSourceVolume = Sphere(20., vec3(50., 81.6, 81.6), vec3(12.), vec3(0.), DIFF);\nSphere spheres[NUM_SPHERES];\nvoid initSpheres()\n{\n\tspheres[0] = Sphere(1e5, vec3(-1e5+1., 40.8, 81.6),\tvec3(0.), vec3(.75, .25, .25), DIFF);\n\tspheres[1] = Sphere(1e5, vec3( 1e5+99., 40.8, 81.6),vec3(0.), vec3(.25, .25, .75), DIFF);\n\tspheres[2] = Sphere(1e5, vec3(50., 40.8, -1e5),\t\tvec3(0.), vec3(.75), DIFF);\n\tspheres[3] = Sphere(1e5, vec3(50., 40.8,  1e5+170.),vec3(0.), vec3(0.), DIFF);\n\tspheres[4] = Sphere(1e5, vec3(50., -1e5, 81.6),\t\tvec3(0.), vec3(.75), DIFF);\n\tspheres[5] = Sphere(1e5, vec3(50.,  1e5+81.6, 81.6),vec3(0.), vec3(.75), DIFF);\n\tspheres[6] = Sphere(16.5, vec3(27., 16.5, 47.), \tvec3(0.), vec3(1.), SPEC);\n\tspheres[7] = Sphere(16.5, vec3(73., 16.5, 78.), \tvec3(0.), vec3(.7, 1., .9), REFR);\n\tspheres[8] = Sphere(600., vec3(50., 681.33, 81.6),\tvec3(12.), vec3(0.), DIFF);\n}\n\nfloat intersect(Sphere s, Ray r) \n{\n\tvec3 op = s.p - r.o;\n\tfloat t, epsilon = 1e-3, b = dot(op, r.d), det = b * b - dot(op, op) + s.r * s.r;\n\tif (det < 0.) return 0.; else det = sqrt(det);\n\treturn (t = b - det) > epsilon ? t : ((t = b + det) > epsilon ? t : 0.);\n}\n\nint intersect(Ray r, out float t, out Sphere s, int avoid) \n{\n\tint id = -1;\n\tt = 1e5;\n\ts = spheres[0];\n\tfor (int i = 0; i < NUM_SPHERES; ++i) {\n\t\tSphere S = spheres[i];\n\t\tfloat d = intersect(S, r);\n\t\tif (i!=avoid && d!=0. && d<t) { t = d; id = i; s=S; }\n\t}\n\treturn id;\n}\n\nvoid world_pos_at(Ray r, out PixelInfo info)\n{\n    vec3 acc = vec3(0.);\n\tvec3 mask = vec3(1.);\n\tint id = -1;\n\n    float t;\n\tSphere obj;\n\tid = intersect(r, t, obj, id);               \n\tvec3 x = t * r.d + r.o;\n    vec3 n = normalize(x - obj.p), nl = n * sign(-dot(n, r.d));\n    info.pos = x;\n    info.norm = n;\n}\n\nvec3 camPos()\n{\n    float speed = 1.;\n    vec3 offset = 30. * vec3(sin(speed * iTime), cos(speed * iTime), 0);\n    vec3 camPos = offset + vec3(\n        (2. * .5 * iResolution.xy / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), \n        169.\n    );\n    return camPos;   \n}\n\nvoid build_screen_ray(vec2 fragCoord, out Ray r)\n{    \n    vec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.;\n    vec3 target = vec3(50., 40., 81.6);\n    vec3 camera = camPos();\n\n    vec3 cz = normalize(target - camera);\n\tvec3 cx = vec3(1., 0., 0.);\n\tvec3 cy = normalize(cross(cx, cz)); cx = cross(cz, cy);\n    vec3 raydir = normalize(0.53135 * (iResolution.x/iResolution.y * uv.x * cx + uv.y * cy) + cz);\t    \n    \n    r.o = camera;\n    r.d = raydir;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tinitSpheres();\n        \n    PixelInfo info;\n    Ray screen_ray;\n    build_screen_ray(fragCoord, screen_ray);\n    world_pos_at(screen_ray, info); \n     \n    fragColor.rgb = info.norm;\n    fragColor.a = length(info.pos - screen_ray.o);\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\nstruct Ray { vec3 o, d; };\n\nvec3 camPos()\n{\n    float speed = 1.;\n    vec3 offset = 30. * vec3(sin(speed * iTime), cos(speed * iTime), 0);\n    vec3 camPos = offset + vec3(\n        (2. * .5 * iResolution.xy / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), \n        169.\n    );\n    return camPos;   \n}\n\nvoid build_screen_ray(vec2 uv, out Ray r)\n{    \n    //vec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.;\n    vec3 target = vec3(50., 40., 81.6);\n    vec3 camera = camPos();\n\n    vec3 cz = normalize(target - camera);\n\tvec3 cx = vec3(1., 0., 0.);\n\tvec3 cy = normalize(cross(cx, cz)); cx = cross(cz, cy);\n    vec3 raydir = normalize(0.53135 * (iResolution.x/iResolution.y * uv.x * cx + uv.y * cy) + cz);\t    \n    \n    r.o = camera;\n    r.d = raydir;\n}\n\nvec3 position(vec2 uv, float depth)\n{\n    Ray screen_ray;\n    build_screen_ray(2. * uv - vec2(1,1), screen_ray);\n\n    return (screen_ray.o + screen_ray.d * depth);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;    \n    vec4 c02 = texture(iChannel0, uv);\n\n    vec3 N = c02.xyz;\n    vec3 P = position(uv, c02.w);  \n    \n    vec3 res = vec3(0.0);\n    \n    if (P.y < 0.02)\n    {\n        res += 1.0 * \n            vec3(0.5+0.5*sin(iTime*0.7),0.5+0.5*cos(iTime*1.4),0.2);\n           //vec3(0.2,0.9,0.2);\n    }\n    if (P.y > 81.32)\n    {\n       res += 1.0 * \n           vec3(0.5+0.5*cos(iTime*1.1),0.2,0.5+0.5*cos(iTime*0.9));\n           //vec3(0.9,0.2,0.2);\n    }\n    \n    fragColor.rgb = res;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\nstruct Ray { vec3 o, d; };\n\nfloat rand(vec3 co, float seed)\n{\n    return fract(iDate.a + seed * 109.3 + sin(dot(co.xy, vec2(12.9898, seed * 78.233))) * 43758.5453);\n}\n\nvec3 camPos()\n{\n    float speed = 1.;\n    vec3 offset = 30. * vec3(sin(speed * iTime), cos(speed * iTime), 0);\n    vec3 camPos = offset + vec3(\n        (2. * .5 * iResolution.xy / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), \n        169.\n    );\n    return camPos;   \n}\n\nvoid build_screen_ray(vec2 uv, out Ray r)\n{    \n    vec3 target = vec3(50., 40., 81.6);\n    vec3 camera = camPos();\n\n    vec3 cz = normalize(target - camera);\n\tvec3 cx = vec3(1., 0., 0.);\n\tvec3 cy = normalize(cross(cx, cz)); cx = cross(cz, cy);\n    vec3 raydir = normalize(0.53135 * (iResolution.x/iResolution.y * uv.x * cx + uv.y * cy) + cz);\t    \n    \n    r.o = camera;\n    r.d = raydir;\n}\n\nvec3 position(vec2 uv, float depth)\n{\n    Ray screen_ray;\n    build_screen_ray(2. * uv - vec2(1,1), screen_ray);\n\n    return (screen_ray.o + screen_ray.d * depth);\n}\n\nvec3 combine(vec3 P1, vec3 N1, vec2 uv2, inout float w)\n{\n    vec4 c02 = texture(iChannel0, uv2);\n\n    vec3 N2 = c02.xyz;\n    vec3 P2 = position(uv2, c02.w);  \n    vec3 L2 = texture(iChannel3, uv2).rgb;\n    \n    //1 bounce\n    //if (fract(iTime * 0.12) < 0.5) L2 = texture(iChannel1, uv2).rgb; \n    \n    vec3 delta = P2 - P1;\n    float dist = length(delta);\n    vec3 L = delta / dist;\n    if (dist < 0.001) return vec3(0);\n\n    float alignA = clamp(dot(L, N1), 0.0f, 1.0f); // how much the center is curved towards the sample   \n    float alignB = clamp(dot(-L, N2), 0.0f, 1.0f); // how much the sample is curved towards the center\n        \n    float weight = alignA * alignB / (dist * dist);\n   \n    w += weight;\n    \n    return L2 * weight;\n}\n\nvec4 SSGI(vec2 fragCoord)\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 ps = vec2(1) / iResolution.xy;\n     \n    float w = 0.;\n    vec3 acc = vec3(0);\n    \n    vec4 c0 = texture(iChannel0, uv);\n    \n    vec3 N = c0.xyz;\n    vec3 P = position(uv, c0.w);\n    vec3 L = texture(iChannel2, uv).rgb;\n        \n    float nr_samples = 6.;\n    \n    // super big cheat as a test for directional sampling > seems to make it more glossy!\n    // float v = dot(N, vec3(0, 1, 0));\n    // float h = dot(N, vec3(1, 0, 0));\n    // vec2 q = vec2(h, v);\n    \n    float prog_begin = 2. * 3.1415 * rand(P, 357.); \n    float prog_end = prog_begin + 2. * 3.1415;\n    \n    float prog = prog_begin;\n    \n    float step_avg = (prog_end - prog_begin) / nr_samples;\n    float step_min = 0.8 * step_avg;\n    float step_range = 0.4 * step_avg; \n    float offset = 1.5;\n    float limit = iResolution.x * 0.7;\n\n    // take random samples on screen: \n    // todo -> in direction of normal\n    // todo -> more in direction of normal if glossy\n    // todo -> avoid off-screen samples?\n    for (float i = 0.; i < nr_samples; ++i)\n    {\n        prog += step_min + step_range * rand(P, 1. + i);\n        float r2 = rand(P, 2. * i);\n        //r2 = sqrt(r2);\n        r2 = offset + (limit - offset) * r2;\n        vec2 s = uv + ps /** q*/ * r2 * vec2(sin(prog), cos(prog));\n        // why does this have the wrong effect\n        // because clamping is actually a good method to approximate off-screen areas?\n        /*if (s.x < 0.) s.x = -s.x;\n        if (s.y < 0.) s.y = -s.y;\n        if (s.x > 1.) s.x = 2. - s.x;\n        if (s.y > 1.) s.y = 2. - s.y;*/\n        acc += combine(P, N, s, w);\n    }\n    \n    return vec4(acc / (0.00001 + w), 0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{        \n    //vec3 camera = vec3((2. * .5*iResolution.xy / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), 169.);\n    vec2 uv = fragCoord / iResolution.xy;\n    // todo: double buffer the light-accumulation\n    // and then make a mapping of the new fram onto the old one?\n    // mapping by 1 matrix to map from old to new view-space?\n    // then pretend pixels are {u, v, depth, 0/1(?)} coordinates\n    fragColor = SSGI(fragCoord) * 0.3 + 0.7 * texture(iChannel2, uv);\n\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "struct Ray { vec3 o, d; };\n\nfloat rand(vec3 co, float seed)\n{\n    return fract(iDate.a + seed * 109.3 + sin(dot(co.xy, vec2(12.9898, seed * 78.233))) * 43758.5453);\n}\n\nvec3 camPos()\n{\n    float speed = 1.;\n    vec3 offset = 30. * vec3(sin(speed * iTime), cos(speed * iTime), 0);\n    vec3 camPos = offset + vec3(\n        (2. * .5 * iResolution.xy / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), \n        169.\n    );\n    return camPos;   \n}\n\nvoid build_screen_ray(vec2 uv, out Ray r)\n{    \n    //vec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.;\n    vec3 target = vec3(50., 40., 81.6);\n    vec3 camera = camPos();\n\n    vec3 cz = normalize(target - camera);\n\tvec3 cx = vec3(1., 0., 0.);\n\tvec3 cy = normalize(cross(cx, cz)); cx = cross(cz, cy);\n    vec3 raydir = normalize(0.53135 * (iResolution.x/iResolution.y * uv.x * cx + uv.y * cy) + cz);\t    \n    \n    r.o = camera;\n    r.d = raydir;\n}\n\nvec3 position(vec2 uv, float depth)\n{\n    Ray screen_ray;\n    build_screen_ray(2. * uv - vec2(1,1), screen_ray);\n\n    return (screen_ray.o + screen_ray.d * depth);\n}\n\nvec3 combine(vec3 P1, vec3 N1, vec2 uv2, inout float w)\n{\n    vec4 c02 = texture(iChannel0, uv2);\n\n    vec3 N2 = c02.xyz;\n    vec3 P2 = position(uv2, c02.w);\n    vec3 AA2 = texture(iChannel2, uv2).rgb;\n    \n    float dist = length(P1 - P2) / 5.;\n    float align = clamp(dot(N1, N2), 0., 1.);\n        \n    float weight = align / (0.01 + dist);\n    w += weight;\n    \n    return AA2 * weight;\n}\n\nvec3 SSGI_resolve(vec2 fragCoord)\n{\n    // todo: 2 pass resolve (2 pass weighted gaussian blurr)\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 ps = vec2(1) / iResolution.xy;\n    \n    vec4 c0 = texture(iChannel0, uv);\n\n    vec3 N = c0.xyz;\n    vec3 P = position(uv, c0.w);\n\n    float w = 1.;\n    vec3 acc = w * texture(iChannel2, uv).rgb;\n            \n    float nr_samples = 32.;\n    float prog = 2. * 3.1415 * rand(P, 1.);\n    float step_avg = 2. * 3.1415 / nr_samples;\n    float step_min = 0.95 * step_avg;\n    float step_range = 0.1 * step_avg; \n     \n    // take random samples on screen\n    for (float i = 0.; i < nr_samples; ++i)\n    {\n        prog += step_min + step_range * rand(P, i);\n        float r2 = rand(P, 2. * i + 99.);\n        r2 = 7.5 + 11.5 * r2;     \n        vec2 s = uv + ps * vec2(r2 * sin(prog), r2 * cos(prog));\n        acc += combine(P, N, s, w);\n    }\n\n    //return vec3(acc.w);\n    return acc.rgb / (0. + w); //(acc.xyz / w + light * 0.8);\n    //return vec3(light.r, acc.r * 2.0, 0);\n    //return light + acc;// / nr_samples;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    vec2 uv = fragCoord/iResolution.xy;    \n    vec4 c02 = texture(iChannel0, uv);\n\n    vec3 N = c02.xyz;\n    vec3 P = position(uv, c02.w);\n    \n    vec3 light = texture(iChannel1, uv).rgb;\n    fragColor.rgb = light;\n    \n    //fragColor.rgb = position(uv);\n    \n    /*if (fract(iTime * 0.12) < 0.15)\n    {\n        fragColor.rgb = vec3(0.5) + 0.5 * texture(iChannel0, uv).rgb;     \n    }\n    else if (fract(iTime * 0.12) < 0.3)\n    {\n        fragColor.rgb = light;\n    }\n    else if (fract(iTime * 0.12) < 0.45)\n    {\n        fragColor.rgb = texture(iChannel2, uv).rgb;\n    }\n    else\n    {*/\n        fragColor.rgb = light + SSGI_resolve(fragCoord) * 0.7;\n    //}\n    \n\n    // todo: reconstuct pos from depth!\n   \n    //if (uv.x < 0.5)\n    //   fragColor.rgb = light; // SSGI_resolve(fragCoord);\n    //else\n    //   fragColor.rgb = light + SSGI_resolve(fragCoord);\n    //if (uv.x > 0.5)\n    //    fragColor.rgb = SSGI_resolve(fragCoord);\n    //else\n    //   fragColor.rgb = texture(iChannel2, uv).rgb;\n    //fragColor.rgb = light;\n    //fragColor.rgb = light + SSGI_resolve(fragCoord);\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

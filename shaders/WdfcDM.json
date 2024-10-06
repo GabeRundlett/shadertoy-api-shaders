@@ -1,0 +1,258 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1584933080",
+            "description": "SPH implementation using buffers for storage\n\nSpace - Add particles\nMouse - attract particles\n\nBuffer A - pressure calculations\nBuffer B - pressure force and viscosity force\nBuffer C - particle overlap avoidance\nBuffer B - force/velocity integration ",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "WdfcDM",
+            "likes": 18,
+            "name": "SPH Fluid Sim",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "fluid",
+                "particle",
+                "sph"
+            ],
+            "usePreview": 0,
+            "username": "natethegreat2525",
+            "viewed": 1088
+        },
+        "renderpass": [
+            {
+                "code": "#define dotrad 10\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (fragCoord.y < 10. || fragCoord.x < 10. || fragCoord.x > iResolution.x-10. || fragCoord.y > iResolution.y-10.) {\n        return;\n    }\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    float thickness = 0.;\n    float thickness_r = 0.;\n    float thickness_d = 0.;\n    vec2 vel;\n    float count = 0.;\n    // Output to screen\n    for (int i = -dotrad; i < dotrad; i++) {\n        for (int j = -dotrad; j < dotrad; j++) {\n            vec4 tex = texelFetch(iChannel0, ivec2(fragCoord) + ivec2(i,j), 0);\n            if (tex.x == 0.) {\n                continue;\n            }\n            float str = length(vec2(i,j));\n            float str_r = length(vec2(float(i)+1.,j));\n            float str_d = length(vec2(i,float(j)+1.));\n\n    \t\tthickness += 1./(str*str);\n    \t\tthickness_r += 1./(str_r*str_r);\n    \t\tthickness_d += 1./(str_d*str_d);\n            vel += tex.zw;\n            count++;\n        }\n    }\n    float thickness_base = clamp(thickness, 0., .5)*2.;\n    thickness_r = clamp(thickness_r, 0., .5)*2.;\n    thickness_d = clamp(thickness_d, 0., .5)*2.;\n    vec2 thickness_grad = (vec2(thickness_r, thickness_d)-thickness_base);\n    vec4 bg = texture(iChannel1, uv-thickness_grad*.1);\n    vec3 base_color = vec3(vel*.2/max(1.,count) + .5,1);\n    fragColor = vec4(mix(bg.rgb,base_color,thickness > 0.1 ? .5 : 0.), 1);\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n\n// on this buffer x = pressure, y = pressure_near\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 curVec = ivec2(fragCoord);\n    vec4 self_tex = texelFetch(iChannel0, curVec, 0);\n  \t\n    if (self_tex.x > 0.) {\n        float dens = 0.;\n        float dens_near = 0.;\n        for (int i = -RAD; i <= RAD; i++) {\n            for (int j = -RAD; j <= RAD; j++) {\n                if (i == 0 && j == 0) {\n                    continue;\n                }\n                ivec2 ij = ivec2(i,j);\n                vec4 tex = texelFetch(iChannel0, curVec+ij, 0);\n\n                if (tex.x > 0.) {\n                    vec2 dp = tex.xy - self_tex.xy;\n                    float len = length(dp);\n                    if (len < r) {\n                        float q = 1.-len/r;\n                        float q_sq = q*q;\n                        dens += q_sq;\n                        dens_near += q*q_sq;\n                    }\n                }\n            }\n    \t}\n        float pressure = k*(dens-rest_dens);\n        float pressure_near = k_near*dens_near;\n        fragColor = vec4(pressure, pressure_near, 0, 0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n\n// on this buffer x = force X, y = force Y\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 curVec = ivec2(fragCoord);\n    vec4 cur_tex = texelFetch(iChannel0, curVec, 0);\n  \tfragColor = vec4(0);\n    if (cur_tex.x > 0.) {\n        float dens = 0.;\n        float dens_near = 0.;\n       \tvec4 self_vals = texelFetch(iChannel1, curVec, 0);\n\n        for (int i = -RAD; i <= RAD; i++) {\n            for (int j = -RAD; j <= RAD; j++) {\n                if (i == 0 && j == 0) {\n                    continue;\n                }\n                ivec2 ij = ivec2(i,j);\n                vec4 tex = texelFetch(iChannel0, curVec+ij, 0);\n\t\t\t\tvec4 neighbor_vals = texelFetch(iChannel1, curVec+ij, 0);\n                if (tex.x > 0.) {\n                    vec2 dp = cur_tex.xy-tex.xy;\n                    float len = length(dp);\n                    if (len < r) {\n                        float q = 1.-len/r;\n                        float dm = q*(self_vals.x + neighbor_vals.x + (self_vals.y + neighbor_vals.y)*q);\n                        vec2 visc = (tex.zw-cur_tex.zw) * q * VISC;\n                        fragColor.xy += dm*dp/len + visc;\n                    }\n                    //relative drag\n                    //fragColor.xy += tex.zw*.01 - cur_tex.zw*.01;\n                }\n            }\n    \t}\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n\n// on this buffer x,y = position of first duplicated particle, z,w = position of second duplicated particle\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 curVec = ivec2(fragCoord);\n    bool hasPoint = false;\n    bool hasPoint2 = false;\n    for (int i = -MAX_V; i <= MAX_V; i++) {\n        for (int j = -MAX_V; j <= MAX_V; j++) {\n            ivec2 ij = ivec2(i,j);\n            vec4 tex = texelFetch(iChannel0, curVec+ij, 0);\n\t\t\tvec4 force = texelFetch(iChannel1, curVec+ij, 0);\n            tex.zw += force.xy;\n            if (tex.x != 0. && int(tex.z+tex.x) == curVec.x && int(tex.w+tex.y) == curVec.y) {\n                if (hasPoint) {\n                    if (hasPoint2) {\n                        //third point\n                        fragColor.zw = vec2(float(i+curVec.x), float(j+curVec.y));\n                    } else {\n                        //second point\n                        fragColor.xy = vec2(float(i+curVec.x), float(j+curVec.y));\n                    }\n                \thasPoint2 = true;\n                }\n                hasPoint = true;\n            }\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define RAD 10\n#define k .01\n#define k_near .1\n#define rest_dens 5.\n#define r 10.\n#define VISC 0.01\n\n#define G -.05\n#define MAX_V 5\n#define MAX_Vd 5.",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\n// modified version of\n// http://byteblacksmith.com/improvements-to-the-canonical-one-liner-glsl-rand-for-opengl-es-2-0/\nfloat rand(vec3 co)\n{\n    float a = 12.9898;\n    float b = 78.233;\n    float d = 283.8574;\n    float c = 43758.5453;\n    float dt= dot(co ,vec3(a,b,d));\n    float sn= mod(dt,3.14);\n    return fract(sin(sn) * c);\n}\n\n// on this buffer xy = particle position, zw = particle velocity\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    bool hasPoint = false;\n    ivec2 curVec = ivec2(fragCoord);\n    for (int i = -MAX_V; i <= MAX_V; i++) {\n        for (int j = -MAX_V; j <= MAX_V; j++) {\n            ivec2 ij = ivec2(i,j);\n            vec4 tex = texelFetch(iChannel0, curVec+ij, 0);\n\t\t\tvec4 force = texelFetch(iChannel1, curVec+ij, 0);\n            if (iMouse.z > 0.) {\n                vec2 diff = iMouse.xy - fragCoord.xy;\n                float len = length(diff);\n                if (len < 150.) {\n                    force.xy += .2*normalize(diff);\n                }\n            }\n            tex.zw += force.xy;\n            tex.z = min(max(tex.z, -MAX_Vd),MAX_Vd);\n            tex.w = min(max(tex.w, -MAX_Vd),MAX_Vd);\n            if (!hasPoint && tex.x != 0. && int(tex.z+tex.x) == curVec.x && int(tex.w+tex.y) == curVec.y) {\n                fragColor = tex + vec4(tex.zw,0,G);\n                hasPoint = true;\n            }\n        }\n    }\n    if (!hasPoint) {\n\t\tvec4 dedup = texelFetch(iChannel2, curVec+ivec2(1,0), 0);\n        if (dedup.x != 0. || dedup.y != 0.) {\n            vec4 tex = texelFetch(iChannel0, ivec2(int(dedup.x),int(dedup.y)), 0);\n            vec4 force = texelFetch(iChannel1, ivec2(int(dedup.x),int(dedup.y)), 0);\n            tex.zw += force.xy;\n            tex.z = min(max(tex.z, -MAX_Vd),MAX_Vd);\n            tex.w = min(max(tex.w, -MAX_Vd*.9),MAX_Vd*.9);\n            fragColor = tex + vec4(tex.zw,0,G);\n        }\n    }\n    if (fragCoord.y < 20.) {\n        fragColor.w += 0.15*(20.-fragCoord.y);\n    }\n    if (fragCoord.x < 20.) {\n    \tfragColor.z += 0.15*(20.-fragCoord.x);\n    }\n    if (fragCoord.x > iResolution.x-20.) {\n    \tfragColor.z -= 0.15*(fragCoord.x + 20. - iResolution.x);\n    }\n    if (fragCoord.y > iResolution.y-20.) {\n    \tfragColor.w -= 0.15*(fragCoord.y + 20. - iResolution.y);\n    }\n    if (iFrame == 2) {\n        if (curVec.x < 200 && curVec.x > 50 && curVec.y > 50 && (curVec.x + curVec.y) % 3 == 1 && curVec.y % 3 == 1 ) {\n            fragColor = vec4(fragCoord.xy,0,0);\n        }\n    }\n    if (texelFetch(iChannel3, ivec2(32,0), 0).x > 0.5 && rand(vec3(iTime,fragCoord)) > .995 && fragCoord.x < 150. && fragCoord.x > 50. && fragCoord.y > 400.) {\n        fragColor = vec4(fragCoord.xy, 0,0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

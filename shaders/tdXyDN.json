@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1584807633",
+            "description": "tessellation test ...nothing fast and fancy ...more of educaional value i guess ;-)\n...geometry and more detailed info here: [url]https://www.shaderoo.org/?shader=zh8I1X[/url]\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "tdXyDN",
+            "likes": 15,
+            "name": "Tetrahedra SDF tessellation",
+            "published": 3,
+            "tags": [
+                "tetrahedra",
+                "tessellation",
+                "marchingcubes"
+            ],
+            "usePreview": 0,
+            "username": "flockaroo",
+            "viewed": 791
+        },
+        "renderpass": [
+            {
+                "code": "// created by florian berger (flockaroo) - 2020\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// Tetrahedra tessellation\n\n// also check original on shaderoo:\n//  https://www.shaderoo.org/?shader=zh8I1X\n//  ...for geometry and more detailed info\n\n\n// check Buff_A for actual algorithm...\n\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\n\n// Volume -> cubes -> tetrahedra -> cut by distance field\n\n// scan the volume in small cubic cells (like marchin cubes)\n// ...subdivide every cube into tetrahedra (simpler to cut that cubes) \n// ...cut tetrahedra by distance (simpler to cut that cubes)\n// ...create cutting triangles\n\n// you can also export the object by pressing (Geom->.OBJ) button\n\n#define Res vec2(iResolution.xy)\n\nvoid march(inout vec3 pos, vec3 dir)\n{\n    float eps=.001;\n    for(int i=0;i<80;i++)\n    {\n        float d=dist(pos);\n        pos+=dir*d*.7;\n        if (d<eps) break;\n    }\n}\n\nuniform float showRaymarch;\n\n// do some raymarching here for comparison to original distance field\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 pos,dir;\n    getTrafo(pos,dir,fragCoord, Res, iMouse, iTime);\n    march(pos,dir);\n    vec3 g=getGrad(pos,.001);\n    vec3 n=normalize(g);\n    vec3 colM=n*.5+.5;\n    if(length(g)<.0001) colM=vec3(0);\n    vec3 colG=texture(iChannel0,fragCoord/Res).xyz;\n    \n    fragColor.xyz=mix(colG,colM+.5-.5*showRaymarch,0.3);\n    fragColor.w=1.;\n    //fragColor+=.3*texture(iChannel1,fragCoord/Res);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2020\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// Tetrahedra tessellation\n\n// the first pixel in Buff_A stores:\n// pixel.x.....actual number of processed tatrahedron\n// pixel.y.....actual number of triangles\n\n// ...the following TetraPerPass*4 pixels in Buff_A are used for finding new \n// tatrahedra which contain distance field 0-passes\n// (4 pixels per tetrahedron)\n\n// ...the pixels after TetraPerPass*4 are the final triangles (3 pixels per triangle) \n\n// 2 modes: 12 or 5 tetrahedra per cube cell\n#define TETRA_PER_CUBE 5\n//#define TETRA_PER_CUBE 12\n\n// enable this to start searching triangles in different regions of the volume\n// otherwise volume would just be stepped through sequentially from 0,0,0 to 1,1,1\n#define MULTI_SEARCHPOINTS\n\n//#include Include_A.glsl\n//#include Include_B.glsl\n\n#define Res0 vec2(textureSize(iChannel0,0))\n\nint getPixelIdx(vec2 c)\n{\n    ivec2 res=textureSize(iChannel0,0);\n    return int(c.x)+int(c.y)*res.x;\n}\n\n\n// check cut plane through tetrahedron\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\nvoid checkTetra(vec3 p[4], int vidx, inout vec3 v)\n{\n    vec3 t[4]; int ti=0;\n    t[0]=vec3(0);t[1]=vec3(0);t[2]=vec3(0);t[3]=vec3(0);\n    //{0,1, 1,2, 2,0, 0,3, 1,3, 2,3}\n    int idxn[4];\n    int idxp[4];\n    for(int i=0;i<6;i++)\n    {\n        int i1=i%3;\n        int i2=(i+1)%3; if(i>=3) i2=3;\n        float d1=dist(p[i1]), d2=dist(p[i2]);\n        \n        // if one point has negative and the other positive distance\n        if(d1*d2<0.) { \n            \n            // store index of negative/positive distance point\n            idxn[ti] = (d1<0.) ? i1 : i2 ;\n            idxp[ti] = (d1<0.) ? i2 : i1 ;\n            \n            // simple mix...\n            t[ti] = mix(p[i1],p[i2],abs(d1/(d1-d2)));\n            //t[ti]=mix(p[i1],p[i2],0.);\n            \n            // ...refine by marching to dist=0\n            vec3 dir = normalize(p[i2]-p[i1])*sign(d1);\n            for(int j=0;j<8;j++) t[ti] += dist(t[ti])*dir;\n            \n            ti++; \n        }\n    }\n    \n    //FIXME 4th point needs to be checked specially - which 2 other points of tri?\n    if(t[3]!=vec3(0)) // FIXME: !=vec3(0) is not the best detection \n    {\n        #ifdef QUADSTRIP_ORDER\n        // quadstrip order:\n        // p1- to p1+,    p1- to p2+,    p2- to p1+,    p2- to p2+\n        int idx[4] = int[4](0,1,2,3);\n        for(int i=1;i<4;i++) if(idxn[i]==idxn[0] && idxp[i]!=idxp[0]) { idx[1]=i; break; }\n        for(int i=1;i<4;i++) if(idxn[i]!=idxn[0] && idxp[i]==idxp[0]) { idx[2]=i; break; }\n        for(int i=1;i<4;i++) if(idxn[i]!=idxn[0] && idxp[i]!=idxp[0]) { idx[3]=i; break; }\n        #else\n        // quad order:\n        // p1- to p1+,    p1- to p2+,    p2- to p2+,    p2- to p1+\n        int idx[4] = int[4](0,1,2,3);\n        for(int i=1;i<4;i++) if(idxn[i]==idxn[0] && idxp[i]!=idxp[0]) { idx[1]=i; break; }\n        for(int i=1;i<4;i++) if(idxn[i]!=idxn[0] && idxp[i]!=idxp[0]) { idx[2]=i; break; }\n        for(int i=1;i<4;i++) if(idxn[i]!=idxn[0] && idxp[i]==idxp[0]) { idx[3]=i; break; }\n        vec3 n = cross(t[idx[1]]-t[idx[0]],t[idx[2]]-t[idx[0]]);\n        if (dot(n,getGrad(t[idx[0]],.01))<=0.) { vidx=3-vidx; } \n        #endif\n        v=t[idx[vidx]];\n    }\n    else\n    {\n        vec3 n = cross(t[1]-t[0],t[2]-t[0]);\n        if (dot(n,getGrad(t[0],.01))<=0.) { vec3 d=t[2];t[2]=t[1];t[1]=d; } \n        v=t[vidx];\n        //v=vec3(0);\n    }\n}\n\n\n\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\nvoid checkTetra12(int cIdx, int tIdx, int vIdx, ivec3 cnum, vec3 csize, inout vec3 vert)\n{\n    // this is just a trick to start searching triangles in different regions of the volume\n    // otherwise volume would just be stepped through sequentially from 0,0,0 to 1,1,1\n    #ifdef MULTI_SEARCHPOINTS\n    int subdiv=8;\n    int cl=(cnum.x*cnum.y*cnum.z)/subdiv;\n    cIdx=(cIdx%subdiv)*cl+cIdx/subdiv;\n    #endif\n    \n    ivec3 cIdx3=ivec3(cIdx%cnum.x,(cIdx/cnum.x)%cnum.y,(cIdx/(cnum.x*cnum.y))%cnum.z);\n    vec3 p[4];\n    vec3 cm=csize*vec3(cIdx3-cnum/2);\n    p[3]=cm;\n    for(int i=0;i<3;i++)\n    {\n        p[i]=(vec3(i%2,i/2,0)-.5)*csize;\n        if (tIdx%2==1) p[i].xy*=-1.;\n        //if (tIdx>=6) p[i].zx*=-1.;\n        if ((tIdx/2)%3==1) p[i]=p[i].zxy;\n        if ((tIdx/2)%3==2) p[i]=p[i].yzx;\n        if (tIdx>=6) p[i]*=-1.;\n        //if (tIdx/2>3) p[i]=p[i].zxy;\n        //if (tIdx/2>4) p[i]=p[i].zxy;\n        p[i]+=cm;\n    }\n    //if(tIdx==11)\n    checkTetra(p,vIdx,vert);\n}\n\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\n// beware: those cells have to be flipped every other cell to fit together (see cellPar below)\nvoid checkTetra5(int cIdx, int tIdx, int vIdx, ivec3 cnum, vec3 csize, inout vec3 vert)\n{\n    // this is just a trick to start searching triangles in different regions of the volume\n    // otherwise volume would just be stepped through sequentially from 0,0,0 to 1,1,1\n    #ifdef MULTI_SEARCHPOINTS\n    int subdiv=8;\n    int cl=(cnum.x*cnum.y*cnum.z)/subdiv;\n    cIdx=(cIdx%subdiv)*cl+cIdx/subdiv;\n    #endif\n    \n    ivec3 cIdx3=ivec3(cIdx%cnum.x,(cIdx/cnum.x)%cnum.y,(cIdx/(cnum.x*cnum.y))%cnum.z);\n    int cellPar=(cIdx3.x+cIdx3.y+cIdx3.z)&1;\n    vec3 p[4];\n    vec3 cm=csize*vec3(cIdx3-cnum/2);\n    \n    // center tetrahedron\n    for(int i=0;i<4;i++) \n        p[i]=cm+.5*csize*vec3(vec2(i&1)*2.-1.,1)*vec3(1,vec2((i/2)&1)*2.-1.)*vec3(float(cellPar)*2.-1.,1,1);\n\n    if(tIdx<4)  // for edge tatrahedra just mirror one edge point\n        p[tIdx]=-(p[tIdx]-cm)+cm;\n        \n    //if(tIdx==11)\n    checkTetra(p,vIdx,vert);\n}\n\nint sortInTriangles(int pixIdx, int triCnt, inout vec4 c)\n{\n    int pix_ti=(pixIdx-sort0)/3-triCnt;\n    int pix_vi=(pixIdx-sort0)%3;\n    int ti=-1;\n    for(int i=0;i<TetraPerPass;i++)\n    {\n        vec3 p[4];\n        p[3]=getPixel(march0+i*4+3).xyz;\n        p[2]=getPixel(march0+i*4+2).xyz;\n        p[1]=getPixel(march0+i*4+1).xyz;\n        p[0]=getPixel(march0+i*4+0).xyz;\n        if(p[0]!=vec3(0))\n        {\n            ti++;\n            if (pix_ti==ti) { c=vec4(p[pix_vi],1); }\n            if(p[3]!=vec3(0))\n            {\n                ti++;\n                if (pix_ti==ti) { c=vec4(p[(pix_vi+2)%4],1); }\n            }\n        }\n    }\n    return ti+1;\n}\n\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\nvoid mainImage( out vec4 fragColor, vec2 fragCoord )\n{\n    // store actual cell index in ll pixel\n    vec3 fullSize=vec3(2.5,5.,1.8);\n    vec3 csize=vec3(.085);\n    ivec3 cnum=ivec3(fullSize/csize);\n    int tetraCnt=int(getPixel(0).x);\n    int triCnt=int(getPixel(0).y);\n    // 4 pixels per tetrahedron\n    ivec2 res=textureSize(iChannel0,0);\n    int pixIdx=getPixelIdx(fragCoord);\n    fragColor=getPixel(pixIdx);\n    if ( tetraCnt>(cnum.x*cnum.y*cnum.z)*TETRA_PER_CUBE && iFrame!=0 ) return;\n\n//##IMG##...stripped inline images away for size ( check on https://www.shaderoo.org/?shader=zh8I1X )\n    // check all cells in volume\n    if(pixIdx-march0>=0 && pixIdx-march0<TetraPerPass*4)\n    {\n        int pIdx=pixIdx-march0+tetraCnt*4;\n        int cellIdx =(pIdx/4)/TETRA_PER_CUBE;\n        int tetraIdx=(pIdx/4)%TETRA_PER_CUBE;\n        int vertIdx =pIdx%4;\n        vec3 vert=vec3(0);\n        #if TETRA_PER_CUBE == 12\n        checkTetra12(cellIdx,tetraIdx,vertIdx,cnum,csize,vert);\n        #endif\n        #if TETRA_PER_CUBE == 5\n        checkTetra5(cellIdx,tetraIdx,vertIdx,cnum,csize,vert);\n        #endif\n        fragColor=vec4(vert,1);\n    }\n    \n    // store triangles in upper buffer region (blue in above image)\n    //#ifdef SORT_IN_TRIANGLES\n    if(pixIdx-sort0>=triCnt*3 && pixIdx-sort0<(triCnt+TetraPerPass*2)*3)\n    {\n        fragColor=getPixel(pixIdx);\n        sortInTriangles(pixIdx,triCnt,fragColor);\n        //fragColor=col;\n    }\n    //#endif\n    \n    // store temporary tetrahedra in first buffer region (green in above image)\n    if(pixIdx==0) \n    {\n        int tcnt=sortInTriangles(pixIdx,triCnt,fragColor);\n        // store counters in 1st pixel (red in above image)\n        fragColor=vec4(tetraCnt+TetraPerPass,triCnt+tcnt,0,1);\n    }\n    if(iFrame==0) fragColor=vec4(0);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2020\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// rendering triangles from Buffer A\n\n// ...not really fast or useful to raymarch triangles\n// ...but maybe it serves some \"educational\" purpose (at least for myself ;-)\n\n#define TriPerFrame 10\n\n#define Res vec2(iResolution.xy)\n\nint tcnt=0;\n\nfloat dot2( vec3 v ) { return dot(v,v); }\nfloat udTriangle( vec3 p, vec3 a, vec3 b, vec3 c )\n{\n  vec3 ba = b - a; vec3 pa = p - a;\n  vec3 cb = c - b; vec3 pb = p - b;\n  vec3 ac = a - c; vec3 pc = p - c;\n  vec3 nor = cross( ba, ac );\n\n  return sqrt(\n    (sign(dot(cross(ba,nor),pa)) +\n     sign(dot(cross(cb,nor),pb)) +\n     sign(dot(cross(ac,nor),pc))<2.0)\n     ?\n     min( min(\n     dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),\n     dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb) ),\n     dot2(ac*clamp(dot(ac,pc)/dot2(ac),0.0,1.0)-pc) )\n     :\n     dot(nor,pa)*dot(nor,pa)/dot2(nor) );\n}\n\nfloat triDist(vec3 p)\n{\n    float d=10000.;\n    int triNum=int(getPixel(0).y);\n    for(int i=0;i<TriPerFrame;i++)\n    {\n        int i3=-i*3;\n        i3+=sort0+((iFrame*TriPerFrame)%triNum)*3;\n        vec3 v1=getPixel(i3+0).xyz+vec3(1,0,1)*.0;\n        vec3 v2=getPixel(i3+1).xyz+vec3(0,1,1)*.0;\n        vec3 v3=getPixel(i3+2).xyz;\n        d=min(d,udTriangle(p,v1,v2,v3));\n    }\n    return d;\n}\n\nvec3 getTriGrad(vec3 p, float eps) \n{ \n    vec2 d=vec2(eps,0); \n    float d0=triDist(p);\n    return vec3(triDist(p+d.xyy)-d0,triDist(p+d.yxy)-d0,triDist(p+d.yyx)-d0)/eps; \n}\n\nvoid march(inout vec3 pos, vec3 dir)\n{\n    float eps=.001;\n    for(int i=0;i<80;i++)\n    {\n        float d=triDist(pos);\n        pos+=dir*d*.9;\n        if (d<eps) break;\n    }\n}\n    \n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 pix0=texelFetch(iChannel1,ivec2(0,0),0);\n    int tcnt=int(pix0.y);\n    if(iMouse.xy!=pix0.xy) \n    {\n     \ttcnt=0;\n        fragColor=vec4(0,0,0,100000);\n    }\n    else\n    {\n    \tvec3 pos,dir, pos0;\n    \tgetTrafo(pos,dir,fragCoord, Res, iMouse, iTime);\n        pos0=pos;\n    \tmarch(pos,dir);\n    \tvec3 g=getTriGrad(pos,.02);\n    \tvec3 n=normalize(g);\n    \tvec3 colM=n*.5+.5;\n        //colM+=vec3(0,0,1);\n    \tif(length(g)<.0001) colM=vec3(0);\n\t\tvec4 newCol=vec4(colM,length(pos-pos0));\n        vec4 oldCol=texture(iChannel1,fragCoord/Res);\n        fragColor=(newCol.w<oldCol.w)?newCol:oldCol;\n        //fragColor=newCol;\n     \ttcnt+=TriPerFrame;\n    }\n    if(iFrame<10) \n    {\n     \ttcnt=0;\n        fragColor=vec4(0,0,0,100000);\n    }\n    if(ivec2(fragCoord)==ivec2(0))\n    \tfragColor = vec4(iMouse.xy,tcnt,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// some of iq's SDF-primitives\nfloat distBox( vec3 p, vec3 halfSize)\n{\n    vec3 q = abs(p) - halfSize;\n    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat distBoxR( vec3 p, vec3 halfSize, float r) { return distBox( p, halfSize-r ) - r ; }\n\n\nfloat distCyl( vec3 p, float r, float h )\n{\n  vec2 d = vec2( length(p.xy)-r, abs(p.z) - h*.5 );\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nfloat distCylR( vec3 p, float r, float h, float R )\n{\n  vec2 d = vec2( length(p.xy)-(r-R), abs(p.z) - (h*.5-R) );\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0))-R;\n}\n\n// iq's exponantial smooth-min func\nfloat smin( float a, float b, float k )\n{\n    k=3./k;\n    float res = exp2( -k*a ) + exp2( -k*b );\n    return -log2( res )/k;\n}\n\n// iq's polynomial smooth-min func\nfloat smin_( float a, float b, float k )\n{\n    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h);\n}\n\nfloat dist2( vec3 p)\n{\n    //return length(p)-1.;\n    return length(vec2(length(p.xy)-1.,p.z))-.35;\n}\n\nconst vec3 BodySize=vec3(1.8,4.14,1.0);\n\nfloat dist(vec3 p)\n{\n    p.x=abs(p.x);\n    vec3 p0=p;\n    // torus\n    float d=10000.,d2;\n    p=p0-vec3(-p.y*.02,0,0);\n    float yfall=min((p.y+0.0)*abs(p.y+0.0),0.);\n    float yfall2=(p.y>.0?2.5:7.)*min((-abs(p.y)+1.2)*abs(-abs(p.y)+1.2),0.);\n    yfall=mix(yfall,yfall2,step(0.,-p.z));\n    d2=distBoxR(p,vec3(BodySize.xz,100).xzy*.5*vec3(exp(-abs(p.y)*p.y*p.y*p.y*p.y/500.),1,1.+.15*yfall),max(.02,-1.*p.z-.07*p.y));\n    d=min(d,d2);\n    d2=dot(p-.5*BodySize*vec3(.55,0,1.+.15*yfall),normalize(vec3(.8,0,1.-.9*yfall)));\n    d=max(d,d2);\n    \n    // hood\n    vec3 n=normalize(vec3(0,1,2.5));\n    float dpx=max(p.x-1.,-.5);\n    float dpy=max(p.y-.9+.4*dpx,0.);\n    vec3 p2=p-.05*(1.-dpx*5.-dpx*dpx*10.)*(1.-exp(-dpy/.2)-dpy*.8);\n    //vec3 p2=p-.05*(1.-dpx*5.-dpx*dpx*10.)*min(1.-dpy*.2,1.);\n    d2=dot(p2-.5*BodySize*vec3(0,1,1)-vec3(0,0,-.75),normalize(vec3(0,1,2.5)));\n    d=max(d,d2);\n    \n    p-=vec3(0,-1.6,.5);\n    d2=distBoxR(p+vec3(0,0,-p.y*.12),vec3(BodySize.x*.25*1.1-p.y*.2+p.z*.4,1,.3),.02);\n    d=max(d,-d2);\n\n    d2=abs(p0.y)-BodySize.y*.5;\n    d=-smin_(-d,-d2,.01);\n\n    vec3 p1;\n    p1=BodySize*.5*vec3(1, .59,-.65);\n    p2=BodySize*.5*vec3(1,-.63,-.65);\n    d=max(d,-distCylR((p0-p1).yzx,.35,.8,.05));\n    d=max(d,-distCylR((p0-p2).yzx,.35,.8,.05));\n    d=min(d,distCylR((p0-p1-vec3(-.17,0,.04)).yzx,.31,.27,.08));\n    d=min(d,distCylR((p0-p2-vec3(-.12,0,.04)).yzx,.31,.27,.08));\n    //d=max(d,-(length(p0-p1*vec3(1,-1,1))-.37));\n\n    p=p0-vec3(p.y*.02,0,0);\n    \n    //d2=length(vec2(length(p.xy)-2.5,p.z))-.01;\n    //d=min(d,d2);\n    return d;\n}\n\nvec3 getGrad(vec3 p, float eps) \n{ \n    vec2 d=vec2(eps,0); \n    float d0=dist(p);\n    return vec3(dist(p+d.xyy)-d0,dist(p+d.yxy)-d0,dist(p+d.yyx)-d0)/eps; \n}\n\n// the first pixels in Buff_A stores the number of triangles\n// the first TetraPerPass*4 pixels in Buff_A are used for finding new trinagles\n// (4 pixels per tetrahedron)\n// the pixels after TetraPerPass*4 are just triangles (3 pixels per triangle) \nconst int TetraPerPass=256;\nconst int march0=1;\nconst int sort0=TetraPerPass*4+march0;\n\n#define getPixel(pixidx) texelFetch(iChannel0,ivec2((pixidx)%textureSize(iChannel0,0).x,(pixidx)/textureSize(iChannel0,0).x),0)\n\n#define PIH 1.57079632679\n\n#define ROTM(ang) mat2(cos(ang-vec2(0,PIH)),-sin(ang-vec2(0,PIH)))\n\nfloat tanFOVh=.6;\n\nvoid getTrafo(inout vec3 pos, inout vec3 dir, vec2 fc, bool inv, vec2 Res, vec4 iMouse, float iTime)\n{\n    vec2 sc=(fc-Res*.5)/Res.x*2.;\n    dir=normalize(vec3(0,0,-1./tanFOVh)+vec3(sc,0));\n    \n    float ph = iMouse.x/Res.x*10.;\n    if (iMouse.x<.5) ph=2.13;\n    float th = iMouse.y/Res.y*10.+1.4;\n    float camDist=5./**exp(-iMouseData.z/5000.)*/;\n    //th=0.;\n\n    if(inv)\n    {\n        pos=vec3(0,0,camDist);\n        pos.yz=ROTM(th)*pos.yz;\n        dir.yz=ROTM(th)*dir.yz;\n        pos.xy=ROTM(ph)*pos.xy;\n        dir.xy=ROTM(ph)*dir.xy;\n    }\n    else\n    {\n        pos.xy=ROTM(-ph)*pos.xy;\n        pos.yz=ROTM(-th)*pos.yz;\n        pos.z-=camDist;\n    }\n}\n\nvoid getTrafo(inout vec3 pos, inout vec3 dir, vec2 fc, vec2 Res, vec4 iMouse, float iTime)\n{\n    getTrafo(pos, dir, fc, true, Res, iMouse, iTime);\n}\n\nvoid getTrafo(inout vec3 pos, vec2 Res, vec4 iMouse, float iTime)\n{\n    vec3 dir;\n    getTrafo(pos, dir, vec2(0), false, Res, iMouse, iTime);\n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

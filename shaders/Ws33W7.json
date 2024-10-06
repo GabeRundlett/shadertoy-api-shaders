@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1568642957",
+            "description": "Illustrate how to modify a pattern using a simple control map.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Ws33W7",
+            "likes": 4,
+            "name": "Local Spot Noise : Control Map",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "texture",
+                "lsn",
+                "spotnoise"
+            ],
+            "usePreview": 0,
+            "username": "H4w0",
+            "viewed": 317
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================\n//== Local Spot Noise for Procedural Surface Details Synthesis  \n//== https://acavalier.github.io/research/local-spot-noise-paper\n//=======================================================\n//== Analytic Filtering - https://www.shadertoy.com/view/tdyXzK\n//== Normal Mapping - https://www.shadertoy.com/view/Wdc3W7\n//== Control Map - https://www.shadertoy.com/view/Ws33W7\n//=======================================================\n//== Authors : Arthur Cavalier, Guillaume Gilet, Djamchid Ghazanfarpour\n//=======================================================\n\n\n//--------------------------------------------------------------------------------------------------------\n// User Parameters ---------------------------------------------------------------------------------------\n\n#define SHOW_CONTROL_MAP 0 \nconst uint  LSN_GLOBAL_SEED = 0u;\nconst int   LSN_IMPULSES    = 3;\nfloat LSN_RESOLUTION  = 10.;\n\n\n//--------------------------------------------------------------------------------------------------------\n// Constants ---------------------------------------------------------------------------------------------\nconst float m_pi_2 = 1.5707963267;         \nconst float m_pi   = 3.1415926535;          \nconst float m_2_pi = 6.2831853071;  \n\n//--------------------------------------------------------------------------------------------------------\n// RayTracing---------------------------------------------------------------------------------------------\nvec3 compute_camera_ray_direction(in vec2 screen_coordinates, in vec3 origin, in vec3 target, float cr )\n{\n\tvec3 cw = normalize(target-origin);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv =          ( cross(cu,cw) );\n    return mat3( cu, cv, cw )*normalize(vec3(screen_coordinates,2.0));\n}\n\nfloat plane_intersection(in vec3 ro, in vec3 rd, in vec4 plane)\n{\n    return -(dot(ro,plane.xyz)+plane.w)/dot(rd,plane.xyz);\n}\n\n//--------------------------------------------------------------------------------------------------------\n// Matrix Maths ------------------------------------------------------------------------------------------\nfloat det2x2(in mat2 m)         {return (m[0][0]*m[1][1] - m[0][1]*m[1][0]);}\nmat2  inv2x2(in mat2 m)         {return (1./det2x2(m))*mat2(m[1][1], -m[0][1], -m[1][0], m[0][0]);}\nmat2  tra2x2(in mat2 m)         {return mat2(m[0][0],m[1][0],m[0][1],m[1][1]);}\n\n//--------------------------------------------------------------------------------------------------------\n// PRNG --------------------------------------------------------------------------------------------------\n// Pseudo Random Number Generation\n// From Texton Noise Source Code provided by Arthur Leclaire et al. \n// https://www.idpoisson.fr/galerne/texton_noise/index.html\n// Sourced ::\n/* \n * From http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/\n * Same strategy as in Gabor noise by example\n * Apply hashtable to create cellseed\n * Use a linear congruential generator as fast PRNG\n */\n\nuint  wang_hash(uint seed)                                          {seed=(seed^61u)^(seed>>16u);seed*=9u;seed=seed^(seed>>4u);seed*=668265261u;seed=seed^(seed>>15u);return(seed);}\nuint  cell_seed(const in ivec2 c, const in uint offset)             {const uint period=1024u;uint s=((uint(c.y)%period)*period+(uint(c.x)%period))*period+offset; if(s==0u){s = 1u;}return(s);}\nuint  myrand(inout uint p)                                          {p^=(p<<13u);p^=(p>>17u);p^=(p<<5u);return p;}\nfloat myrand_uniform_0_1(inout uint p)                              {return float(myrand(p))/float(4294967295u);}\nfloat myrand_uniform_m_M(inout uint p, in float mi, in float ma)    {return mi + (myrand_uniform_0_1(p) * (ma - mi));}\n\n//--------------------------------------------------------------------------------------------------------\n// Gaussians utils ---------------------------------------------------------------------------------------\n\n/* Elliptical Gaussian Covariance Matrix    */\n/* From RotationAngle, ScaleX, ScaleY       */\n/* Geometric definition of the CovMatrix    */\nmat2 RxSxSxRinv(in float theta, in float sx, in float sy)\n{\n    float A = cos(theta);\n    float B = sin(theta);\n    float A2 = A*A;\n    float B2 = B*B;\n    float sx2 = sx*sx;\n    float sy2 = sy*sy;\n\n    float r00 = A2*sx2+B2*sy2;\n    float r11 = A2*sy2+B2*sx2;\n    float r01 = A*B*sx2-A*B*sy2;\n    float r10 = r01;\n    return mat2(r00,r01,r10,r11);\n}\n\n/* K : \\lambda    */\n/* M : \\mu        */\n/* S : \\Sigma     */\nfloat gaussian(in vec2 X, in float K, in vec2 M, in mat2 S)\n{\n    vec2 P = X-M;\n    return( K * exp( -0.5 * dot(P,inv2x2(S)*P) ) );\n}\n\n/* K : \\lambda                              */\n/* M : \\mu                                  */\n/* S : \\Sigma                               */\n/* Kp: Pixel footprint amplitude            */\n/* Sp: Pixel footprint covariance matrix    */\nfloat gaussian_filtered(in vec2 X, in float K, in vec2 M, in mat2 S, in float Kp, in mat2 Sp)\n{\n    mat2  invSp = inv2x2(Sp);\n    mat2  invS = inv2x2(S);\n    vec2  XM = X-M;\n    mat2  S3 = inv2x2(invSp + invS);   \n    return m_2_pi * sqrt(det2x2(S3)) * gaussian(XM,K*Kp,vec2(0.),S+Sp);\n}\n\n\n//--------------------------------------------------------------------------------------------------------\n// Custom Kernel -----------------------------------------------------------------------------------------\nfloat kernel(in uint prng, in vec2 xy, in int cell_id, in float Kp, in mat2 Sp, in float orientation)\n{\n    float theta = orientation; \n    if(cell_id%2 == 0)\n        theta += m_pi_2;\n    \n    return gaussian_filtered(xy, 1., vec2(0.0), RxSxSxRinv(theta,0.6,0.08), Kp, Sp);\n}\n\n//--------------------------------------------------------------------------------------------------------\n// Local Spot Noise --------------------------------------------------------------------------------------\nfloat local_spot_noise(in vec2 texture_coords, in vec2 control_map_coords)\n{\n    vec2 scaled_coords = LSN_RESOLUTION * texture_coords ;   \n    vec2 cell_coords = fract(scaled_coords);\n    vec2 cell_index = floor(scaled_coords);\n\n    vec2 dUdx = 0.5 * dFdx(scaled_coords);\n    vec2 dUdy = 0.5 * dFdy(scaled_coords);\n    mat2  Jc = mat2(dUdx,dUdy); \n    mat2  Sp = Jc*tra2x2(Jc);\n    float Kp = 1.0/(m_2_pi*sqrt(det2x2(Sp))); \n\n    ivec2 cell_ID;\n    uint  seed, prng;\n    vec2  cell_shot;\n    \n    vec3  control_map \t= texture(iChannel0,control_map_coords).rgb;\n    float distribution \t= 0.5*control_map.y;\n    float orientation \t= m_pi_2*control_map.x;\n    float chaos_max = control_map.z;\n    \n\n    float sum = 0.0;\n    float wei = 1.0/float(LSN_IMPULSES);\n    float amp = 1.0;\n\tfor (int m = -1; m <= +1; m++)\n    for (int n = -1; n <= +1; n++)\n    {\n        cell_ID.x = int(cell_index.x) + m;\n        cell_ID.y = int(cell_index.y) + n;\n        seed  = cell_seed(cell_ID, LSN_GLOBAL_SEED);\n        prng  = wang_hash(seed);\n\n\n        vec2 xy = cell_coords-vec2(m,n);\n        for(int k=0;k<LSN_IMPULSES;k++)\n        {\n            cell_shot.x = myrand_uniform_m_M(prng, 0.5-distribution, 0.5+distribution);  \n            cell_shot.y = myrand_uniform_m_M(prng, 0.5-distribution, 0.5+distribution);\n            float perturbation = myrand_uniform_m_M(prng, 0., chaos_max) * m_pi_2;\n            sum += kernel(prng, xy-cell_shot, cell_ID.x+cell_ID.y, Kp, Sp, orientation+perturbation);\n        }\n    }\n    return sum * wei;\n}\n\n\n//--------------------------------------------------------------------------------------------------------\n// Main --------------------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 coords = ((2.*fragCoord.xy-iResolution.xy) / iResolution.y);\n    vec2 mouse = clamp(iMouse.xy/iResolution.xy, 0., 1.);\n    \n    LSN_RESOLUTION = max(10.,10.+floor(20.*mouse.x));\n   \n    float spot_noise = local_spot_noise(coords,fragCoord/iResolution.xy);\n    fragColor.rgb   = vec3(spot_noise);\n   \n    #if SHOW_CONTROL_MAP\n\t    fragColor.rgb   = texture(iChannel0,fragCoord/iResolution.xy).rgb;\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pixel_coords = fragCoord / iResolution.xy;\n    vec2 texture_coords = ((2.*fragCoord.xy-iResolution.xy) / iResolution.y);\n    \n    float pulse_1 = 0.5+0.5*cos(iTime);\n    float pulse_2 = 0.5+0.5*sin(0.2*iTime);\n    \n    fragColor = vec4(pixel_coords.x, pulse_1, clamp(texture_coords.x,0.,1.)*pulse_2 ,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

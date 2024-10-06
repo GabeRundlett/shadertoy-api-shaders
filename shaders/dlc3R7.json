@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1682107692",
+            "description": "N-Convex Dithering (via Greedy Selection) is a lesser-known dithering algorithm that is compatible with arbitrary palettes. The output pixel colour is randomly selected based on a set of weighted candidates using Inverse Distance Weighting.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dlc3R7",
+            "likes": 2,
+            "name": "N-Convex Dithering",
+            "published": 3,
+            "tags": [
+                "threshold",
+                "dither",
+                "palette",
+                "ordered"
+            ],
+            "usePreview": 0,
+            "username": "matejloub",
+            "viewed": 185
+        },
+        "renderpass": [
+            {
+                "code": "// Algorithm configuration. Feel free to tinker with some of the values to explore the algorithm!\n#define N 4                    // Number of candidates per fragment\n#define DISTANCE_EXPONENT 1.0  // The exponent term of the IDW equation\n#define PALETTE_SIZE 16        // Number of colours in the palette\n#define PIXEL_SIZE 2.0         // Size of pixels in the shader output\n#define ENABLE_SORT            // Choose whether to enable the sorting procedure\n\n#define INFINITY 3.4e38        // 'Infinity'\n\n// Helper macro to convert an RGB hex code to a vec3\n#define RGB8(h) (vec3(h >> 16 & 0xFF, h >> 8 & 0xFF, h & 0xFF) / 255.0) \n\n    /*\n    N-Convex Dithering via Greedy Selection[1]. This algorithm attempts to find a set of N candidates\n    which form a convex hull around the input colour in colour space. Each candidate is given a weight\n    equal to the inverse of its distance to the input colour, à la Inverse Distance Weighting (IDW)[2].\n    The output colour is chosen by randomly (or psuedo-randomly) selecting from the set of available\n    candidates with respect to their weights. In this shader we use take values from a threshold matrix\n    to sample from the list of candidates. A sorting procedure is used to minimise artifacts from the\n    randomisation process. For more information, as well as a more sophisticated variant of this\n    algorithm, please see [3]!\n    \n    [1] K. Lemstrom, P. Franti. \"N-Candidate methods for location invariant dithering of color images\". \n        http://cs.uef.fi/sipu/pub/N-candidateDithering-IVC.pdf\n    [2] https://en.wikipedia.org/wiki/Inverse_distance_weighting\n    [3] https://www.shadertoy.com/view/dlcGzN\n    */\n\n// Using the Commodore 64's palette. Feel free to input your own!\nconst vec3 palette[PALETTE_SIZE] = vec3[](\n    RGB8(0x000000), RGB8(0x626262), RGB8(0x898989), RGB8(0xadadad),\n    RGB8(0xffffff), RGB8(0x9f4e44), RGB8(0xcb7e75), RGB8(0x6d5412),\n    RGB8(0xa1683c), RGB8(0xc9d487), RGB8(0x9ae29b), RGB8(0x5cab5e),\n    RGB8(0x6abfc6), RGB8(0x887ecb), RGB8(0x50459b), RGB8(0xa057a3));\n\n// Convert a gamma-encoded sRGB value to linear RGB\n// https://en.wikipedia.org/wiki/SRGB#From_sRGB_to_CIE_XYZ\nvec3 sRGBtoLinear(vec3 colour)\n{\n    vec3 linear;\n    linear.r = colour.r > 0.04045 ? pow((colour.r + 0.055) / 1.055, 2.4) : colour.r / 12.92;\n\tlinear.g = colour.g > 0.04045 ? pow((colour.g + 0.055) / 1.055, 2.4) : colour.g / 12.92;\n\tlinear.b = colour.b > 0.04045 ? pow((colour.b + 0.055) / 1.055, 2.4) : colour.b / 12.92;\n    return linear;\n}\n\n// Get the luminance value of a given colour\nfloat getLuminance(vec3 colour)\n{\n    return colour.r * 0.299 + colour.g * 0.587 + colour.b * 0.114;\n}\n\n// Sample the value in the threshold matrix for the current pixel\nfloat sampleThreshold(vec2 coord)\n{\n    // Sample the centre of the texel\n    ivec2 pixel = ivec2(coord / PIXEL_SIZE) % ivec2(iChannelResolution[1]);\n    vec2 uv = vec2(pixel) / iChannelResolution[1].xy;\n    vec2 offset = 0.5 / iChannelResolution[1].xy;\n    return texture(iChannel1, uv + offset).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Get the colour for this fragment\n    vec2 pixelSizeNormalised = PIXEL_SIZE * (1.0 / iResolution.xy);\n    vec2 uv = pixelSizeNormalised * floor(fragCoord / iResolution.xy / pixelSizeNormalised);\n    vec3 colour = texture(iChannel0, uv).rgb;\n\n    // Screen wipe effect\n    if (fragCoord.x < iMouse.x) \n    {\n        fragColor = vec4(colour, 1.0);\n        return;\n    }\n     \n    // ====================================== //\n    // Actual dithering algorithm starts here //\n    // ====================================== //\n    \n    // Create a mapping from sorted palette indices to actual indices\n    int mapLuminanceToIndex[PALETTE_SIZE];\n    \n    for (int i = 0; i < PALETTE_SIZE; i++) \n        mapLuminanceToIndex[i] = i;\n    \n#if defined ENABLE_SORT\n\n    // Sort the index array by the corresponding palette colours' luminance (bubble sort)\n    for (int i = PALETTE_SIZE - 1; i > 0; i--) \n    {\n      for (int j = 0; j < i; j++) \n      {\n          if (getLuminance(palette[mapLuminanceToIndex[j]]) > \n              getLuminance(palette[mapLuminanceToIndex[j+1]])) \n          { \n              // Swap the indices\n              int t = mapLuminanceToIndex[j]; \n              mapLuminanceToIndex[j] = mapLuminanceToIndex[j+1]; \n              mapLuminanceToIndex[j+1] = t; \n          }\n      }\n    }\n    \n#endif // ENABLE_SORT\n\n    // Find N candidates via the 'greedy selection' method\n    vec3 colourLinear = sRGBtoLinear(colour);\n    vec3 goalColour = colourLinear;\n    float totalWeight = 0.0;\n    float weights[PALETTE_SIZE];\n    bool markedColours[PALETTE_SIZE];\n    \n    for (int i = 0; i < N; i++)\n    {\n        float closestDistance = INFINITY;\n        int closestColour = 0;\n        \n        // Find the closest colour in the palette via brute force\n        for (int j = 0; j < PALETTE_SIZE; j++)\n        {\n            if (markedColours[j]) continue;\n            \n            vec3 difference = goalColour - sRGBtoLinear(palette[j]);\n            float distance = dot(difference, difference);\n\n            if (distance < closestDistance)\n            {\n                closestDistance = distance;\n                closestColour = j;\n            }\n        }\n        \n        // Mark this candidate as taken\n        markedColours[closestColour] = true;\n\n        // Offset the goal\n        vec3 quantError = colourLinear - sRGBtoLinear(palette[closestColour]);\n        goalColour += quantError;\n\n        // If the colour is an exact match just use it\n        float distance = dot(quantError, quantError);\n        \n        if (distance == 0.0)\n        {\n            fragColor = vec4(palette[closestColour], 1.0);\n            return;\n        }\n        \n        // Compute the weight\n        weights[closestColour] = 1.0 / pow(distance, DISTANCE_EXPONENT);\n        totalWeight += weights[closestColour];\n    }\n    \n    // Select the output colour from the frequency array\n    float randomValue = sampleThreshold(fragCoord) * totalWeight;\n    float cumulativeSum = 0.0;\n \n    for (int i = 0; i < PALETTE_SIZE; i++)\n    {\n        cumulativeSum += weights[mapLuminanceToIndex[i]];\n        \n        if (randomValue < cumulativeSum)\n        {\n             fragColor = vec4(palette[mapLuminanceToIndex[i]], 1.0);\n             return;\n        }\n    }\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 12,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/e81e818ac76a8983d746784b423178ee9f6cdcdf7f8e8d719341a6fe2d2ab303.webm"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

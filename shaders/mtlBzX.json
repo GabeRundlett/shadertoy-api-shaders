@@ -1,0 +1,237 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1693626074",
+            "description": "Interactive!\n\nA 2D implementation of [url=https://drive.google.com/file/d/1L6v1_7HY2X-LV3Ofb6oyTIxgEaP4LOI6/view]\"Radiance Cascades: A Novel Approach to Calculating Global Illumination\"[/url]\n\nSky integral formula [url=/view/NttSW7]by Mathis[/url]",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "mtlBzX",
+            "likes": 114,
+            "name": "Radiance Cascades",
+            "published": 3,
+            "tags": [
+                "mouse",
+                "interactive",
+                "global",
+                "illumination",
+                "light",
+                "tracing",
+                "keyboard",
+                "trace",
+                "path",
+                "radiance",
+                "cascade"
+            ],
+            "usePreview": 1,
+            "username": "fad",
+            "viewed": 6478
+        },
+        "renderpass": [
+            {
+                "code": "// Controls:\n// Click and drag with mouse to draw\n// Press space to toggle betweem emissive and non-emissive brush\n// Press 1 to switch to drawing a temporary light instead of permanent\n\n// A 2D implementation of \n// Radiance Cascades: A Novel Approach to Calculating Global Illumination\n// https://drive.google.com/file/d/1L6v1_7HY2X-LV3Ofb6oyTIxgEaP4LOI6/view\n\n// You can set the parameters to the algorithm in the Common tab\n\n// Sky integral formula taken from\n// Analytic Direct Illumination - Mathis\n// https://www.shadertoy.com/view/NttSW7\n\n// sdBezier() formula taken from\n// Quadratic Bezier SDF With L2 - Envy24\n// https://www.shadertoy.com/view/7sGyWd\n\n// In this Shadertoy implementation there is a bit of temporal lag which\n// is not due to a flaw in the actual algorithm, but rather a limitation\n// of Shadertoy - one of the steps in the algorithm is to merge cascades\n// in a reverse mipmap-like fashion which would actually be done within\n// one frame, but in Shadertoy we have to split that work up over\n// multiple frames. Even with this limitation, it still looks good and\n// only has an n-frame delay to fully update the lighting, where n is\n// the total number of cascades.\n\n// For small point lights, a ringing artefact is visible. I couldn't\n// figure out a way to fix this properly :(\n\n// This buffer interpolates the radiance coming from cascade 0\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    screenRes = iResolution.xy;\n    ivec2 cubemapRes = textureSize(iChannel0, 0);\n    int nPixels = int(float(6 * cubemapRes.x * cubemapRes.y) * cubemapUsage);\n    ivec2 c0_sRes = ivec2(sqrt(\n        4.0 * float(nPixels) / (4.0 + float(c_dRes * (nCascades - 1))) *\n        iResolution.xy / iResolution.yx\n    ));\n    vec2 p = fragCoord / iResolution.xy * vec2(c0_sRes);\n    ivec2 q = ivec2(round(p)) - 1;\n    vec2 w = p - vec2(q) - 0.5;\n    ivec2 h = ivec2(1, 0);\n    vec4 S0 = cascadeFetch(iChannel0, 0, q + h.yy, 0);\n    vec4 S1 = cascadeFetch(iChannel0, 0, q + h.xy, 0);\n    vec4 S2 = cascadeFetch(iChannel0, 0, q + h.yx, 0);\n    vec4 S3 = cascadeFetch(iChannel0, 0, q + h.xx, 0);\n    vec3 fluence = mix(mix(S0, S1, w.x), mix(S2, S3, w.x), w.y).rgb * 2.0 * PI;\n    // Overlay actual SDF drawing to fix low resolution edges\n    vec4 data = sampleDrawing(iChannel1, fragCoord);\n    fluence = mix(fluence, data.gba * 2.0 * PI, clamp(3.0 - data.r, 0.0, 1.0));\n    // Tonemap\n    fragColor = vec4(1.0 - 1.0 / pow(1.0 + fluence, vec3(2.5)), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This buffer calculates and merges radiance cascades. Normally the\n// merging would happen within one frame (like a mipmap calculation),\n// meaning this technique actually has no termporal lag - but since\n// Shadertoy has no way of running a pass multiple times per frame, we \n// have to resort to spreading out the merging of cascades over multiple\n// frames.\n\nvec2 intersectAABB(vec2 ro, vec2 rd, vec2 a, vec2 b) {\n    // Return the two intersection t-values for the intersection between a ray\n    // and an axis-aligned bounding box\n    vec2 ta = (a - ro) / rd;\n    vec2 tb = (b - ro) / rd;\n    vec2 t1 = min(ta, tb);\n    vec2 t2 = max(ta, tb);\n    vec2 t = vec2(max(t1.x, t1.y), min(t2.x, t2.y));\n    return t.x > t.y ? vec2(-1.0) : t;\n}\n\nfloat intersect(vec2 ro, vec2 rd, float tMax) {\n    // Return the intersection t-value for the intersection between a ray and\n    // the SDF drawing from Buffer B\n    screenRes = vec2(textureSize(iChannel1, 0));\n    float tOffset = 0.0;\n    // First clip the ray to the screen rectangle\n    vec2 tAABB = intersectAABB(ro, rd, vec2(0.0001), screenRes - 0.0001);\n    \n    if (tAABB.x > tMax || tAABB.y < 0.0) {\n        return -1.0;\n    }\n    \n    if (tAABB.x > 0.0) {\n        ro += tAABB.x * rd;\n        tOffset += tAABB.x;\n        tMax -= tAABB.x;\n    }\n    \n    if (tAABB.y < tMax) {\n        tMax = tAABB.y;\n    }\n\n    float t = 0.0;\n\n    for (int i = 0; i < 100; i++) {\n        float d = sdDrawing(iChannel1, ro + rd * t);\n        t += abs(d);\n\n        if (t >= tMax) {\n            break;\n        }\n\n        if (0.2 < t && d < 1.0) {\n            return tOffset + t;\n        }\n    }\n\n    return -1.0;\n}\n\nvec4 radiance(vec2 ro, vec2 rd, float tMax) {\n    // Returns the radiance and visibility term for a ray\n    vec4 p = sampleDrawing(iChannel1, ro);\n\n    if (p.r > 0.0) {\n        float t = intersect(ro, rd, tMax);\n        \n        if (t == -1.0) {\n            return vec4(0.0, 0.0, 0.0, 1.0);\n        }\n\n        p = sampleDrawing(iChannel1, ro + rd * t);\n    }\n\n    return vec4(p.gba, 0.0);\n}\n\nvec3 integrateSkyRadiance_(vec2 angle) {\n    // Sky radiance helper function\n    float a1 = angle[1];\n    float a0 = angle[0];\n    \n    // Sky integral formula taken from\n    // Analytic Direct Illumination - Mathis\n    // https://www.shadertoy.com/view/NttSW7\n    const vec3 SkyColor = vec3(0.2,0.5,1.);\n    const vec3 SunColor = vec3(1.,0.7,0.1)*10.;\n    const float SunA = 2.0;\n    const float SunS = 64.0;\n    const float SSunS = sqrt(SunS);\n    const float ISSunS = 1./SSunS;\n    vec3 SI = SkyColor*(a1-a0-0.5*(cos(a1)-cos(a0)));\n    SI += SunColor*(atan(SSunS*(SunA-a0))-atan(SSunS*(SunA-a1)))*ISSunS;\n    return SI / 6.0;\n}\n\nvec3 integrateSkyRadiance(vec2 angle) {\n    // Integrate the radiance from the sky over an interval of directions\n    if (angle[1] < 2.0 * PI) {\n        return integrateSkyRadiance_(angle);\n    }\n    \n    return\n        integrateSkyRadiance_(vec2(angle[0], 2.0 * PI)) +\n        integrateSkyRadiance_(vec2(0.0, angle[1] - 2.0 * PI));\n}\n\nvoid mainCubemap(out vec4 fragColor, vec2 fragCoord, vec3 fragRO, vec3 fragRD) {\n    // Calculate the index for this cubemap texel\n    int face;\n    \n    if (abs(fragRD.x) > abs(fragRD.y) && abs(fragRD.x) > abs(fragRD.z)) {\n        face = fragRD.x > 0.0 ? 0 : 1;\n    } else if (abs(fragRD.y) > abs(fragRD.z)) {\n        face = fragRD.y > 0.0 ? 2 : 3;\n    } else {\n        face = fragRD.z > 0.0 ? 4 : 5;\n    }\n    \n    int i =\n        int(fragCoord.x) + int(iResolution.x) *\n        (int(fragCoord.y) + int(iResolution.y) * face);\n    // Figure out which cascade this pixel is in\n    int nPixels =\n        int(float(6 * int(iResolution.x) * int(iResolution.y)) * cubemapUsage);\n    vec2 screenRes = vec2(textureSize(iChannel1, 0));\n    ivec2 c0_sRes = ivec2(sqrt(\n        4.0 * float(nPixels) / (4.0 + float(c_dRes * (nCascades - 1))) *\n        screenRes / screenRes.yx\n    ));\n    int c_size =\n        c0_sRes.x * c0_sRes.y +\n        c0_sRes.x * c0_sRes.y * c_dRes * (nCascades - 1) / 4;    \n    \n    if (i >= c_size) {\n        return;\n    }\n    \n    int n = i < c0_sRes.x * c0_sRes.y ? 0 : int(\n        (4.0 * float(i) / float(c0_sRes.x * c0_sRes.y) - 4.0) / float(c_dRes)\n        + 1.0\n    );\n    // Figure out this pixel's index within its own cascade\n    int j = i - (n > 0\n        ? c0_sRes.x * c0_sRes.y + (c0_sRes.x * c0_sRes.y * c_dRes * (n - 1)) / 4\n        : 0);\n    // Calculate this cascades spatial and directional resolution\n    ivec2 cn_sRes = c0_sRes >> n;\n    int cn_dRes = n == 0 ? 1 : c_dRes << 2 * (n - 1);\n    // Calculate this pixel's direction and position indices\n    int d = j % cn_dRes;\n    j /= cn_dRes;\n    ivec2 p = ivec2(j % cn_sRes.x, 0);\n    j /= cn_sRes.x;\n    p.y = j;\n    int nDirs = c_dRes << 2 * n;\n    // Calculate this pixel's ray interval\n    vec2 ro = (vec2(p) + 0.5) / vec2(cn_sRes) * screenRes;\n    float c0_intervalLength = \n        length(screenRes) * 4.0 / (float(1 << 2 * nCascades) - 1.0);\n    float t1 = c0_intervalLength;\n    float tMin = n == 0 ? 0.0 : t1 * float(1 << 2 * (n - 1));\n    float tMax = t1 * float(1 << 2 * n);\n    vec4 s = vec4(0.0);\n    \n    // Calculate radiance intervals and merge with above cascade\n    for (int i = 0; i < nDirs / cn_dRes; ++i) {\n        int j = 4 * d + i;\n        float angle = (float(j) + 0.5) / float(nDirs) * 2.0 * PI;\n        vec2 rd = vec2(cos(angle), sin(angle));\n        vec4 si = radiance(ro + rd * tMin, rd, tMax - tMin);\n        \n        // If the visibility term is non-zero\n        if (si.a != 0.0) {\n            if (n == nCascades - 1) {\n                // If we are the top-level cascade, then there's no other\n                // cascade to merge with, so instead merge with the sky radiance\n                vec2 angle = vec2(j, j + 1) / float(nDirs) * 2.0 * PI;\n                si.rgb += integrateSkyRadiance(angle) / (angle.y - angle.x);\n            } else {\n                // Otherwise, find the radiance coming from the above cascade in\n                // this direction by interpolating the above cascades\n                vec2 pf = (vec2(p) + 0.5) / 2.0;\n                ivec2 q = ivec2(round(pf)) - 1;\n                vec2 w = pf - vec2(q) - 0.5;\n                ivec2 h = ivec2(1, 0);\n                vec4 S0 = cascadeFetch(iChannel0, n + 1, q + h.yy, j);\n                vec4 S1 = cascadeFetch(iChannel0, n + 1, q + h.xy, j);\n                vec4 S2 = cascadeFetch(iChannel0, n + 1, q + h.yx, j);\n                vec4 S3 = cascadeFetch(iChannel0, n + 1, q + h.xx, j);\n                vec4 S = mix(mix(S0, S1, w.x), mix(S2, S3, w.x), w.y);\n                si.rgb += si.a * S.rgb;\n                si.a *= S.a;\n            }\n        }\n        \n        s += si;\n    }\n    \n    s /= float(nDirs / cn_dRes);\n    fragColor = s;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// The shader automatically calculates the maximum spatial resolution\n// possible for the cascades such that they can still fit within the\n// cubemap buffer with the c_dRes and nCascades parameters below. But if\n// you have a low end device, that might be too much, so decrease the\n// proportion of the cubemap buffer actually used here:\nconst float cubemapUsage = 1.0;\n\n// Number of directions in cascade 0\nconst int c_dRes = 16;\n// Number of cascades all together\nconst int nCascades = 5;\n\n// Brush radius used for drawing, measured as fraction of iResolution.y\nconst float brushRadius = 0.01;\n\nconst float MAX_FLOAT = uintBitsToFloat(0x7f7fffffu);\nconst float PI = 3.1415927;\nconst float MAGIC = 1e25;\n\nvec2 screenRes;\n\nvec4 cubemapFetch(samplerCube sampler, int face, ivec2 P) {\n    // Look up a single texel in a cubemap\n    ivec2 cubemapRes = textureSize(sampler, 0);\n    if (clamp(P, ivec2(0), cubemapRes - 1) != P || face < 0 || face > 5) {\n        return vec4(0.0);\n    }\n\n    vec2 p = (vec2(P) + 0.5) / vec2(cubemapRes) * 2.0 - 1.0;\n    vec3 c;\n    \n    switch (face) {\n        case 0: c = vec3( 1.0, -p.y, -p.x); break;\n        case 1: c = vec3(-1.0, -p.y,  p.x); break;\n        case 2: c = vec3( p.x,  1.0,  p.y); break;\n        case 3: c = vec3( p.x, -1.0, -p.y); break;\n        case 4: c = vec3( p.x, -p.y,  1.0); break;\n        case 5: c = vec3(-p.x, -p.y, -1.0); break;\n    }\n    \n    return texture(sampler, normalize(c));\n}\n\nvec4 cascadeFetch(samplerCube cascadeTex, int n, ivec2 p, int d) {\n    // Look up the radiance interval at position p in direction d of cascade n\n    ivec2 cubemapRes = textureSize(cascadeTex, 0);\n    int nPixels = int(float(6 * cubemapRes.x * cubemapRes.y) * cubemapUsage);\n    ivec2 c0_sRes = ivec2(sqrt(\n        4.0 * float(nPixels) / (4.0 + float(c_dRes * (nCascades - 1))) *\n        screenRes / screenRes.yx\n    ));\n    int cn_offset = n > 0\n        ? c0_sRes.x * c0_sRes.y + (c0_sRes.x * c0_sRes.y * c_dRes * (n - 1)) / 4\n        : 0;\n    int cn_dRes = n == 0 ? 1 : c_dRes << 2 * (n - 1);\n    ivec2 cn_sRes = c0_sRes >> n;\n    p = clamp(p, ivec2(0), cn_sRes - 1);\n    int i = cn_offset + d + cn_dRes * (p.x + cn_sRes.x * p.y);\n    int x = i % cubemapRes.x;\n    i /= cubemapRes.x;\n    int y = i % cubemapRes.y;\n    i /= cubemapRes.y;\n    return cubemapFetch(cascadeTex, i, ivec2(x, y));\n}\n\nconst int KEY_SPACE = 32;\nconst int KEY_1 = 49;\n\n#ifndef HW_PERFORMANCE\nuniform vec4 iMouse;\nuniform sampler2D iChannel2;\nuniform float iTime;\n#endif\n\nbool keyToggled(int keyCode) {\n    return texelFetch(iChannel2, ivec2(keyCode, 2), 0).r > 0.0;\n}\n\nvec3 hsv2rgb(vec3 c) {\n    vec3 rgb = clamp(\n        abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0,\n        0.0,\n        1.0\n    );\n\treturn c.z * mix(vec3(1.0), rgb, c.y);\n}\n\nvec3 getEmissivity() {\n    return !keyToggled(KEY_SPACE)\n        ? pow(hsv2rgb(vec3(iTime * 0.2, 1.0, 0.8)), vec3(2.2))\n        : vec3(0.0);\n}\n\nfloat sdCircle(vec2 p, vec2 c, float r) {\n    return distance(p, c) - r;\n}\n\nfloat sdSegment(vec2 p, vec2 a, vec2 b) {\n    vec2 ap = p - a;\n    vec2 ab = b - a;\n    return distance(ap, ab * clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0));\n}\n\nvec4 sampleDrawing(sampler2D drawingTex, vec2 P) {\n    // Return the drawing (in the format listed at the top of Buffer B) at P\n    vec4 data = texture(drawingTex, P / vec2(textureSize(drawingTex, 0)));\n    \n    if (keyToggled(KEY_1) && iMouse.z > 0.0) {\n        float radius = brushRadius * screenRes.y;\n        //float sd = sdCircle(P, iMouse.xy + 0.5, radius);\n        float sd = sdSegment(P, abs(iMouse.zw) + 0.5, iMouse.xy + 0.5) - radius;\n        \n        if (sd <= max(data.r, 0.0)) {\n            data = vec4(min(sd, data.r), getEmissivity());\n        }\n    }\n\n    return data;\n}\n\nfloat sdDrawing(sampler2D drawingTex, vec2 P) {\n    // Return the signed distance for the drawing at P\n    return sampleDrawing(drawingTex, P).r;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// SDF drawing logic from \n// Smooth Mouse Drawing - fad\n// https://www.shadertoy.com/view/dldXR7\n\n// This buffer tracks smoothed mouse positions over multiple frames.\n\n// See https://lazybrush.dulnan.net/ for what these mean:\n#define RADIUS (iResolution.y * 0.015)\n#define FRICTION 0.05\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    if (fragCoord.y != 0.5 || fragCoord.x > 3.0) {\n        return;\n    }\n\n    if (iFrame == 0) {\n        if (fragCoord.x == 2.5) {\n            fragColor = iMouse;\n        } else {\n            fragColor = vec4(0.0);\n        }\n        \n        return;\n    }\n    \n    vec4 iMouse = iMouse;\n    \n    if (iMouse == vec4(0.0)) {\n        float t = iTime * 3.0;\n        iMouse.xy = vec2(\n            cos(3.14159 * t) + sin(0.72834 * t + 0.3),\n            sin(2.781374 * t + 3.47912) + cos(t)\n        ) * 0.25 + 0.5;\n        iMouse.xy *= iResolution.xy;\n        iMouse.z = MAGIC;\n    }\n    \n    vec4 mouseA = texelFetch(iChannel0, ivec2(1, 0), 0);\n    vec4 mouseB = texelFetch(iChannel0, ivec2(2, 0), 0);\n    vec4 mouseC;\n    mouseC.zw = iMouse.zw;\n    float dist = distance(mouseB.xy, iMouse.xy);\n    \n    if (mouseB.z > 0.0 && (mouseB.z != MAGIC || iMouse.z == MAGIC) && dist > 0.0) {\n        vec2 dir = (iMouse.xy - mouseB.xy) / dist;\n        float len = max(dist - RADIUS, 0.0);\n        float ease = 1.0 - pow(FRICTION, iTimeDelta * 10.0);\n        mouseC.xy = mouseB.xy + dir * len * ease;\n    } else {\n        mouseC.xy = iMouse.xy;\n    }\n    \n    if (fragCoord.x == 0.5) {\n        fragColor = mouseA;\n    } else if (fragCoord.x == 1.5) {\n        fragColor = mouseB.z == MAGIC && iMouse.z != MAGIC ? vec4(0.0) : mouseB;\n    } else {\n        fragColor = mouseC;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// This buffer draws the SDF:\n// .r stores signed distance\n// .gba stores emissivity\n\n// SDF drawing logic from \n// Smooth Mouse Drawing - fad\n// https://www.shadertoy.com/view/dldXR7\n\n// solveQuadratic(), solveCubic(), solve() and sdBezier() are from\n// Quadratic Bezier SDF With L2 - Envy24\n// https://www.shadertoy.com/view/7sGyWd\n// with modification. Thank you! I tried a lot of different sdBezier()\n// implementations from across Shadertoy (including trying to make it\n// myself) and all of them had bugs and incorrect edge case handling\n// except this one.\n\nint solveQuadratic(float a, float b, float c, out vec2 roots) {\n    // Return the number of real roots to the equation\n    // a*x^2 + b*x + c = 0 where a != 0 and populate roots.\n    float discriminant = b * b - 4.0 * a * c;\n\n    if (discriminant < 0.0) {\n        return 0;\n    }\n\n    if (discriminant == 0.0) {\n        roots[0] = -b / (2.0 * a);\n        return 1;\n    }\n\n    float SQRT = sqrt(discriminant);\n    roots[0] = (-b + SQRT) / (2.0 * a);\n    roots[1] = (-b - SQRT) / (2.0 * a);\n    return 2;\n}\n\nint solveCubic(float a, float b, float c, float d, out vec3 roots) {\n    // Return the number of real roots to the equation\n    // a*x^3 + b*x^2 + c*x + d = 0 where a != 0 and populate roots.\n    const float TAU = 6.2831853071795862;\n    float A = b / a;\n    float B = c / a;\n    float C = d / a;\n    float Q = (A * A - 3.0 * B) / 9.0;\n    float R = (2.0 * A * A * A - 9.0 * A * B + 27.0 * C) / 54.0;\n    float S = Q * Q * Q - R * R;\n    float sQ = sqrt(abs(Q));\n    roots = vec3(-A / 3.0);\n\n    if (S > 0.0) {\n        roots += -2.0 * sQ * cos(acos(R / (sQ * abs(Q))) / 3.0 + vec3(TAU, 0.0, -TAU) / 3.0);\n        return 3;\n    }\n    \n    if (Q == 0.0) {\n        roots[0] += -pow(C - A * A * A / 27.0, 1.0 / 3.0);\n        return 1;\n    }\n    \n    if (S < 0.0) {\n        float u = abs(R / (sQ * Q));\n        float v = Q > 0.0 ? cosh(acosh(u) / 3.0) : sinh(asinh(u) / 3.0);\n        roots[0] += -2.0 * sign(R) * sQ * v;\n        return 1;\n    }\n    \n    roots.xy += vec2(-2.0, 1.0) * sign(R) * sQ;\n    return 2;\n}\n\nint solve(float a, float b, float c, float d, out vec3 roots) {\n    // Return the number of real roots to the equation\n    // a*x^3 + b*x^2 + c*x + d = 0 and populate roots.\n    if (a == 0.0) {\n        if (b == 0.0) {\n            if (c == 0.0) {\n                return 0;\n            }\n            \n            roots[0] = -d/c;\n            return 1;\n        }\n        \n        vec2 r;\n        int num = solveQuadratic(b, c, d, r);\n        roots.xy = r;\n        return num;\n    }\n    \n    return solveCubic(a, b, c, d, roots);\n}\n\nfloat sdBezier(vec2 p, vec2 a, vec2 b, vec2 c) {\n    vec2 A = a - 2.0 * b + c;\n    vec2 B = 2.0 * (b - a);\n    vec2 C = a - p;\n    vec3 T;\n    int num = solve(\n        2.0 * dot(A, A),\n        3.0 * dot(A, B),\n        2.0 * dot(A, C) + dot(B, B),\n        dot(B, C),\n        T\n    );\n    T = clamp(T, 0.0, 1.0);\n    float best = 1e30;\n    \n    for (int i = 0; i < num; ++i) {\n        float t = T[i];\n        float u = 1.0 - t;\n        vec2 d = u * u * a + 2.0 * t * u * b + t * t * c - p;\n        best = min(best, dot(d, d));\n    }\n    \n    return sqrt(best);\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    vec4 data = texelFetch(iChannel1, ivec2(fragCoord), 0);\n    float sd = iFrame != 0 ? data.r : MAX_FLOAT;\n    vec3 emissivity = iFrame != 0 ? data.gba : vec3(0.0);\n    vec4 mouseA = iFrame > 0 ? texelFetch(iChannel0, ivec2(0, 0), 0) : vec4(0.0);\n    vec4 mouseB = iFrame > 0 ? texelFetch(iChannel0, ivec2(1, 0), 0) : vec4(0.0);\n    vec4 mouseC = iFrame > 0 ? texelFetch(iChannel0, ivec2(2, 0), 0) : iMouse;\n    mouseA.xy += 0.5;\n    mouseB.xy += 0.5;\n    mouseC.xy += 0.5;\n    float d = MAX_FLOAT;\n    \n    if (mouseB.z <= 0.0 && mouseC.z > 0.0) {\n        d = distance(fragCoord, mouseC.xy);\n    } else if (mouseA.z <= 0.0 && mouseB.z > 0.0 && mouseC.z > 0.0) {\n        d = sdSegment(fragCoord, mouseB.xy, mix(mouseB.xy, mouseC.xy, 0.5));\n    } else if (mouseA.z > 0.0 && mouseB.z > 0.0 && mouseC.z > 0.0) {\n        d = sdBezier(\n            fragCoord,\n            mix(mouseA.xy, mouseB.xy, 0.5),\n            mouseB.xy,\n            mix(mouseB.xy, mouseC.xy, 0.5)\n        );\n    } else if (mouseA.z > 0.0 && mouseB.z > 0.0 && mouseC.z <= 0.0) {\n        d = sdSegment(fragCoord, mix(mouseA.xy, mouseB.xy, 0.5), mouseB.xy);\n    }\n    \n    d -= brushRadius * iResolution.y;\n    \n    if (\n        d < max(0.0, sd) && !keyToggled(KEY_1) &&\n        (mouseC.z != MAGIC || cos(iTime * 20.0) > 0.5)\n    ) {\n        sd = min(d, sd);\n        emissivity = getEmissivity() * float(mouseC.z != MAGIC || cos(iTime * 10.0) > 0.5);\n    }\n    \n    fragColor = vec4(sd, emissivity);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

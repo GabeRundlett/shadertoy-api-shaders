@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1709481308",
+            "description": "Generalizing worley noise cell positioning. Normally you pass a 0-1 float (which I call \"regularity\"), where 0 is normal worley and 1 is a uniform grid. I'm extending the bottom of the range; at -1 each cell's point can be generated *anywhere*.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MXlXD8",
+            "likes": 1,
+            "name": "Experiment: Expanding Worley",
+            "published": 3,
+            "tags": [
+                "noise",
+                "worley"
+            ],
+            "usePreview": 0,
+            "username": "cra_manning_w",
+            "viewed": 128
+        },
+        "renderpass": [
+            {
+                "code": "//IQ integer hash II\nconst uint k = 1103515245U;\nvec3 hash( uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\n//Interpolates from a to b as t goes from -1 to 0,\n//    then from b to c as t goes from 0 to 1.\nfloat lerp3(float a, float b, float c, float t)\n{\n    return (t < 0.0) ? mix(b, a, -t) : mix(b, c, t);\n}\n//A version of lerp3() which applies pow(t, _) to each half of the lerp.\nfloat lerp3Pow(float a, float b, float c, float t,\n               float powAB, float powBC)\n{\n    return (t < 0.0) ?\n               mix(b, a, pow(-t, 1.0 / powAB)) :\n               mix(b, c, pow(t, powBC));\n}\n\n\n////////////////////////////////\n//   Expanded Worley noise\n\n//Controlled by the new \"regularity\" parameter:\n//  * 0 is traditional worley noise\n//  * 1 is a uniform grid\n//  * -1 is total randomness\n\n//Gets the position of a worley noise point, for a particular grid cell.\n//Returns the cell's position, given the space spanned by the entire grid.\nvec2 worleyCellPos(uvec2 gridResolution, uvec2 gridCell,\n                   vec2 spaceMin, vec2 spaceMax,\n                   float regularity, uint seed)\n{\n    vec2 spaceSize = spaceMax - spaceMin,\n         cellMin = spaceMin + (vec2(gridCell) / vec2(gridResolution)),\n         cellMax = cellMin + (vec2(1, 1) / vec2(gridResolution));\n    \n    vec3 rng = hash(uvec3(gridCell, seed));\n    vec2 pointMin = cellMin,\n         pointMax = cellMax,\n         t = rng.xy;\n    //Normal worley logic: move towards a uniform grid as regularity approaches 1\n    if (regularity >= 0.0)\n    {\n        t = mix(t, vec2(0.5, 0.5), regularity);\n    }\n    //Expanded logic: move towards a totally random space as regularity approaches -1\n    else\n    {\n        pointMin = mix(cellMin, spaceMin, -regularity);\n        pointMax = mix(cellMax, spaceMax, -regularity);\n    }\n    \n    return mix(pointMin, pointMax, t);\n}\n\n//The main worley noise function.\n//Places points in a particular space covered by the given grid.\n//Returns the distance to the nearest point.\n//The max possible value depends on regularity and grid resolution;\n//    see 'worleyCellMaxDistance()' for help on normalization.\nfloat expandedWorleyNoise(vec2 pos, uvec2 gridResolution,\n                          vec2 spaceMin, vec2 spaceMax,\n                          float regularity, uint seed)\n{\n    //Cap the grid size to avoid crashing the GPU.\n    gridResolution = min(gridResolution, uvec2(80, 80));\n    \n    //Vanilla Worley Noise logic: find the distance to the closest cell.\n    //However, if regularity is less than 0,\n    //    then any point in the entire space could be the closest!\n    float minDist = 999999.0;\n    for (uint x = 0u; x < gridResolution.x; ++x)\n        for (uint y = 0u; y < gridResolution.y; ++y)\n        {\n            vec2 cellPos = worleyCellPos(gridResolution, uvec2(x, y),\n                                         vec2(0, 0), vec2(1, 1),\n                                         regularity, seed);\n            minDist = min(minDist, distance(pos, cellPos));\n        }\n\n    return minDist;\n}\n\n//Calculate the theoretical upper bound on the distance\n//    between any position within the grid, and its nearest worley grid point.\n//You may optionally get a more aesthetically-pleasing upper bound\n//    which will sometimes be too low (or less commonly, too high).\nfloat worleyCellMaxDistance(float regularity, vec2 cellSize, vec2 spaceSize,\n                            bool aestheticCorrection)\n{\n    //In normal worley noise, max distance is 1 cell diagonal.\n    float usualMaxDistance = length(cellSize);\n    \n    //In fully-regular noise, all points are orthogonal\n    //    and the furthest you can get is a cell corner.\n    float uniformMaxDistance = length(cellSize) / 2.0;\n    \n    //In pure white noise, points could be all over the space.\n    //In theory, they could all be concentrated at one corner.\n    float whiteMaxDistance = length(spaceSize);\n    \n    float theoreticalMax = lerp3(whiteMaxDistance, usualMaxDistance, uniformMaxDistance, regularity);\n    \n    //Aesthetically the output is too bright with high regularity\n    //    and too dark in most other cases.\n    if (aestheticCorrection)\n        return theoreticalMax * lerp3Pow(0.18, 0.7, 1.2, regularity, 0.89, 1.3);\n    else\n        return theoreticalMax;\n}\n\n//Normalizes the worley noise for display.\nfloat normalizeNoise(float value, float regularity, vec2 cellSize, vec2 spaceSize)\n{\n    float roughMax = worleyCellMaxDistance(regularity, cellSize, spaceSize, true);\n    return clamp(value / roughMax, 0.0, 1.0);\n}\n\n////////////////////////////////////\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor.a = 1.0;\n    \n    bool mouseClicked = iMouse.z > 0.0;\n\n    vec2 uv = fragCoord/iResolution.xy;\n    float aspectRatio = iResolution.x / float(iResolution.y);\n    \n    //\"Regularity\" parameter oscillates over time, unless mouse is in use.\n    float regularity;\n    if (mouseClicked)\n        regularity = mix(-1.0, 1.0, pow(iMouse.x / iResolution.x, 1.0));\n    else\n        regularity = cos(0.4 * iTime);\n    \n    //Pick a grid resolution to line up with the screen.\n    uvec2 gridSize = uvec2(iResolution.xy / 100.0);\n    vec2 gridCellSizeUv = vec2(aspectRatio, 1) / vec2(gridSize);\n    \n    //Color the screen using worley noise.\n    float noise = expandedWorleyNoise(uv, gridSize, vec2(0, 0), vec2(1, 1), regularity, 345u);\n    noise = normalizeNoise(noise, regularity, gridCellSizeUv, vec2(1, 1));\n    fragColor.rgb = vec3(noise);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

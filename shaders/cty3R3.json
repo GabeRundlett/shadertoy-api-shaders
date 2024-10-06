@@ -1,0 +1,149 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1684514006",
+            "description": "A bloom implementation using only 2 buffer passes by making use of texture mipmaps",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "cty3R3",
+            "likes": 36,
+            "name": "2-Pass Buffer Bloom",
+            "published": 3,
+            "tags": [
+                "2d",
+                "post",
+                "postprocess",
+                "bloom",
+                "mipmap",
+                "shapes",
+                "hdr"
+            ],
+            "usePreview": 0,
+            "username": "gelami",
+            "viewed": 1479
+        },
+        "renderpass": [
+            {
+                "code": "\n// 2-Pass Buffer Bloom - gelami\n// https://www.shadertoy.com/view/cty3R3\n\n/* \n * A bloom implementation using only 2 buffer passes by making use of texture mipmaps\n * \n * Since Shadertoy only has a few buffers available, we are not able to do the\n *   standard bloom methods which does multiple passes for the downsampling and upsampling\n * So instead, we can use the mipmaps with a large blur kernel for the downsampling\n * and a small blur in the upsampling to accomplish a similar thing\n * \n * For the first pass (Buffer B), we render each mipmap level at the same time\n *   with an 11x11 gaussian blur applied for the downsampling\n * Then the second pass (Image) simply adds all the mipmaps together,\n *   with a 3x3 gaussian blur pass to remove some of the blockiness from the mipmaps\n * \n * The 3x3 gaussian blur in the second pass was a bit of a bottleneck,\n *   so it is optimized to 4 taps using bilinear filtering.\n * More info about it on the article below\n * \n * Buffer A: Rendering the shapes\n * Buffer B: 1st pass, downsampling\n * Image: 2nd pass, upsampling\n * Defines in Common\n * \n * \n * Resources:\n * \n * Custom Bloom Post-Process in Unreal Engine - Froyok\n * https://www.froyok.fr/blog/2021-12-ue4-custom-bloom/\n * \n * Next generation post processing in Call of Duty: Advanced Warfare - Jorge Jimenez\n * http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare\n * \n * Optimized gaussian blur kernel using bilinear filtering\n * Optimizing Convolutions - John Chapman\n * https://john-chapman.github.io/2019/03/29/convolution.html\n * \n * \n * Other cool bloom shaders:\n *\n * Gargantua With HDR Bloom - sonicether\n * https://www.shadertoy.com/view/lstSRS\n *\n * Buffer pass bloom - robobo1221\n * https://www.shadertoy.com/view/lsBfRc\n */\n\nvec4 SampleLodBlurred(sampler2D tex, vec2 uv, vec2 res, const int lod)\n{\n    vec4 result = vec4(0);\n    float sc = exp2(float(lod));\n    vec2 nres = floor(res / sc * 0.5);\n    \n    #ifndef OPTIMIZED_UPSAMPLE_BLUR\n    const float[9] weights = float[](\n        1., 2., 1.,\n        2., 4., 2.,\n        1., 2., 1.\n    );\n    \n    float w = 0.0;\n    for (int x = -1; x <= 1; x++)\n    {\n        for (int y = -1; y <= 1; y++)\n        {\n            vec2 o = vec2(x, y);\n            float wg = weights[x + 1 + (y + 1) * 3];\n            vec2 p = uv + o / nres;\n\n            result += wg * SampleLod(iChannel1, saturate(p), iResolution.xy, lod);\n            w += wg;\n        }\n    }\n    result /= w;\n    \n    // Optimized blur using bilinear filtering\n    // https://john-chapman.github.io/2019/03/29/convolution.html\n    #else\n    \n    const vec2[4] offsets = vec2[](\n        vec2(-1.0/3.0, -1.0/3.0),\n        vec2( 1.0/3.0, -1.0/3.0),\n        vec2(-1.0/3.0,  1.0/3.0),\n        vec2( 1.0/3.0,  1.0/3.0)\n    );\n    \n    for (int i = 0; i < 4; i++)\n    {\n        vec2 o = offsets[i];\n        vec2 p = uv + o / nres;\n        \n        result += SampleLod(iChannel1, saturate(p), iResolution.xy, lod);\n    }\n    result *= 0.25;\n    \n    #endif\n    \n    return result;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec3 col = vec3(0);\n    \n    #ifndef UPSAMPLE_BLUR\n    col += SampleLod(iChannel1, uv, iResolution.xy, 0).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 1).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 2).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 3).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 4).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 5).rgb;\n    \n    #else\n    \n    // Skip 3x3 blur on first 3 mips\n    #if 1\n    col += SampleLod(iChannel1, uv, iResolution.xy, 0).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 1).rgb;\n    col += SampleLod(iChannel1, uv, iResolution.xy, 2).rgb;\n    #else\n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 0).rgb;\n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 1).rgb;\n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 2).rgb;\n    #endif\n    \n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 3).rgb;\n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 4).rgb;\n    col += SampleLodBlurred(iChannel1, uv, iResolution.xy, 5).rgb;\n    \n    #endif\n    \n    col /= 6.0;\n    col = mix(texture(iChannel0, uv).rgb, col, BLOOM_FACTOR);\n    \n    //col = texture(iChannel1, uv).rgb;\n    //col = textureLod(iChannel0, uv, 4.0).rgb;\n    //col = SampleLod(iChannel1, uv, iResolution.xy, 4).rgb;\n    \n    // Tonemappers\n    //col = col / (1.0 + col);\n    //col = ACESFilm(col * 0.55);\n    //col = Uncharted2Tonemap(col);\n    //col = ReinhardExt(col, 5.5);\n    col = ReinhardExtLuma(col, 2.5); //5.5\n    //col = col / (1.0 + luminance(col));\n    //col = GlobalLogTonemap(col, 0.0, 3.5, 0.15);\n    \n    fragColor = vec4(linearTosRGB(col), 1);\n    fragColor += (dot(hash23(vec3(fragCoord, iTime)), vec2(1)) - 0.5) / 255.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n\n#define EXPOSURE 15.0\n\n#define BLOOM_FACTOR 0.6\n\n#define ROTATION\n\n#define DOWNSAMPLE_BLUR_RADIUS 5\n\n#define UPSAMPLE_BLUR\n#define OPTIMIZED_UPSAMPLE_BLUR\n\n#define MAX_LOD 6\n\n#define STEPS 512\n#define MAX_DIST 100.\n#define EPS 1e-4\n\n#define PI (acos(-1.))\n#define TAU (PI*2.)\n\nvec4 SampleLod(sampler2D tex, vec2 uv, vec2 res, const int lod)\n{\n    vec2 hres = floor(res / 2.0);\n    \n    vec2 nres = hres;\n    float xpos = 0.0;\n    int i = 0;\n    for (; i < lod; i++)\n    {\n        xpos += nres.x;\n        \n        nres = floor(nres / 2.0);\n    }\n    \n    vec2 nuv = uv * vec2(nres);\n    \n    nuv = clamp(nuv, vec2(0.5), vec2(nres)-0.5);\n    nuv += vec2(xpos, 0);\n    \n    return texture(tex, nuv / res);\n}\n\nfloat safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }\n\nfloat saturate(float x) { return clamp(x, 0., 1.); }\nvec2 saturate(vec2 x) { return clamp(x, vec2(0), vec2(1)); }\nvec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }\n\nfloat sqr(float x) { return x*x; }\nvec2 sqr(vec2 x) { return x*x; }\nvec3 sqr(vec3 x) { return x*x; }\n\nfloat luminance(vec3 col) { return dot(col, vec3(0.2126729, 0.7151522, 0.0721750)); }\n\nmat2 rot2D(float a)\n{\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n// https://iquilezles.org/articles/palettes/\nvec3 palette(float t)\n{\n    return .5 + .5 * cos(TAU * (vec3(1, 1, 1) * t + vec3(0, .33, .67)));\n}\n\n// Hash without Sine\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nvec3 sRGBToLinear(vec3 col)\n{\n    return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));\n}\n\nvec3 linearTosRGB(vec3 col)\n{\n    return mix(1.055 * pow(col, vec3(1.0 / 2.4)) - 0.055, col * 12.92, lessThan(col, vec3(0.0031308)));\n}\n\nvec3 Uncharted2TonemapPartial(vec3 x)\n{\n    float A = 0.15;\n    float B = 0.50;\n    float C = 0.10;\n    float D = 0.20;\n    float E = 0.02;\n    float F = 0.30;\n    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;\n}\n\nvec3 Uncharted2Tonemap(vec3 x)\n{\n    const float E = 2.5;\n    const float W = 11.2;\n    \n    return Uncharted2TonemapPartial(x * E) / Uncharted2TonemapPartial(vec3(W));\n}\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n\n// https://64.github.io/tonemapping/\n// https://imdoingitwrong.wordpress.com/2010/08/19/why-reinhard-desaturates-my-blacks-3\nvec3 ReinhardExt(vec3 col, const float w)\n{\n    vec3 n = col * (1.0 + col / (w * w));\n    return n / (1.0 + col);\n}\n\nvec3 ReinhardExtLuma(vec3 col, const float w)\n{\n    float l = luminance(col);\n    float n = l * (1.0 + l / (w * w));\n    float ln = n / (1.0 + l);\n    return col * ln / l;\n}\n\n// https://cs.brown.edu/courses/cs129/results/proj5/valayshah/\n// http://www.cs.nott.ac.uk/~pszqiu/webpages/Papers/icpr2006-hdri-camera.pdf\nvec3 GlobalLogTonemap(vec3 col, const float ymin, const float ymax, const float t)\n{\n    float y = luminance(col);\n    float a = (ymax - ymin) * t;\n    float lm = log(ymin + a);\n    float yn = (log(y + a) - lm) / (log(ymax + a) - lm);\n    return col * yn / y;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Fork of \"Gelami Raymarching Template\" by gelami. https://shadertoy.com/view/mslGRs\n// 2023-05-17 14:41:51\n\n// https://iquilezles.org/articles/distfunctions2d/\n// https://www.shadertoy.com/view/3tSGDy\nfloat sdStar(in vec2 p, in float r, in int n, in float m) // m=[2,n]\n{\n    // these 4 lines can be precomputed for a given shape\n    float an = 3.141593/float(n);\n    float en = 3.141593/m;\n    vec2  acs = vec2(cos(an),sin(an));\n    vec2  ecs = vec2(cos(en),sin(en)); // ecs=vec2(0,1) and simplify, for regular polygon,\n\n    // reduce to first sector\n    float bn = mod(atan(p.x,p.y),2.0*an) - an;\n    p = length(p)*vec2(cos(bn),abs(sin(bn)));\n\n    // line sdf\n    p -= r*acs;\n    p += ecs*clamp( -dot(p,ecs), 0.0, r*acs.y/ecs.y);\n    return length(p)*sign(p.x);\n}\n\n// https://www.shadertoy.com/view/3tyBzV\nfloat dot2(vec2 p) { return dot(p, p); }\nfloat sdHeart( in vec2 p )\n{\n    p.x = abs(p.x);\n\n    if( p.y+p.x>1.0 )\n        return sqrt(dot2(p-vec2(0.25,0.75))) - sqrt(2.0)/4.0;\n    return sqrt(min(dot2(p-vec2(0.00,1.00)),\n                    dot2(p-0.5*max(p.x+p.y,0.0)))) * sign(p.x-p.y);\n}\n\nfloat sdBox( in vec2 p, in vec2 b )\n{\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\nfloat smootherstep(float f)\n{\n    return f*f*f*(f*(f*6.0-15.0)+10.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pv = (2. * (fragCoord) - iResolution.xy) / iResolution.y;\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec3 col = vec3(0);\n\n    col = vec3(1, 0.5, 1);\n    \n    float t = iTime * 0.8;\n    \n    #ifdef ROTATION\n    #if 0\n    pv *= rot2D(t * 0.8);\n    #else\n    pv *= rot2D(smootherstep(fract(t * 0.5 / PI)) * TAU);\n    #endif\n    #endif\n    \n    vec2 p1 = pv - vec2(0.8, 0);\n    vec2 p2 = (pv + vec2(0.8, 0.2)) * 2.6;\n    \n    #ifdef ROTATION\n    p1 *= rot2D(t * 1.0);\n    \n    p2.y -= 0.55;\n    p2 *= rot2D(t * 1.0);\n    p2.y += 0.55;\n    #endif\n    \n    float d = length(pv) - 0.2;\n    float r = 0.02;\n    float st = sdStar(p1, 0.25 - r, 5, 3.0) - r;\n    float sh = sdHeart(p2) / 2.6 - 0.02;\n    \n    if (st < d)\n    {\n        d = st;\n        col = vec3(1, 0.5, 0.2);\n    }\n    if (sh < d)\n    {\n        d = sh;\n        col = vec3(0.2, 0.5, 1);\n    }\n    \n    /*\n    float sb = abs(sdBox(pv, vec2(1.6, 0.8))) - 0.01;\n    if (sb < d)\n    {\n        d = sb;\n        col = vec3(1, 0.8, 0.6);\n    }*/\n    \n    col *= smoothstep(2.0 / iResolution.y, 0.0, d);\n    \n    col *= EXPOSURE;\n    col = max(col, vec3(0));\n    \n    fragColor = vec4(col, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\nfloat gaussian(vec2 i, float sigma) {\n    return exp(-dot(i,i) / (2.0 * sigma*sigma));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 hres = floor(iResolution.xy / 2.0);\n        \n    vec2 res = hres;\n    float xpos = 0.0;\n    int lod = 0;\n    for (; lod < MAX_LOD; lod++)\n    {\n        xpos += res.x;\n        \n        if (xpos > fragCoord.x || res.x <= 1.0)\n            break;\n        res = floor(res / 2.0);\n    }\n    \n    if (fragCoord.y >= res.y)\n    {\n        fragColor = vec4(0);\n        return;\n    }\n    \n    fragColor = vec4(0);\n    \n    vec2 px = 1.0 / iResolution.xy;\n    vec2 p = (fragCoord - vec2(xpos - res.x, 0)) / iResolution.xy;\n    vec2 uv = (fragCoord - vec2(xpos - res.x, 0)) / vec2(res);\n    \n    // Skip blurring LOD 0 for performance\n    #if 1\n    if (lod == 0)\n    {\n        fragColor = textureLod(iChannel0, uv, 1.0);\n        return;\n    }\n    #endif\n    \n    const int rad = DOWNSAMPLE_BLUR_RADIUS;\n    const float sigma = float(rad) * 0.4;\n\n    // TODO: Optimized blur kernel using bilinear\n    float sc = exp2(float(lod));\n    float w = 0.0;\n    for (int x = -rad; x <= rad; x++)\n    {\n        for (int y = -rad; y <= rad; y++)\n        {\n            vec2 o = vec2(x, y);\n            float wg = gaussian(o, sigma);\n            //float wg = exp(-dot(o, o) * 0.125);\n            vec2 p = uv + o / vec2(res);\n            \n            // Clamp to edge\n            //p = clamp(p, 0.5 / res, (res - 0.5) / res);\n            \n            // Clamp to border\n            if (p == clamp(p, vec2(0.5) / res, (res - 0.5) / res))\n                fragColor += wg * textureLod(iChannel0, p, float(lod));\n            w += wg;\n        }\n    }\n    fragColor /= w;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

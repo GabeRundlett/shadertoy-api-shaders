@@ -1,0 +1,146 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1575906962",
+            "description": "this is basically \"molten bismuth\" shader generalized to three dimensions.\n(finally a reason to utilize the render-cubemap - at least one face of it...)",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "tl33RM",
+            "likes": 62,
+            "name": "single pass 3D fluid",
+            "published": 3,
+            "tags": [
+                "3d",
+                "fluid",
+                "cfd",
+                "singlepass"
+            ],
+            "usePreview": 0,
+            "username": "flockaroo",
+            "viewed": 2265
+        },
+        "renderpass": [
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// single pass 3D fluid dynamics\n\n// same fluid as in \"molten bismut\" but generalized to 3 dimensions\n// ...but with self-consistent-ish velocity field\n// the previous method was just defined implicitely by the rotations on multiple scales\n// here the calculated velocity field is put back into the stored field\n\n// drawing the fluid\n\n//#define RENDER_OBSTACLE\n//#define VELOCITY_VAL 2.0\n//#define REFRACT\n#ifdef OBSTACLE\n#define CUT_MIDDLE\n#endif\n\n#define Res  (iResolution.xy)\n\nvec3 getVal(vec3 pos)\n{\n    vec4 coord=coord3to2(pos);\n    vec3 v1=textureLod(iChannel0,vec3(coord.xy/Res0.xy-.5,.5),0.).xyz;\n    vec3 v2=textureLod(iChannel0,vec3(coord.zw/Res0.xy-.5,.5),0.).xyz;\n    return mix(v1,v2,fract(pos.z-.5));\n}\n\n#ifndef RandTex \n#define RandTex iChannel1\n#endif\n\nvec4 myenv(vec3 pos, vec3 dir, float period)\n{\n    #ifndef SHADEROO\n    return texture(iChannel2,dir.xzy);\n    #else\n    float azim = atan(dir.y,dir.x);\n    float th = asin(dir.z);\n    float c=(sin(-azim*5.-1.5)*.15+.25);\n    float thr  = .5*.5*(.7*sin(2.*azim*5.)+.3*sin(2.*azim*7.));\n    float thr2 = .5*.125*(.7*sin(2.*azim*13.)+.3*sin(2.*azim*27.));\n    float thr3 = .5*.05*(.7*sin(2.*azim*32.)+.3*sin(2.*azim*47.));\n    float br  = smoothstep(thr-.2, thr+.2, dir.z+.25);\n    float br2 = smoothstep(thr2-.2,thr2+.2,dir.z+.15);\n    float br3 = smoothstep(thr3-.2,thr3+.2,dir.z);\n    vec4 r1 = .5*(texture(RandTex,dir.xy*.01)-texture(RandTex,dir.xy*.017+.33));\n    vec3 skyCol=vec3(.9,1,1.1)+.3*(r1.xxx*.5+r1.xyz*.5);\n    //skyCol*=2.5;\n    vec4 r2 = .5*(texture(RandTex,dir.xy*.1)-texture(RandTex,dir.xy*.07-.33));\n    vec3 floorCol = vec3(.9,1.1,1.)*.8+.5*(r2.xxx*.7+r2.xyz*.3);\n    vec3 col=mix(floorCol.zyx,skyCol,br3);\n    col=mix(floorCol.yzx*.7,col,br2);\n    col=mix(floorCol.xyz*.7*.7,col,br);\n    vec3 r=texture(RandTex,vec2(azim/PI2*.125,.5)).xyz;\n    col*= 1.-clamp(((r.xxx*.7+r.xzz*.3)*2.-1.)*clamp(1.-abs(dir.z*1.6),0.,1.),0.,1.);\n    return vec4(col*col*vec3(1.1,1,.9)/**clamp(1.+dir.x*.3,.9,1.2)*/,1);\n    #endif\n}\n\n\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\n//float dist(vec3 p) { return sdBox(p,vec3(1.5)); }\nbool box_enable=true;\nbool box_neg=false;\n\nfloat getAbsVel(vec3 p)\n{\n    return length(getVal(fluidPos(p)));\n}\n\nvec3 getVelGrad(vec3 p, float eps)\n{\n    float v=getAbsVel(p);\n    vec3 d=vec3(1,0,0)*eps;\n    return vec3(\n            getAbsVel(p+d.xyy)-v,\n            getAbsVel(p+d.yxy)-v,\n            getAbsVel(p+d.yyx)-v\n        )/eps;\n}\n\nfloat dist(vec3 p) { \n    float lmin=min(FRes.x,min(FRes.y,FRes.z));\n    #ifdef CUT_MIDDLE\n    float dbox=sdBox(p-distPos(FRes*.25)*vec3(1,0,0),FRes/lmin*.99*vec3(.5,1,1));\n    #else\n    float dbox=sdBox(p,FRes/lmin*.99);\n    #endif\n    float d=1000.;\n    //if(box_enable) return dbox;\n    if(box_enable) return box_neg?-dbox:dbox;\n    //float v=length(getVal((p*.5+.5)*FRes));\n    float v=length(getVal(fluidPos(p)));\n    float v0=v;\n    #ifdef VELOCITY_VAL\n    v=abs(v-VELOCITY_VAL);\n    d=min(d,v*.1/length(getVelGrad(p,1./dot(FRes,vec3(.333)))));\n    #else\n    v=abs(fract(v/.5)*.5-.25);\n    //d=min(d,v/v0*.1);\n    d=min(d,v*.1/length(getVelGrad(p,1./dot(FRes,vec3(.333)))));\n    #endif\n    //if(!box_enable) d=min(d,-dbox+.01);\n#ifdef OBSTACLE\n#ifdef RENDER_OBSTACLE\n    d=min(d,obstacleDist(p));\n#endif\n#endif\n    d=max(d,dbox);\n    return d;\n}\n\nvec3 getGrad(vec3 p,float delta)\n{\n    float v=dist(p);\n    vec2 d=vec2(delta,0); return vec3( dist(p+d.xyy)-v,\n                                       dist(p+d.yxy)-v,\n                                       dist(p+d.yyx)-v )/delta;\n}\n\nfloat march(inout vec3 p, vec3 dir)\n{\n    //if(!intersectBox(p-bbpos,dir,bbsize)) { enable_car=false; }\n    //if(!(intersectBox(p-bbpos1,dir,bbsize1)||intersectBox(p-bbpos2,dir,bbsize2))) { enable_car=false; }\n    vec3 p0=p;\n    float eps=.0003;\n    float dmin=1000.;\n    bool findmin=false;\n    float d=dist(p);\n    vec3 pmin=p;\n    for(int i=0;i<500;i++)\n    {\n        float dp=d;\n        d=dist(p);\n        p+=dir*d*1.;\n#ifdef SHADOW\n        if (d<dp) findmin=true;\n        if (findmin && d<dmin) { dmin=d; pmin=p; }\n#endif\n        if (d<eps) return 0.;\n    }\n    return clamp(dmin/length(pmin-p0)/.05,0.,1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 sc=(fragCoord-Res*.5)/Res.x;\n    float zoom=1.;\n    #ifdef SHADEROO\n    zoom=1.-iMouseData.z/1000.;\n    #endif\n    float eps = .5/dot(FRes,vec3(.333));\n    \n    vec3 pos=vec3(0,0,5.5)*zoom;\n    vec3 dir=normalize(vec3(sc,-.8));\n    vec4 q=vec4(0,0,0,1);\n    float th=-(iMouse.y-Res.y*.5)/Res.y*6.;\n    float ph=-(iMouse.x-Res.x*.5)/Res.x*10.;\n    if(iMouse.x<1.) { th=1.2; ph=-iTime*.25; }\n    q=multQuat(q,axAng2Quat(vec3(0,0,1),ph));\n    q=multQuat(q,axAng2Quat(vec3(1,0,0),th));\n    pos=transformVecByQuat(pos,q);\n    dir=transformVecByQuat(dir,q);\n    vec3 pos0=pos;\n\n    float m=march(pos,dir);\n    vec3 nb=normalize(getGrad(pos,eps));\n    vec3 nb2=vec3(1,1,1);\n    #ifdef REFRACT\n    dir=refract(dir,nb,.7);\n    #endif\n    if (m!=0.) nb=vec3(1,1,1);\n    if (m==0.)\n    {\n        box_neg=true;\n        vec3 pos2=pos+dir*.1;\n        m=march(pos2,dir);\n        nb2=normalize(getGrad(pos2,eps));\n        if (m!=0.) nb2=vec3(1,1,1);\n        box_enable=false;\n        m=march(pos,dir);\n    }\n\n    vec3 n=getGrad(pos,eps);\n    if (length(n)<.001) n=vec3(0,0,1);\n    n=normalize(n);\n    float ao=1.;\n    if(m==0.)\n    {\n    ao*=dist(pos+n*.2)/.1*4.+.5;\n    ao*=dist(pos+n*.1)/.1*4.+.5;\n    ao*=dist(pos+n*.05)/.1*4.+.5;\n    ao*=dist(pos+n*.03)/.1*4.+.5;\n    ao=clamp(ao,0.,1.);\n    ao=ao*.5+.5;\n    }\n\n    fragColor.xyz=vec3(.8,.9,1.);\n    fragColor.xyz=mix(fragColor.xyz,nb2*.5+.5,.2);\n    if(m==0.)\n    {\n        vec3 n=normalize(getGrad(pos,eps));\n        fragColor.xyz=(1.+.0*n);\n        fragColor.xyz*=clamp(dot(n,normalize(vec3(1,1,1.5))),0.,1.)*.3+.7;\n        fragColor.xyz*=getVal(fluidPos(pos))*.5+.5;\n    }\n    fragColor.xyz=mix(fragColor.xyz,nb*.7+.5,.2);\n    fragColor=clamp(fragColor,0.,1.);\n    fragColor*=ao;\n    \n    // add some reflection\n    fragColor=fragColor+.3*myenv(vec3(0),reflect(dir,n),1.);\n    \n    // vignetting\n    fragColor-=2.*dot(sc,sc);\n    \n    fragColor.w=1.;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// single pass 3D fluid dynamics\n\n// same fluid as in \"molten bismut\" but generalized to 3 dimensions\n// ...but with self-consistent-ish velocity field\n// the previous method was just defined implicitely by the rotations on multiple scales\n// here the calculated velocity field is put back into the stored field\n\n//...helper funcs\n\n//#define OBSTACLE\n\n#define PI2 6.283185\n\n#define Res0 vec2(1024)\n#define Res1 vec2(textureSize(iChannel1,0))\n\nvec2 uvSmooth(vec2 uv,vec2 res)\n{\n    // no interpolation\n    //return uv;\n    // sinus interpolation\n    //return uv+.8*sin(uv*res*PI2)/(res*PI2);\n    // iq's polynomial interpolation\n    vec2 f = fract(uv*res);\n    return (uv*res+.5-f+3.*f*f-2.0*f*f*f)/res;\n}\n\nvec4 inverseQuat(vec4 q)\n{\n    //return vec4(-q.xyz,q.w)/length(q);\n    // if already normalized this is enough\n    return vec4(-q.xyz,q.w);\n}\n\nvec4 multQuat(vec4 a, vec4 b)\n{\n    return vec4(cross(a.xyz,b.xyz) + a.xyz*b.w + b.xyz*a.w, a.w*b.w - dot(a.xyz,b.xyz));\n}\n\nvec3 transformVecByQuat( vec3 v, vec4 q )\n{\n    return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w*v );\n}\n\nvec4 axAng2Quat(vec3 ax, float ang)\n{\n    return vec4(normalize(ax),1)*sin(vec2(ang*.5)+vec2(0,PI2*.25)).xxxy;\n}\n\n//////// Fluid lookup funcs\n\nconst vec3 FRes=vec3(70,100,50);\n//const vec3 FRes=vec3(90);\n\nvec4 coord3to2(vec3 p)\n{\n    p.z-=.5;\n    p=mod(p+FRes+FRes,FRes);\n    p.xy=clamp(p.xy,vec2(.5),FRes.xy-.5);\n    ivec2 N=ivec2(Res0/FRes.xy);\n    int z1=int(p.z)%int(FRes.z);\n    int z2=(z1+1)%int(FRes.z);\n    vec2 xy1 = p.xy + vec2( float(z1%N.x)*FRes.x, float(z1/N.x)*FRes.y );\n    vec2 xy2 = p.xy + vec2( float(z2%N.x)*FRes.x, float(z2/N.x)*FRes.y );\n    return vec4(xy1,xy2);\n}\n\nvec3 coord2to3(vec2 c)\n{\n    ivec2 N=ivec2(Res0/FRes.xy);\n    vec2 cr=c/FRes.xy;\n    vec2 indXY=floor(cr);\n    vec2 cm=(cr-indXY)*FRes.xy;\n    //vec2 cm=mod(c,FRes.xy);\n    return vec3(cm,indXY.x+indXY.y*float(N.x)+.5);\n}\n\nfloat sdRoundBox( vec3 p, vec3 b, float r )\n{\n  vec3 q = abs(p) - (b-r);\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;\n}\n\nfloat sdRoundedCylinder( vec3 p, float R, float r, float h )\n{\n  vec2 d = vec2( length(p.xz)-R, abs(p.y) - h*.5 );\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0)) - r;\n}\n\nfloat distTorus(vec3 p, float R, float r)\n{\n    return length(p-vec3(normalize(p.xy),0)*R)-r;\n}\n\nfloat sdCone( vec3 p, vec2 c )\n{\n  // c is the sin/cos of the angle\n  float q = length(p.xy);\n  return dot(c,vec2(q,p.z));\n}\n\nfloat dDirLine(vec3 p, vec3 c, vec3 dir, float l)\n{\n    p-=c;\n    dir=normalize(dir);\n    float dp=dot(p,dir);\n    //return length(p-dp*dir);\n    return max(max(length(p-dp*dir),-dp),dp-l);\n}\n\nvec3 fluidPos(vec3 p)\n{\n    float lmin=min(FRes.x,min(FRes.y,FRes.z));\n    return p*lmin*.5+FRes*.5;\n}\n\nvec3 distPos(vec3 p)\n{\n    float lmin=min(FRes.x,min(FRes.y,FRes.z));\n    return (p-.5*FRes)/(lmin*.5);\n}\n\n#define WheelFR vec3( 0.8, 1.2,-0.1)\n#define WheelRadius 0.45\n#define ObjBoundRadius 3.5\n\n// smoothed minimum - copied from iq's site (https://iquilezles.org/articles/smin)\nfloat smin2( float a, float b, float k ) { return -log2( exp2( -k*a ) + exp2( -k*b ) )/k; }\n\nfloat distCar(vec3 pos)\n{\n    pos.x=abs(pos.x);\n    if(dot(pos,pos)>ObjBoundRadius*ObjBoundRadius) return length(pos)-ObjBoundRadius*0.5;\n    float dist = 100000.0;\n    dist = min(dist, sdRoundBox(pos-vec3(0.0,-0.5,0.7),vec3(0.75-0.15,1.1-0.15,0.5-0.15)*1.2,0.15));\n    pos.y=abs(pos.y);\n    dist = smin2(dist, sdRoundBox(pos-vec3(0.0, 0.0,0.3),vec3(0.8-0.1, 1.8-0.1,0.35-0.1)*1.2,0.1),10.0);\n    dist = max(dist, -(length((pos-WheelFR).yzx)-WheelRadius*1.2));\n    dist = min(dist, distTorus((pos-WheelFR).yzx,WheelRadius-0.15,0.15));\n    return dist;\n}\n\nfloat obstacleDist(vec3 p)\n{\n    //// car\n    return distCar((p*vec3(1,-1,1)-vec3(0,0,-.2))*1.8)/1.8;\n    ////// sphere\n    //float d=length(p)-.35;\n    //// cylinder\n    //float d=length(p.yz)-.35;\n    //// plane\n    float d=sdRoundBox( transformVecByQuat(p-vec3(0,0,-0.1),axAng2Quat(vec3(1,0,0),.6)), vec3(.45,.45,.05), 0.02 );\n    //d=max(d,p.y);\n    return d;\n}\n\nvec3 obstacleGrad(vec3 p,float delta)\n{\n    float v=obstacleDist(p);\n    vec2 d=vec2(delta,0); return vec3( obstacleDist(p+d.xyy)-v,\n                                       obstacleDist(p+d.yxy)-v,\n                                       obstacleDist(p+d.yyx)-v )/delta;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// single pass 3D CFD\n\n// same fluid as in \"molten bismut\" but generalized to 3 dimensions\n// ...but with self-consistent-ish velocity field\n// the previous method was just defined implicitely by the rotations on multiple scales\n// here the calculated velocity field is put back into the stored field\n\n// the actual simulation\n\n#define RotNum 6\n\n#define keyTex iChannel2\n#define KEY_I (texture(keyTex,vec2((105.5-32.0)/256.0,(0.5+0.0)/3.0)).x)\n\nvec3 getVal(vec3 pos)\n{\n    vec4 coord=coord3to2(pos);\n    vec3 v1=textureLod(iChannel0,vec3(coord.xy/Res0.xy-.5,.5),0.).xyz;\n    vec3 v2=textureLod(iChannel0,vec3(coord.zw/Res0.xy-.5,.5),0.).xyz;\n    return mix(v1,v2,fract(pos.z-.5));\n}\n\nvec3 deltaPoint(int i)\n{\n    #if RotNum == 8 // cube diagonals\n        vec3 b = (vec3(i&1,i&2,i&4)*vec3(2,1,.5)-1.)*.58;\n    #endif\n    #if RotNum == 6 // +/- x,y,z (cube sides)\n        vec3 d=1.-clamp(mod(vec3(i,i+1,i+2),3.),0.,1.);\n        float sg=float(i/3)*2.-1.;\n        vec3 b = d*sg;\n    #endif\n    #if RotNum == 4 // tetrahedral points (every other cube diag)\n        vec2 sg=vec2((i&1)*2,i&2)-1.;\n        vec3 b = (sg.x*vec3(1,sg.y,0)+sg.y*vec3(0,0,1))*.58;\n    #endif\n    #if RotNum == 3 // 3 points on a triangle\n        vec3 b = vec3(cos(.5+float(i)*PI2/3.+vec2(0,1.57)),0.);\n    #endif\n    #if RotNum == 2 // 2 opposite points\n        vec3 b = float(i&1)*2.-1.*vec3(1,1,1)*.58;\n    #endif\n    #if RotNum == 1 // only 1 points\n        vec3 b = vec3(1,1,1)*.58;\n    #endif\n    return b;\n}\n\nvec3 getRot(vec3 pos, float s, vec4 q)\n{\n    vec3 rot=vec3(0);\n    for(int i=0;i<RotNum;i++)\n    {\n        vec3 b=s*transformVecByQuat(deltaPoint(i),q);\n        vec3 v=getVal(pos+b);\n        rot+=cross(v,b);\n    }\n    return rot/float(RotNum)/(s*s);\n}\n\nvec4 rand3d(vec3 uv)\n{\n    float pz=uv.z*256.;\n    float z=floor(pz);\n    vec2 uv1=uv.xy+z*vec2(17,31)/256.;\n    vec2 uv2=uv1+vec2(17,31)/256.;\n    return mix(textureLod(iChannel1,uv1,0.),textureLod(iChannel1,uv2,0.),pz-z);\n}\n\nvec4 getRand(int idx)\n{\n    ivec2 res = textureSize(iChannel1,0);\n    return texelFetch(iChannel1,ivec2(idx%res.x,(idx/res.x)%res.y),0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 pos = coord2to3(fragCoord);\n    if(pos.z>FRes.z) discard; // ignore idle parts of storing texture\n    \n    vec4 q = normalize(cos(vec4(1,1.5,2.3,3)*float(iFrame)*2.3+.0*pos.yzxy)); // vary curl-evaluation-points in time\n    //vec4 q = normalize(getRand(iFrame+int(pos.x)+int(.1*pos.y))); // vary curl-evaluation-points in time\n    \n    // this could be a crucial part to find a quaternions that vary rpeopery\n    // - no too small roatations\n    // - q, qr fairly orthogonal \n    //q=normalize(getRand(iFrame+1+int(pos.x)+int(.1*pos.y)));\n    vec4 qr=normalize(getRand(iFrame+1));\n    //vec4 qr=normalize(q.yxzw*vec3());\n    vec3 v=vec3(0);\n    vec3 vm=vec3(0);\n    float cnt=0.;\n    float sMax=.2*length(FRes); // take curls up to 1/4 field size\n    float s=1.;\n    q=normalize(getRand(iFrame/*+int(pos.x*13.+pos.y*7.+pos.z*17.)*/));\n    for(int l=0;l<20;l++)\n    {\n        //q=normalize(getRand(iFrame+l));\n        if ( s > sMax ) break;\n        for(int i=0;i<RotNum;i++)\n        {\n            vec3 b=s*transformVecByQuat(deltaPoint(i),q);\n            v+=cross(getRot(pos+b, s, q.wxyz),b);\n            vm+=s*getVal(pos+b);\n            cnt+=s;\n        }\n        s*=2.0;\n        q=multQuat(q,qr);\n    }\n    \n    v*=1./float(RotNum);\n    vm/=cnt;\n    #ifdef OBSTACLE\n    //install 0'th order velocity (ignored by algorithm)\n    v=mix(v,vm,.05);\n    #endif\n    \n    // perform advection\n    fragColor.xyz=getVal(pos-.05*v*FRes.x);\n    \n    // feeding some self-consistency into the velocity field\n    // (otherwise velocity would be defined only implicitely by the multi-scale rotation sums)\n    fragColor.xyz=mix(fragColor.xyz,v*4.,.025);\n    \n    // add a little \"motor\"\n    //vec2 c=fract(scuv(iMouse.xy/iResolution.xy))*iResolution.xy;\n    //vec2 dmouse=texelFetch(iChannel3,ivec2(0),0).zw;\n    //if (iMouse.x<1.) c=Res0*.5;\n    vec3 c=FRes*.5*vec3(1,1.,1);\n    #ifdef OBSTACLE\n    c=FRes*.5*vec3(1,.1,1);\n    #endif\n    vec3 scr=(pos-c)/FRes*2.;\n    #ifdef OBSTACLE\n    // nozzle in y-direction\n    fragColor.xyz = mix(fragColor.xyz,2.25*vec3(0,1,0),1./(dot(scr,scr)/0.005+.005));\n    #else\n    // slowly rotating current in the center (when mouse not moved yet)\n    fragColor.xyz += 1.1*cos(floor(iTime*.2)*2.5*vec3(.3,1,1.7)) / (dot(scr,scr)/0.005+.005);\n    //fragColor.xyz= mix(fragColor.xyz, 8.1*cos(floor(iTime*.1)*2.5*vec3(.3,1,1.7)), 1./(dot(scr,scr)/0.005+.005));\n    #endif\n    \n    //fragColor.xyz = mix(fragColor.xyz,1.5*vec3(0,1,0),exp(-scr.y*scr.y/0.01/0.01));\n    //fragColor.xyz = mix(fragColor.xyz,1.5*vec3(0,1,0),exp(-(scr.y-1.8)*(scr.y-1.8)/0.01/0.01));\n\n    #ifdef OBSTACLE\n    if(obstacleDist(distPos(pos))<0.) \n    {\n        vec3 n=normalize(obstacleGrad(distPos(pos),.001));\n        fragColor.xyz-=1.*dot(fragColor.xyz,n)*n;\n        fragColor.xyz*=vec3(0.8);\n    }\n    #endif\n    \n    // feed mouse motion into flow\n    //fragColor.xy += .0003*dmouse/(dot(scr,scr)/0.05+.05);\n\n    // initialization\n    if(iFrame<=4) fragColor=vec4(0);\n    if(KEY_I>.5 ) fragColor=(rand3d(coord2to3(fragCoord)*.0003)-.5)*6.;\n    fragColor.w=1.;\n}\n\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n\t// only use one face of cubemap (z+)\n    if( rayDir.z<0.0 || abs(rayDir.x)>abs(rayDir.z) || abs(rayDir.y)>abs(rayDir.z)) discard;\n\n    // Output to cubemap\n    mainImage(fragColor,(rayDir.xy/rayDir.z*.5+.5)*Res0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

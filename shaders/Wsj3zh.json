@@ -1,0 +1,134 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1548151458",
+            "description": "refraction + reflection in a water drop. Spectral effect on refractive index exaggerated. With Jacobian & sum Int.\nMouse.y = tone mapping.\n1st reflec = cloud reflec. 1st refrac = iridiscent cloud + silverlining. 2nd(&3rd) refract = rainbow (I max ~42°).",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wsj3zh",
+            "likes": 16,
+            "name": "rainbow effect - spectral, cumul",
+            "published": 3,
+            "tags": [
+                "rays",
+                "refraction",
+                "rainbow",
+                "geometry",
+                "optics",
+                "lense"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 1196
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of https://shadertoy.com/view/3dj3zh\n// fork of https://www.shadertoy.com/view/3d23RR\n// Spectral variant of https://shadertoy.com/view/WsS3Rz\n\n// NB: no real perceptual color rendition here, just approx hue :-)\n\n#define S(d) smoothstep( e, 0., d)   // antialiased draw.\n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    vec2 R = iResolution.xy,\n         U = u / R.y,\n         M = iMouse.xy;\n    \n    float e = 1.5/R.y,\n          k = length(M)<10. ? .5+.5*sin(iTime) : M.y/R.y;\n\n    O = T(u) / iTime;\n    \n    O =   log(1.+k*O);         // tone mapping\n      //  2.*log(1.+.2*sqrt(O));\n    O = mix( min(O,1.), vec4(0,1,1,0), S( abs(length(Pdisk-U)-r)) ); // trace disk\n\n    O = sqrt(O); // to sRGB\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// bufA: path( bounce x, Id y) = ( Pos, Dir )\n\n#define Inf 1e3\n#define Eps 1e-2\n\n// --- ray-sphere intersec: || (P + l*D) - C ||² = r²  ->  2-polynomial\nfloat sphere(vec2 P, vec2 D, vec2 C, float r) {\n   vec2 d = P-C;\n    float b = dot(d,D), c = dot(d,d) - r*r, k = b*b-c, l;\n    if (k>0.) {\n        l = -b - sqrt(k); if (l > Eps) return l; // hit distance\n        l = -b + sqrt(k); if (l > Eps) return l; // hit distance\n    }\n    return Inf;                         // no hit\n}\n// normal at hit point P\n#define sphereN(P,C)     normalize(P-(C))\n// test if P in sphere\n#define inSphere(P,C,r)  ( dot(P-(C),P-(C)) < (r)*(r) )\n\nvec3 hash( uvec3 x ) // https://www.shadertoy.com/view/XlXcW4\n{\n    const uint k = 1103515245U;  // GLIB C\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x) / float(0xffffffffU);\n}\n// --- trace rays( x = bounceID, y = pathID ) ------------------------\nvoid mainImage( out vec4 O, vec2 U )\n{\n    int c = int(U.x/B); U.x = mod(U.x, B);\n    if ( c > 1 << int(F) ) return;             // manage only B bounces and F fork\n    \n    float t, y, I = .5, m = 1.;                // medium: >0: air <0: glass\n    vec2  R = iResolution.xy,                  // I: ray indensity\n          X = vec2(1,0), P, D, D2, N,\n          C = Pdisk;                           // moving sphere ( C, r )\n             \n    y = U.y/K; if ( y > 1.) return;            // R.y/K rays \n    P = vec2( 0, .5+.4*hash(uvec3(iFrame,U.y,12345)) ),  D = X; // init ray ( P, D )\n  //P = vec2( 0, .5+.4*fract(3e4*sin(y+float(iFrame))) ),  D = X; // init ray ( P, D )\n    float idx = 1.33 + .1*y;                   // freq dep exagerated x10\n// 1.33 -> 1.34 from red(.7 um) to violet(.4 um)  https://en.wikipedia.org/wiki/Optical_properties_of_water_and_ice\n    m = inSphere(P,C,r) ? -1. : 1.;            // start medium\n \n    // in this variant, whole propagation computed in one frame to avoid inconsistency as sphere moves.\n    for (int x = 1; x <= int(U.x); x++) {      // bounce x\n \n        float l = sphere(P,D, C,r);            // dist to intersections\n \n        if (l<Inf) {\n            P += l*D;                          // hit point\n            N =  sphereN(P,C);                 // normal at hit\n\n#if INTENSITY\n            float i = m<0.? idx: 1./idx,\n                 ci = abs(dot(D,N)), \n                 ct = 1. - i*i*(1.-ci*ci), R = 1.;\n            if (ct>0.) ct = sqrt(ct);\n#  if 1     \n            // Fresnel (unpolarized) https://en.wikipedia.org/wiki/Fresnel_equations\n            if (ct>0.) {\n                vec2 Fr = vec2( (i*ci-ct)/(i*ci+ct), (i*ct-ci)/(i*ct+ci) );\n                R = dot(Fr,Fr) / 2.;\n               }\n#  else     \n            // Schlick's approximation https://en.wikipedia.org/wiki/Schlick%27s_approximation\n            float r = (i*i-1.) / (i*i+1.);\n            if (i>1.) if (ct>0.) ci = sqrt(ct); else r=1.;\n                  R = mix( pow(1.-ci,5.),1., r*r); \n#  endif\n#else\n            float R = .5;\n#endif           \n            if ( (c>>(x-1))%2 ==0  ) {         // fork stack: refr or refl ?\n                D2 = refract( D, m*N, m<0.? idx: 1./idx );\n                if (D2 != vec2(0) )            // refraction possible\n                { m = -m; D = D2; I *= 1.-R; continue; } // refracted ray dir  \n            }\n            D = reflect(D, m*N);  I *= R;                // reflected ray dir\n        }\n        else { P += l*D; break; }              // go straight\n    }\n    O.xy = P; // O.zw = D;\n    O.z = INTENSITY > 0 ? I : 1.; // O.w = freq\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define K min(R.y,50.)     // trace K pathes per frame\nconst float B = 5.,        // trace B bounces (including start). pref: x4 best\n            F = 3.;        // consider F forks\n\n#define INTENSITY 1        // 1: evaluate Fresnel \n\n//#define Pdisk  ( iMouse.z>0. ? iMouse.xy/R.y : vec2(1,.7) )\n#define Pdisk      vec2(1,.7) \nconst float r = .2;\n\n#define T(U)   texelFetch( iChannel0, ivec2(U), 0 )\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define S(d) smoothstep( e, 0., d)   // antialiased draw.\n\n// --- line segment with disc ends: seamless distance to segment //  https://www.shadertoy.com/view/4dcfW8\nfloat line(vec2 p, vec2 a, vec2 b) { \n    p -= a, b -= a;\n    float h = clamp(dot(p, b) / dot(b, b), 0., 1.);   // proj coord on line\n  //return length(p - b * h);                         // dist to segment\n    p -= b*h; return dot(p,p);                        // square dist\n}\n\n// --- draw pathes -----------------------------------------------------\nvoid mainImage( out vec4 O, vec2 u )\n{\n    vec2 R = iResolution.xy,\n         U = u / R.y;\n    \n    float t, d = 1e5, l, y, b, e = 1.5/R.y;\n    O = texelFetch( iChannel1, ivec2(u), 0 );\n    \n    for( float n=0.; n<K; n++)                        // follow path n\n      for (float c=0.; c<F; c++) {                    // fork combinations\n        vec2 P = T(vec2(B*c+c,n)).xy, _P;             // path start point\n        for( float i=1.+c; i<B; i++) {                // follow bounces. +c: opt (redundancies)\n            l = line( U, _P = P, P = T(vec2(B*c+i,n)).xy );\n         // l = length(T(vec2(i,n)).xy-U)*.1; l*=l;   // test\n            if (l < e*e) \n                d = l, y = n, b = B*c+i,\n                O +=   S( sqrt(d))                                 // segment drawing\n                     * T(vec2(b-1.,y)).z                           // intensity\n                     * ( b == 1. || b == B+2.                      // color :\n                           ? vec4(1)                               // before any refraction\n                           : ( .6 + .6 * cos( 6.3*(y/K)  + vec4(0,23,21,0)  ) ) // hue:  https://www.shadertoy.com/view/ll2cDc\n                       );\n       }   }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

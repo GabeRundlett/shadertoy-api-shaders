@@ -1,0 +1,75 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1583704724",
+            "description": "First pass at integrating PBR and simple area lights.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ttGSW3",
+            "likes": 7,
+            "name": "Area Lights WIP: (SS10)",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "testing",
+                "arealights"
+            ],
+            "usePreview": 0,
+            "username": "angelo12",
+            "viewed": 433
+        },
+        "renderpass": [
+            {
+                "code": "vec3  areaLightPos;\nvec3  areaLightCol;\nfloat areaLightRad;\n\nfloat _time;\n\n#define SPHERE_ID 0.0\n#define GROUND_ID 1.0\n#define LIGHT_ID 2.0\nvec2 \nMap(vec3 p)\n{\n    vec2 res = vec2(1e10, -1.0);\n\n    //Geometry\n    //UOP(sdSphere(p - vec3(0.0, 0.0, 0.1), 0.25), SPHERE_ID);\n    UOP(sdGroundPlane(p + 0.25), GROUND_ID);\n\n    //Lights\n    float r = 0.2;\n    areaLightRad = 0.1;\n    areaLightPos = vec3(r * cos(_time), 0.2 * cos(_time) + 0.1, r*sin(_time));\n    UOP(sdSphere(p - areaLightPos, areaLightRad), LIGHT_ID);\n\n    return res;\n}\n\n#define MAX_DIST 20.0\n#define MAX_STEPS 200\n#define MIN_DIST 0.001\nvec2 \nRayMarch(vec3 ro, vec3 rd)\n{\n    float t = 0.0;\n    vec2 res = vec2(-1.0);\n    for(int i = 0; i < MAX_STEPS && t < MAX_DIST; ++i)\n    {\n        vec2 hit = Map(ro + rd*t);\n\n        if(abs(hit.x) < t * MIN_DIST)\n        {\n            res = vec2(t, hit.y);\n            break;\n        }\n\n        t += hit.x;\n    }\n    return res;\n}\n\nvec3\nCalcNormal(vec3 p)\n{\n    vec2 e = vec2(0.001, 0.0);\n    return normalize(vec3(Map(p + e.xyy).x - Map(p - e.xyy).x,\n                          Map(p + e.yxy).x - Map(p - e.yxy).x,\n                          Map(p + e.yyx).x - Map(p - e.yyx).x));\n}\n\nfloat\nCalcSoftShadows(vec3 ro, vec3 rd)\n{\n    float k = 2.0;\n    float n = 1.0;\n    for(float t = 0.2; t < MAX_DIST;)\n    {\n        float h = Map(ro + t*rd).x;\n        if(h < MIN_DIST) return 0.0;\n\n        n = min(n, h*k/ t);\n        t += h;\n    }\n    return n;\n}\n\nfloat specTrowbridgeReitz( float HoN, float a, float aP )\n{\n\tfloat a2 = a * a;\n\tfloat aP2 = aP * aP;\n\treturn ( a2 * aP2 ) / pow( HoN * HoN * ( a2 - 1.0 ) + 1.0, 2.0 );\n}\n\nfloat visSchlickSmithMod( float NoL, float NoV, float r )\n{\n\tfloat k = pow( r * 0.5 + 0.5, 2.0 ) * 0.5;\n\tfloat l = NoL * ( 1.0 - k ) + k;\n\tfloat v = NoV * ( 1.0 - k ) + k;\n\treturn 1.0 / ( 4.0 * l * v );\n}\n\nfloat fresSchlickSmith( float HoV, float f0 )\n{\n\treturn f0 + ( 1.0 - f0 ) * pow( 1.0 - HoV, 5.0 );\n}\n\nfloat sphereLight( vec3 pos, vec3 N, vec3 V, vec3 r, float f0, float roughness, float NoV, out float NoL )\n{\n\tvec3 L = areaLightPos - pos;\n\tvec3 centerToRay = dot( L, r ) * r - L;\n\tvec3 closestPoint = L + centerToRay * clamp( areaLightRad / length( centerToRay ), 0.0, 1.0 );\t\n\tvec3 l = normalize( closestPoint );\n\tvec3 h = normalize( V + l );\n\t\n\tNoL\t= clamp( dot( N, l ), 0.0, 1.0 );\n\tfloat HoN = clamp( dot( h, N ), 0.0, 1.0 );\n\tfloat HoV = dot( h, V );\n\t\n\tfloat distL = length( L );\n\tfloat alpha = roughness * roughness;\n\tfloat alphaPrime = clamp( areaLightRad / ( distL * 2.0 ) + alpha, 0.0, 1.0 );\n\t\n\tfloat specD\t= specTrowbridgeReitz( HoN, alpha, alphaPrime );\n\tfloat specF\t= fresSchlickSmith( HoV, f0 );\n\tfloat specV\t= visSchlickSmithMod( NoL, NoV, roughness );\n\t\n\treturn specD * specF * specV * NoL;\n}\n\nvec3 \nRender(vec3 ro, vec3 rd)\n{\n    //Ray setup\n    vec3 col = vec3(0.0);\n    vec2 res = RayMarch(ro, rd);\n    float t = res.x;\n    float id = res.y;\n\n    //Sky rendering\n    vec3 sky = vec3(0.0);\n    col += sky;\n\n    //Opaque pass\n    if(id >= 0.0)\n    {\n        //Geometry\n        vec3 P = ro + t*rd;\n        vec3 N = CalcNormal(P);\n        vec3 V = -rd;\n        vec3 R = reflect(rd, N);\n        float NdotV = saturate(dot(N,V));\n\n        //Noise\n        float noise =  texture(iChannel0, P.xz* 0.2).x * 0.5 ;\n        noise +=  texture(iChannel0, P.xz*0.4).y * 0.25; \n        noise +=  texture(iChannel0, P.xz*0.8).z * 0.125;\n        noise +=  texture(iChannel0, P.xz*1.6).z * 0.125 / 2.0;\n\n        //Material & PBR parameters\n        col = vec3(1.0);\n        if(id == LIGHT_ID) {col = vec3(1.0, 1.0, 1.0);return col;}\n\n        //Albedo\n        vec3 albedo = texture(iChannel1, P.xz* 1.0).xyz;\n        albedo = mix( albedo, albedo * 1.3, noise * 0.35 - 1.0 ); \n\n        //Roughness\n        float roughness = 0.2 - clamp( 0.5 - dot( albedo, albedo ), 0.05, 0.95 );\n\n        //F0\n        float f0 = 0.3;\n\n        //Lighting\n        vec3 lin = vec3(0.0);\n        vec3 L = normalize(vec3(1.0, 1.0, 0.0));\n        float diff = saturate(dot(L, N));\n\n        //Shadowing\n        //diff *= CalcSoftShadows(P, L);\n\n        //Shading\n        float NdotLSphere;\n        float specSph\t= sphereLight( P, N, V, R, f0, roughness, NdotV, NdotLSphere );\n        lin += albedo * 0.3183 * ( NdotLSphere ) + specSph;\n\n        //lin += 1.00 * diff * vec3(1.0, 1.0, 1.0);\n        col *= lin;\n    }\n\n    //Fog\n    col = mix(col, vec3(0.0), 1.0 - exp(-0.1*t*t));\n    return saturate(col);\n}\n\n#define AA 2\nvoid \nmainImage(out vec4 fragColor, in vec2 fragPos)\n{\n    _time = iTime / 2.0;\n    vec3 tot = vec3(0.0);\n\n    //Camera\n    float nearP = 1.0;\n    float roll = 0.0;\n    vec3 ta = vec3(0.0);\n    vec3 ro = ta + vec3(0.0, 0.2, -1.0);\n\n#if AA > 1\n    for(int i =0; i < AA; ++i)\n    for(int j =0; j < AA; ++j)\n    {\n        vec2 offset = 0.5 - vec2(i, j) / float(AA);\n        vec2 uv = ((fragPos + offset) - 0.5*iResolution.xy) / iResolution.y;\n#else\n        vec2 uv = ((fragPos) - 0.5*iResolution.xy) / iResolution.y;\n#endif \n        mat3 cam = SetCamera(ro, ta, roll);\n        vec3 rd = cam * normalize(vec3(uv, nearP));\n\n        vec3 col = Render(ro, rd);\n\n        tot += col;\n#if AA > 1\n    }\n    tot /= float(AA* AA);\n#endif\n\n    GAMMA(tot);\n    fragColor = vec4(tot, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define INV_GAMMA  0.454545\n#define M_PI acos(-1.0)\n#define M_TAU M_PI*2.0\n\n//Comment this out if running this file on shadertoy\n#define SHADERTOY \n\n//------------------------------------------------------------------------------------\n//----------------------------------SDF Shaping functions-----------------------------\nfloat\nsdSphere(vec3 p, float r)\n{\n    return length(p) - r;\n}\n\nfloat \nsdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat\nsdGroundPlane(vec3 p)\n{\n    return p.y;\n}\n\n//------------------------------------------------------------------------------------\n//----------------------------------SDF Joining functions-----------------------------\n#define UOP(dist, ID) res = uop(res, vec2(dist, ID))\nvec2\nuop(vec2 a, vec2 b)\n{\n    return (a.x < b.x) ? a : b;\n}\n\n//------------------------------------------------------------------------------------\n//----------------------------------Rotation functions--------------------------------\nvec2 \nrotate(vec2 a, float b)\n{\n    float c = cos(b);\n    float s = sin(b);\n    return vec2(\n        a.x * c - a.y * s,\n        a.x * s + a.y * c\n    );\n}\n\n//------------------------------------------------------------------------------------\n//----------------------------------Noise functions-----------------------------------\nfloat\nhash(float seed)\n{\n    uvec2 p = floatBitsToUint(vec2(seed+=.1,seed+=.1));\n    p = 1103515245U*((p >> 1U)^(p.yx));\n    uint h32 = 1103515245U*((p.x)^(p.y>>3U));\n    uint n = h32^(h32 >> 16);\n    return float(n)/float(0xffffffffU);\n}\n\n//------------------------------------------------------------------------------------\n//----------------------------------Camera functions------------------------------\nmat3\nSetCamera(vec3 ro, vec3 ta, float roll)\n{\n    vec3 f, temp, r, u;\n    f = normalize(ta - ro);\n    temp = normalize(vec3(sin(roll), cos(roll), 0.0));\n    r = normalize(cross(temp, f));\n    u = normalize(cross(f, r));\n\n    return mat3(r, u, f);\n}\n\n//------------------------------------------------------------------------------------\n//----------------------------------Path Trace functions------------------------------\nvec3\nCosineWeightedRay(vec3 N, float seed)\n{\n    float u = hash(seed + 70.93);\n    float v = hash(seed + 21.43);\n\n    float a = M_TAU*v;\n    u = 2.0*u - 1.0;\n\n    return(normalize(N + vec3(sqrt(1.0 - u*u)*vec2(cos(a), sin(a)), u)));\n}\n\n//--------------------------------------------------------------------------------------\n//----------------------------------Post processing functions----------------------------\n#define GAMMA(col) col = pow(col, vec3(INV_GAMMA))\n\n\n//---------------------------------------------------------------------------------------- \n//----------------------------------Basic functions---------------------------------------\n#ifdef SHADERTOY\n#define saturate(vol) clamp(vol, 0.0, 1.0)\n#endif\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

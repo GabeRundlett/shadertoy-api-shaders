@@ -1,0 +1,110 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697453923",
+            "description": "simple demo on how to do a terrain with differen bioms and texture breakup in one. This uses a 1 sample version of Directional Flow. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DsVcW1",
+            "likes": 20,
+            "name": "Biom Texture Shuffle Dither",
+            "published": 3,
+            "tags": [
+                "terrain",
+                "texture",
+                "dither",
+                "normal",
+                "height",
+                "tiling",
+                "bilinear",
+                "stochastic",
+                "directionalflow",
+                "biom"
+            ],
+            "usePreview": 0,
+            "username": "gehtsiegarnixan",
+            "viewed": 292
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2023 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/*\nThis is a demo that shows how to disrupt texture tiling, sample different \nbiomes, and blend them seamlessly. This technique is a slight variation of \nthe Directional Flow method.\n\nThis code is extensively commented to help you understand its inner workings. \nIt's important to note that it's designed to work with a range of features \nShadertoy does not have, such as Texture Arrays and Gather functions. If \nyou have access to these native functions, use them instead. The \nDirectional Flow algorithm is a versatile tool that can create a variety \nof effects, which go beyond the scope of this shader.\n\nThis shader uses dithering to switch between samples and is so able to use a\nsingle sample to achive similar results to bilinear interpolation. If you \nuse TemporalAA to blur the result it looks pretty much identical to a proper\nbilinear interpolation while being ~4x faster.\n\nThis demo includes mouse controls to adjust the light direction, zoom and \nvarious parameters mentioned below this header.\n\nAdditional reading material:\n\nCatlikeCoding's has a well explained guide on Directional Flow:\nhttps://catlikecoding.com/unity/tutorials/flow/directional-flow/\n\nCOD recently made a presentation outlining a similar method:\nhttps://advances.realtimerendering.com/s2023/index.html#CODTerrain\n\nHere's my 4-sample Bilinear Biom Texture Shuffle:\nhttps://www.shadertoy.com/view/dsVyRw\n\nSee here how to Dither Bilinear Weights:\nhttps://www.shadertoy.com/view/ddGcWh\n*/\n\n// The number of previous samples looked at to blur result, with a similar effect to\n// Temporal Anti-Aliasing (TAA) which you should use instead if you can.\n#define TEMPORALBLUR 8 \n\n// Enable debug grid where the two mappings blend with each other\n#define LINETHICKNESS 0.01\n//#define SHOWGRID\n\n// Size of interpolation grid\n#define GRIDSIZE 32.0\n\n// Power scale: 1 means no contrast, 50 means maximum contrast\n#define CONTRAST 2.0\n\n// Maximum noise offset in grid scale\n#define NOISESTRENGTH 1.2\n\n// Scale of noise in grid scale\n#define NOISESCALE 1.3 \n\n// Size of textures in grid scale\n#define DETAILSCALE 1.0\n\n// Function to select a texture using an index. Acts like a crude texture array.\nvec4 textureArray(int index, vec2 uv, vec2 duvdx, vec2 duvdy) {\n    vec4 color;    \n    if (index == 0) {\n        // the gravel texture is just greyscale so we make it pretty with a colormap\n        color = vec4(bone(textureGrad(iChannel0, uv, duvdx, duvdy).x),0);\n    } else if (index == 1) {\n        color = textureGrad(iChannel1, uv, duvdx, duvdy);\n    } else if (index == 2) {\n        color = textureGrad(iChannel2, uv, duvdx, duvdy);\n    } else {\n        color = textureGrad(iChannel3, uv, duvdx, duvdy);\n    }\n    return color;\n}\n\n// Function for generating normals using 3 texture samples.\n// Original source: https://www.shadertoy.com/view/3sSSW1\nvec3 HeightToNormal(int heightMap, vec2 uv, vec2 duvdx, vec2 duvdy, float strength) {\n    vec2 s = 1.0 / iChannelResolution[0].xy;\n    \n    float textureOffset = 1.0;\n    \n    float p = textureArray(heightMap, uv, duvdx, duvdy).y;\n    float h1 = textureArray(heightMap, uv + s * vec2(textureOffset,0), duvdx, duvdy).y;\n    float v1 = textureArray(heightMap, uv + s * vec2(0,textureOffset), duvdx, duvdy).y;\n       \n   \tvec2 xy = (p - vec2(h1, v1));\n    \n    return normalize(vec3(xy * strength, 1.0));\n}\n\n// Struct to hold material values\nstruct materialVal {\n    vec3 color;\n    vec3 normal;\n};\n\n// Generate biomes blending with texture tiling breakup in one\nmaterialVal biomTexShuffle(sampler2D biomTex, vec2 uv, vec2 fragCoord, float time,\n    float gridSize, float contrast, float noiseStrength, float rndScale, float texScale) {\n\n    // Tiling Noise ________________________________________________________\n    // The tiling noise idea is from COD:\n    // https://advances.realtimerendering.com/s2023/index.html#CODTerrain\n    \n    // Scale noise coordinates to be independent of biome dimension for convenience\n    vec2 noiseUV = uv * gridSize / rndScale;\n    \n    // Sample noise vector; using a 2D texture of Perlin noise would be better\n    vec2 noiseVec = simplexNoiseVec(noiseUV);\n    \n    // Apply strength and correct for biome dimension again\n    noiseVec = noiseVec * noiseStrength / gridSize;\n    \n    // Distort the grid UVs to hide the tiling pattern\n    vec2 gridUV = uv - noiseVec;\n    \n    // Weights ____________________________________________________________\n        \n    // Generate zigzag pattern\n    vec2 zigZag = abs(fract(gridUV * gridSize/2.0 - 0.25)*2.0-1.0);\n    \n    // Invert zigzag as a partial of the weights\n    vec2 infZigZag = 1.0 - zigZag;\n\n    // Generate alpha values (weights) for bilinear interpolation.\n    float weightA = zigZag.x * zigZag.y;\n    float weightB = zigZag.x * infZigZag.y;\n    float weightC = infZigZag.x * zigZag.y;\n    float weightD = infZigZag.x * infZigZag.y;\n    \n    // Combine weight/alpha values. \n    vec4 weights = vec4(weightA, weightB, weightC, weightD);\n        \n    // Change the weights contrast for less blurry results.\n    weights = smoothContrast(weights, contrast);\n    \n    // Dither _____________________________________________________________\n    \n    // Sample dither noise\n    float dither = ScreenSpaceDither12(fragCoord, time);\n    \n    // Smooth contrast creates artifacts in the dither. Clamping removes them\n    dither = clamp(dither, 0.01, 0.99);\n    \n    // Applies float dither to weight values.\n    // The weights are grouped cumulatively, and if the dither value is within one \n    // cumulative section for one of the weights, that weight is selected\n    vec2 offset;\n    if (weights.x > dither) {\n        // Weight A\n        offset = vec2(0.0, 0.0);\n    } else if (weights.x + weights.y > dither) {\n        // Weight B\n        offset = vec2(0.0, 0.5);\n    } else if (1. - weights.w > dither) {\n        // Weight C\n        // because sum of all weights is 1, so 1-w = sum of xyz\n        offset = vec2(0.5, 0.0);\n    } else {\n        // Weight D\n        offset = vec2(0.5, 0.5);\n    }\n    \n    // Biom ________________________________________________________________\n    \n    // Coordinates of every other grid point\n    vec2 scaledCoords = (floor(gridUV * (gridSize/2.) +.25 +offset) -offset)*2.;\n    \n    // Get biome texture resolution\n    vec2 texSize = vec2(textureSize(biomTex, 0));\n    \n    // Modulo for looping biome textures\n    ivec2 texelCoords = ivec2(fract(scaledCoords/gridSize) * texSize);\n    \n    // Sample the texels.\n    float biom = texelFetch(biomTex, texelCoords, 0).x;\n    \n    // Increase to separate numbers\n    float biomCount = 4.; // Since we can only have 4 textures\n    \n    // Scale biom sample to seperate integers\n    //int biomID = int(biom * biomCount);\n    // Since I don't have an actual biom texture I'll do some modifications \n    int biomID = int(biom * 7.);\n    \n    // Sample Detail Textures ______________________________________________\n    \n    // This hash doesn't like 0. Mod is optional and makes it repeat at uv 0-1.\n    vec2 hashCoords = mod(scaledCoords, gridSize) + 1.; \n    \n    // Obtain a cheap random vector \n    vec2 rnd = hash22(hashCoords) * 2.0 - 1.0;\n    \n    // Scale UVs for detail textures, should be higher than texSize\n    vec2 detailUV = uv * gridSize * texScale;\n    \n    // Calculate mip as the automatic ones don't work for dithering\n    vec2 duvdx = dFdx(detailUV);\n    vec2 duvdy = dFdy(detailUV);\n    \n    // Normalize vector to prevent rotation from scaling the result\n    vec2 rotation = normalize(rnd);\n    \n    // Randomly rotate\n    detailUV = rotateUV(detailUV, rotation);\n    \n    // Randomly offset\n    detailUV += rnd;\n    \n    // Sample detail texture\n    vec3 color = textureArray(biomID, detailUV, duvdx, duvdy).xyz; \n    \n    // Sample Normal, if you can use an actual normal texture instead\n    vec3 normal = HeightToNormal(biomID, detailUV, duvdx, duvdy, 50.0);\n    \n    // Since we rotated the UVs we have to rotate the normals too\n    normal = vec3(rotateUV(normal.xy, rotation), normal.z);\n        \n    #ifdef SHOWGRID\n        // overlaying the edges of the alpha mask\n        vec4 mask = step(abs(weights - 0.1), vec4(LINETHICKNESS));\n        color = max(mask.xyz, color * (1.-mask.w));\n    #endif\n    \n    // Combine color and normal into a struct\n    return materialVal(color, normal);;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    // Square UVs, with 0.5 in the center\n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.x + 0.5; \n\n    // If the mouse was not clicked, animate light\n    vec3 lightDir;\n    float zoom;\n    if (iMouse.x > 0.0) {\n        // scale mouse coords to 0-1 range of screen\n        vec2 mouse = iMouse.xy / iResolution.xy;\n    \n        // Mouse controls zoom with steps\n        float zoomsteps = 10.;\n        zoom = mix(1.0, 0.10, pow(floor(mouse.y*zoomsteps)/zoomsteps,.5));\n    \n        // Mouse controls light direction\n        float angle = mouse.x * 3.14 * 3.;\n        lightDir = normalize(vec3(cos(angle), sin(angle), 1.0));\n    } else {\n        // Animated zoom\n        float zoomTime = iTime * 0.1;\n        zoom = mix(1.0, 0.10, cos(zoomTime) * 0.5 + 0.5);\n    \n        // Time controls light direction\n        float lightTime = iTime * 0.3;\n        lightDir = normalize(vec3(cos(lightTime), sin(lightTime), 1.0));\n    } \n    \n    // Apply zoom on the center\n    uv = (uv - 0.5) * zoom + 0.5;\n\n    // Initialize color and normal\n    vec3 color = vec3(0.0);\n    vec3 normal = vec3(0.0);\n    \n    #if TEMPORALBLUR <= 1\n        // We just take a single sample from the ditheredSample function.\n        materialVal terrain = biomTexShuffle(iChannel3, uv, fragCoord, iTime,\n            GRIDSIZE, CONTRAST, NOISESTRENGTH, NOISESCALE, DETAILSCALE);\n        color = terrain.color;\n        normal = terrain.normal;\n        \n    #else\n        // We take multiple samples from the ditheredSample function and average them.\n        // This is normally done automatically by your TAA or motion blur\n        for(int i = 0; i < TEMPORALBLUR; i++) {\n            materialVal terrain = biomTexShuffle(iChannel3, uv, fragCoord, iTime - float(i),\n                GRIDSIZE, CONTRAST, NOISESTRENGTH, NOISESCALE, DETAILSCALE);\n            color += terrain.color;\n            normal += terrain.normal;\n        }\n        color /= float(TEMPORALBLUR);\n        \n        // technically wrong but looks the same as Slerp\n        normal = normalize(normal / float(TEMPORALBLUR)); \n    #endif\n    \n    #ifndef SHOWGRID           \n        // Apply lighting to show the normals too\n        color = phongLighting(color, normal, vec3(0,0,1), lightDir);\n    #endif\n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//_____________________GENERIC FUNCTIONS______________________________\n\n// My customized hash which is faster than a texture lookup\n// inspired by David Hoskins https://www.shadertoy.com/view/XdGfRR\n#define VPRIME1 uvec2(3480082861U, 2420690917U)\n#define VPRIME2 uvec2(1317666547U, 2149110343U)\n#define SMALLESTFLOAT (1.0 / float(0xffffffffU))\nvec2 hash22(vec2 p)\n{\n\tuvec2 q = uvec2(ivec2(p)) * VPRIME1;\n\tq = (q.x & q.y) * VPRIME2;\n\treturn vec2(q) * SMALLESTFLOAT;\n}\n\n// rotates UV by direction\nvec2 rotateUV(vec2 uv, vec2 direction){\n    // Calculate the rotation matrix\n    mat2 rotationMatrix = mat2(\n        -direction.x, direction.y,\n        direction.y, direction.x\n    );\n\n    // Rotate the UV coordinates\n    return rotationMatrix * uv;\n}\n\n// valve edition (slightly modified to be a true 12 dither)\n// http://alex.vlachos.com/graphics/Alex_Vlachos_Advanced_VR_Rendering_GDC2015.pdf\n// input in pixels (ie not normalized uv)\nfloat ScreenSpaceDither12(vec2 vScreenPos, float time) {\n    float vDither = dot( vec2( 171.0, 231.0 ), vScreenPos.xy + time); \n    return fract( vDither / 103.0);\n}\n\n// Increases the steepness of Alpha while preserving 0-1 range and 1 sum\n// See 2 value example https://www.desmos.com/calculator/n6gpory8yq\nvec4 smoothContrast(vec4 alpha, float contrast) {\n    // increase steepness using power\n    vec4 powAlpha = pow(alpha, vec4(contrast));\n    \n    // normalize back to precentage of 1\n    return powAlpha/(powAlpha.x + powAlpha.y + powAlpha.z + powAlpha.w);\n}\n\n// makes bone colormap with polynimal 6\nvec3 bone(float t) {\n    const vec3 c0 = vec3(-0.005007,-0.003054,0.004092);\n    const vec3 c1 = vec3(1.098251,0.964561,0.971829);\n    const vec3 c2 = vec3(-2.688698,-0.537516,2.444353);\n    const vec3 c3 = vec3(12.667310,-0.657473,-8.158684);\n    const vec3 c4 = vec3(-27.183124,8.398806,10.182004);\n    const vec3 c5 = vec3(26.505377,-12.576925,-5.329155);\n    const vec3 c6 = vec3(-9.395265,5.416416,0.883918);\n    return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));\n}\n\n// Phong lighting model\nvec3 phongLighting(vec3 albedo, vec3 normal, vec3 cameraDir, vec3 lightDir) {\n    // Ambient\n    float ambientStrength = 0.25;\n    vec3 ambient = ambientStrength * albedo;\n\n    // Diffuse \n    float diff = clamp(dot(normal, lightDir), 0.5, 1.0);\n    vec3 diffuse = diff * albedo;\n\n    // Specular\n    float specularStrength = 0.25;\n    vec3 viewDir = normalize(cameraDir);\n    vec3 reflectDir = reflect(-lightDir, normal);  \n    float specular = pow(clamp(dot(viewDir, reflectDir), 0.0, 1.0), 36.0);\n    specular *= specularStrength;  \n\n    // Combine results\n    return ambient + diffuse + specular;\n}\n\n//_____________________________Simplex Noise______________________________\n// Copyright © 2013 Inigo Quilez\n// https://www.shadertoy.com/view/Msf3WH\n\nvec2 hash( vec2 p ) // replace this by something better\n{\n\tp = vec2( dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)) );\n\treturn -1.0 + 2.0*fract(sin(p)*43758.5453123);\n}\n\nfloat noise( in vec2 p )\n{\n    const float K1 = 0.366025404; // (sqrt(3)-1)/2;\n    const float K2 = 0.211324865; // (3-sqrt(3))/6;\n\n\tvec2  i = floor( p + (p.x+p.y)*K1 );\n    vec2  a = p - i + (i.x+i.y)*K2;\n    float m = step(a.y,a.x); \n    vec2  o = vec2(m,1.0-m);\n    vec2  b = a - o + K2;\n\tvec2  c = a - 1.0 + 2.0*K2;\n    vec3  h = max( 0.5-vec3(dot(a,a), dot(b,b), dot(c,c) ), 0.0 );\n\tvec3  n = h*h*h*h*vec3( dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));\n    return dot( n, vec3(70.0) );\n}\n\n// 4 layer simplex noise range -1 to 1\nfloat simplexNoise(vec2 uv) {    \n    mat2 m = mat2( 1.6,  1.2, -1.2,  1.6 );\n    float f;\n    f  = 0.5000*noise( uv ); uv = m*uv;\n    f += 0.2500*noise( uv ); uv = m*uv;\n    f += 0.1250*noise( uv ); uv = m*uv;\n    f += 0.0625*noise( uv ); uv = m*uv;\n    return f;\n}\n\n// generates 2 vector of simplex noise\nvec2 simplexNoiseVec(vec2 uv) {\n    // sample noise function\n    float noiseX = simplexNoise(uv);    \n    float noiseY = simplexNoise(uv + 691.); // with prime offset\n    \n    // make noise vector\n    return vec2(noiseX, noiseY);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

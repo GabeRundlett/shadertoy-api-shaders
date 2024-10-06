@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1504821721",
+            "description": "Quick test of marching through a volumetric texture with simple lighting, no scattering (just sampling in one direction to get the lighting at any point). Drag left and right to change the direction of the lighting through the cube.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MtfcWN",
+            "likes": 4,
+            "name": "Basic volume rendering test",
+            "published": 3,
+            "tags": [
+                "3d",
+                "noise",
+                "volume"
+            ],
+            "usePreview": 0,
+            "username": "NBickford",
+            "viewed": 1299
+        },
+        "renderpass": [
+            {
+                "code": "// Simple volume rendering test of a cube with random-opacity cells.\n// We're not being too careful with sampling positions or optimization;\n// just marching through the volume, calculating the lighting (which\n// all comes directly from above) at each step, and displaying the result.\n\n// At the moment, we do get banding artifacts near the darker edge when\n// the lighting direction is slightly off from directly above;\n// This might be due to sampling positions along the light ray leaving the\n// cube and improperly handling transparency, but I'm not sure.\n\n// Returns the per-cell opacity of the volume at the given texture coordinate.\nfloat sampleA(vec3 texcoord){\n    return texture(iChannel0, texcoord).r/4.0;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Set up a coordinate system - x pointing right, y pointing up.\n\tvec2 uv = 2.0*(fragCoord.xy-iResolution.xy*0.5) / iResolution.x;\n    \n    // Camera controls.\n    // We use a left-handed DirectX-style coordinate system: x points\n    // to the right, y points up, and z points into the screen.\n    vec3 co = vec3(sin(iTime*0.5), 0.0, -3.0);\n    vec3 ci = vec3(uv.x, uv.y, 1.0);\n    \n    // Our raytracing code for the cube is very simplified,\n    // since we'll always assume the camera's x and y coordinates\n    // remain between -1 and 1 - i.e. we're always looking into\n    // the front face of the cube.\n    \n    // t is just a variable to store our position (!= distance)\n    // along the ray. Since it doesn't directly store distance,\n    // we are fudging things a bit.\n    \n    // first hit\n    // (co+ci*t).z=-1.0\n    // -> t = (-1.0-co.z)/ci.z\n    float t = (-1.0-co.z)/ci.z;\n    \n    // Step size: size of cube/# of pixels\n    float dt = 2.0/32.0;\n   \n    // Accumulated color\n    vec4 col = vec4(0.0); //a*rgb, a - in-front blending.\n    \n    // Current position\n    vec3 p = co+ci*t;\n    \n    // Derivation:\n    //float tToEdge = min((1.0-sign(ci.x)*co.x)/abs(ci.x),\n    //                    (1.0-sign(ci.y)*co.y)/abs(ci.y));\n    \n    //  (1-cox)/ci.x>0 <=> ci.x>0 and cox<1 (maybe)\n    //                  or ci.x<0 and cox>1 (no)\n    // Assume we start within the cube, so abs(cox)<1.\n    // (-1-cox)/ci.x>0 <=> ci.x>0 and cox<-1 (no)\n    //                  or ci.x<0 and cox>-1 (maybe)\n    \n    for(int i=0; i<32; i++){\n        p += ci*dt; //p = co+ci*(t+i*dt);\n        \n        // are we inside the cube?\n        if(max(abs(p.x),max(abs(p.y),abs(p.z)))<1.0){\n            // Sample opacity at current position\n            vec3 uvw = p*0.5+vec3(0.5);\n            float a = sampleA(uvw);\n            \n            // Lighting: how much light is transmitted from above?\n            float upT = 1.0; // upwards transparency\n            \n            // actually, let's have some light directing!\n            float dx = 2.0*(iMouse.x-iResolution.x*0.5)/iResolution.x;\n            \n            // New y sampling coordinate.\n            // Since we want to sample each of the cells above the current one\n            // without blending, we'll need to round its y coordinate to a\n            // half-cell position:\n            // positions:\n            vec3 uvw2 = uvw;\n            uvw2.y = (floor(uvw2.y*32.0)+0.5)/32.0;\n            uvw2.x += dx*(uvw2.y-uvw.y); // Step along the light ray that amount\n            \n            // Handle the transparency loss due to the current cube:\n            // light through dt units = 1.0-a\n            // light through 2*dt units = (1.0-a)^2\n            upT *= pow(1.0-a, (uvw2.y-uvw.y)*32.0+0.5);\n            \n            for(int j = 1; j<32; j++){\n                // Move uvw2 one cell upwards:\n                uvw2.y += 1.0/32.0;\n                uvw2.x += dx/32.0;\n                \n                if(uvw2.y<1.0 &&\n                   0.0<uvw2.x && uvw2.x<1.0){\n                    upT *= (1.0-sampleA(uvw2));\n                }\n            }\n            \n            // For blending on the edges: how far is it to the edge\n            // of the cube? (note: not handling ci.x=0 or ci.y=0 case)\n            \n            float tToEdge = min(1.0/abs(ci.x)-p.x/ci.x,\n                                1.0/abs(ci.y)-p.y/ci.y);\n            \n            // Derivation: We only look at sides of the cube.\n            // Suppose ci.x>0. Then t to edge is  (1-p.x)/ci.x.\n            //      If ci.x<0, then t to edge is (-1-p.x)/ci.x\n            // So along x, t to edge is sign(ci.x)/ci.x - p.x/ci.x\n            //                        =     1/abs(ci.x) - p.x/ci.x.\n            // Equation along y is analogous (just substitute y for x)\n            \n            if(tToEdge<dt){\n                // Beer-Lambert-style blending.\n                if(tToEdge<0.000001){\n                    a = 0.0;\n                }else{\n                    // opacity per dt units = a\n                    // opacity per 2*dt units = 1-(1-a)^2\n                    a = 1.0-pow(1.0-a,tToEdge/dt);\n                }\n            }\n            \n            // Premultiplied alpha blending\n            // per https://www.teamten.com/lawrence/graphics/premultiplication/\n            // rgb color 1, lighting upT, opacity a\n            vec4 below = vec4(upT*a, upT*a, upT*a, a);\n            col = col + (1.0-col.a)*below;\n        }\n    }\n    \n    // alpha-composite with black behind - this turns out to be trivial :|\n    vec4 sky = vec4(0.0);\n    \n    col = col + (1.0-col.a)*sky;\n    \n    // and convert to gamma for display!\n\tfragColor = vec4(pow(col.rgb, vec3(1.0/2.2)), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

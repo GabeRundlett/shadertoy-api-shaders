@@ -1,0 +1,199 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1646490508",
+            "description": "Raymarched 3D -> Edge detect -> Text -> CRT",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "fdBfRy",
+            "likes": 29,
+            "name": "Retro 3D",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "retro",
+                "crt"
+            ],
+            "usePreview": 0,
+            "username": "kosmaks",
+            "viewed": 631
+        },
+        "renderpass": [
+            {
+                "code": "// Finally CRT look and distortions\n\nconst vec2 curvature = vec2(6., 6.);\nconst vec3 frame = vec3(0.);\n\nvec2 curveRemapUV(vec2 uv) {\n    uv = uv * 2.0 - 1.0;\n    vec2 offset = abs(uv.yx) / vec2(curvature.x, curvature.y);\n    uv = uv + uv * offset * offset;\n    uv = uv * 0.5 + 0.5;\n    return uv;\n}\n\nvec3 splitColors(vec3 source, float x) {\n    float selector = mod(x, 3.) / 3.;\n    vec3 red = vec3(source.x, 0., 0.);\n    vec3 green = vec3(0., source.y, 0.);\n    vec3 blue = vec3(0., 0., source.z);\n    vec3 zero = vec3(0.);\n    \n    if (selector < 0.33) return vec3(source.x, source.y * 0.2, 0.);\n    if (selector < 0.66) return vec3(0., source.y, 0.);\n    return vec3(0., source.y * 0.2, source.z);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 ouv = fragCoord / iResolution.xy;\n    vec2 uv = curveRemapUV(ouv * 1.01 - 0.005);\n    \n    if (uv.x < 0. || uv.x > 1. || uv.y < 0. || uv.y > 1.) {\n        fragColor = vec4(frame, 1.);\n        return;\n    }\n    \n    vec3 col = texture(iChannel0, uv).xyz;\n    col = splitColors(col, fragCoord.x);\n    \n    float scanline = abs(sin(uv.x * 250. + iTime * 10.));\n    col *= scanline * 0.1 + 0.9;\n    \n    float vignette = 1. - distance(uv, vec2(0.5)) / 0.7;\n    vignette *= vignette;\n    col *= vignette * 0.6 + 0.4;\n    col *= 2.3;\n    \n    vec3 ro = vec3(0.5, 0.5, 0.);\n    vec3 hit = vec3(uv, 1.);\n    vec3 rd = normalize(hit - ro);\n    vec3 normal = normalize(vec3(ouv, 0.) - vec3(uv, 0.1));\n    \n    vec3 light = vec3(0.9, 0.9, 0.4);\n    vec3 ld = normalize(light - hit);\n    float diffuse = dot(normal, ld);\n    \n    vec3 h = normalize(ld - rd);\n    float specular = pow(max(0., dot(normal, h)), 200.);\n    \n    vec3 refl = reflect(rd, normal);\n    vec3 reflColor = texture(iChannel1, refl).rgb;\n    \n    col += diffuse * 0.1;\n    col += specular * 0.1;\n    col += reflColor * 0.05;\n    \n    vec2 fade2 = smoothstep(0.48, 0.5, abs(uv - 0.5));\n    float fade = max(fade2.x, fade2.y);\n    col = mix(col, frame, fade);\n    \n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Here we define the scene and ray marching functions\n\n#define MAX_STEPS (100)\n#define MIN_DIST (0.0001)\n#define MAX_DIST (10.)\n\n#define MAT vec3\n\nvec3 rotate(vec3 v, vec3 axis, float angle) {\n    float ah = angle / 2.;\n    vec4 q = vec4(axis.xyz * sin(ah), cos(ah));\n    vec3 temp = cross(q.xyz, v) + q.w * v;\n    return v + 2. * cross(q.xyz, temp);\n}\n\nfloat sdCappedCylinder(vec3 p, float h, float r) {\n  vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(h, r);\n  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));\n}\n\nfloat sdBox(vec3 p, vec3 b) {\n    vec3 q = abs(p) - b;\n    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);\n}\n\nfloat traceScene(vec3 p, out MAT outMat) {\n    float d = MAX_DIST;\n    \n    p.x = abs(p.x);\n    \n    // body\n    float yskew = 1. - min(0.3, abs(p.y)) / 0.3;\n    yskew = yskew * 0.6 + 0.3;\n    float zskew = 1. - min(1.2, abs(p.z)) / 0.3;\n    zskew = zskew * 0.2 + 0.8;\n    if (p.z < 0.) {\n        zskew = 1.;\n    }\n    d = min(d, sdBox(p, vec3(0.2 * yskew, 0.2 * zskew, 1.2)));\n    \n    // wings\n    vec3 wp = p;\n    wp.y = abs(wp.y);\n    wp = rotate(wp, vec3(0., 0., 1.), -0.4);\n    float wxskew = 1. - min(0.9, abs(p.x)) / 0.9;\n    wxskew = 0.8 * wxskew + 0.2;\n    d = min(d, sdBox(wp - vec3(0.5, 0., -0.9), vec3(0.45, 0.01, 0.3 * wxskew)));\n    \n    // engines\n    wp = rotate(wp, vec3(1., 0., 0.), 1.57);\n    d = min(d, sdCappedCylinder(wp - vec3(0.9, 0.8, 0.), 0.07, 0.2));\n    d = min(d, sdCappedCylinder(wp - vec3(0.9, 0.3, 0.), 0.01, 0.6));\n    wp.x *= sign(p.y);\n    d = min(d, sdCappedCylinder(wp - vec3(0.25, 1.2, 0.1), 0.07, 0.3));\n    \n    // cabin\n    vec3 cp = rotate(p, vec3(1., 0., 0.), -0.1);\n    d = min(d, sdBox(cp - vec3(0., 0.13, 0.3), vec3(0.1, 0.1, 0.2)));\n    \n    return d;\n}\n\nvec3 getNormal(vec3 p) {\n    MAT mat;\n    float dist = traceScene(p, mat);\n    vec2 e = vec2(MIN_DIST, 0.);\n    vec3 n = dist - vec3(\n        traceScene(p - e.xyy, mat),\n        traceScene(p - e.yxy, mat),\n        traceScene(p - e.yyx, mat));\n    return normalize(n);\n}\n\nfloat rayMarch(vec3 ro, vec3 rd, out MAT outMat) {\n    float totalDist = 0.;\n    MAT mat;\n    \n    for (int i = 0; i < MAX_STEPS; ++i) {\n        float d = traceScene(ro + rd * totalDist, mat);\n        totalDist += d;\n        if (totalDist > MAX_DIST) return MAX_DIST + 1.;\n        if (d < MIN_DIST) return totalDist;\n    }\n    \n    return MAX_DIST + 1.;\n}\n\nstruct InitialRayData {\n    vec2 fragCoord;\n    vec3 iResolution;\n    float iTime;\n};\n\nvoid setupInitialRay(in InitialRayData data, out vec3 ro, out vec3 rd) {\n    vec2 fragCoord = data.fragCoord;\n    vec2 iResolution = data.iResolution.xy;\n    float iTime = data.iTime;\n    //float iTime = floor(data.iTime / 0.05) * 0.05;\n\n    vec2 vp = vec2(\n        fragCoord.x - 0.5 * (iResolution.x - iResolution.y), \n        fragCoord.y\n    ) / iResolution.y * 2. - 1.;\n    \n    float cs = 1.2;\n    //vec3 co = vec3(1., 1., -1.);\n    vec3 co = vec3(sin(iTime), 0.8, cos(iTime));\n    vec3 ct = vec3(0., 0., -0.2);\n    \n    rd = normalize(ct - co);\n    vec3 right = normalize(cross(vec3(0., 1., 0.), rd));\n    vec3 up = cross(rd, right);\n    ro = co + right * vp.x * cs + up * vp.y * cs;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// This pass is used to get radiance infroamtion\n\nvec3 light(vec3 ld, vec3 lr, vec3 albedo, vec3 normal, vec3 rd) {\n    vec3 radiance = vec3(0.);\n    \n    float diffuse = max(0., dot(normal, ld));\n    radiance += albedo * lr * diffuse;\n    \n    vec3 h = normalize(ld - rd);\n    float specular = pow(max(0., dot(normal, h)), 200.);\n    radiance += albedo * lr * specular * 10.;\n    \n    return radiance;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    InitialRayData irData;\n    irData.fragCoord = fragCoord;\n    irData.iResolution = iResolution;\n    irData.iTime = iTime;\n    vec3 ro, rd;\n    setupInitialRay(irData, ro, rd);\n    \n    // Marching\n    vec3 radiance = vec3(0.);\n    vec3 ld = normalize(vec3(1., 1., 0.4));\n    \n    MAT material;\n    float d;\n    d = rayMarch(ro, rd, material);\n    \n    if (d < MAX_DIST) {\n        vec3 touch = ro + rd * d;\n        vec3 normal = getNormal(touch);\n        vec3 albedo = vec3(0.1);\n        \n        radiance += light(\n            normalize(vec3(1., 2., 0.4)),\n            vec3(5.),\n            albedo,\n            normal,\n            rd\n        );\n        \n        radiance += light(\n            normalize(vec3(-1., 2., -0.3)),\n            vec3(0.2),\n            albedo,\n            normal,\n            rd\n        );\n        \n        float ambient = 0.2;\n        radiance += albedo * ambient;\n    } else {\n        radiance = vec3(1000.);\n    }\n    \n    vec3 color = radiance;\n    color = color / (color + vec3(2.0));\n    color = pow(color, vec3(1.0/2.2)); \n   \n    fragColor = vec4(color, 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// This pass computes normals and depth info for further edge detection\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    InitialRayData irData;\n    irData.fragCoord = fragCoord;\n    irData.iResolution = iResolution;\n    irData.iTime = iTime;\n    vec3 ro, rd;\n    setupInitialRay(irData, ro, rd);\n    \n    MAT material;\n    float d;\n    vec3 normal;\n    d = rayMarch(ro, rd, material);\n    \n    if (d < MAX_DIST) {\n        vec3 touch = ro + rd * d;\n        normal = getNormal(touch);\n    }\n    \n    fragColor = vec4(normal, d);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Here we perform edge detection\n\nvec2[] neighbours = vec2[](\n    vec2(-1., -1.),\n    vec2(-1., 1.),\n    vec2(1., -1.),\n    vec2(1., 1.)\n);\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord.xy / iResolution.xy;\n\n    vec2 depthScale = 1. / iResolution.xy;\n    vec2 normScale = 1. / iResolution.xy;\n    \n    vec4 value = texture(iChannel0, uv);\n    \n    float depthDiff = 0.;\n    float normalDiff = 1.;\n            \n    for (int i = 0; i < neighbours.length(); ++i) {\n        vec2 depthUV = neighbours[i] * depthScale + uv;\n        float depthValue = texture(iChannel0, depthUV).w;\n        depthDiff = max(depthDiff, abs(depthValue - value.w));\n        \n        vec2 normUV = neighbours[i] * normScale + uv;\n        vec4 normalValue = texture(iChannel0, normUV);\n        if (normalValue.w < MAX_DIST) {\n            vec3 normal = normalValue.xyz;\n            normalDiff = round(min(normalDiff, abs(dot(normal, value.xyz))));\n        }\n    }\n    \n    depthDiff = depthDiff < 0.25 ? 0. : 1.;\n    normalDiff = 1. - normalDiff;\n    float edge = max(depthDiff, normalDiff);\n    \n\n    fragColor = vec4(vec3(edge), edge);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// This pass creates text version of 3d scene\n\nconst float fontSize = 16.;\nconst float fontCell = 1. / fontSize;\n\nconst vec2[] shades = vec2[](\n    vec2(0., 13.),  //\n    vec2(7., 4.),   // .\n    vec2(10., 12.), // :\n    vec2(11., 13.), // +\n    //vec2(8., 10.),  // X\n    vec2(3., 13.)   // #\n);\n\nconst vec2 eVert = vec2(12., 8.); // |\nconst vec2 eHor = vec2(13., 13.); // -\nconst vec2 eCw = vec2(15., 13.);  // /\nconst vec2 eCcw = vec2(12., 10.); // \\\n\nconst vec2[] text = vec2[](\n    vec2(13., 11.), // M\n    vec2(15., 9.), // o\n    vec2(4., 9.), // d\n    vec2(5., 9.), // e\n    vec2(12., 9.), // l\n    vec2(0., 13.),\n    vec2(14., 9.), // n\n    vec2(15., 9.), // o\n    vec2(10., 12.), // :\n    vec2(0., 13.),\n    vec2(8., 10.), // X\n    vec2(7., 10.), // W\n    vec2(1., 12.), // 1\n    vec2(3., 12.), // 3\n    vec2(3., 12.), // 3\n    vec2(7., 12.), // 7\n    vec2(14., 13.), //.\n    vec2(0., 13.),\n    vec2(4., 15.) // []\n);\n\nvec2 valueToShadeIdx(float value) {\n    uint index = uint(floor(clamp(1. - value, 0., 0.98) * float(shades.length())));\n    return shades[index];\n}\n\n\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    float ratio = iResolution.y / iResolution.x;\n    \n    // Radiance -> symbol\n    float gsize = 45.;\n    vec2 vp = fragCoord / iResolution.y;\n    vec2 gvp = floor(vp * gsize) / gsize;\n    vec2 guv = fract(vp * gsize);\n    vec2 uv = gvp * vec2(ratio, 1.);\n    float color = texture(iChannel0, uv).x;\n    vec2 fillIdx = valueToShadeIdx(color);\n    \n    // Detect edge\n    vec2 winsize = vec2(ratio, 1.) / gsize;\n    vec2 firstHit = vec2(-1., 0.);\n    vec2 secondHit = vec2(-1., 0.);\n    int res = 5;\n    float unres = 1. / float(res);\n    for (int j = 0; j < res; ++j) {\n        for (int i = 0; i < res; ++i) {\n            if (i == 1 && j == 1) continue;\n            \n            vec2 offset = vec2(float(i), float(j)) * unres;\n            vec2 ouv = uv + winsize * offset;\n            float value = texture(iChannel2, ouv).x;\n            \n            if (value > 0.) {\n                if (firstHit.x < 0.) {\n                    firstHit = offset;\n                } else {\n                    secondHit = offset;\n                    break;\n                }\n            }\n        }\n    }\n    \n    // Edge -> symbol\n    vec2 edgeIdx = vec2(-1., 0.);\n    if (firstHit.x >= 0. && secondHit.x >= 0.) {\n        vec2 dir = normalize(secondHit - firstHit);\n        if (dir.y < 0.) dir = -dir;\n        float angle = atan(dir.y, dir.x);\n        \n        if (angle > 2.15) edgeIdx = eHor;\n        else if (angle > 1.88) edgeIdx = eCcw;\n        else if (angle > 1.26) edgeIdx = eVert;\n        else if (angle > 0.63) edgeIdx = eCw;\n        else edgeIdx = eHor;\n    }\n    \n    // Symbol -> tex\n    vec2 tuv;\n    float t;\n    if (edgeIdx.x >= 0.) {\n        tuv = ((guv * 0.6 + 0.2) + edgeIdx) * fontCell;\n        t = texture(iChannel1, tuv).x;\n    } else {\n        tuv = ((guv * 0.6 + 0.2) + fillIdx) * fontCell;\n        t = texture(iChannel1, tuv).x * 0.7;\n        //t = 0.;\n    }\n    \n    \n    // Text\n    ivec2 xy = ivec2(gvp * gsize);\n    if (xy.y == 5) {\n        int i = xy.x - 5;\n        int len = mod(iTime, 0.8) < 0.4 ? text.length() : text.length() - 1;\n        if (i >= 0 && i < len) {\n            vec2 ch = text[i];\n            tuv = ((guv * 0.6 + 0.2) + ch) * fontCell;\n            t = texture(iChannel1, tuv).x * 1.5;\n        }\n    }\n    \n    fragColor = vec4(vec3(t * 0.2, t * 0.8 + 0.2, t * 0.4), 1.);\n    //fragColor = vec4(vec2(y), 0., 1.);\n    //fragColor = vec4(vec3(texture(iChannel1, fragCoord / iResolution.xy).x), 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

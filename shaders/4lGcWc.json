@@ -1,0 +1,88 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1537964262",
+            "description": "Fluid simulation on a sphere!",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4lGcWc",
+            "likes": 3,
+            "name": "Sphere Fluid",
+            "published": 3,
+            "tags": [
+                "sphere",
+                "fluid"
+            ],
+            "usePreview": 0,
+            "username": "pyBlob",
+            "viewed": 925
+        },
+        "renderpass": [
+            {
+                "code": "/*\nBased on fluid by wyatt: https://www.shadertoy.com/view/XtGcDK\nInstead of storing planar velocity in xy,\nthe angular velocity xyz is used to advect the fluid around the sphere.\nUnfortunately this means that there is no component left for the ink.\n\nI wanted to use Cube A for storing the fluid simulation, but it does\nnot allow for referencing itself (that was in 2018, should be possible now). So for now this is using polar coordinates\nto store the fluid in Buffer A.\n\nPresets:\n\t1. stream around equator\n\t2. blob to the left\n\t3. blob upwards\n\t4. only pressure gradient\n\nUnlike in planar geometry, you can't simply add or subtract spherical position vectors.\nIn spherical geometry, component-wise subtraction of position vectors only makes\nsense for small displacements. To capture large displacements, a better notion of\ndifference is \"rotation\".\n\nA similar equivalence holds between:\n    - dates: position/point in time (like '2021-02-05 00:00:00')\n    - intervals: difference/distance in time (like '5 days, 2 hours 1 second').\nAs time is usually linear, intervals are valid for small and large displacements.\n\nA very convenient representation for *instantaneous* velocity is angle-axis or length-axis,\nbecause they behave like their planar equivalents:\n    1. linear + component-wise (like adding forces, multiplying by time)\n    2. when no net tangential (=in-plane) force acts on a particle,\n       all components stay the same during the advection step\n\nFor navigating the sphere, matrices and quaternions are better, because they\ncorrectly capture the curvature during composition.\n\nposition:\n\t- plane: vec2 [pixels]\n\t- sphere: vec3 [pixels]\nposition offset:\n\t- plane: vec2 [pixels]\n\t- sphere: rotation, multiple possible representations\n\t\t- matrix: mat3\n\t\t- quaternion: vec4\n\t\t\t- used by this shader for navigating on sphere\n\t\t- angle-axis: vec3 [direction: rotation axis, length: radians]\n\t\t- length-axis: vec3 [direction: rotation axis, length: pixels]\nvelocity:\n\t- plane: vec2 [pixels/tick]\n\t- sphere:\n\t\t(can be any offset, following are convenient)\n\t\t- angle-axis: vec3 [direction: rotation axis, length: radians/tick]\n\t\t- length-axis: vec3 [direction: rotation axis, length: pixels/tick]\n\t\t\t- storage format in texture\n\t\t\t- unlike matrix/quaternions they behave linearly, so they can be\n\t\t\t  multiplied by deltaTime to get a position offset\n\t\t\t- unlike matrix/quaternions they also behave linearly\n\t\t\t  when applying forces\nacceleration:\n\t- plane: vec2 [pixels/tick^2]\n\t- sphere:\n\t\t- angle-axis: vec3 [direction: rotation axis, length: radians/tick^2]\n\t\t- length-axis: vec3 [direction: rotation axis, length: pixels/tick^2]\n\t\t\t- used\n*/\n\nvec3 view(vec3 v)\n{\n    float t = 0.;\n    #if PRESET == 1\n    \t//t = iTime * 1.0; // rotate\n        t = iTime * 0.0;\n    #elif PRESET == 2\n    \t//t = iTime * 0.3; // shockwave\n    \t//t = iTime * 0.1; // blob\n        t = iTime * 0.0; // stationary\n    #elif PRESET == 3\n    \tt = iTime * 0.3;\n    #elif PRESET == 4\n    \tt = iTime * 1.0;\n    #endif\n    v = R(Q(vec3(sin(t * 1.) * .5, 0, 0)), v);\n    v = R(Q(vec3(0, t * .1, 0)), v);\n    return v;\n}\n\nfloat map(vec3 p)\n{\n    float r = length(p);\n    float planet = r - 1.;\n    float background = 200. - r;\n    return min(planet, background);\n}\n\nvec3 flowColor(vec3 col)\n{\n    return col * vec3(8, 2, 12) + .5;\n}\n\nvoid renderSphere(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = (fragCoord - iResolution.xy / 2.) / iResolution.y;\n\t\n    vec3 p = view(vec3(0, 0, -12));\n    vec3 v = view(normalize(vec3(uv*.22, 1)));\n\n\tfor (int i=0 ; i<60 ; i++)\n        p += v * map(p);\n    \n    //vec3 col = vec3(length(T(p).xyz) + .5);\n    vec3 col = flowColor(T(p).xyz);\n    if (length(p) > 1.5)\n        col *= .1;\n    col *= T(p).w * .5 + .9;\n    //col = vec3(polar(normalize(p)),0);\n    //col = topolar(polar(normalize(p)));\n    //col = normalize(p);\n    //col = texture(iChannel0, fragCoord/iResolution.xy).w;\n\n    fragColor = vec4(col, 1);\n}\n\nvoid renderProjection(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = (fragCoord - iResolution.xy / 2.) / iResolution.x * 4.;\n    vec2 top = uv - vec2(1, 0);\n    vec2 bottom = uv + vec2(1, 0);\n    vec3 col = vec3(0);\n    if (length(top) < 1.)\n    {\n        vec3 p = vec3(\n            top,\n            sqrt(1. - length(top))).xzy;\n        col = flowColor(T(p).xyz);\n    }\n    if (length(bottom) < 1.)\n    {\n        vec3 p = vec3(\n            vec2(-bottom.x, bottom.y),\n            -sqrt(1. - length(bottom))).xzy;\n        col = flowColor(T(p).xyz);\n    }\n    fragColor = vec4(col, 1);\n}\n\nvoid renderConstantAngle(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = (fragCoord - iResolution.xy / 2.) / iResolution.x * 4.;\n    vec2 top = uv - vec2(1, 0);\n    vec2 bottom = uv + vec2(1, 0);\n    vec3 col = vec3(0);\n    if (length(top) < 1.)\n    {\n        float r = length(top);\n        float lat = + PI / 2. * (1. - r);\n        top /= r + 1e-9;\n        vec3 p = vec3(\n            cos(lat) * top,\n            sin(lat)).xzy;\n        col = flowColor(T(p).xyz);\n    }\n    if (length(bottom) < 1.)\n    {\n        float r = length(bottom);\n        float lat = - PI / 2. * (1. - r);\n        bottom /= r + 1e-9;\n        vec3 p = vec3(\n            cos(lat) * vec2(-bottom.x, bottom.y),\n            sin(lat)).xzy;\n        col = flowColor(T(p).xyz);\n    }\n    fragColor = vec4(col, 1);\n}\n\nvoid renderDirect(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec3 col = texelFetch(iChannel0, ivec2(fragCoord), 0).xyz;\n    fragColor = vec4(flowColor(col), 1);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    renderSphere(fragColor, fragCoord);\n    ////renderProjection(fragColor, fragCoord);\n    //renderConstantAngle(fragColor, fragCoord);\n    //renderDirect(fragColor, fragCoord);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// 1..4\n#define PRESET 1\n\nconst float PI = 3.141592653589793;\n\n// converts point U (that sits on a sphere with arbitrary radius) to two polar angles uv for texture lookup\nvec2 polar(vec3 U)\n{\n    return fract(vec2(\n        atan(U.x, U.z) / 2.,\n        atan(U.y, length(U.xz))\n    ) / PI + .5);\n}\n\n// converts two polar angles uv from texture to point U on a sphere with radius 1\nvec3 topolar(vec2 uv)\n{\n    uv = vec2(2, 1) * (uv - .5) * PI;\n    return vec3(sin(uv.x), 0, cos(uv.x)) * cos(uv.y) + vec3(0, sin(uv.y), 0);\n}\n\n#define T(U) texture(iChannel0, polar(U))\n\n// convert v to a quaternion\n//  - direction of v: axis of rotation (ccw when viewed from above)\n//  - length of v: angle in radians\nvec4 Q(vec3 v)\n{\n    float a = length(v);\n    return vec4(v / (a + 1e-9) * sin(a * .5), cos(a * .5));\n}\n\n// quaternion rotation: rotates the direction v by the quaternion q\nvec3 R(vec4 q, vec3 v)\n{\n    vec3 t = 2. * cross(q.xyz, v);\n    return v + q.w * t + cross(q.xyz, t);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\n// calculate an arbitrary tangent vector at point U on the surface a sphere\nvec3 getv1(vec3 U)\n{\n    vec3 u = abs(U);\n    float m = max(u.x, max(u.y, u.z));\n    if (u.x == m)\n        return cross(U, vec3(0,1,0));\n    return cross(U, vec3(1,0,0));\n}\n\nvoid mainCubemap(out vec4 q, in vec2 _fc, in vec3 _ro, in vec3 U);\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    // simulate a cubemap by mapping planar coordinates uv to points U on surface of a sphere\n    mainCubemap(fragColor, fragCoord, vec3(0), topolar(fragCoord / iResolution.xy));\n    //fragColor.xyz = topolar(fragCoord / iResolution.xy);\n}\n\n// radius of the sphere [pixels]\nconst float RA = 1000.;\n// convert surface displacement v [pixels] (the direction is still the rotation axis)\n// 1. to v / RA [radians] (-> angular displacement)\n// 2. to quaternion Q(v / RA)\nvec4 QRA(vec3 v) { return Q(v / RA); }\n\n// read iChannel0\nvec4 t(vec3 U) {\n    return T(U);\n    //return vec4(vec3(1,0,0), T(U).w);\n}\n\nvoid mainCubemap(\n    // q.xyz contains the angular velocity of the fluid at the current position.\n    //   angular velocity is a vector with two components:\n    //     - its direction is the axis of rotation (like for rigidbodies)\n    //       when viewing this axis from above, rotation is always counter-clockwise\n    //     - its length is proportional to the surface speed [pixels/tick]\n    //   e.g. preset=2\n    //      blob has angular velocity vec3(0,10,0) -> points up (\"+y/up\" axis).\n    //      when looking at the \"+y/up\"-axis from above, the blob is at the bottom edge.\n    //      ccw rotation means the that blob will move in the \"-x/left\"-direction.\n    //   e.g. preset=1\n    //      the central ring has angular velocity vec3(0,10,0) -> points up (\"+y/up\" axis).\n    //      when looking at the \"+y/up\"-axis from above, the ring is all around the edge/equator.\n    //      ccw rotation means the whole ring rotates along this edge (like the blob from preset=2).\n    //   e.g. preset=3\n    //      blob has angular velocity vec3(10,0,0) -> points to right (\"+x/right\" axis).\n    //      when looking at the \"+x/right\"-axis from above, the blob is at the left edge.\n    //      ccw rotation means the that blob will move in the \"+y/up\"-direction.\n    // q.w contains the pressure.\n    out vec4 q,\n    // _fc is not used - fragCoord\n    in vec2 _fc,\n    // _ro is not used - 0\n    in vec3 _ro,\n    // point on the surface of the sphere.\n    // normalize(U) is the normal at that point and points out.\n    in vec3 U\n    )\n{\n    // tangent vector that is perpendicular to the normal direction U\n    vec3 _v1 = normalize(getv1(U));\n    // cotangent vector that is perpendicular to both _v1 and U\n    vec3 _v2 = normalize(cross(_v1, U));\n\n    // offsets for the particles (see shader from wyatt)\n    // these are quaternions (rotation instead of displacement)\n    vec4 va = QRA(_v1);\n    vec4 vb = QRA(_v2);\n    vec4 vc = QRA(-_v1);\n    vec4 vd = QRA(-_v2);\n    \n    // particle locations, uses R instead of + (see shader from wyatt)\n    vec3 O = U, A = R(va, U), B = R(vb, U), C = R(-vc, U), D = R(-vd, U);\n    // particle states (see shader from wyatt)\n    vec4 u = t(U), a = t(A), b = t(B), c = t(C), d = t(D);\n\n    vec4 p;\n    vec2 g = vec2(0);\n    \n    #define I 2\n    for (int i=0 ; i<I ; i++)\n    {\n        // move particles R(QRA(-angular_surface_velocity), position) instead of (pos + velocity)\n        U = R(QRA(-u.xyz), U);\n        A = R(QRA(-a.xyz), A);\n        B = R(QRA(-b.xyz), B);\n        C = R(QRA(-c.xyz), C);\n        D = R(QRA(-d.xyz), D);\n        \n        // U and A,B,C,D are close, so we can approximate surface distance by spatial 3d distance.\n        //   -> this is the same as in shader from wyatt\n        p += vec4(\n            // approximately arc length for small velocities\n            length(U-A),\n            length(U-B),\n            length(U-C),\n            length(U-D)\n        ) * RA - 1.;\n        \n        g += vec2(a.w-c.w, b.w-d.w);\n        \n        u = t(U); a = t(A); b = t(B); c = t(C); d = t(D);\n    }\n    \n    q = T(U);\n    vec4 N = (a+b+c+d) / 4.;\n    q = mix(q, N, vec4(0,0,0,1));\n    q.xyz -= (_v1 * g.x + _v2 * g.y) / 10. / float(I);\n    q.w += (p.x + p.y + p.z + p.w) / 10.;\n\n    q.w *= 0.9999;\n\n    //q.xyz = U;\n\n    if (iFrame < 1) q = vec4(0);\n \t#if PRESET == 1\n    \tif (iFrame < 14 && abs(O.y)<.1) q.xyzw = vec4(sin(atan(U.x,U.z)*8.)*.2,4,0,0);\n    #elif PRESET == 2\n    \tif (iFrame < 14 && -O.z>0.99) q.xyzw = vec4(0,10,0,0);\n    #elif PRESET == 3\n    \tif (iFrame < 14 && -O.z>0.999) q.xyzw = vec4(10,0,0,0);\n    #elif PRESET == 4\n    \tU = cos(U * 30.); if (iFrame < 14) q.xyzw = vec4(0, 0, 0, U.x*U.y*U.z);\n    #endif\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

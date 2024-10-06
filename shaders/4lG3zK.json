@@ -1,0 +1,113 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1475481623",
+            "description": "My representation of a glowing animated gun skin from Call of Duty!\n\nIt's mapped onto something sort of resembling a gun. That's the extend of my raymarcher modelling :P",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4lG3zK",
+            "likes": 5,
+            "name": "COD Gun Skins",
+            "published": 3,
+            "tags": [
+                "lighting",
+                "raymarcher",
+                "animation",
+                "glow",
+                "skin",
+                "cod",
+                "gun"
+            ],
+            "usePreview": 0,
+            "username": "jackdavenport",
+            "viewed": 900
+        },
+        "renderpass": [
+            {
+                "code": "// COD Gun Skins\n// by jackdavenport\n\n// Post-processing pass\n// Main render code in Buffer A\n\n// Uncomment to disable post effects\n//#define DEBUG\n\n// Based on 'Physical Chromatic Aberration'\n// Source: https://www.shadertoy.com/view/MtXXDr\nvec3 chromaticAberration(sampler2D sampler, vec2 uv) {\n    float vig = length(uv*2.-1.)-.5;\n    vec3 nuv = normalize(vec3(uv*2.-1.,1.));\n    vec3 n   = vec3(0.,0.,-1.);\n    vec3 ri  = 1.+vec3(0.,.015,.03)*(.4*vig);\n    \n    vec3 rr  = refract(nuv, n, ri.x);\n    vec3 rg  = refract(nuv, n, ri.y);\n    vec3 rb  = refract(nuv, n, ri.z);\n    \n    vec2 ruv = (rr.xy / rr.z) / 2. + .5;\n    vec2 guv = (rg.xy / rg.z) / 2. + .5;\n    vec2 buv = (rb.xy / rb.z) / 2. + .5;\n    \n    return vec3(\n    \ttexture(sampler, ruv).x,\n     \ttexture(sampler, guv).y,\n        texture(sampler, buv).z\n    );\n}\n\n// Gaussian blur by mrharicot (modified by me for bloom)\n// Source: https://www.shadertoy.com/view/XdfGDH\nfloat normpdf(in float x, in float sigma)\n{\n\treturn 0.39894*exp(-0.5*x*x/(sigma*sigma))/sigma;\n}\nvec3 bloom(sampler2D sampler, vec2 fragCoord, float threshold) {\n    const int mSize = 8;\n\tconst int kSize = (mSize-1)/2;\n\tfloat kernel[mSize];\n\tvec3 final_colour = vec3(0.0);\n\t\t\n\t//create the 1-D kernel\n\tfloat sigma = 7.0;\n\tfloat Z = 0.0;\n\tfor (int j = 0; j <= kSize; ++j)\n\t{\n\t\tkernel[kSize+j] = kernel[kSize-j] = normpdf(float(j), sigma);\n\t}\n\t\t\n\t//get the normalization factor (as the gaussian has been clamped)\n\tfor (int j = 0; j < mSize; ++j)\n\t{\n\t\tZ += kernel[j];\n\t}\n\t\t\n\t//read out the texels\n\tfor (int i=-kSize; i <= kSize; ++i)\n\t{\n\t\tfor (int j=-kSize; j <= kSize; ++j)\n\t\t{\n\t\t\tfinal_colour += kernel[kSize+j]*kernel[kSize+i]*(texture(sampler, (fragCoord.xy+vec2(float(i),float(j))) / iResolution.xy).rgb-threshold);\n\t\t}\n\t}\t\t\n\treturn vec3(clamp(final_colour/(Z*Z),0.,1.));\n}\n\n// ACES curve tonemapping by knarkowicz\n// Source: https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 tonemapping(vec3 col) {\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return clamp((col*(a*col+b))/(col*(c*col+d)+e),0.,1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord / iChannelResolution[0].xy;\n    fragColor.w = 1.;\n\n    #ifndef DEBUG\n    fragColor.xyz  = chromaticAberration(iChannel0, uv);\n    //fragColor.xyz += bloom(iChannel0, fragCoord, .4)*1.2;\n    fragColor.xyz  = tonemapping(fragColor.xyz);\n    #else\n    fragColor = texture(iChannel0, uv);\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// COD Gun Skins\n// by jackdavenport\n\n// Main renderer\n\n// Raymarching settings\n#define MAX_ITERATIONS 256\n#define MAX_DISTANCE   256.\n#define REFL_ITERATIONS 128\n#define SHADOW_SAMPLES 32\n\n// Math constants\n#define EPSILON .001\n#define SHADOW_BIAS .01\n#define PI 3.14159265359\n\n// Lights\n#define LIGHT_DIR vec3(45.,30.,25.)\n#define LIGHT_COL vec3(1.,.9,.9)\n#define LIGHT_AMB .1\n#define LIGHT2_POS vec3(-2.,-1.,-1.)\n#define LIGHT2_COL vec3(.25,.25,1.)\n#define LIGHT3_POS vec3(-1.,1.,1.)\n#define LIGHT3_COL vec3(1.,.5,.5)\n\nvec2 rot2D(vec2 p, float angle) {\n\tangle = radians(angle);\n    float s = sin(angle), c = cos(angle);\n    return mat2(c,s,-s,c)*p;\n}\n\n// Distance functions by iq\n// Source: https://iquilezles.org/articles/distfunctions\nfloat sdCappedCylinder( vec3 p, vec2 h )\n{\n  vec2 d = abs(vec2(length(p.xz),p.y)) - h;\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\nfloat sdTorus( vec3 p, vec2 t )\n{\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  return length(q)-t.y;\n}\nfloat udRoundBox( vec3 p, vec3 b, float r )\n{\n  return length(max(abs(p)-b,0.0))-r;\n}\n\nvec2 dstUnion(vec2 a, vec2 b) {\n    if(a.x < b.x) return a;\n    return b;\n}\nvec2 dstSmin(vec2 a, float b, float k) {\n    float h = clamp( 0.5+0.5*(b-a.x)/k, 0.0, 1.0 );\n    return vec2(mix( b, a.x, h ) - k*h*(1.0-h), a.y);\n}\nvec2 dstSub(vec2 a, float b) {\n    return vec2(max(-b,a.x),a.y);\n}\n    \nvec3 rotateGun(vec3 p) {\n    p.yz = rot2D(p.yz, 90.);\n    float a = 75.*sin(iTime*.45);\n    if(iMouse.x > 0. || iMouse.y > 0.) {\n        float m = 75.*((iMouse.x/iResolution.x)*2.-1.);\n        p.xy = rot2D(p.xy, m);\n    } else {\n        p.xy = rot2D(p.xy, a);\n    }\n    return p;\n}\n\nvec2 dstScene(vec3 p) {\n    vec3 q = rotateGun(p);\n\tvec2 scn = vec2(sdCappedCylinder(q, vec2(.4,1.4))-0.02, 0.);\n    scn = dstUnion(scn, vec2(sdTorus(q, vec2(.45,.1)), 0.));\n    scn = dstUnion(scn, vec2(sdTorus(q+vec3(0.,1.,0.), vec2(.45,.1)), 0.));\n    scn = dstSmin(scn, udRoundBox(q+vec3(0.,-.7,.5),vec3(.1,.2,.01),.2), .1);\n    scn = dstSub(scn, sdCappedCylinder(q-vec3(0.,.2,0.), vec2(.3,1.3))-.02);\n    q.yz = rot2D(q.yz, -45.);\n    scn = dstSmin(scn, udRoundBox(q-vec3(0.,-1.6,.9), vec3(.1,.4,.1), .2), .1);\n    return scn;\n}\n\nvec2 raymarch(vec3 ori, vec3 dir, int iter) {\n    float  t = 0.;\n    float id = -1.;\n    for(int i = 0; i < MAX_ITERATIONS; i++) {\n        if(t >= MAX_DISTANCE || i >= iter) {\n        \tbreak;   \n        }\n    \tvec2 scn = dstScene(ori+dir*t);\n        if(scn.x < EPSILON) {\n        \tid = scn.y;\n            break;   \n        }\n        t += scn.x * .75;\n    }\n    return vec2(t,id);\n}\n\nvec3 calcNormal(vec3 p, float t) {\n\tvec2 e = vec2(EPSILON*t,0.);\n    vec3 n = vec3(dstScene(p+e.xyy).x-dstScene(p-e.xyy).x,\n                  dstScene(p+e.yxy).x-dstScene(p-e.yxy).x,\n                  dstScene(p+e.yyx).x-dstScene(p-e.yyx).x);\n    return normalize(n);\n}\n\n// Soft shadows by iq\n// Source: https://www.shadertoy.com/view/Xds3zN\nfloat softshadow( in vec3 ro, in vec3 rd, in float mint, in float tmax )\n{\n\tfloat res = 1.0;\n    float t = mint;\n    for( int i=0; i<SHADOW_SAMPLES; i++ )\n    {\n\t\tfloat h = dstScene( ro + rd*t ).x;\n        res = min( res, 16.0*h/t );\n        t += clamp( h, 0.02, 0.10 );\n        if( h<0.001 || t>tmax ) break;\n    }\n    return clamp( res, 0.0, 1.0 );\n\n}\n\n// Nicer shadow bias by opengl-tutorial.org\n// Source: http://www.opengl-tutorial.org/intermediate-tutorials/tutorial-16-shadow-mapping/\nfloat doShadow(vec3 ld, vec3 p, vec3 n) {\n    float cosTheta = clamp(dot(n,ld),0.,1.);\n\tfloat bias = SHADOW_BIAS*tan(acos(cosTheta)); // cosTheta is dot( n,l ), clamped between 0 and 1\n\tbias = clamp(bias, 0., 0.01);\n    return softshadow(p+ld*bias,ld,bias,MAX_DISTANCE);\n}\n\nvec3 calcLighting(vec3 col, vec3 p, vec3 n, vec3 r, float sh) {\n    // Primary directional light\n    vec3 lv = LIGHT_DIR;\n    vec3 ld = normalize(lv);\n    float d = max(dot(ld,n),0.);\n    float s = 0.;\n    float a = doShadow(ld,p,n);\n    if(sh > 0.) {\n    \ts = pow(max(dot(ld,r), 0.), sh);   \n    }\n    vec3 ds = vec3(LIGHT_AMB);\n    vec3 ss = vec3(0.);\n    ds += LIGHT_COL*d*a;\n    ss += LIGHT_COL*s*a;\n    // Secondary point light\n    lv = LIGHT2_POS - p;\n    ld = normalize(lv);\n    a = (1.-clamp(length(lv)/20.,0.,1.))*doShadow(ld,p,n);\n    d = max(dot(ld,n),0.);\n    s = 0.;\n    if(sh > 0.) {\n    \ts = pow(max(dot(ld,r), 0.), sh);   \n    }\n    ds += LIGHT2_COL*d*a;\n    ss += LIGHT2_COL*s*a;\n    // Another secondary point light\n    lv = LIGHT3_POS - p;\n    ld = normalize(lv);\n    a = (1.-clamp(length(lv)/5.,0.,1.))*doShadow(ld,p,n);\n    d = max(dot(ld,n),0.);\n    s = 0.;\n    if(sh > 0.) {\n    \ts = pow(max(dot(ld,r), 0.), sh);   \n    }\n    ds += LIGHT3_COL*d*a;\n    ss += LIGHT3_COL*s*a;\n    return (col*ds)+ss;\n}\n\n// 3D texture sampling by reinder\n// Source: https://www.shadertoy.com/view/4dj3Dw (not reinder's shader)\nvec4 tex3D( in vec3 pos, in vec3 normal, sampler2D sampler )\n{\n\treturn \ttexture( sampler, pos.yz )*abs(normal.x)+ \n\t\t\ttexture( sampler, pos.xz )*abs(normal.y)+ \n\t\t\ttexture( sampler, pos.xy )*abs(normal.z);\n}\n\nvec3 doEmission(vec3 p, vec3 n) {\n    // Main emission code (pattern)\n    vec3 tp = rotateGun(p);\n    vec3 pt = pow(tex3D(tp+vec3(.05,-.15,.1)*iTime, n, iChannel0).zzz,vec3(5.)) * 2.5;\n    return clamp(pt,0.,1.) * vec3(.1,1.*abs(cos(iTime*.2)),1.*abs(sin(iTime)));\n}\n\nvec3 shadeGun(vec2 scn, vec3 p, vec3 n, vec3 r) {\n    float mt = tex3D(rotateGun(p), n, iChannel1).z;\n    vec3 col = vec3(.35) + mt*.1;\n    col = calcLighting(col, p, n, r, 10.+80.*mt);\n    \n    return col;\n}\n\nvec3 shade(vec3 ori, vec3 dir) {\n\tvec2 scn = raymarch(ori, dir, MAX_ITERATIONS);\n    vec3 col = vec3(0.);\n    if(scn.y == 0.) {\n        vec3 p = ori+dir*scn.x;\n    \tvec3 n = calcNormal(p,scn.x);\n    \tvec3 r = normalize(reflect(dir,n));\n        col = shadeGun(scn,p,n,r);\n        \n        vec2 rs = raymarch(p+r*SHADOW_BIAS,r,REFL_ITERATIONS);\n        vec3 rc = texture(iChannel3,r).xyz;\n        if(rs.y == 0.) {\n        \tvec3 rp = p+r*(SHADOW_BIAS+rs.x);\n            vec3 rn = calcNormal(rp,rs.x);\n            vec3 rr = normalize(reflect(dir,rn));\n            rc = shadeGun(rs,rp,rn,rr)+doEmission(rp,rn);\n        }\n        float f = 1.-pow(max(-dot(dir,n),0.),.45);\n        col = mix(col, rc, f*.4);\n        col += doEmission(p,n);\n    } else {\n    \tcol = texture(iChannel3, dir).xyz;   \n    }\n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = (fragCoord - iResolution.xy * .5) / iResolution.y;\n    \n    vec3 ori = vec3(0.,0.,-3.);\n    vec3 dir = vec3(uv, 1.);\n    \n\tfragColor.xyz = shade(ori, normalize(dir));\n    fragColor.w   = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

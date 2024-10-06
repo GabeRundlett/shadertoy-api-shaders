@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1618271997",
+            "description": "Signed distance field for the polygonal approximation of the NACA 4-digits series. \n\nDrag vertically to change the maximum camber (first digit) and vertically to change its location along the chord (second digit).\n\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NdXSz8",
+            "likes": 6,
+            "name": "approx. NACAxxxx - 2d distance",
+            "published": 3,
+            "tags": [
+                "2d",
+                "sdf",
+                "cfd",
+                "naca"
+            ],
+            "usePreview": 0,
+            "username": "jmpep",
+            "viewed": 424
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2021 Javier Meseguer de Paz\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n//\n// Signed distance field of a NACAxxxx (4-digit series)\n// https://en.wikipedia.org/wiki/NACA_airfoil#Four-digit_series\n//\n// I couldn't find an analytical SDF, and computing the derivatives to use Newton-Rhapson to approximate the\n// SDF numerically yielded monstruous derivatives:\n// http://javiermeseguer.com/wp-content/uploads/2021/04/naca-symbolic.html\n//\n// So I decided to just convert the NACA to a simple polygon and just SDF it instead.\n// \n// I don't think this is terribly useful, but who knows.\n//\n// Credits:\n// - The implementation for the polygon SDF comes from: https://www.shadertoy.com/view/WdSGRd\n//\n// Related:\n// - NACA00xx: https://www.shadertoy.com/view/ssBGWd\n\n\n// Use this macros to define what NACAxxxx profile to use. Use mouse_x or mouse_y to\n// determine the digit by dragging the mouse in the x or y directions respectively.\n// Usually these digits are integers (they are digits, after all) but in this shader\n// using real values is allowed for greater interactivity.\n#define DIGIT0 mouse_y // DIGIT0 is the maximum camber as a percentage of the chord.\n#define DIGIT1 mouse_x // DIGIT1 * 10 is the location of the maximum camber (also % chord)\n#define DIGIT2 2       // DIGIT2 x 10 + DIGIT3 gives the maximum thickness (% chord)\n#define DIGIT3 2\n\n#define IS_DEMO 1\n\n// Define how many segments to use to approximate the NACA\n#define N 40\n\nvec2 naca(float d1, float d2, float d3, float d4, float mx) {\n    float m = d1 / 100.0;\n    float p = d2 / 10.0;\n    float t = (d3 * 10.0 + d4) / 100.0;\n    \n    if (d2 < 1.0) {\n        m = 0.0;\n        p = 0.5;\n    }\n    \n    float x = mx;\n    if (x > 1.0) x = x - 2.0;\n    if (x < 0.0) x = - x;\n        \n    float sx = sqrt(x);\n    float yt = 5.0 * t * (0.2969*sx + x*(-0.126 + x * (-0.3516 + x * (0.2843 + x * (-0.1037)))));\n\n    float yc = 0.0;\n    float dycdx = 0.0;\n\n    if (x <= p) {\n        yc = m/(p*p) * (2.0*p*x-x*x);\n        dycdx = (2.0*m/(p*p))*(p-x);\n    } else {\n        float temp = (1.0 - p);\n        yc = (m/(temp*temp))*((1.0-2.0*p)+2.0*p*x-x*x);\n        dycdx = (2.0*m/(1.0-p*p))*(p-x);\n    }\n\n    float omega = atan(dycdx);\n    \n    vec2 res;\n    if (mx < 0.0) {\n        res.x = x + yt * sin(omega);\n        res.y = yc - yt * cos(omega);\n    } else {\n        res.x = x - yt * sin(omega);\n        res.y = yc + yt * cos(omega);\n    }\n\n    return res;\n}\n\nfloat cross2d(vec2 v0, vec2 v1) {\n    return v0.x*v1.y - v0.y*v1.x;\n}\n\n// polygon's sdf from https://www.shadertoy.com/view/wdBXRW\nfloat sdPolygonalNACA( vec2 p, float d1, float d2, float d3, float d4 ) {\n   \n    // compute first vertex\n    float ttA = -1.001;\n    vec2 cA = naca(d1, d2, d3, d4, ttA);        \n\n    // initialize distance and sign\n    float d = dot(p-cA,p-cA);\n    float s = 1.0;\n    \n    for (int i = 1; i <= N; ++i) {\n        // compute next vertex\n        float tB = 2.0 * float(i)/float(N) - 1.001;\n        \n        // .. we don't sample uniformly. Instead, we use the next formula to \n        // .. achieve a higher sampling rate closer to the leading edge, where\n        // .. the curvature is higher.\n        float ttB = tB * tB * sign(tB);\n        vec2 cB = naca(d1, d2, d3, d4, ttB);\n        \n        // distance squared\n        vec2 e = cA - cB;\n        vec2 w =  p - cB;\n        vec2 b = w - e*clamp( dot(w,e)/dot(e,e), 0.0, 1.0 );\n        d = min( d, dot(b,b) );\n        \n        // winding number from http://geomalgorithms.com/a03-_inclusion.html\n        bvec3 cond = bvec3( p.y >= cB.y, \n                            p.y < cA.y, \n                            e.x*w.y>e.y*w.x );\n        if( all(cond) || all(not(cond)) ) s=-s;\n        \n        // current vertex becomes the previous vertex\n        ttA = ttB;\n        cA = cB;\n    }\n      \n    return sqrt(d) * s;\n}\n\n// from iq's signed distance field gallery\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n    \n    vec2 m = iMouse.xy/iResolution.xy;\n    float mouse_x = m.x * 9.0;\n    float mouse_y = m.y * 9.0;\n    \n    float d1 = 8.0;\n    float d2 = 4.0;\n    float d3 = float(DIGIT2);\n    float d4 = float(DIGIT3);\n    \n    if (m.x != 0.0 || m.y != 0.0) \n    {\n        d1 = float(DIGIT0);\n        d2 = float(DIGIT1);\n    }\n    \n    #if IS_DEMO // override with demo purposes\n        d1 = mix(0.0, 8.0, 0.5 + 0.5 * sin(iTime));\n        d2 = mix(3.0, 7.0, 0.5 + 0.5 * sin(iTime / 2.0));\n        d3 = mix(1.0, 3.0, 0.5 + 0.5 * sin(iTime / 4.0));\n        d4 = mix(0.0, 9.0, 0.5 + 0.5 * sin(iTime / 8.0));        \n    #endif\n    \n    float d = sdPolygonalNACA(0.65 * (uv + vec2(0.5, 0.0)), d1, d2, d3, d4); \n    \n    vec3 col = vec3(1.0) - sign(d)*vec3(0.1,0.4,0.7);\n    col *= 1.0 - exp(-5.0*abs(d));\n    col *= 0.8 + 0.2*cos(120.0*d/(0.65));\n    col = mix( col, vec3(1.0), 1.0-smoothstep(0.0,0.02,abs(d)) );\n\n    fragColor = vec4( col, 1.0 );    \n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

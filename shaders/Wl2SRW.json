@@ -1,0 +1,190 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1565212933",
+            "description": "First attemp to implement a Doom(2016)-like glass renderer as described in Adrian Courrèges' excellent article \"DOOM (2016) Graphics Study\" (http://www.adriancourreges.com/blog/2016/09/09/doom-2016-graphics-study/).",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wl2SRW",
+            "likes": 14,
+            "name": "Translucent Glass with decals",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "post",
+                "glass",
+                "mipmap",
+                "translucency",
+                "multipass",
+                "forward"
+            ],
+            "usePreview": 0,
+            "username": "merry",
+            "viewed": 1067
+        },
+        "renderpass": [
+            {
+                "code": "/**\n * @buffer\tImage\n * @brief   FXAA filter (author: Mudlord) + fade from black.\n */\n\n//\tThis is my attemp to implement a Doom(2016)-like glass renderer as described in Adrian Courrèges' article \"DOOM (2016)\n//\tGraphics Study\" (http://www.adriancourreges.com/blog/2016/09/09/doom-2016-graphics-study/).\n//\tThis \"Common\" tab contains most of the code shared along rendering passes.\n\n//\tDuring the \"Buffer A\" pass, all opaques are fully rendered (floor, sky, red sticks and spheres).\n//\tDuring the \"Buffer B\" pass, all translucent glasses are rendered: for each pixel that represents a translucent glass,\n//\tthe specular component is calculated, and result is multiplied by the opaque color buffer value at that point.\n//\tSpecular component for glass potentially includes a pattern such a decal or a Voronoi distribution.\n//\tOpaque color buffer is read on a particular mipmap level depending on the glass roughness at that point and the distance\n//\tbetween the glass and the object behind. Due to the fact I can't implement proper downscale/upscale blur filtering,\n//\ta 9-tap filter is used to read the mipmapped texture, and a filtered, blurred copy of the opaque color buffer is added\n//  to make it more pleasant to watch.\n//\tDuring the \"Buffer C\" pass, the opaque buffer is blurried in order to be used by the \"Buffer B\" pass.\n//\tDuring the \"Buffer D\" pass, all postprocessing but AA is applied.\n//\tFinally, the  \"Image\" pass  does apply FXAA to the resulting image.\n\n//\tKnown bugs/bad approximations:\n//\t* Refraction in \"Buffer B\" is basically wrong. TOTALLY. But does the trick :)\n//\t* Texture filtering is terrible.\n//\t* The light  source is not in the right spot, probably.\n//\t* Reflection is not properly shaded, just using a flat color.\n//\t* Some shadowing artifacts are visible on spheres when they get over the glasses height.\n\n//\tLots of love to people whose code I'm using here: iq, XT95, Mudlord, the Mercury guys.\n//\tBy merry^Architect (2019).\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{\n    initCommon(iResolution.xy, fragCoord, iTime);\n    \n    vec2  p         = fragCoord.xy/iResolution.xy;\n    vec2  pp        = 1.0 / iResolution.xy;\n    vec4  color     = texture(iChannel0, vec2(fragCoord.xy * pp));\n    vec3  luma      = vec3(0.299, 0.587, 0.114);\n    float lumaNW    = dot(texture(iChannel0, (fragCoord.xy + vec2(-1.,-1.)) * pp).xyz, luma);\n    float lumaNE    = dot(texture(iChannel0, (fragCoord.xy + vec2( 1.,-1.)) * pp).xyz, luma);\n    float lumaSW    = dot(texture(iChannel0, (fragCoord.xy + vec2(-1., 1.)) * pp).xyz, luma);\n    float lumaSE    = dot(texture(iChannel0, (fragCoord.xy + vec2( 1., 1.)) * pp).xyz, luma);\n    float lumaM     = dot(color.xyz, luma);\n    float lumaMin   = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));\n    float lumaMax   = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));\n\n    vec2  dir       = vec2(-((lumaNW + lumaNE) - (lumaSW + lumaSE)), ((lumaNW + lumaSW) - (lumaNE + lumaSE)));\n    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * (1.0/8.0)), (1.0/128.0));\n    float rcpDirMin = 2.5 / (min(abs(dir.x), abs(dir.y)) + dirReduce);\n    dir = min(vec2(8.0, 8.0), max(vec2(-8.0, -8.0), dir * rcpDirMin)) * pp;\n\n    vec3 rgbA = 0.5 * \n    (\n        texture(iChannel0, fragCoord.xy * pp + dir * (1. / 3. -.5)).xyz +\n        texture(iChannel0, fragCoord.xy * pp + dir * (2. / 3. -.5)).xyz\n    );\n    vec3 rgbB = rgbA * 0.5 + 0.25 * \n    (\n        texture(iChannel0, fragCoord.xy * pp + dir *-.5).xyz +\n        texture(iChannel0, fragCoord.xy * pp + dir * .5).xyz\n    );\n\n    float lumaB = dot(rgbB, luma);\n    fragColor = vec4((lumaB < lumaMin) || (lumaB > lumaMax) ? rgbA : rgbB, color.w);\n    fragColor*= min  (iTime*.33,1.); // Fade from black.\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/**\n * @buffer\tBuffer A\n * @brief   Opaque rendering.\n */\n\n//\tAA checkerboard texture.\n//\tOriginal author: iq.\n// \tSource: https://www.shadertoy.com/view/llffWs\nvec3  pri(in vec3 x)\n{\n    vec3    h = fract(x /  2.0)- 0.5;\n    return \tx * 0.5 + h * (1.0 - 2.0 * abs(h));\n}\nfloat checkersTextureGradTri(in vec3 p, in vec3 ddx, in vec3 ddy)\n{\n    vec3 \tw = max(abs(ddx), abs(ddy)) + 0.01;       \t\t\t\t// Filter kernel.\n    vec3 \ti = (pri(p + w) - 2.0 * pri(p) + pri(p - w)) / (w * w); // Analytical integral (box filter).\n    return \t0.5 -0.5 * i.x  * i.y * i.z;                  \t\t\t// XOR pattern.\n}\n\n//\tComputes the material to use on opaque rendering.\nmat4  material(uint matID, vec3 ro, vec3 rd, vec3 pos, vec3 nor)\n{\n    mat4 mat;\n    \n    if (uint(0) == matID)\n    {\n        mat[0] = vec4(2.0, 0.0, 0.0, 0.0); // Albedo.\n        mat[1] = vec4(0.2, 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2] = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3] = vec4(nor, 0.0);           // Normal.\n    }\n    else \n    if (uint(1) == matID)\n    {\n\t\tvec3 ro, rd, ddx_ro, ddx_rd, ddy_ro, ddy_rd;\n\t\tcalcRayForPixel(gFragCoord, ro, rd);\n\t\tcalcRayForPixel(gFragCoord + vec2(1.0,0.0), ddx_ro, ddx_rd);\n\t\tcalcRayForPixel(gFragCoord + vec2(0.0,1.0), ddy_ro, ddy_rd);    \n\t\t           \n\t\tvec3 ddx_pos = ddx_ro - ddx_rd * dot(ddx_ro - pos, nor) / dot(ddx_rd, nor);\n\t\tvec3 ddy_pos = ddy_ro - ddy_rd * dot(ddy_ro - pos, nor) / dot(ddy_rd, nor);    \n\t\tvec3 uvw     = 0.5 * pos;\n\t\tvec3 ddx_uvw = 0.5 * ddx_pos-uvw;\n\t\tvec3 ddy_uvw = 0.5 * ddy_pos-uvw;\n        \n        mat[0] = vec4(1.0, 1.0, 1.0, 0.0) * step(checkersTextureGradTri(uvw, ddx_uvw, ddy_uvw),.5); // Albedo.\n        mat[1] = vec4(0.9, 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2] = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3] = vec4(nor, 0.0);           // Normal.\n    }\n \telse\n    if (uint(3) == matID)\n    {\n        mat[0] = vec4(pal(dot(normalize(pos.xzz), vec3(0, 0, 1)), vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.33, 0.67)), 0.); // Albedo.\n        mat[1] = vec4(0.3, 0.4, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2] = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3] = vec4(nor, 0.0);           // Normal.\n    }\n    else\n    if (uint(4) == matID)\n    {\n\t\tmat[0] = vec4(pal(dot(normalize(pos.xzz), vec3(0, 0, 1)), vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.10, 0.20)), 0.); // Albedo.\n        mat[1] = vec4(0.3, 0.4, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2] = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3] = vec4(nor, 0.0);           // Normal.\n    }\n    return \tmat;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord)\n{\n\tinitCommon(iResolution.xy, fragCoord, iTime);\n    gPassNo   = kPassNo_Opaque;\n    gMaxSteps = 96;\n\t\n    vec3  ro, rd;\n    calcRayForPixel(fragCoord, ro, rd);\n    \n\tmat3  res = computeLocalIntersection(ro, rd);\n    vec3  pos = res[0];\n    vec3  nor = res[1];\n    float dis = res[2].x;\n    float dep = res[2].y;\n    uint  mid = uint(res[2].z);\n    vec4  col = vec4(0);\n    \n    if (dis  >= kFarPlaneDist)\n    {//\tRenders the sky color.\n      \tcol   = vec4(skyColor  (rd), 0);\n    }\n    else\n    {//\tRenders the material.\n        mat4 mat = material(mid, ro , rd, pos, nor);\n        col = computeColor (pos, nor, ro, rd , mat);\n\t\tcol+= col.w * vec4 (skyColor(reflect(rd, nor)), 0); // Reflects the sky.\n    }\n    fragColor = vec4(col.xyz, dep);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n * @buffer\tBuffer B\n * @brief   Tranparent rendering.\n */\n\nmat4  material(uint matID, vec3 ro, vec3 rd, vec3 pos, vec3 nor)\n{\n    mat4 mat;\n    \n    if (uint(98) == matID)\n    {//\tColor window.\n        float a = clamp(iqnoise(pos.xy + pos.zx * 1.5, 1., 0.), 0., 1.);\n        mat[0]  = vec4 (pal(a, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.33, 0.67)), 0.0); // Albedo.\n        mat[1]  = vec4(a  , 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2]  = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3]  = vec4(nor, 0.0);           // Normal.\n    }\n    else\n    if (uint(99) == matID)\n    {//\tVertical stripes tempered glass.\n        mat[0]  = vec4(0.5, 0.5, 0.5, 0.0); // Albedo.\n        mat[1]  = vec4(0.3 + step(mod(pos.x + pos.z, 4.), 2.) * 0.5, 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2]  = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3]  = vec4(nor, 0.0);           // Normal.\n    }\n    else\n    if (uint(100) == matID)\n    {//\tSquared-pattern  tempered glass.\n        mat[0]  = vec4(0.1, 0.1, 0.1, 0.0); // Albedo.\n        mat[1]  = vec4(iqnoise((pos.xy + pos.zy) * vec2(0.5, 0.25), 0., 0.) * 0.3 + 0.3, 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2]  = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3]  = vec4(nor, 0.0);           // Normal.\n    }\n    else\n    if (uint(101) == matID)\n    {//\tNyan Cat deco glass.\n        vec4 t  = texture(iChannel1,fract(vec2(0.19, 0.19) + pos.xy * vec2(0.007, 0.05)));\n        mat[0]  = vec4(t.xyz, 0.0); \t\t// Albedo.\n        mat[1]  = vec4(0.2+ 0.5 *t.a, 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2]  = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3]  = vec4(nor, 0.0);           // Normal.\n    }\n    else\n    if (uint(102) == matID)\n    {//\tRegular glass.\n        mat[0]  = vec4(0.5, 0.5, 0.5, 0.0); // Albedo.\n        mat[1]  = vec4(0.1 +0.05 * iqnoise(20. * (pos.xy + pos.zx), 1., 1.), 0.5, 0.0, 0.0); // Roughness/Fresnel/Metalness.\n        mat[2]  = vec4(0.0, 0.0, 0.0, 0.0); // Reserved.\n        mat[3]  = vec4(nor, 0.0);           // Normal.\n    }\n    return\tmat;\n}\n\n// \tImproved bilinear texture reading.\n//\tOriginal author: iq.\n//\tSource: https://iquilezles.org/articles/texture\nvec4 getTexel(in sampler2D texID, in vec2 uv, in float lod)\n{\n    vec2 myTexResolution = vec2(textureSize(texID, int(lod)));\n    uv = uv * myTexResolution + 0.5;\n    vec2 i = floor(uv);\n    vec2 f = uv - i;\n    f  = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);\n    uv = i + f;\n    uv = (uv - 0.5) / myTexResolution;\n    return texture(texID, uv, lod);\n}\n\n//\tGaussian-weighted 9-tap blur.\n//\tMerges mipmapped bilinear color buffer read with bilinear blurry color buffer read. \nvec3 fetchFilteredColor(in sampler2D texID0, in sampler2D texID1, in vec2 uv, in float lod)\n{\n\tvec3 e = vec3(-1, 0, 1)*lod;\n    return mix\n    (\n\t    (\n    \t\tgetTexel(texID0, uv + gTexelSize * e.xx, lod) * 0.077847 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.yx, lod) * 0.123317 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.zx, lod) * 0.077847 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.xy, lod) * 0.123317 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.yy, lod) * 0.195346 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.zy, lod) * 0.123317 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.xz, lod) * 0.077847 +\n    \t\tgetTexel(texID0, uv + gTexelSize * e.yz, lod) * 0.123317 +\n\t\t    getTexel(texID0, uv + gTexelSize * e.zz, lod) * 0.077847\n    \t).xyz,\n\t\tgetTexel(texID1, uv, 0.5).xyz, \n        lod / 9.\n    );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord)\n{\n\tinitCommon(iResolution.xy, fragCoord, iTime);\n    gMaxSteps = 96;\n    gPassNo   = kPassNo_Transparent;\n\t\n    vec3  ro, rd;\n    calcRayForPixel(fragCoord, ro, rd);\n    \n\tmat3  res = computeLocalIntersection(ro, rd);\n    vec3  pos = res[0];\n    vec3  nor = res[1];\n    float dis = res[2].x;\n    float dep = res[2].y;\n    uint  mid = uint(res[2].z);\n    vec3  col = vec3(0);\n    vec2  uv  = fragCoord / iResolution.xy;    \n    if ((dis  < kFarPlaneDist) && (dep < texture(iChannel0, uv, 0.0).w))\n    {//\tRenders the glass material.\n\t\tmat4  mat = material(mid, ro, rd, pos, nor);\n        float lod = clamp(kMaxMipLevel  * (pow(texture(iChannel0, uv, 0.0).w, 16.0) - pow(dep, 64.0)), 4. *mat[1].x, kMaxMipLevel);\n        uv += 0.0025 * reflect(rd, nor).xz * lod * 1.5;\n\n        col  = fetchFilteredColor(iChannel0, iChannel2, uv, lod) * mat[0].xyz; // Reads the opaque color buffer and adds the glass color.\n        float spe = computeBRDF(pos, nor, ro, rd, mat);\n\n        //\tLooks for reflections.\n        gPassNo   = kPassNo_Opaque;\n\t\tgMaxSteps = 64;\n\t\tro  = res[0] + res[1] * kEpsilon;\n        rd  = reflect(rd, res[1]);\n        res = computeLocalIntersection(ro, rd);        \n\t\tvec3  ref;\n        ref = (res[2].x >= kFarPlaneDist) ? skyColor(rd) : kAmbientColor; // Reflections are not shaded but flat-rendered.\n        col+= spe * mix(vec3(1), ref, 0.75);\n    }          \n  \telse\n    {//\tNo glass, copies opaque color buffer data.\n        col = texture(iChannel0, uv, 0.0).xyz;\n    }\n    fragColor =  vec4(col, dep);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n * @buffer\tCommon\n * @brief   Common functions and data.\n */\n\nconst float kEpsilon            = 0.001  ;\t\t\t\t\t// General-purpose epsilon.\nconst float kPi                 = 3.14159265359;\t\t\t// Half tau.\nconst float kNearPlaneDist      = 0.1 ;\t\t\t\t\t\t// Near plane distance.\nconst float kFarPlaneDist       = 64.0;\t\t\t\t\t\t// Far  plane distance.\nconst vec3  kAmbientColor       = vec3(.166, .406, .664); \t// Ambient light color.  \nconst float kAmbientTerm        = 0.25; \t\t\t\t\t// Ambient light term.\nconst float kMaxMipLevel \t\t= 3.0 ;   \t\t\t\t\t// Maximum mip level for glass.\n\nconst uint  kPassNo_Opaque      = uint(0);\t\t\t\t\t// Set gPassNo to this value for opaque objects rendering.\nconst uint  kPassNo_Transparent = uint(1);\t\t\t\t\t// Set gPassNo to this value for transparent objects rendering.\n\n//\tFollowing values are to be set in order to run functions hereby.\nint   gMaxSteps\t  ; // Maximum number of raymarching steps.\nuint  gPassNo\t  ; // Pass number, either kPassNo_Opaque or kPassNo_Transparent.\nfloat gTimeSecs\t  ; // Elapsed time, in seconds.\nvec2  gFragCoord  ; // glFragCoord.\nvec2  gResolution ; // Viewport resolution, in pixels.\nvec2  gTexelSize  ; // Texel size  , in tangent space.\nfloat gTexelRadius; // Texel radius, in tangent space.\n\n//\tSDF  functions.\nvec3  opRot  (vec3 p, float a) { return vec3(cos(a) * p.xy + sin(a) * vec2(p.y, -p.x), p.z); }\nfloat sdPlane(vec3 p, vec4  n) { return dot(p,n.xyz) + n.w; }\nfloat sdBox  (vec3 p, vec3  b)\n{\n    vec3 d = abs(p) - b;\n    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));\n}\n\n// \tRepeat around the origin by a fixed angle.\n// \tFor easier use, num of repetitions is use to specify the angle.\n// \tSource: http://mercury.sexy/hg_sdf/\nfloat pModPolar(inout vec2 p, float repetitions)\n{\n\tfloat angle  = 2. * kPi / repetitions;\n\tfloat a = atan(p.y, p.x)+ angle / 2.0;\n\tfloat r = length(p);\n\tfloat c = floor (a  / angle);\n\ta = mod (a,  angle) - angle / 2.0;\n\tp = vec2(cos(a), sin(a)) * r;\n\t// For an odd number of repetitions, fix cell index of the cell in -x direction\n\t// (cell index would be e.g. -5 and 5 in the two halves of the cell):\n\tif (abs(c) >= (repetitions / 2.)) \n     \tc = abs(c);\n\treturn \tc;\n}\n\n//\tNoise functions.\n//\tOriginal author: iq.\n//\tSource: https://www.shadertoy.com/view/Xd23Dh\nvec3 hash3(in vec2 p)\n{\n    vec3 q = vec3(dot(p, vec2(127.1, 311.7)) , \n\t\t\t\t  dot(p, vec2(269.5, 183.3)) , \n\t\t\t\t  dot(p, vec2(419.2, 371.9)));\n\treturn \tfract(sin(q) * 43758.5453);\n}\n\nfloat iqnoise(in vec2 x, in float u, in float v)\n{\n    vec2  p  = floor(x);\n    vec2  f  = fract(x);\n\tfloat k  = 1.0 + 63.0 * pow(1.0 - v, 6.0);\n\tfloat va = 0.0;\n\tfloat wt = 0.0;\n    for(int j=-2; j <= 2; ++j)\n    for(int i=-2; i <= 2; ++i)\n    {\n        vec2  g  = vec2 (float(i),float(j));\n\t\tvec3  o  = hash3(p + g) * vec3 (u, u, 1.0);\n\t\tvec2  r  = g - f + o.xy;\n\t\tfloat d  = dot(r , r);\n\t\tfloat ww = pow(1.0 - smoothstep(0.0, 1.414, sqrt(d)), k);\n\t\tva      += o.z * ww;\n\t\twt      += ww;\n    }\n    return \tva / wt;\n}\n\n//\tProcedural sky colorization.\n//\tOriginal author: XT95. Cloudy look added during the development of this shader.\n//\tSource: https://www.shadertoy.com/view/lt2SR1\nvec3 skyColor(in vec3 rd)\n{\n    const vec3 sundir = normalize(vec3(0,.1, 1));\n    float yd = min(rd.y, 0.);\n    rd.y     = max(rd.y, 0.);\n    \n    vec3 col = vec3(0.);\n    col += vec3(0.4, .4 - exp( -rd.y*20. )*.3, .0) \t\t  * exp(-rd.y * 9.0); // R/G.\n    col += vec3(0.3, .5, .6) * (1.    - exp(-rd.y* 8.  )) * exp(-rd.y * 0.9); // B.\n    col  = mix (col*1.2, vec3(.3),  1.- exp( yd  * 100.)); \t\t\t\t\t  // Fog.\n    col += vec3(1.0, .8, .55) * pow(max(dot(rd, sundir), 0.), 15. ) * .6; \t  // Sun.\n    col += pow (max(dot(rd, sundir), 0.), 150.0) *.15  ;\n    col  = 3.* mix(col, vec3(iqnoise(rd.xy * 24. + gTimeSecs, 1., 1.)) * iqnoise(rd.yz * 32. + gTimeSecs * .33, 1., 1.), .25); // Cloudy look.\n    return\tcol;\n}\n\n//\tSDF scene.\n#define MIN(dst, src) dst = mix(src, dst, step(dst.x, src.x))\nvec2  mapScene(const vec3 pos)\n{\n\tvec2  a = vec2(kFarPlaneDist, 0), b = a;\n    vec3  p ; // Auxiliary world position.\n\tfloat t ; // Auxiliary cell identifier for repeating domains.\n    switch (gPassNo)\n    {\n    case kPassNo_Opaque:\t\t// Opaque pass.\n\t\tb   = vec2(sdPlane(pos, vec4(0,1,0,0)), 1.); MIN(a, b);\t// Floor.\n        p   = pos;\n        pModPolar(p.xz, 5.);\n        b   = vec2(sdBox(p - vec3(20, 0,-10.1), vec3(.1, 5, .1)), 0.); MIN(a, b);\n        b   = vec2(sdBox(p - vec3(20, 0, 10.1), vec3(.1, 5, .1)), 0.); MIN(a, b); // Glass frames.\n\n        p   = pos;\n        p   = opRot(p.zxy, gTimeSecs * .1).yzx;\n        t   = pModPolar(p.xz, 16.);\n        p.y+= 1. - 5. * abs(sin(t * .5 + gTimeSecs * 1.)) * (1. + abs(t * .25));\n        b   = vec2(length(p - vec3(25,  2, 0)) - 1., 3.); MIN(a, b); // Big   bouncing spheres.\n        \n        p   = pos;\n        p   = opRot(p.zxy,-gTimeSecs * .2).yzx;\n        t   = pModPolar(p.xz, 32.);\n        p.y+= 1. - 3. * abs(sin(t * t + t * .15 + gTimeSecs * 4.)) * (1. + abs(hash3(vec2(t * 16.,3)).x));\n        b   = vec2(length(p - vec3(32,1.5, 0)) - .5, 4.); MIN(a, b); // Small bouncing spheres.\n \n        break;\n        \n    case kPassNo_Transparent:\t// Transparency pass.\n        p   = pos;\n        t   = pModPolar(p.xz, 5.);\n        b   = vec2(sdBox(p-vec3(20,0,0), vec3(.1,12,10)), 100. + t); MIN(a, b); // Glass walls.\n      \tbreak;\n    }\n    return\ta;\n}\n\nvec3  computeNormal(const vec3 pos)\n{\n    vec3 epsilon = vec3(kEpsilon, 0, 0);\n\treturn normalize(vec3\n\t(\n        mapScene(pos + epsilon.xyy).x - mapScene(pos - epsilon.xyy).x, \n        mapScene(pos + epsilon.yxy).x - mapScene(pos - epsilon.yxy).x, \n        mapScene(pos + epsilon.yyx).x - mapScene(pos - epsilon.yyx).x)\n\t);\n}\n\nmat3  computeCameraMatrix(vec3 ro, vec3 ta, float cr)\n{\n\tvec3 cw = normalize(ta - ro);\n\tvec3 cp = vec3 (sin(cr), cos(cr), 0.0);\n\tvec3 cu = normalize(cross(cw,cp));\n\tvec3 cv = normalize(cross(cu,cw));\n    return mat3(cu, cv, cw);\n}\n\n//\tImproved soft shadows.\n//\tOriginal author: iq (using algorithm proposed by Sebastien Aaltonen).\n//\tSource: //https://www.shadertoy.com/view/lsKcDD\nfloat computeSoftShadow(const vec3 ro, const vec3 rd, const float tmin, const float tmax, float k)\n{\n\tfloat res  = 1.0;\n    float t    = tmin;\n    float ph   = 1e10; // Big, such that y = 0 on the first iteration.\n    \n    for (int i = 0; i < 32; ++i)\n    {\n\t\tfloat h = mapScene(ro + rd * t).x;\n        {\n            float y = h * h / (2.0 *  ph);\n            float d = sqrt(h * h - y * y);\n            res = min(res, 10. * d / max(0., t - y));\n            ph  = h;\n        }\n        t += h;\n        if ((res < kEpsilon) || (t > tmax)) \n            break;\n    }\n    return clamp(res, 0., 1.);\n}\n\nvec4 castRay(vec3 ro, vec3 rd)\n{\n    float t   = kNearPlaneDist, stepLength = 0., prevRad = kFarPlaneDist, prevErr = kFarPlaneDist, err, k = 1.2;\n    vec2  res = vec2(kFarPlaneDist, 0);\n\tint   i   = gMaxSteps;\n    for (; (i >= 0) && (t < kFarPlaneDist); --i)\n    {\n        res = mapScene(ro + rd * t);\n        bool  sor = (k > 1.) && ((prevRad + res.x) < stepLength);\n        if (sor)\n        {\n            stepLength-= k * stepLength;\n            k = 1.;            \n        }        \n        else\n            stepLength = res.x * k;\n\n        prevRad = res.x;\n        err = res.x / t;\n        if (!sor)\n        {\n            if (err < prevErr     ) { res.x = t; prevErr = err; }\n            if (err < gTexelRadius) break;\n        }\n        t  += stepLength;\n    }\n    return vec4(t, res.xy, gMaxSteps - i);\n}\n\n//\tGets light data.\nmat4 light(const vec3 pos)\n{\n    mat4 lit = mat4\n    (\n\t   \t5.00, 12.00, 0.00,10.00, // Light position and attenuation.\n        1.00,   .98, 0.90, 0.00, // Light color.\n        0.00,  0.00, 0.00, 0.00, // Reserved.\n        0.00,  0.00, 0.00, 0.00  // Reserved.\n    );\n    lit[3].xyz = normalize(lit[0].xyz - pos); // Computes light vector.\n    return\tlit;\n}\n\nfloat sq(float a) { return a * a; }\nfloat computeBRDF (vec3 pos, vec3 nor, vec3 ro, vec3 rd, mat4 mat)\n{\n\tmat4  lit  = light(pos);\n    float rgh  = mat[1].x;\n    vec3  h    = normalize(-rd + lit[3].xyz);\n    float rsq  = max(.001, sq(rgh));\n    vec3 terms = vec3\n    (\n        (rsq * rsq / (kPi * sq((sq(rsq) - 1.) * sq(clamp(dot(mat[3].xyz, h), 0., 1.)) + 1.))), // Distribution.\n        (mat[1].y + (1. - mat[1].y ) * (pow((1.  - clamp(dot(h, -rd), 0., 1.)), 5.))), // Fresnel.\n        (sq(1. / (dot(h , lit[3].xyz) * (1. - rsq *.5) + rsq * .5))) // Geometry.\n    );\n\treturn\t(terms.x * terms.y * terms.z / kPi);\n}\n\nvec4  computeColor(vec3 pos, vec3 nor, vec3 ro, vec3 rd, mat4 mat)\n{\n    vec3  col  = vec3(0), diffuse;\n    vec4  amb  = vec4(0), res;\n\tmat4  lit  = light(pos);\n    float spe  = computeBRDF(pos, nor, ro, rd, mat);\n    diffuse    = mix(mat[0].xyz  * clamp(dot(mat[3].xyz, lit[3].xyz), 0., 1.) * (1. - mat[1].z), mat[0].xyz, mat[0].w);\n    col += mix(lit[1].xyz , vec3(1), mat[0].w) * (diffuse \t\t\t\t\t// Diffuse lighting.\n        +  (((1. - mat[1].z) + mat[1].z *  mat[0].xyz)) * spe);\t\t\t\t// Specular light.\n    col *= computeSoftShadow(pos, lit[3].xyz, kEpsilon, kFarPlaneDist, .5); // Soft shadowing.\n    col += mat[0].xyz * kAmbientColor * kAmbientTerm; \t\t\t\t\t\t// Ambient lighting.\n    return  vec4(col, spe);\n}\n\nmat3  computeLocalIntersection(const vec3 ro, const vec3 rd)\n{\n    vec4 res;\n    vec3 pos, nor;\n\n    res     = castRay(ro, rd);\n    pos     = ro + rd * res.x;// Intersection computation.\n    \n    float coneSize  = tan(kPi / 6.) / (gResolution.y);\n    float error     = 0.;\n    for (int  i = 0; i < 3; ++i)\n    {//\tError correction.\n        pos    -= rd * (error - mapScene(pos).x);\n        error   = coneSize * length(ro - pos);\n    }\n    const float a = (kFarPlaneDist + kNearPlaneDist) / (kFarPlaneDist - kNearPlaneDist);\n\tconst float b = 2.0 * kFarPlaneDist * kNearPlaneDist / (kFarPlaneDist - kNearPlaneDist);\n\tfloat depth   = a + b /-length(ro - pos); // Depth computation.\n    \n    return mat3(pos, computeNormal(pos), res.x, depth, uint(res.z));\n}\n\nvoid calcRayForPixel(in vec2 fragCoord, out vec3 ro, out vec3 rd)\n{\n    vec2  uv = fragCoord / gResolution;\n\tvec2  p  = (-gResolution + 2.0 * fragCoord) / gResolution.y;\n    float h  = gTimeSecs * .5;\n    float r  = sin(gTimeSecs * .1) * .5 + .5;\n    ro       = vec3(4. * sin(h * .35) * (4. + sin(h)), 4. + sin(h) * 2., 4. * cos(h * .35) * (3. + cos(h)));\n    vec3  ta = vec3(-ro.x, 4., -ro.z);\n    ro \t\t = ro * vec3(r, 1, r);\n    mat3  ca = computeCameraMatrix(ro, ta, 0.0);\n    rd       = ca * normalize(vec3(p.xy,  2.0));\n}\n\n//\tProcedural palette generator.\n//\tOriginal author: iq.\n//\tSource: https://www.shadertoy.com/view/ll2GD3\nvec3 pal(in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d) { return a + b * cos(6.28318*(c*t+d)); }\nvoid initCommon(in vec2 res, in vec2 coord, in float time)\n{\n    gFragCoord   = coord;\n    gResolution  = res;\n    gTimeSecs    = time;\n    gTexelSize   = 1./ res;\n\tgTexelRadius = length(gTexelSize);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/**\n * @buffer\tBuffer D\n * @brief   Merge with filmic pass.\n */\n\nconst float kToneMapA =.15;\nconst float kToneMapB =.50;\nconst float kToneMapC =.10;\nconst float kToneMapD =.20;\nconst float kToneMapE =.02;\nconst float kToneMapF =.30;\nconst float kToneMapW =0.9;\nfloat hashf(float n) { int q = int(n); return float((0x3504f333 * q * q + q) * (0xf1bbcdcb * q * q + q)) * (2. /  8589934592.) + .5; }\nvec4 tonemap(vec4 x)\n{\n   return ( (x * (kToneMapA * x + kToneMapC * kToneMapB) + kToneMapD * kToneMapE)  /\n            (x * (kToneMapA * x + kToneMapB            ) + kToneMapD * kToneMapF)) -\n            kToneMapE / kToneMapF;\n}\nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{\n\tinitCommon(iResolution.xy, fragCoord, iTime);\n\n    vec2 uv  = fragCoord.xy / iResolution.xy;\n    vec2 qv  = uv * 2. - 1.;\n\tvec4 col = vec4\n   (\n\t\ttexture(iChannel0, uv - gTexelSize - length(pow(qv, vec2(8.))) * .005).x,    \n\t\ttexture(iChannel0, uv).y,    \n\t\ttexture(iChannel0, uv + gTexelSize + length(pow(qv, vec2(8.))) * .005).z,    \n\t    1\n    );//Chromatic aberration.\n    \n    col = tonemap(col) / tonemap(kToneMapW + .05 * textureLod(iChannel0, vec2(0.5), 9.0)); // Tonemapping.\n    col = col* (1./ pow(1. + pow(sqrt(dot(qv, qv)) * .3, 3.), 58.)); // Vignetting.\n    col = pow(col, vec4(1./2.2)); // Gamma correction.\n\tcol = .75*col + .25 * col * pow(hashf(fragCoord.x * fragCoord.y + iTime * 50.), 0.05); // Noise (to emulate film grain).    \n    \n    fragColor = col;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n * @buffer\tBuffer C\n * @brief   81-tap blur.\n */\n\nconst float kBlurWeights[] = float[]\n(\n\t0.000000, 0.000001, 0.000014, 0.000055, 0.000088, 0.000055, 0.000014, 0.000001, 0.000000,\n\t0.000001, 0.000036, 0.000362, 0.001445, 0.002289, 0.001445, 0.000362, 0.000036, 0.000001,\n\t0.000014, 0.000362, 0.003672, 0.014648, 0.023205, 0.014648, 0.003672, 0.000362, 0.000014,\n\t0.000055, 0.001445, 0.014648, 0.058434, 0.092566, 0.058434, 0.014648, 0.001445, 0.000055,\n\t0.000088, 0.002289, 0.023205, 0.092566, 0.146634, 0.092566, 0.023205, 0.002289, 0.000088,\n\t0.000055, 0.001445, 0.014648, 0.058434, 0.092566, 0.058434, 0.014648, 0.001445, 0.000055,\n\t0.000014, 0.000362, 0.003672, 0.014648, 0.023205, 0.014648, 0.003672, 0.000362, 0.000014,\n\t0.000001, 0.000036, 0.000362, 0.001445, 0.002289, 0.001445, 0.000362, 0.000036, 0.000001,\n\t0.000000, 0.000001, 0.000014, 0.000055, 0.000088, 0.000055, 0.000014, 0.000001, 0.000000\n);\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n\tinitCommon(iResolution.xy, fragCoord, iTime);\n\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 c  = vec4(0);\n    for (int i = 0; i < 9; ++i)\n        for (int j = 0; j < 9; ++j)\n            c += texture(iChannel0, uv + 2.5 * gTexelSize * vec2(i - 4, j - 4), 2.0) * kBlurWeights[j * 9 + i];\n    \n    fragColor = c;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

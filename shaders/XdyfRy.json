@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1529238202",
+            "description": "octree ray traversal, with point light.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XdyfRy",
+            "likes": 31,
+            "name": "random octree dark",
+            "published": 3,
+            "tags": [
+                "octree"
+            ],
+            "usePreview": 1,
+            "username": "abje",
+            "viewed": 2647
+        },
+        "renderpass": [
+            {
+                "code": "#define mindetail 0\n#define maxdetail 7\n#define steps 1000\n#define time iTime*0.5\n#define maxdistance 100.0\n#define tree 2.0\n\n#define ambient 0.03\n//#define softshadow //really bad soft shadowing\n\n\n#define rot(spin) mat2(cos(spin),sin(spin),-sin(spin),cos(spin))\n\n//random function from https://www.shadertoy.com/view/MlsXDf\nfloat rnd(vec4 v) { return fract(4e4*sin(dot(v,vec4(13.46,41.74,-73.36,14.24))+17.34)); }\n\n//0 is empty, 1 is subdivide and 2 is full\nint getvoxel(vec3 p, float size) {\n    if ((p.x==0.0||p.x==2.0)&&p.y==0.0) {\n        return 0;\n    }\n    \n    float val = rnd(vec4(p,size));\n    \n    if (val < 0.4+size*0.25) {\n        return 0;\n    } else if (val < 0.95+size*0.03) {\n        return 1;\n    } else {\n        return 2;\n    }\n    \n    //return int(val*val*3.0);\n}\n\nfloat getmaterial(vec3 p, float size) {\n    float val = rnd(vec4(p,size));\n    return clamp((val-0.9)*10.0,0.0,1.0);\n}\n\n//ray-cube intersection, on the inside of the cube\nvec3 voxel(vec3 ro, vec3 rd, vec3 ird, float size)\n{\n    size *= 0.5;\n    \n    vec3 hit = -(sign(rd)*(ro-size)-size)*ird;\n    \n    return hit;\n}\n\nfloat sphDensity( vec3  ro, vec3  rd,   // ray origin, ray direction\n                  vec3  sc, float sr,   // sphere center, sphere radius\n                  float dbuffer )       // depth buffer\n{\n    // normalize the problem to the canonical sphere\n    float ndbuffer = dbuffer / sr;\n    vec3  rc = (ro - sc)/sr;\n\t\n    // find intersection with sphere\n    float b = dot(rd,rc);\n    float c = dot(rc,rc) - 1.0;\n    float h = b*b - c;\n\n    // not intersecting\n    if( h<0.0 ) return 0.0;\n\t\n    h = sqrt( h );\n    \n    //return h*h*h;\n\n    float t1 = -b - h;\n    float t2 = -b + h;\n\n    // not visible (behind camera or behind ndbuffer)\n    if( t2<0.0 || t1>ndbuffer ) return 0.0;\n\n    // clip integration segment from camera to ndbuffer\n    t1 = max( t1, 0.0 );\n    t2 = min( t2, ndbuffer );\n\n    // analytical integration of an inverse squared density\n    float i1 = -(c*t1 + b*t1*t1 + t1*t1*t1/3.0);\n    float i2 = -(c*t2 + b*t2*t2 + t2*t2*t2/3.0);\n    return (i2-i1)*(3.0/4.0);\n}\n\nvec4 octreeray(vec3 ro, vec3 rd, float maxdist,\n               out vec3 lro, out vec3 fro,\n               out float size, out float proxim) {\n    size = pow(tree,float(-mindetail));\n    lro = mod(ro,size);\n    fro = ro-lro;\n    vec3 srd = sign(rd);\n    vec3 ird = 1.0/max(rd*srd,0.001);\n    vec3 mask;\n    bool exitoct = false;\n    int recursions = mindetail;\n    float dist = 0.0;\n    int i;\n    float edge = 1.0;\n    proxim = 1.0;\n    float lastsize = size;\n    vec3 hit = voxel(lro, rd, ird, size);\n    \n    //the octree traverser loop\n    //each iteration i either:\n    // - check if i need to go up a level\n    // - check if i need to go down a level\n    // - check if i hit a cube\n    // - go one step forward if cube is empty\n    for (i = 0; i < steps; i++)\n    {\n        if (dist > maxdist) break;\n        int voxelstate = getvoxel(fro*size,size);\n        //int voxelstate = getvoxel(floor(fro/size+0.5)*size,size);\n        \n        //i go up a level\n        if (exitoct)\n        {\n            vec3 newfro = floor(fro/size/tree+0.5/tree)*size*tree;\n            \n            lro += fro-newfro;\n            fro = newfro;\n            \n            recursions--;\n            size *= tree;\n            exitoct = (recursions > mindetail) && (((mod(dot(fro/size,mask)+0.5,tree)-tree*0.5)*dot(srd,mask)) < -tree*0.5+0.75);\n            \n            if (!exitoct) {\n            \thit = voxel(lro, rd, ird, size);\n            }\n        }\n        //subdivide\n        else if(voxelstate == 1&&recursions<maxdetail)\n        {\n            \n            recursions++;\n            size /= tree;\n            \n            vec3 mask2 = clamp(floor(lro/size),0.0,tree-1.0);\n            fro += mask2*size;\n            lro -= mask2*size;\n            hit = voxel(lro, rd, ird, size);\n        }\n        //move forward\n        else if (voxelstate == 0 || (voxelstate == 1 && recursions == maxdetail))\n        {\n#ifdef softshadow\n            if (lastsize >= size) {\n                lastsize = size;\n            } else {\n                proxim = lastsize;\n            }\n#endif\n            \n            //raycast and find distance to nearest voxel surface in ray direction\n            if (hit.x < min(hit.y,hit.z)) {\n                mask = vec3(1,0,0);\n            } else if (hit.y < hit.z) {\n                mask = vec3(0,1,0);\n            } else {\n                mask = vec3(0,0,1);\n            }\n            float len = dot(hit,mask);\n            \n            //moving forward in ray direction\n            lro += rd*len-mask*srd*size;\n            dist += len;\n            hit -= len;\n            hit += mask*ird*size;\n            \n            vec3 newfro = fro+mask*srd*size;\n            //this line is a bit ugly, this checks if i've gone out of octree bounds\n            exitoct = (floor(newfro/size/tree+0.5/tree)!=floor(fro/size/tree+0.5/tree))&&(recursions>0);\n            fro = newfro;\n        }\n        else\n        {\n            break;\n        }\n    }\n    return vec4(dist, mask);\n}\n\nfloat octreeshadow(vec3 ro, vec3 rd, float lightdist) {\n    vec3 dummy1;\n    float dummy2;\n    float proxim;\n    float len = octreeray(ro,rd,lightdist,dummy1,dummy1,dummy2,proxim).x;\n    if (len >= lightdist) {\n        return proxim;\n    } else {\n        return 0.0;\n    }\n}\n\nvoid mainImage( out vec4 fragColor,  vec2 fragCoord )\n{\n    \n    fragColor = vec4(0.0);\n    vec2 uv = (fragCoord.xy * 2.0 - iResolution.xy) /iResolution.y;\n    \n    vec3 ro = vec3(0.5+sin(time)*0.4,0.5+cos(time)*0.4,time);\n    vec3 rd = normalize(vec3(uv,1.0));\n    \n    //if the mouse is in the bottom left corner, don't rotate the camera\n    if (length(iMouse.xy) > 40.0) {\n    \trd.yz *= rot(iMouse.y/iResolution.y*3.14-3.14*0.5);\n    \trd.xz *= rot(iMouse.x/iResolution.x*3.14*2.0-3.14);\n    }\n    vec3 lro;\n    vec3 fro;\n    float size;\n    float dummy;\n    vec4 len = octreeray(ro, rd, maxdistance, lro, fro, size,dummy);\n    \n    vec3 hit = ro+rd*len.x;\n    \n    //if(i < steps)\n    {\n    \tfloat val = fract(dot(fro,vec3(15.23,754.345,3.454)));\n        vec3 normal = -len.yzw*sign(rd);\n        hit += normal*0.001;\n        vec3 color = (sin(val*vec3(39.896,57.3225,48.25))*0.5+0.5)*0.4+0.2;\n        \n        vec3 light = vec3(2.5+sin(time)*0.4,0.5-cos(time)*0.4,time+1.0);\n        float lightdist = length(light-hit);\n        vec3 lightrd = (hit-light)/lightdist;\n        float shadow = octreeshadow(light,lightrd,lightdist);\n        float lighting = shadow*(5.0/(lightdist*lightdist+1.0));\n            //*clamp(2.0-lightdist*lightdist*0.1,0.0,1.0);\n        \n        lighting *= max(dot(lightrd,-normal),0.0);\n        lighting = max(lighting,ambient);\n        \n        float glow = sphDensity(ro,rd,light,0.2,len.x);\n        /*\n        vec3 normal = -len.yzw*sign(rd);\n    \tfragColor = vec4(boxpos,1.0);\n\t\t*/\n        \n        color *= lighting;\n        \n        float material = getmaterial(fro,size);\n        \n        if (material > 0.5) {\n            vec3 reflectrd = reflect(rd,-normal);\n            float specular = sphDensity(hit,reflectrd,light,0.2,maxdistance)\n                *(5.0/(lightdist*lightdist+1.0))*shadow;\n            \n            /*vec3 normal = -reflection.yzw*sign(reflectrd);\n            vec3 hit2 = hit+reflectrd*reflection.x;\n            \n    \t\tfloat val = fract(dot(fro2,vec3(15.23,754.345,3.454)));\n        \tvec3 color2 = (sin(val*vec3(39.896,57.3225,48.25))*0.5+0.5)*0.4+0.2;\n            \n            float lightdist2 = length(light-hit2);\n            vec3 lightrd2 = (hit2-light)/lightdist2;\n            float lighting2 = octreeshadow(light,lightrd2,lightdist2)\n            \t*(5.0/(lightdist2*lightdist2+1.0));\n\n            lighting2 *= max(dot(lightrd2,-normal),0.0);\n            lighting2 = max(lighting,ambient);\n            color2 *= lighting2;\n            \n            if (getmaterial(fro2,size2) <= 0.5)\n                color2 *= texture(iChannel0, vec2(dot(hit2,reflection.wyz),dot(hit2,reflection.zwy))).xyz;\n            \n            color.xyz = color.xyz*0.9+0.1*color2;*/\n            \n            color += specular;\n        } else {\n            color *= texture(iChannel0, vec2(dot(hit,len.wyz),dot(hit,len.zwy))).xyz;\n        }\n        \n        color /= hit.x*hit.x*0.01+1.0;\n        fragColor.xyz = color;\n        fragColor = max(fragColor, glow);\n        fragColor = sqrt(fragColor);\n\t\t\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

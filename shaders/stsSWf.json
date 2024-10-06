@@ -1,0 +1,88 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1626728973",
+            "description": "Shamelessly stolen idea from blender render. Source: https://twitter.com/chiu_hans/status/1416972152381657093?s=20",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "stsSWf",
+            "likes": 29,
+            "name": "Lasers!",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "raymarching",
+                "lasers"
+            ],
+            "usePreview": 0,
+            "username": "kosmaks",
+            "viewed": 727
+        },
+        "renderpass": [
+            {
+                "code": "float getDistMinimal(vec3 p, out int id) {\n    return bootstrapGetDist(iTime, p, id);\n}\n\n\nfloat getDist(vec3 p, out int id) {\n    float d = getDistMinimal(p, id);\n    \n    float td = MAX_DIST;\n    int tid;\n    float fi = -1.;\n    \n    for (int i = 0; i < MAX_LASER_BOUNCES; ++i) {\n        fi += 1.;\n        vec3 start = sampleCell(iChannel0, vec2(0., fi)).xyz;\n        if (start.x < -9.) break;\n        vec3 end = sampleCell(iChannel0, vec2(1., fi)).xyz;\n        td = sdSegment(p, start, end);\n        if (td < d) { d = td; id = ID_LASER; }\n    }\n    \n    return d;\n}\n\nvec3 getNormal(vec3 p) {\n    int id;\n    float dist = getDistMinimal(p, id);\n    vec2 e = vec2(MIN_DIST, 0.);\n    vec3 n = dist - vec3(\n        getDistMinimal(p - e.xyy, id),\n        getDistMinimal(p - e.yxy, id),\n        getDistMinimal(p - e.yyx, id));\n    return normalize(n);\n}\n\nfloat softShadow(vec3 ro, vec3 rd, float k, float mind, float maxd) {\n    int id;\n    float totalDist = 0.1;\n    float res = 1.;\n    for (int i = 0; i < MAX_STEPS; ++i) {\n        vec3 next = ro + totalDist * rd;\n        float d = getDistMinimal(next, id);\n        if (id != ID_LASER && id != ID_REFR) {\n            res = min(res, k * d / totalDist);\n            if (abs(d) < mind) return 0.;\n        } else {\n            return 1.1;\n        }\n        totalDist += d;\n        if (totalDist > maxd) break;\n    }\n    return clamp(res, 0., 1.);\n}\n\nfloat castRay(vec3 ro, vec3 rd, out int id) {\n    float totalDist = 0.;\n    for (int i = 0; i < MAX_STEPS; ++i) {\n        vec3 next = ro + totalDist * rd;\n        float d = getDist(next, id);\n        totalDist += (d);\n        if (abs(d) < MIN_DIST || totalDist > MAX_DIST) break;\n        if (i == MAX_STEPS - 1) totalDist = MAX_DIST + 1.;\n    }\n\n    return totalDist;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord.xy / iResolution.y;\n    float vpWindow = 2. / iResolution.y;\n    vec2 vpShift = vec2(iResolution.x / iResolution.y, 1.);\n    vec2 vp = fragCoord * vpWindow - vpShift;\n\n    vec3 camOrigin = vec3(0.2, 2.2, -2.) + sin(iTime * 1.) * vec3(0.1, 0., 0.);\n    vec3 camTarget = vec3(0.1, -0.2, 0.5);\n    vec3 camForward = normalize(camTarget - camOrigin);\n    vec3 camRight = cross(vec3(0., 1., 0.), camForward);\n    vec3 camUp = cross(camForward, camRight);\n\n    vec3 ro = camOrigin;\n    vec3 rd = normalize(camForward * 2.5 + camRight * vp.x + camUp * vp.y);\n\n    int id;\n    float d;\n    vec3 col = vec3(0.);\n    vec3 mul = vec3(1.);\n    float flip = 0.;\n\n    for (int i = 0; i < 20; ++i) {\n        d = castRay(ro, rd, id);\n\n        if (d < MAX_DIST) {\n\n            if (id == ID_LASER) {\n                col += mul * vec3(0., 2., 0.);\n                break;\n            }\n\n            vec3 hit = ro + d * rd;\n            vec3 n = getNormal(hit);\n            \n            vec3 tl = normalize((LIGHT_POS - hit));\n            \n            float diffuse = max(0., dot(tl, n));\n            float ambient = 0.1;\n            float specular = max(0., dot(reflect(normalize(hit - LIGHT_POS), n), -rd));\n            float shadow = softShadow(hit + n * MIN_DIST * 2., tl, 10., 0.001, 2.);\n            \n            if (id == ID_FLOOR) {\n                col += mul * diffuse * vec3(0.5);\n                col += mul * ambient * vec3(0.1);\n                col += mul * pow(specular, 2.) * vec3(0.2);\n                col *= mix(0.7, 1., shadow);\n                break;\n            } else\n            \n            if (id == ID_TARGET) {\n                col += mul * diffuse * vec3(1.);\n                col += mul * vec3(0.3);\n                col += mul * pow(specular, 20.) * vec3(0.2);\n                col *= mix(0.7, 1., shadow);\n                \n                mul *= 0.2;\n                ro = hit + n * MIN_DIST * 2.;\n                rd = reflect(rd, n);\n                continue;\n            } else\n            \n            if (id == ID_REFR) {\n                col += mul * pow(specular, 20.) * vec3(5.);\n                \n                float h = REFR;\n                float idx = mix(1. / h, h / 1., flip);\n                rd = refract(rd, n, idx);\n                ro = hit + rd * WALL * 4.;\n                flip = 1. - flip;\n                \n                continue;\n            }\n\n            if (id == ID_REFL) {\n                col += mul * diffuse * vec3(0.1);\n                col += mul * pow(specular, 3.) * vec3(1.);\n                col *= mix(0.7, 1., shadow);\n                \n                ro = hit + n * MIN_DIST * 2.;\n                rd = reflect(rd, n);\n                rd = normalize(rd + texture(iChannel1, hit.xy * 3.).xyz * rd * 0.4);\n                continue;\n            }\n\n            break;\n\n        } else {\n            break;\n        }\n    }\n\n    \n    float gamma = 2.2;\n    col = pow(col, vec3(1. / gamma));\n    \n    \n    float frame = 1. - length(fragCoord.xy / iResolution.xy - 0.5);\n    col *= frame * frame * 0.9 + 0.1;\n    \n    \n    fragColor = vec4(col,1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 16,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define MIN_DIST (0.001)\n#define MAX_DIST (10.)\n#define MAX_STEPS (100)\n\n#define WALL (0.002)\n#define MAX_LASER_BOUNCES (20)\n#define LASER_ORIGIN (vec3(-1.93, 0., -2.))\n\nconst vec3 LASER_DIR = normalize(vec3(0.7, 0., 2.));\n\n#define ID_FLOOR (0)\n#define ID_REFL (1)\n#define ID_REFR (2)\n#define ID_LASER (3)\n#define ID_TARGET (4)\n#define ID_ROOF (5)\n\n#define LIGHT_POS (vec3(0., 3., -0.5))\n\n#define REFR (1.5)\n\n// distance funcs\n\nvec3 rotate(vec3 v, vec3 axis, float angle) {\n    float ah = angle / 2.;\n    vec4 q = vec4(axis.xyz * sin(ah), cos(ah));\n    vec3 temp = cross(q.xyz, v) + q.w * v;\n    return v + 2. * cross(q.xyz, temp);\n}\n\nfloat sdSegment(vec3 p, vec3 s, vec3 e) {\n    p -= s;\n    e -= s;\n    float len = length(e);\n    float v = clamp(dot(p, e) / (len * len), 0., 1.);\n    vec3 proj = e * v;\n    return distance(proj, p) - 0.003;\n}\n\nfloat sdCylinder(vec3 p, float h, float r) {\n  vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(h, r);\n  return min(max(d.x, d.y),0.0) + length(max(d, 0.0));\n}\n\nfloat sdHollowCylinder(vec3 p, float h, float r) {\n    return max(sdCylinder(p, h, r), -sdCylinder(p, h - WALL, r - WALL));\n}\n\n// bootstraps\n\n#define ANIM_DURATION (3.5)\n\nfloat animate(float iTime, float start, float end, float from, float to) {\n    iTime += ANIM_DURATION;\n    iTime = mod(iTime, ANIM_DURATION + 0.5);\n    float dur = (end - start);\n    float idx = clamp((iTime - start) / dur, 0., 1.);\n    \n    idx = min(idx, 1. - clamp((iTime - ANIM_DURATION) / 0.5, 0., 1.));\n    \n    idx = smoothstep(0., 1., idx);\n    return mix(from, to, idx);\n}\n\nfloat bootstrapGetDist(float iTime, vec3 p, out int id) {\n    id = ID_FLOOR;\n    float d = p.y + 0.5, td, shift;\n    vec3 tp;\n    \n    //d = min(d, 6. - length(p));\n \n    shift = animate(iTime, 0., 0.5, 0.3, 0.5);\n    tp = p;\n    tp -= vec3(-1., 0., 0.7);\n    tp = rotate(tp, vec3(0., 1., 0.), shift);\n    tp = rotate(tp, vec3(1., 0., 0.), 1.57);\n    td = sdCylinder(tp, 0.2, 0.03);\n    if (td < d) { d = td; id = ID_REFL; }\n\n    shift = animate(iTime, 0.5, 1., -0.3, 0.);\n    tp = p;\n    tp -= vec3(0.15, shift, 0.7);\n    td = sdHollowCylinder(tp, 0.5, 0.08);\n    if (td < d) { d = td; id = ID_REFR; }\n \n    shift = animate(iTime, 1., 1.5, -1.9, -1.8);\n    tp = p;\n    tp -= vec3(1., 0., 0.6);\n    tp = rotate(tp, vec3(0., 1., 0.), shift);\n    tp = rotate(tp, vec3(1., 0., 0.), 1.57);\n    td = sdCylinder(tp, 0.2, 0.03);\n    if (td < d) { d = td; id = ID_REFL; }\n\n    shift = animate(iTime, 1.5, 2., 2., 1.8);\n    tp = p;\n    tp -= vec3(-0.7, 0., 1.);\n    tp = rotate(tp, vec3(0., 1., 0.), shift);\n    tp = rotate(tp, vec3(1., 0., 0.), 1.57);\n    td = sdCylinder(tp, 0.2, 0.03);\n    if (td < d) { d = td; id = ID_REFL; }\n\n    shift = animate(iTime, 2., 2.5, -0.45, -0.535);\n    tp = p;\n    tp -= vec3(0.5, 0., 1.47);\n    tp = rotate(tp, vec3(0., 1., 0.), shift);\n    tp = rotate(tp, vec3(1., 0., 0.), 1.57);\n    td = sdCylinder(tp, 0.2, 0.03);\n    if (td < d) { d = td; id = ID_REFL; }\n\n    shift = animate(iTime, 2.5, 3., -1.3, -1.1);\n    tp = p;\n    tp -= vec3(-0.5, 0., -0.5);\n    tp = rotate(tp, vec3(0., 1., 0.), shift);\n    tp = rotate(tp, vec3(1., 0., 0.), 1.57);\n    td = sdCylinder(tp, 0.2, 0.03);\n    if (td < d) { d = td; id = ID_REFL; }\n    \n    shift = animate(iTime, 3., 3.5, 0., 1.);\n    tp = p;\n    tp -= vec3(0.7, 0., -0.25);\n    td = length(tp) - 0.2;\n    if (td < d) { d = td; id = ID_TARGET; }\n \n    return d;\n}\n\n// State\n\n#define GRID_SIZE (100.)\n#define GRID_CELL (1. / GRID_SIZE)\n#define GRID_HALF vec2(GRID_CELL * 0.5)\n#define CLOSE(x, y) (abs(x - y) < 0.001)\n#define IS_CELL(c, a) (CLOSE(c.x, a.x) && CLOSE(c.y, a.y))\n\nvec2 getGridCell(vec2 uv) {\n    vec2 scaled = uv * GRID_SIZE;\n    vec2 vertex = floor(scaled);\n    vec2 center = vertex + 0.5;\n    return distance(scaled, center) < 0.5 ? vertex : vec2(-1.);\n}\n\nvec4 sampleCell(sampler2D tex, vec2 index) {\n    return texture(tex, index / GRID_SIZE + GRID_HALF);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "float getDist(vec3 p, out int id) {\n    return bootstrapGetDist(iTime, p, id);\n}\n\nvec3 getNormal(vec3 p) {\n    int id;\n    float dist = getDist(p, id);\n    vec2 e = vec2(MIN_DIST, 0.);\n    vec3 n = dist - vec3(\n        getDist(p - e.xyy, id),\n        getDist(p - e.yxy, id),\n        getDist(p - e.yyx, id));\n    return normalize(n);\n}\n\nfloat castRay(vec3 ro, vec3 rd, out int id) {\n    float totalDist = 0.;\n    for (int i = 0; i < MAX_STEPS; ++i) {\n        vec3 next = ro + totalDist * rd;\n        float d = getDist(next, id);\n        totalDist += (d);\n        if (abs(d) < MIN_DIST || totalDist > MAX_DIST) break;\n        if (i == MAX_STEPS - 1) totalDist = MAX_DIST + 1.;\n    }\n    \n    return totalDist;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {    \n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec2 cell = getGridCell(uv);\n    \n    if (\n        cell.x >= 2. || \n        cell.y >= float(MAX_LASER_BOUNCES) || \n        cell.x < 0. || \n        cell.y < 0.\n    ) {\n        fragColor = vec4(0.);\n        return;\n    }\n   \n    \n    vec3 lo = LASER_ORIGIN, ld = LASER_DIR;\n    int id;\n    float flip = 0.;\n    \n    float fi = -1.;\n    \n    for (int i = 0; i < MAX_LASER_BOUNCES; ++i) {\n        fi += 1.;\n        \n        float d = castRay(lo, ld, id);\n        \n        if (IS_CELL(cell, vec2(0., fi))) {\n            fragColor = vec4(lo, 0.);\n            return;\n        }\n        \n        vec3 hit = lo + d * ld;\n        \n        if (IS_CELL(cell, vec2(1., fi))) {\n            fragColor = vec4(hit, 0.);\n            return;\n        }\n        \n        if (d > MAX_DIST) {\n            break;\n        }\n        \n        if (id == ID_REFL) {\n            vec3 n = getNormal(hit);\n            lo = hit + n * MIN_DIST;\n            ld = reflect(ld, n);\n            continue;\n        }\n\n        if (id == ID_REFR) {\n            vec3 n = getNormal(hit);\n            lo = hit - n * WALL * 3.;\n            ld = refract(ld, n, mix(1. / REFR, REFR / 1., flip));\n            flip = 1. - flip;\n            continue;\n        }\n\n        break;\n    }\n    \n    \n    fragColor = vec4(vec3(-10.), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

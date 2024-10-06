@@ -1,0 +1,202 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587347283",
+            "description": "Left/Right (Q/E) = Look ---- Up/Down (W/S) = Walk forwards / backwards. (D/A) = Strafe ------ Press 2 to toggle grid. Click on the grid to place walls. Hold 1 and click to erase walls.  Blue lines show FOV. Wall texture in Buf A. ",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "3s2cDK",
+            "likes": 12,
+            "name": "Raycasting Editor",
+            "published": 3,
+            "tags": [
+                "raycast",
+                "keyboard",
+                "firstperson",
+                "editor"
+            ],
+            "usePreview": 0,
+            "username": "Plento",
+            "viewed": 538
+        },
+        "renderpass": [
+            {
+                "code": "// Plento\n\n// You can place and delete walls in the grid.\n\n// Image = Graphics\n// Buffer A = wall texture (Try out different ones! or make custom one from here)\n// Buffer C = grid traversal\n// Buffer B = Input and map data.\n// Various params in common\n\n// ---CONTROLS---\n\n// Left/Right or Q/E = turn left/right\n// Up/Down or W/S = Walk forwards/backwards. \n// A/D = Walk sideways\n// Press 2 to toggle grid. \n// Click on the grid to place walls. \n// Hold 1 and click to erase walls.  \n// Blue lines show FOV. \n// Wall texture in Buf A. \n\n// I learned the traversal algorithm from this article: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.42.3443&rep=rep1&type=pdf\n\n// This is still a work in progress\n\nvec2 R;\n\n\nvec4 t(vec2 p){\n    return texelFetch(iChannel1, ivec2(p), 0);\n}\n\nfloat ln( in vec2 p, in vec2 a, in vec2 b ){\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nmat2 rot(float a) {\n    return mat2(cos(a), -sin(a), sin(a), cos(a));\n}\n\n\nfloat grid(vec2 uv){\n    float th = 0.18;\n    \n    float g = smoothstep(th, th + .0025 , abs(uv.x)) *\n        smoothstep(th - .0025, th + .0025, abs(uv.y));\n    \n    return g;\n}\n\nint GetTile(vec2 id){\n    vec2 vs = R / gs; // Pixel size of cells\n    vec2 coord = (vs * id) + 1.; // Jump to cell in question\n    float val = texelFetch(iChannel1, ivec2(coord), 0).w; // Get cell value\n    \n    if(val == 1.)\n        return 1;\n    else if(val == 2.)\n        return 2;\n    else if(val == 0.)\n        return 0;   \n    else\n        return 0;\n    \n}\n\n\nvec3 Editor(vec2 ruv, vec2 uv, vec2 id, vec2 p, float a){\n    vec3 col = vec3(1);\n    \n    int tile = GetTile(id);\n    \n    if(tile == 1)\n     \tcol = vec3(0.0, 0.6, 0.0);\t   \n    \n\tcol *= grid(ruv); // Grid\n    \n    // Test FOV lines\n    col = mix(vec3(0.0, 0.0, 1.0), col, \n              smoothstep(0.004, 0.0041,ln(uv, p, vec2(p.x + 1.*cos(a - (FOV/2.)), p.y + 1.*sin(a - (FOV/2.))))));  \n    col = mix(vec3(0.0, 0.0, 1.0), col, \n              smoothstep(0.004, 0.0041,ln(uv, p, vec2(p.x + 1.*cos(a + (FOV/2.)), p.y + 1.*sin(a + (FOV/2.))))));\n    \n    return col;\n}\n\nvoid mainImage( out vec4 f, in vec2 u )\n{\n    R = iResolution.xy;\n    vec2 nv = vec2(u.xy - 0.5*R.xy)/R.y;\n    vec2 uv = u / R;\n    uv *= zoom;\n   \n    vec2 m = iMouse.xy / R.xy-.5; \n    m.x *= R.x/R.y;\n    \n    vec3 topdown = vec3(1);\n    vec3 graphics = vec3(0);\n    vec3 col = vec3(1);\n    \n    vec2 ruv = fract(uv*gs);\n    vec2 id = floor(uv*gs);\n    \n    // User input\n    vec4 h = texture(iChannel1, u / R);\n    \n    // Raycast data\n    vec4 ray = texture(iChannel2, u / R);\n    \n    // Player cell ID\n    vec2 pid = floor(h.xy*gs);\n    \n    // Toggle value for editor\n    float TWO = texelFetch( iChannel3, ivec2(50,2), 0 ).x; \n    float THREE = texelFetch( iChannel3, ivec2(51,0), 0 ).x; \n    \n    // Map editor color\n    topdown = Editor(ruv, uv, id, h.xy, h.z);\n   \n    ////// 3D graphics ///////\n    float height = (2. / ray.x)*.1;\n  \t\n    height *= 1.-step(FAR, ray.x);\n    \n    float fog = smoothstep(2.9, 0.0, ray.x);\n    vec3 skyCol = vec3(0., 0.8, 0.8);\n    vec3 groundCol = vec3(0.5);\n    \n    float a = atan(h.y, h.x);\n    \n    // 3D grid lines\n    vec2 vg = fract(ray.zw*gs - 0.5);\n    vec3 vgCol = vec3(1.0, 0.0, 0.0) * smoothstep(0.027, 0.024, abs((vg.y - vg.x)));\n    \n    if(nv.y >= height/2.){ // We are ABOVE wall\n        graphics = skyCol;    \n    }\n    else if(nv.y <= -height/2.){ // We are BELOW wall\n        graphics = groundCol;\n    }\n    else{ // We are ON the wall so lets figure out texture coordinates\n \t\t\n        // Normalized distance from uv y-coord to bottom of wall.\n        float sDist = (-height/2. - nv.y) / height;\n        \n        // Texture coordinate\n        vec2 tc = vec2((ray.z*8.0 - ray.w*4.0), sDist);\n        \n        // Get wall texture\n        vec3 wallCol = texture(iChannel0, -tc).xyz; \n        \n        graphics = (wallCol * fog); // Walls\n        //graphics += vgCol; // 3D grid lines\n    }\n    \n    \n    if(TWO == 1.)\n        col = mix(topdown, graphics, 0.55);\n    else\n        col = graphics;\n          \n    f = vec4(col, 1.0);\n    \n}\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// User input and map generation\nvec2 R;\n\nvec4 b(vec2 p){return texture(iChannel1, p / R);   }\n\nint GetTile(vec2 id){\n    vec2 voxSize = vec2(R.x / gs, R.y / gs);\n    \n    vec2 coord = (voxSize * id) + 1.;\n    \n    float val = texelFetch(iChannel1, ivec2(coord), 0).w;\n    \n    if(val > 0.)\n        return 1;\n    else\n \t\treturn 0;   \n}\n\n\nvoid mainImage( out vec4 f, in vec2 u ){\n    R = iResolution.xy;\n    vec2 uv = u / R;\n    \n    vec2 m = iMouse.xy / R;\n    \n    uv *= zoom;\n    m *= zoom;\n    \n    \n    \n    // Map texture generation\n    vec2 id = floor(uv*gs);\n    vec2 mid = floor(m*gs);\n    \n    float space = texture(iChannel1, u / R).w;\n    \n    \n    // Editor controls\n    float ONE = 1.-texelFetch( iChannel0, ivec2(49,0), 0 ).x; \n    float TWO = 1.-texelFetch( iChannel0, ivec2(50,0), 0 ).x; \n    \n    // Player Controls\n    float left = texelFetch( iChannel0, ivec2(37,0), 0 ).x;\n    float right = texelFetch( iChannel0, ivec2(39,0), 0 ).x;\n    float up = texelFetch( iChannel0, ivec2(38,0), 0 ).x;\n    float down = texelFetch( iChannel0, ivec2(40,0), 0 ).x;\n    \n    float A = texelFetch( iChannel0, ivec2(65,0), 0 ).x;\n    float D = texelFetch( iChannel0, ivec2(68,0), 0 ).x;\n    float W = texelFetch( iChannel0, ivec2(87,0), 0 ).x;\n    float S = texelFetch( iChannel0, ivec2(83,0), 0 ).x;\n    \n    float Q = texelFetch( iChannel0, ivec2(81,0), 0 ).x;\n    float E = texelFetch( iChannel0, ivec2(69,0), 0 ).x;\n    \n    if(id == mid && iMouse.z > 0.){\n        space = ONE;\n    }\n    \n    vec4 p = b(u); // (posX, posY, lookAngle, space)\n    \n    vec2 pid = floor(p.xy*gs);\n    \n    p.z -= turnSpeed * left;\n    p.z += turnSpeed * right;\n    \n    p.z -= turnSpeed * Q;\n    p.z += turnSpeed * E;\n    \n    \n    p.y += walkSpeed * up * sin(p.z);\n    p.y -= walkSpeed * down * sin(p.z);\n    p.x += walkSpeed * up * cos(p.z);\n    p.x -= walkSpeed * down * cos(p.z);\n    \n    p.y += walkSpeed * W * sin(p.z);\n    p.y -= walkSpeed * S * sin(p.z);\n    p.x += walkSpeed * W * cos(p.z);\n    p.x -= walkSpeed * S * cos(p.z);\n    \n    p.y -= walkSpeed * A * sin(p.z+pi/2.);\n    p.y += walkSpeed * D * sin(p.z+pi/2.);\n    p.x -= walkSpeed * A * cos(p.z+pi/2.);\n    p.x += walkSpeed * D * cos(p.z+pi/2.);\n    \n    \n    \n    \n     if(iFrame<5){\n        space = 0.;\n        p.x = 0.1;\n        p.y = 0.5;\n         \n        if(id.y == 10. || id.y == 20. || id.x == 26.)\n            space = 1.0;\n         \n         \n         \n     }\n    \n    f = vec4(p.xyz, space);\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float pi = 3.14159;\n\nfloat gs = 32.; // Grid Size\nfloat zoom = 1.0;\n\nfloat steps = 90.; // Traversal steps\n\n#define FAR 100.\n\n// Player parameters\nfloat walkSpeed = 0.006;\nfloat turnSpeed = 0.01;\n\n//float FOV = 1.0708;\n//float FOV = 1.0;\n\nfloat FOV = pi/3.5;\nfloat DIST = 10.;",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Grid traversal and distance calculations\n\nvec2 R;\n\n\nvec4 t(vec2 p){\n    return texelFetch(iChannel1, ivec2(p), 0);   \n}\n\n\nint GetTile(vec2 id){\n    vec2 voxSize = vec2(R.x / gs, R.y / gs);\n    vec2 coord = (voxSize * id) + 1.;\n    float val = texelFetch(iChannel1, ivec2(coord), 0).w;\n    \n    if(val > 0.)\n        return 1;\n    else\n \t\treturn 0;   \n}\n\n\n// Voxel traversal\nvec4 ray(vec2 uv, vec2 p, vec2 pid, float a, float difa)\n{\n    // Set up a point which passes through the ray.\n    vec2 v = 1.*vec2(cos(a), sin(a));\n    vec2 rd = p + v;\n    \n    // The signs of ray direction which tells us which cell boundries to worry about.\n    float stepX = sign(v.x);\n    float stepY = sign(v.y);\n    \n    vec2 rp = p;\n    \n    float d = 0.;\n    float n = 0.;\n    \n    for(float i = 0.0; i < steps; i++){\n        // Determine where the lines we want to intersect are on the screen depending on what cell we're in. \n        // and the direction we're looking.\n    \tfloat offX = (step(0., stepX) + pid.x) / gs; // Vertical lines.\n    \tfloat offY = (step(0., stepY) + pid.y) / gs; // Horizontal lines.\t   \n        \n        // Calculate t value on ray for both the horizontal and vertical lines in question.\n        float tMaxX = (offX - p.x) / (v.x);\n    \tfloat tMaxY = (offY - p.y) / (v.y);\n        \n        // The minimum of the two tells us how far we can travel in the current cell without leaving it.\n        float t = (min(tMaxX, tMaxY));\n        \n        // Calculate intersection point.\n        rp = (0.9999 - t)*p + (t + 0.0001)*rd;\n        \n        // Set new cell id for the ray position.\n    \tpid = floor(rp*gs);\n        \n        \n        // Check if new id has an object in the way.\n        if(GetTile(pid)==1){\n            // Ray perpandicular distance to wall\n            d = length(rp - p);\n            d = d*cos(difa); // FIX FISHEYE\n            \n            // \"normal\" of wall\n            n = step(tMaxX, tMaxY);\n            \n            return vec4(d, n, rp);\n            \n     \t\tbreak;\t   \n        }\n    \t\n    }\n     \n    d = FAR;\n    \n    return vec4(d, n, pid);\n}\n\n\nvoid mainImage( out vec4 f, in vec2 u ){\n    R = iResolution.xy;\n    vec2 uv = u / R;\n    uv *= zoom;\n    \n    // Player data\n    vec4 h = texture(iChannel1, u / R); // (posX, posY, angle, mapData)\n   \n    vec2 p = h.xy; // Player world coord\n    vec2 pid = floor(p*gs); // player cell id\n    \n    float adx = FOV / R.x; // Angular step: How much we rotate the ray over one X pixel coord. \n    \n    //float adx = atan((u.x - (R.x*.5)) / tan(h.z));\n    \n    float ra = h.z + (adx*u.x) - (FOV/2.); // Ray angle\n    float difa = ra - h.z; // The angle between the ray angle and the initial look angle is what we want to \n    \t\t\t\t\t\t// use to calculate the perpendicular distance to a wall. \n    \t\t\t\t\t\t \n    vec4 r = ray(uv, p, pid, ra, difa);\n    \n    f = vec4(r.x,r.y,r.zw); // (ray distance, wall \"normal\", hit location)\n}\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Texturing\n\nvec2 R;\n\n\nvoid mainImage( out vec4 f, in vec2 u )\n{\n    R = iResolution.xy;\n    vec2 uv = vec2(u.xy - 0.5*R.xy)/R.y;\n   \n    vec4 col = vec4(1);\n    //uv.x *= .5;\n    \n    //vec2 id = floor(uv*10.);\n    //float checker = mod(id.x + id.y, 2.0);\n    //col = vec4(0.6, 0.3, 0.3,1.) * checker;\n    \n    col = texture(iChannel0, u / R);\n    \n    f = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

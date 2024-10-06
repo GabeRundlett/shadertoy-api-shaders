@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1627079459",
+            "description": "Inspired by iq's article on SDF-based fBM (https://iquilezles.org/articles/fbmsdf/fbmsdf.htm), using cubes instead of spheres.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ftsXWs",
+            "likes": 9,
+            "name": "Scrapyard",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "terrain",
+                "fbm",
+                "brdf"
+            ],
+            "usePreview": 0,
+            "username": "ruojake",
+            "viewed": 363
+        },
+        "renderpass": [
+            {
+                "code": "// Scrapyard by Kristian Sivonen (ruojake)\n// CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)\n\n// set to 1 if you dare - slows down to crawl on my GPU\n#define AA 0\n\n#define sat(x) clamp((x), 1., 0.)\n\nfloat hash(vec3 p)\n{\n    p = fract(p * 21.43125);\n    p += dot(p, p.zxy * 321.32136);\n    return fract(((p.x + p.z) * p.y)*10.);\n}\n\nmat2 rot(float a)\n{\n    float s = sin(a),\n          c = cos(a);\n    return mat2(c, -s, s, c);\n}\n\n// smooth min(q<0)/max(q>=0)\nfloat sm(float a, float b, float q)\n{\n    float d = clamp((b - a) / q + .5, 0., 1.);\n    return mix(a,b,d) + .5 * q * d * (1. - d);\n}\n\nfloat elem(vec3 i, vec3 f, vec3 c)\n{\n    float h = hash(i+c) * .5;\n    vec3 p = f - c;\n    vec3 d = abs(p) - h;\n    return min(max(d.x, max(d.y, d.z)), 0.) + length(max(d, vec3(0.)));\n}\n\n\nfloat grid(vec3 p)\n{\n    vec3 i = floor(p);\n    vec3 f = p - i;\n    const vec2 o = vec2(1,0);\n    \n    return min(\n        min(\n            min(elem(i, f, o.yyy), elem(i, f, o.yyx)),\n            min(elem(i, f, o.yxy), elem(i, f, o.yxx))\n        )\n        ,\n        min(\n            min(elem(i, f, o.xyy), elem(i, f, o.xyx)),\n            min(elem(i, f, o.xxy), elem(i, f, o.xxx))\n        )\n    );\n}\n\nvec2 scene(vec3 p, float th)\n{\n    float res = p.y;\n    if(p.y > .3) return vec2(res, 0);\n    if(p.y <= .015) return vec2(p.y - .015, 0);\n    float s = 1.;\n    const mat3 r = mat3(-.66, 1.51, -1.12,\n                        1.07, 1.28, 1.1,\n                        1.55, -.23, -1.23);\n    const float q = .4;\n\n    for(int i = 0; i < 8; i++)\n    {\n        float d = sm(s * grid(p), res - s*.1, q*s*s);\n        res = mix(sm(d, res, -q*s*s), res, clamp(th/s * 2. - 1.,0.,1.));\n        \n        p *= r;\n        s *= .5;\n\n        if(th > s) break;\n    }\n    return vec2(res, 1);\n}\n\nvec3 normal(vec3 p, float d, float th)\n{\n    vec2 e = vec2(.1 * th, 0);\n    return normalize(d - vec3(\n        scene(p - e.xyy, th).x,\n        scene(p - e.yxy, th).x,\n        scene(p - e.yyx, th).x));\n}\n\nvec3 sky(vec3 rd, vec3 ld, float k, float l)\n{\n    vec3 col = mix(vec3(.05, .2, .5), vec3(1., .97, .96), min(rd.y * .5 + .5, l));\n    float sun = sat(dot(rd, ld));\n    k = max(k, .0001);\n    col += l * pow(sat((sun - .9992 + k) / k), 5. / k) * (30. - 25. * k * (2. - k)) + sun * sun * vec3(1.,.9,.8) * (.25 + k);\n    return col;\n}\n\n// https://google.github.io/filament/Filament.md.html#table_texturedfg\nvec3 DFGAppr(vec3 f0, float ndv, float roughness)\n{\n    vec4 c0 = vec4(-1., -.0275, -.572, .022);\n    vec4 c1 = vec4(1., .0425, 1.04, -.04);\n    vec4 r = roughness * c0 + c1;\n    float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;\n    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;\n    return f0 * ab.x + ab.y;\n}\n\nfloat shadow(vec3 ro, vec3 rd, float maxDist, float k)\n{\n    float res = 1.;\n    float d = 0.;\n    float t = .01;\n    for(int i = 0; i < 30; ++i)\n    {\n        d = scene(ro + rd * t, .01).x * 2.;\n        res = min(res, k * d / t);\n        t += d;\n    \tif(abs(d) < .0001 || t >= maxDist)\n            break;\n        if (res < .001)\n        {\n        \tres = 0.;\n            break;\n        }\n    }\n    return res;\n}\n\nvec3 brdf(vec3 albedo, float metal, float roughness, vec3 rd, vec3 ld, vec3 n, float l)\n{\n    vec3 spec = sky(reflect(rd, n), ld, max(roughness, .0001), l);\n        \n    vec3 diff = albedo * sky(n, ld, 1., 1.) * metal;\n    vec3 f0 = max(albedo * (1. - metal), vec3(.04));\n    return mix(diff, spec, DFGAppr(f0, dot(-rd, n), roughness));\n}\n\nvec3 reinhard(vec3 c)\n{\n    float l0 = dot(c, vec3(.2126, .7152, .0722));\n    float l1 = l0 * (1. + l0 / 20.) / (1. + l0);\n    return c / l0 * l1;\n}\n\nvoid img( out vec4 fragColor, in vec2 uv )\n{  \n    vec3 rd = normalize(vec3(uv, 1.5));\n    mat2 camRot = rot(.3);\n    rd.yz *= camRot;\n    vec3 ro = vec3(uv * .02, 0);\n    ro.yz *= camRot;\n    ro += vec3(0,.5,iTime * .05);\n    vec3 p = ro;\n    float t = .01;\n    vec2 d = vec2(0);\n    float duv = length(fwidth(uv));\n    float th = 0.;\n    float i = 0.;\n    \n    for(;i < 1. && t < 25.; i += 1./128.)\n    {\n        p = ro + rd * t;\n        th = clamp(duv * 3. * t - duv, 0., 1.);\n        d = scene(p, th);\n        t += d.x + (.00025 * t) * sign(d.x);\n        if (abs(d.x)<.0005*t) break;\n    }\n\n    float ao = clamp(1.2 - i, 0., 1.);\n    \n    vec3 nml;\n    if (d.y == 0.)\n        nml = vec3(0,1,0);\n    else if (t < 25.)\n        nml = normal(p, d.x, th);\n    else \n        nml = vec3(0, -1, 0);\n        \n    vec3 lDir = normalize(vec3(2,1,-1));\n    float l = (dot(nml, lDir) * .5 + .5) * ao;\n    \n    vec3 shDir = d.y > 0. ? lDir : reflect(rd, nml);\n    l *= shadow(p + nml * .01, shDir, 1., 4.5 - d.y * 2.); \n    \n    vec3 col = vec3(0);\n    if (d.y == 1.)\n    {\n        col = brdf(vec3(.1), .99, .3, rd, lDir, nml, l) \n            * (.7 + .3 * l);\n    }\n    else if (rd.y <= 0.)\n    {\n        col = brdf(vec3(.3, .025, .005), .8, .001, rd, lDir, nml, min(l, 1. + rd.y));\n    }\n    else\n    {\n        col = sky(rd, lDir, .01, 1.);\n    }\n  \n    if (rd.y <= 0.)\n        col = mix(col, sky(rd, lDir, 1., 1.), clamp(t * .05 - .4, 0., 1.));\n\n    fragColor = vec4(col,1.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5)/iResolution.y;\n    img(fragColor, uv);\n    \n    #if AA\n    if (fwidth(fragColor.g) > .1)\n    {\n        fragColor *= 2.;\n        vec2 offs = vec2(.7 * abs(dFdy(uv.y)),0);\n        vec4 c;\n        mat2 r = mat2(-.5,-.866,.866,-.5);\n        for(int i = 0; i < 3; ++i)\n        {\n            img(c, uv + offs);\n            offs *= r;\n            fragColor += c; \n        }\n        fragColor *= .2;\n        //fragColor.rgb *= vec3(1,0,0);\n    }\n    #endif\n    \n    fragColor.rgb = reinhard(fragColor.rgb);\n    \n    fragColor.rgb = pow(fragColor.rgb, vec3(1./2.2));\n\n    fragColor.rgb += hash(vec3(fragCoord, iFrame)) * .01 - .005;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

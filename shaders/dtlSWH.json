@@ -1,0 +1,64 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1674730416",
+            "description": "Shader version of RBJ's famous EQ cookbook. Looks like no one has done this yet!\nNo benefit from running on the GPU, just for fun.\nThis version doesn't consider parameter automation when calculating past samples, which may cause issues.",
+            "flags": 8,
+            "hasliked": 0,
+            "id": "dtlSWH",
+            "likes": 18,
+            "name": "Audio Equalizer (Biquad Filter)",
+            "published": 3,
+            "tags": [
+                "sound",
+                "filter",
+                "audio",
+                "equalizer",
+                "highpass",
+                "eq",
+                "notch",
+                "gpusound",
+                "lowpass",
+                "equaliser",
+                "biquad",
+                "bandpass",
+                "peaking"
+            ],
+            "usePreview": 0,
+            "username": "MysteryPancake",
+            "viewed": 679
+        },
+        "renderpass": [
+            {
+                "code": "// From https://www.shadertoy.com/view/ltfSRr\nfloat message(vec2 uv) {\n\tuv -= vec2(1.0, 10.0);\n\tif ((uv.x < 0.0) || (uv.x >= 32.0) || (uv.y < 0.0) || (uv.y >= 3.0)) return -1.0;\n\tint i = 1, bit = int(exp2(floor(32.0 - uv.x)));\n\tif (int(uv.y) == 2) i = 928473456 / bit;\n\tif (int(uv.y) == 1) i = 626348112 / bit;\n\tif (int(uv.y) == 0) i = 1735745872 / bit;\n\treturn float(i - 2 * (i / 2));\n}\n\n// Linear scale to decibel scale\nfloat gainTodB(float gain) {\n    return 20.0 * log(gain) / log(10.0);\n}\n\n// Based on https://www.desmos.com/calculator/m1m7rhdpda\nfloat drawResponseCurve(BiquadFilter biquad, vec2 uv) {\n    \n    // X looks wonky, probably due to log scale\n    float x = sin(0.5 * uv.x * PI);\n    x *= x;\n\n    float a = biquad.b0 + biquad.b2;\n    float b = biquad.a0 + biquad.a2;\n    float c = (a + biquad.b1) / 2.0;\n    float d = (b + biquad.a1) / 2.0;\n    \n    float e = c * c - x * (4.0 * biquad.b0 * biquad.b2 * (1.0 - x) + biquad.b1 * a);\n    float f = d * d - x * (4.0 * biquad.a0 * biquad.a2 * (1.0 - x) + biquad.a1 * b);\n    float gain = sqrt(e / f);\n    \n    float volume = gainTodB(gain) * 0.05 + 0.5;\n    float line = 0.01 / abs(uv.y - volume);\n    \n    float under = step(uv.y, volume) * 0.25 + line;\n    \n    return under;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    if (iResolution.y < 2000.0) {\n\t\tfloat c = message(fragCoord / 8.0);\n\t\tif (c >= 0.0) {\n\t\t\tfragColor = vec4(c);\n\t\t\treturn;\n\t\t}\n\t}\n    \n    vec2 uv = fragCoord / iResolution.xy;\n    int samp = int(uv.x * 128.0) + iFrame;\n    \n    // Run biquad filter and get coefficients\n    BiquadFilter biquad = process(samp, iTime);\n    \n    // Draw original sample in red\n    float dryDist = abs(biquad.x1.x * 0.5 + 0.5 - uv.y);\n    vec3 col = vec3(0.5, 0.0, 0.0) * min(1.0, 0.005 / dryDist);\n    \n    // Draw processed sample in yellow\n    float wetDist = abs(biquad.y1.x * 0.5 + 0.5 - uv.y);\n    col += vec3(0.5, 0.5, 0.0) * min(1.0, 0.005 / wetDist);\n    \n    // Draw magnitude response curve\n    col += drawResponseCurve(biquad, uv);\n    \n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec2 mainSound(int samp, float time) {\n    return process(samp, time).y1;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Sound",
+                "outputs": [],
+                "type": "sound"
+            },
+            {
+                "code": "// Based on the famous \"Cookbook formulae for audio EQ biquad filter coefficients\"\n// Huge thanks to Robert Bristow-Johnson and Tom St Denis!\n\nconst float PI = 3.1415926;\n\n// Past samples determine future samples, the higher the better\nconst int PAST_SAMPLES = 128;\n\n// Filter types\nconst int LOW_PASS = 0;\nconst int HIGH_PASS = 1;\nconst int BAND_PASS = 2;\nconst int NOTCH = 3;\nconst int PEAKING = 4;\nconst int LOW_SHELF = 5;\nconst int HIGH_SHELF = 6;\n\nstruct BiquadFilter {\n    // Coefficients used for visualization\n    float a0, a1, a2, b0, b1, b2;\n    // Sample tracking variables\n\tvec2 x1, x2, y1, y2;\n};\n\n// MIDI note to frequency formula\nfloat noteFreq(float note) {\n\treturn 440.0 * exp2((note - 69.0) / 12.0);\n}\n\n// 1D hash, from https://www.shadertoy.com/view/4djSRW\nfloat hash(float p) {\n\tp = fract(p * 0.1031);\n\tp *= p + 33.33;\n\tp *= p + p;\n\treturn fract(p);\n}\n\n// From https://www.shadertoy.com/view/tttfRj\nfloat noise(float s) {\n    int si = int(floor(s));\n    float sf = fract(s);\n    sf = smoothstep(0.0, 1.0, sf);\n    return mix(hash(float(si)), hash(float(si + 1)), sf) * 2.0 - 1.0;\n}\n\n// From https://www.shadertoy.com/view/sls3WM\nfloat coloredNoise(float time, float freq, float Q) {\n    return sin(2.0 * PI * freq * fract(time)) * noise(time * Q);\n}\n\n// From https://www.shadertoy.com/view/sls3WM\nfloat kick(float time) {\n    const float df = 512.0, dftime = 0.01, freq = 60.0;\n    float phase = PI * 2.0 * (freq * time - df * dftime * exp(-time / dftime));\n    float body = sin(phase) * smoothstep(0.3, 0.0, time) * 2.0;\n    float click = coloredNoise(time, 8000.0, 2000.0) * smoothstep(0.007, 0.0, time);\n    return body + click * 2.0;\n}\n\n// Saw wave defined in samples to reduce aliasing\nfloat waveSaw(float freq, int samp) {\n    return fract(freq * float(samp) / iSampleRate) * 2.0 - 1.0;\n}\n\n// Offset the right channel for better stereo width\nvec2 widerSaw(float freq, int samp) {\n    int offset = int(freq) * 64;\n    return vec2(waveSaw(freq, samp - offset), waveSaw(freq, samp + offset));\n}\n\n// Dry sample (no equalization)\nvec2 drySample(int samp) {\n\n    // Imprecise time for drums and noise, not ideal\n    float time = float(samp) / iSampleRate;\n\n    // Main saw chords\n    vec2 result = widerSaw(noteFreq(38.0), samp);\n    result += widerSaw(noteFreq(45.0), samp);\n    result += widerSaw(noteFreq(66.0), samp);\n    result += widerSaw(noteFreq(69.0), samp);\n    result += widerSaw(noteFreq(76.0), samp);\n    result += widerSaw(noteFreq(80.0), samp);\n    \n    // Treble noise\n    result.x += coloredNoise(time, 14000.0, 3000.0) * 0.75;\n    result.y += coloredNoise(time + 0.5, 14000.0, 3000.0) * 0.75;\n    \n    // Kick and sidechain\n    float sidechain = mod(time, 0.5);\n    result *= min(1.0, sidechain * 3.0);\n    result += kick(sidechain) * 2.0;\n    \n    return result * 0.1;\n}\n\n// Wet sample (with equalization)\nBiquadFilter wetSample(int samp, int filterType, float dbGain, float freq, float Q) {\n    \n    float A = pow(10.0, dbGain / 40.0);\n    float omega = 2.0 * PI * freq / iSampleRate;\n    float sn = sin(omega);\n    float cs = cos(omega);\n    // Using Q alpha to make it easier to visualize\n    float alpha = sn / (2.0 * Q);\n    float beta = sqrt(A + A);\n    \n    // From \"Simple implementation of Biquad filters\" by Tom St Denis\n    BiquadFilter biquad;\n    switch (filterType) {\n    case LOW_PASS:\n        biquad.b0 = (1.0 - cs) * 0.5;\n        biquad.b1 = 1.0 - cs;\n        biquad.b2 = (1.0 - cs) * 0.5;\n        biquad.a0 = 1.0 + alpha;\n        biquad.a1 = -2.0 * cs;\n        biquad.a2 = 1.0 - alpha;\n        break;\n    case HIGH_PASS:\n        biquad.b0 = (1.0 + cs) * 0.5;\n        biquad.b1 = -(1.0 + cs);\n        biquad.b2 = (1.0 + cs) * 0.5;\n        biquad.a0 = 1.0 + alpha;\n        biquad.a1 = -2.0 * cs;\n        biquad.a2 = 1.0 - alpha;\n        break;\n    case BAND_PASS:\n        biquad.b0 = alpha;\n        biquad.b1 = 0.0;\n        biquad.b2 = -alpha;\n        biquad.a0 = 1.0 + alpha;\n        biquad.a1 = -2.0 * cs;\n        biquad.a2 = 1.0 - alpha;\n        break;\n    case NOTCH:\n        biquad.b0 = 1.0;\n        biquad.b1 = -2.0 * cs;\n        biquad.b2 = 1.0;\n        biquad.a0 = 1.0 + alpha;\n        biquad.a1 = -2.0 * cs;\n        biquad.a2 = 1.0 - alpha;\n        break;\n    case PEAKING:\n        biquad.b0 = 1.0 + (alpha * A);\n        biquad.b1 = -2.0 * cs;\n        biquad.b2 = 1.0 - (alpha * A);\n        biquad.a0 = 1.0 + (alpha / A);\n        biquad.a1 = -2.0 * cs;\n        biquad.a2 = 1.0 - (alpha / A);\n        break;\n    case LOW_SHELF:\n        biquad.b0 = A * ((A + 1.0) - (A - 1.0) * cs + beta * sn);\n        biquad.b1 = 2.0 * A * ((A - 1.0) - (A + 1.0) * cs);\n        biquad.b2 = A * ((A + 1.0) - (A - 1.0) * cs - beta * sn);\n        biquad.a0 = (A + 1.0) + (A - 1.0) * cs + beta * sn;\n        biquad.a1 = -2.0 * ((A - 1.0) + (A + 1.0) * cs);\n        biquad.a2 = (A + 1.0) + (A - 1.0) * cs - beta * sn;\n        break;\n    case HIGH_SHELF:\n        biquad.b0 = A * ((A + 1.0) + (A - 1.0) * cs + beta * sn);\n        biquad.b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cs);\n        biquad.b2 = A * ((A + 1.0) + (A - 1.0) * cs - beta * sn);\n        biquad.a0 = (A + 1.0) - (A - 1.0) * cs + beta * sn;\n        biquad.a1 = 2.0 * ((A - 1.0) - (A + 1.0) * cs);\n        biquad.a2 = (A + 1.0) - (A - 1.0) * cs - beta * sn;\n        break;\n    }\n\n    // Precompute coefficients\n    float c0 = biquad.b0 / biquad.a0;\n    float c1 = biquad.b1 / biquad.a0;\n    float c2 = biquad.b2 / biquad.a0;\n    float c3 = biquad.a1 / biquad.a0;\n    float c4 = biquad.a2 / biquad.a0;\n\n    // Zero initial samples\n    biquad.x1 = biquad.x2 = biquad.y1 = biquad.y2 = vec2(0.0);\n    \n    // Run equalizer based on past samples\n    for (int i = PAST_SAMPLES; i >= 0; i--) {\n        \n        // Calculate past sample\n        vec2 currentSample = drySample(samp - i);\n\n        // Apply the filter\n        vec2 result = c0 * currentSample + c1 * biquad.x1 + c2 * biquad.x2 - c3 * biquad.y1 - c4 * biquad.y2;\n\n        // Shift x1 to x2, sample to x1\n        biquad.x2 = biquad.x1;\n        biquad.x1 = currentSample;\n\n        // Shift y1 to y2, result to y1\n        biquad.y2 = biquad.y1;\n        biquad.y1 = result;\n    }\n    \n    // Return final sample and coefficients\n    return biquad;\n}\n\n// Main processing\nBiquadFilter process(int samp, float time) {\n\n    // Swap between all 7 filter types\n    int filterType = int(mod(time * 0.5, 7.0));\n    \n    // Modulate frequency over time\n    float range = iSampleRate * 0.25;\n    float freq = mod(time, 28.0) >= 14.0 ? 500.0 : cos(time * PI * 2.0) * range * 0.95 + range;\n    \n    // Modulate filter quality over time\n    float Q = 1.5 + cos(time * 3.0);\n    \n    // Set shelving filters to 6dB of gain (200% boost)\n    const float dbGain = 6.0;\n    \n    // Calculate and run filter\n    return wetSample(samp, filterType, dbGain, freq, Q);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

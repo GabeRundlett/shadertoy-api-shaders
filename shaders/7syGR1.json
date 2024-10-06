@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1645120647",
+            "description": "Simple example of the power of proper dithering techniques for removing banding.\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7syGR1",
+            "likes": 2,
+            "name": "Combat Banding with Dither",
+            "published": 3,
+            "tags": [
+                "color",
+                "rgb",
+                "linear",
+                "dithering",
+                "srgb",
+                "bayer",
+                "absolute",
+                "lrgb"
+            ],
+            "usePreview": 0,
+            "username": "Xaymar",
+            "viewed": 364
+        },
+        "renderpass": [
+            {
+                "code": "// ----------------------------------------\n// Options\n// ----------------------------------------\n\n// How many bits per channel (BpC) should be emulated?\n// Range: [1 .. Inf] Default: 4\n#define BITS_PER_CHANNEL 4\n\n// How much space should be reserved for fully dark and bright pixels?\n// Range: [0 .. .5] Default: (1. / (exp2(float(BITS_PER_CHANNEL)) + 2.)) // About 1 step on each side.\n#define RESERVED_AREA (1. / (exp2(float(BITS_PER_CHANNEL)) + 2.))\n\n// ----------------------------------------\n// References\n// ----------------------------------------\n// https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/\n// https://loopit.dk/banding_in_games.pdf\n// https://cdn.cloudflare.steamstatic.com/apps/valve/2008/GDC2008_PostProcessingInTheOrangeBox.pdf\n\n// ----------------------------------------\n// Code\n// ----------------------------------------\n\nfloat range = (exp2(float(BITS_PER_CHANNEL)) - 1.);\nfloat4 generateBars(float2 uv) {\n    float4 result;\n    float gradient = lerp(0., 1., (uv.x - RESERVED_AREA) / (1. - (RESERVED_AREA * 2.)));\n    // Incorrect: smoothstep(RESERVED_AREA, 1. - RESERVED_AREA, uv.x);\n\n    float gy2 = uv.y * 1.;\n    float gy = fract(gy2);\n\n    result = float4(gradient, gradient, gradient, 1.);\n    if (gy >= .75) {\n        result.rg = float2(0., 0.);\n    } else if (gy >= .50) {\n        result.rb = float2(0., 0.);\n    } else if (gy >= .25) {\n        result.gb = float2(0., 0.);\n    }\n    \n    return result;\n}\n\n#define DITHER_BANDS 7\n\nfloat band0(uint2 fragCoord) {\n    // No dithering.\n    return 0.5;\n}\n\nfloat band1(uint2 fragCoord) {\n    // No dithering, bias to zero.\n    return 1.;\n}\n\nfloat band2(uint2 fragCoord) {\n    // Bayer\n    // Levels should be above 3u for ideal quality. 5u seems to be a good spot.\n    return Bayer(fragCoord, 5u, true, uint(iFrame));\n}\n\nfloat band3(uint2 fragCoord) {\n    // Interleaved Gradient Noise\n    return InterleavedGradientNoise(fragCoord, true, uint(iFrame));\n}\n\nfloat band4(uint2 fragCoord) {\n    // Shaped Thresholding (iChannel2)\n    return textureLod(iChannel2, float2(fragCoord * 1u) / iChannelResolution[2].xy, 0.).r;\n}\n\nfloat band5(uint2 fragCoord) {\n    // Shaped Thresholding (iChannel2)\n    return textureLod(iChannel2, float2(fragCoord * 3u) / iChannelResolution[2].xy, 0.).r;\n}\n\nfloat band6(uint2 fragCoord) {\n    // Shaped Thresholding (iChannel3)\n    return textureLod(iChannel3, float2(fragCoord * 1u) / iChannelResolution[3].xy, 0.).r;\n}\n\nfloat band7(uint2 fragCoord) {\n    // Shaped Thresholding (iChannel3)\n    return textureLod(iChannel3, float2(fragCoord * 3u) / iChannelResolution[3].xy, 0.).r;\n}\n\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    // As far as I can tell, ShaderToy writes directly to the canvas, which is sRGB.\n    // Correct me if I'm wrong, but please provide sources/references.\n\n    vec2 uv = fragCoord / iResolution.xy;\n    uv.y = 1. - uv.y; // Flip V.\n    \n    // Generate a gradient from left to right.\n    float2 guv = float2(uv.x, uv.y * (float(DITHER_BANDS) + 1.));\n    fragColor = generateBars(float2(guv.x, fract(guv.y)));\n    \n    // Call the threshold function.\n    float threshold = 0.;\n    #if DITHER_BANDS >= 7\n    if (guv.y >= 7.) {\n        threshold = band7(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 6\n    if (guv.y >= 6.) {\n        threshold = band6(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 5\n    if (guv.y >= 5.) {\n        threshold = band5(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 4\n    if (guv.y >= 4.) {\n        threshold = band4(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 3\n    if (guv.y >= 3.) {\n        threshold = band3(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 2\n    if (guv.y >= 2.) {\n        threshold = band2(uint2(fragCoord));\n    } else\n    #endif\n    #if DITHER_BANDS >= 1\n    if (guv.y >= 1.) {\n        threshold = band1(uint2(fragCoord));\n    } else\n    #endif\n    if (guv.y >= 0.) {\n        threshold = band0(uint2(fragCoord));\n    }\n    \n    // Perform Dithering (should happen in sRGB space).\n    fragColor = DitherQuantize(fragColor, range, threshold);\n    \n    // Image writes to an lRGB buffer, which is presented as sRGB. Must fix this by inverting the generated color.\n    fragColor = sRGBA_to_lRGBA(fragColor);\n    \n    // Debug threshold\n    //if (fragCoord.y <= iMouse.y) {\n    //    fragColor.rgb = float3(threshold, threshold, threshold);\n    //}\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ----------------------------------------\n// HLSL to GLSL translations\n// ----------------------------------------\n#define float2 vec2\n#define float3 vec3\n#define float4 vec4\n#define int2 ivec2\n#define int3 ivec3\n#define int4 ivec4\n#define uint2 uvec2\n#define uint3 uvec3\n#define uint4 uvec4\n#define bool2 bvec2\n#define bool3 bvec3\n#define bool4 bvec4\n#define fmod mod\n#define imod(a, b) (a % b)\n#define lerp mix\n#define frac fract\n\n// ----------------------------------------\n// Threshold Functions\n// ----------------------------------------\nfloat Bayer(uint2 xy, uint levels, bool temporal, uint iFrame) {\n    if (temporal) {\n        xy.x += iFrame % levels;\n        xy.y += (iFrame / levels) % levels;\n    }\n    \n    float val = 0.;\n    float div = 0.;\n    float mul = 1.;\n\n    //[loop]\n    for(uint level = levels; level >= 1u; level--)\n    {\n        mul *= 4.;\n\n        float2 bayer = fmod(floor(float2(xy.xy) * exp2(1. - float(level))), 2.);\n        float x2 = bayer.x * 2.;\n\n        val += lerp(x2, 3. - x2, bayer.y) / 3. * mul;\n        div += mul;\n    }\n\n    return val / div;\n}\n\n// https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/\nfloat InterleavedGradientNoise(uint2 xy, bool temporal, uint iFrame) {\n    if (temporal) {\n        xy.x += uint(float(imod(iFrame, 64u)) * 5.588238f);\n        xy.y += uint(float(imod(iFrame, 64u)) * 5.588238f);\n    }\n\n    return fmod(52.9829189f * fmod(0.06711056f * float(xy.x) + 0.00583715f * float(xy.y), 1.f), 1.f);\n}\n\n// ----------------------------------------\n// Dither Functions\n// ----------------------------------------\nfloat4 Dither(float4 color, float threshold) {\n    // color: [0..Infinity) Decimal value in the expected output range.\n    // threshold: The output of a thresholding function, like Bayer or IGN.\n\n    /* Naive variant.\n    float4 fcolor = frac(color);\n    color = floor(color);\n    color.r += fcolor.r > threshold ? 1. : 0.;\n    color.g += fcolor.g > threshold ? 1. : 0.;\n    color.b += fcolor.b > threshold ? 1. : 0.;\n    color.a += fcolor.a > threshold ? 1. : 0.;\n    return color; //*/\n    \n    /* Incorrect Variant (>= instead of >)\n    return floor(color) + step(threshold, frac(color)); //*/\n    \n    //* Faked Variant (> emulated with a tiny offset)\n    return floor(color) + step(threshold + 0.0001, frac(color)); //*/\n}\nfloat3 Dither(float3 color, float threshold) {\n    // color: [0..Infinity) Decimal value in the expected output range.\n    // threshold: The output of a thresholding function, like Bayer or IGN.\n\n    /* Naive variant.\n    float3 fcolor = frac(color);\n    color = floor(color);\n    color.r += fcolor.r > threshold ? 1. : 0.;\n    color.g += fcolor.g > threshold ? 1. : 0.;\n    color.b += fcolor.b > threshold ? 1. : 0.;\n    return color; //*/\n    \n    /* Incorrect Variant (>= instead of >)\n    return floor(color) + step(threshold, frac(color)); //*/\n    \n    //* Faked Variant (> emulated with a tiny offset)\n    return floor(color) + step(threshold + 0.0001, frac(color)); //*/\n}\nfloat2 Dither(float2 color, float threshold) {\n    // color: [0..Infinity) Decimal value in the expected output range.\n    // threshold: The output of a thresholding function, like Bayer or IGN.\n\n    /* Naive variant.\n    float2 fcolor = frac(color);\n    color = floor(color);\n    color.r += fcolor.r > threshold ? 1. : 0.;\n    color.g += fcolor.g > threshold ? 1. : 0.;\n    return color; //*/\n    \n    /* Incorrect Variant (>= instead of >)\n    return floor(color) + step(threshold, frac(color)); //*/\n    \n    //* Faked Variant (> emulated with a tiny offset)\n    return floor(color) + step(threshold + 0.0001, frac(color)); //*/\n}\nfloat Dither(float color, float threshold) {\n    // color: [0..Infinity) Decimal value in the expected output range.\n    // threshold: The output of a thresholding function, like Bayer or IGN.\n\n    /* Naive variant.\n    float4 fcolor = frac(color);\n    color = floor(color);\n    color += fcolor > threshold ? 1. : 0.;\n    return color; //*/\n    \n    /* Incorrect Variant (>= instead of >)\n    return floor(color) + step(threshold, frac(color)); //*/\n    \n    //* Faked Variant (> emulated with a tiny offset)\n    return floor(color) + step(threshold + 0.0001, frac(color)); //*/\n}\nfloat4 DitherQuantize(float4 color, float range, float threshold) {\n    return Dither(color * range, threshold) / range;\n}\nfloat3 DitherQuantize(float3 color, float range, float threshold) {\n    return Dither(color * range, threshold) / range;\n}\nfloat2 DitherQuantize(float2 color, float range, float threshold) {\n    return Dither(color * range, threshold) / range;\n}\nfloat DitherQuantize(float color, float range, float threshold) {\n    return Dither(color * range, threshold) / range;\n}\n\n// ----------------------------------------\n// Quantize Functions\n// ----------------------------------------\nfloat Quantize(float v, float range) {\n    return round(v * range) / range;\n}\nvec2 Quantize(vec2 v, float range) {\n    return round(v * range) / range;\n}\nvec3 Quantize(vec3 v, float range) {\n    return round(v * range) / range;\n}\nvec4 Quantize(vec4 v, float range) {\n    return round(v * range) / range;\n}\n\n// ----------------------------------------\n// Unaccelerated lRGB<->sRGB conversion\n// ----------------------------------------\n// May be potentially wrong as I relied on the StackOverflow source for this:\n// - https://stackoverflow.com/questions/61430174/sRGB-linear-rgb-conversion-precision\n\nfloat _sRGB_to_lRGB(float ch) {\n\tif (ch <= 0.04045) {\n\t\treturn (ch / 12.92);\n\t}\n\treturn pow((ch + 0.055) / 1.055, 2.4);\n\t//return (ch <= 0.04045) ? (ch / 12.92) : pow((ch + 0.055) / 1.055, 2.4);\n}\n\nfloat _lRGB_to_sRGB(float ch) {\n\t// Inverse of above.\n    if (ch <= 0.0031308) {\n        return ch * 12.92;\n    }\n    return (1.055 * pow(ch, (1.0 / 2.4)) - 0.055);\n\t//return (ch >= 0.0031308) ? (ch * 12.92) : (1.055 * pow(ch, 1.0 / 2.4) - 0.055);\n}\n\nfloat3 sRGB_to_lRGB(float3 sRGB) {\n\treturn float3(\n\t\t_sRGB_to_lRGB(sRGB.r),\n\t\t_sRGB_to_lRGB(sRGB.g),\n\t\t_sRGB_to_lRGB(sRGB.b)\n\t);\n}\n\nfloat4 sRGBA_to_lRGBA(float4 sRGB) {\n\treturn float4(\n\t\t_sRGB_to_lRGB(sRGB.r),\n\t\t_sRGB_to_lRGB(sRGB.g),\n\t\t_sRGB_to_lRGB(sRGB.b),\n\t\t_sRGB_to_lRGB(sRGB.a)\n\t);\n}\n\nfloat3 lRGB_to_sRGB(float3 lRGB) {\n\treturn float3(\n\t\t_lRGB_to_sRGB(lRGB.r),\n\t\t_lRGB_to_sRGB(lRGB.g),\n\t\t_lRGB_to_sRGB(lRGB.b)\n\t);\n}\n\nfloat4 lRGBA_to_sRGBA(float4 lRGB) {\n\treturn float4(\n\t\t_lRGB_to_sRGB(lRGB.r),\n\t\t_lRGB_to_sRGB(lRGB.g),\n\t\t_lRGB_to_sRGB(lRGB.b),\n\t\t_lRGB_to_sRGB(lRGB.a)\n\t);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

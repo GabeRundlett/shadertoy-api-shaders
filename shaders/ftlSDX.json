@@ -1,0 +1,94 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1626730730",
+            "description": "Image Super Resolution using 5 texture fetch Lanczos-2 resampler and AMD FidelityFX CAS sharpener. 10 texture samples per pixel.  Other upscalers: https://www.shadertoy.com/playlist/WcKXWW\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ftlSDX",
+            "likes": 19,
+            "name": "Fast Supersampling",
+            "published": 3,
+            "tags": [
+                "superresolution",
+                "fsr"
+            ],
+            "usePreview": 1,
+            "username": "goingdigital",
+            "viewed": 2924
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nPlease view shader in full screen. It works better at up-scaling\nthan down-scaling, so needs a viewing window at least 1024x1024 for\nthe default texture.\n\nAMD FidelityFX Contrast Adaptive Sharpening\nhttps://gpuopen.com/fidelityfx-cas/\nPotentially useful to upscale under-resolution renders.\n\nThis is a slimmed down reimplementation based on the paper.\n\nBest viewed in fullscreen.\nDrag left right to change switchover position. CAS on left.\nDrag up and down to set CAS level.\n\nThanks Txoka for the fixes.\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 muv;\n    if (iMouse.z > 0.) {\n        muv = iMouse.xy/iResolution.xy;\n    } else {\n        muv = vec2(.5+.3*sin(iTime*.3),.5);\n    }\n  \n    vec3 col = texture(iChannel0, uv).xyz;\n\n    // CAS algorithm\n    float max_g = col.y;\n    float min_g = col.y;\n    vec4 uvoff = vec4(1,0,1,-1)/iChannelResolution[0].xxyy;\n    vec3 colw;\n    vec3 col1 = texture(iChannel0, uv+uvoff.yw).xyz;\n    max_g = max(max_g, col1.y);\n    min_g = min(min_g, col1.y);\n    colw = col1;\n    col1 = texture(iChannel0, uv+uvoff.xy).xyz;\n    max_g = max(max_g, col1.y);\n    min_g = min(min_g, col1.y);\n    colw += col1;\n    col1 = texture(iChannel0, uv+uvoff.yz).xyz;\n    max_g = max(max_g, col1.y);\n    min_g = min(min_g, col1.y);\n    colw += col1;\n    col1 = texture(iChannel0, uv-uvoff.xy).xyz;\n    max_g = max(max_g, col1.y);\n    min_g = min(min_g, col1.y);\n    colw += col1;\n    float d_min_g = min_g;\n    float d_max_g = 1.-max_g;\n    float A;\n    max_g = max(0., max_g);\n    if (d_max_g < d_min_g) {\n        A = d_max_g / max_g;\n    } else {\n        A = d_min_g / max_g;\n    }\n    A = sqrt(max(0., A));\n    A *= mix(-.125, -.2, muv.y);\n    vec3 col_out = (col + colw * A) / (1.+4.*A);\n    if (uv.x > (muv.x-1./iResolution.x)) {\n        if (uv.x > (muv.x+1./iResolution.x)) {\n            // 'Control' texture\n            col_out = texture(iChannel1, uv).xyz;\n        } else {\n            // Black line\n            col_out = vec3(0);\n        }\n    }\n    \n    \n    // Output to screen\n    fragColor = vec4(col_out,1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 6,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/* Lanczos-2 image upscaler\n*\n* This takes a reduced resolution source, and scales it up while preserving detail.\n* It is very close to an ideal Lanczos-2 filter, but 5 texture fetches instead of 16.\n*\n* Algorithm based on Jorge Jimenez's SIGGRAPH 2016 paper\n* [Jimenez2016] Filmic SMAA: Sharp Morphological and Temporal\nAntialiasing\n* https://research.activision.com/publications/archives/filmic-smaasharp-morphological-and-temporal-antialiasing\n*\n* [Djovnov2012] Bicubic Filtering in Fewer Taps\n* https://vec3.ca/bicubic-filtering-in-fewer-taps\n*\n* I've rolled by own tap coefficients, as seem to be much more accurate to Lanczos-2\n* than the references above.\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Scale constants\n    vec4 scale = vec4(\n        1. / vec2(textureSize(iChannel0, 0)),\n        vec2(textureSize(iChannel0, 0)) / iResolution.xy\n    );\n    \n    // Source position in fractions of a texel\n    vec2 src_pos = scale.zw * fragCoord;\n    // Source bottom left texel centre\n    vec2 src_centre = floor(src_pos - .5) + .5;\n    // f is position. f.x runs left to right, y bottom to top, z right to left, w top to bottom\n    vec4 f; f.zw = 1. - (f.xy = src_pos - src_centre);\n    // Calculate weights in x and y in parallel.\n    // These polynomials are piecewise approximation of Lanczos kernel\n    // Calculator here: https://gist.github.com/going-digital/752271db735a07da7617079482394543\n    vec4 l2_w0_o3 = ((1.5672 * f - 2.6445) * f + 0.0837) * f + 0.9976;\n    vec4 l2_w1_o3 = ((-0.7389 * f + 1.3652) * f - 0.6295) * f - 0.0004;\n\n    vec4 w1_2 = l2_w0_o3;\n    vec2 w12 = w1_2.xy + w1_2.zw;\n    vec4 wedge = l2_w1_o3.xyzw * w12.yxyx;\n    // Calculate texture read positions. tc12 uses bilinear interpolation to do 4 reads in 1.\n    vec2 tc12 = scale.xy * (src_centre + w1_2.zw / w12);\n    vec2 tc0 = scale.xy * (src_centre - 1.);\n    vec2 tc3 = scale.xy * (src_centre + 2.);\n    // Sharpening adjustment\n    // Thanks mad_gooze for the normalization fix.\n    float sum = wedge.x + wedge.y + wedge.z + wedge.w + w12.x * w12.y;    \n    wedge /= sum;\n    vec3 col = vec3(\n        texture(iChannel0, vec2(tc12.x, tc0.y)).rgb * wedge.y +\n        texture(iChannel0, vec2(tc0.x, tc12.y)).rgb * wedge.x +\n        texture(iChannel0, tc12.xy).rgb * (w12.x * w12.y) +\n        texture(iChannel0, vec2(tc3.x, tc12.y)).rgb * wedge.z +\n        texture(iChannel0, vec2(tc12.x, tc3.y)).rgb * wedge.w\n    );\n\n    fragColor = vec4(col,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 6,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

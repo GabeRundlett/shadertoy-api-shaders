@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1488078921",
+            "description": "Via Greg Egan, certain octahedral mappings between the sphere and a square can actually be tiled across the plane. Hold the mouse button to see the sphere's actual rotation.\nBased off of Martin Lambers' paper \"Mappings between Sphere, Disc, and Square\".",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MssyD8",
+            "likes": 7,
+            "name": "Quincunal Sphere Tiling",
+            "published": 3,
+            "tags": [
+                "pattern",
+                "tiling",
+                "tessellation"
+            ],
+            "usePreview": 0,
+            "username": "NBickford",
+            "viewed": 832
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.1415926535897932384626433832795028841971\n\nvec3 sphereTransformation(vec3 pt){\n    // Rotate around the Z axis, slowly accelerating:\n    float r0 = iTime*exp(-1.0/pow(0.01+0.01*iTime,2.0));\n    float cr0 = cos(r0);\n    float sr0 = sin(r0);\n    pt = vec3(pt.x*cr0-pt.y*sr0, pt.x*sr0+pt.y*cr0, pt.z);\n    \n    // Rotate around the X axis:\n    float r1 = iTime*1.0;\n    float sr1 = sin(r1);\n    float cr1 = cos(r1);\n    pt=vec3(pt.x, pt.y*cr1-pt.z*sr1, pt.y*sr1+pt.z*cr1);\n    \n    return pt;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Map uv to a Cartesian grid, centered at the center of the screen.\n    vec2 uv = (fragCoord.xy-0.5*iResolution.xy)/iResolution.y;\n    \n    if(iMouse.z < 1.0){\n        // Zoom out:\n        uv*=3.0;\n\n        // Each of our tiles will be centered at an integer.\n        // Scale inside-tile coordinates to [-1,1]^2:\n        vec2 tP=2.0*mod(uv+0.5,1.0)-1.0;\n\n        // To get the filing to fully work, we have to flip every other copy:\n        if(mod(floor(uv.x+0.5)+floor(uv.y+0.5),2.0)>=1.0){\n            tP*=-1.0;\n        }\n\n        // Now, let's map our tile coordinates to a point on a sphere.\n        \n        // The code for this is taken from the paper\n        // \"Mappings between Sphere, Disc, and Square\" by Martin Lambers,\n        // - specifically, we're using the quincunal mapping attributed\n        // to Pierce (1879), which uses a stereographic projection to\n        // map a hemisphere to a disc, then a conformal mapping to map\n        // a disc to a square.\n\n        // Actually, that conformal mapping looks complicated, and the\n        // results aren't very good (although perhaps they make sense\n        // for animation). Let's use the elliptical mapping instead.\n\n\n        // FROM SQUARE TO TWO SQUARES:\n        // Rotate and scale by 45 degrees (so that the internal square becomes\n        // [-1,1]^2):\n        tP = vec2(tP.x+tP.y,tP.x-tP.y);\n\n        // Figure out which side of the sphere we're on:\n        // +1 = north, -1 = south\n        float side = -1.0;\n        if(max(abs(tP.x),abs(tP.y))<1.0) side = 1.0;\n        \n        // If we're on the south side, flip the coordinates to lie inside\n        // the interior 45-degree square:\n        if(side<0.0){\n            tP = 2.0*clamp(tP,-1.0,1.0)-tP; // this is actually a decent boxfold\n        }\n\n        // SQUARE TO DISC:\n        // Map square to disk by inverting elliptical mapping:\n        vec2 discUV = vec2(tP.x*sqrt(1.0-tP.y*tP.y*0.5),\n                           tP.y*sqrt(1.0-tP.x*tP.x*0.5));\n        \n        // DISC TO SPHERE:\n        // The harmonic mean mapping from the disk to the sphere looks nice.\n        // Let's use that.\n        float rDisc = length(discUV);\n        float phi = 4.0*atan(rDisc*(sqrt(2.0)-1.0)); // maps r=0 to 0, r=1 to pi/2\n        float theta = atan(discUV.y,discUV.x);\n\n        //Finally, connect the two hemispheres and map phi properly:\n        phi = side*(PI*0.5-phi);\n\n\n        // Just for animation, we'll convert the point to a point on a sphere,\n        // then rotate it around some axis.\n        vec3 pt = vec3(cos(theta)*cos(phi),sin(theta)*cos(phi),sin(phi));\n        pt = sphereTransformation(pt);\n\n        // ...and get the color of the sphere at that point!\n        vec3 col = texture(iChannel0,pt).rgb;\n        fragColor = vec4(col, 1.0);\n        \n    }else{\n        // Draw what's actually going on\n        // We're looking from the +z axis; the +x axis is to the right, and the\n        // +y axis is up.\n        //We'll just do a simple orthographic view.\n        \n        //Scale:\n        uv*=2.6;\n        \n        // Get background color:\n        float vignette = (1.0-dot(uv,uv)/8.0)*0.1;\n        // Super ad-hoc dithering:\n        vignette += textureLod(iChannel1,fragCoord.xy/iChannelResolution[1].xy,0.0).r/255.0;\n        vec3 col = vec3(vignette);\n        \n        if(length(uv)<=1.0){\n            // Get z from u (x) and v (y):\n            vec3 pt = vec3(uv.x, -uv.y, sqrt(1.0-dot(uv,uv)));\n            pt = sphereTransformation(pt);\n            vec3 sphereCol = texture(iChannel0, pt).rgb;\n            \n            // Slight visual tweak: If we're within one pixel of the edge\n            // of the sphere, just fade out to the background:\n            // uv.y max - uv.y min = 2.6\n            // uv.y per pixel = 2.6/iResolution.y\n            \n            // You can also increase the blend radius to make the edge smoother.\n            \n            float aaBorder = 1.0-2.0*2.6/iResolution.y;\n            float aaFactor = smoothstep(aaBorder, 1.0, length(uv));\n\n\t\t\t// And blend (don't forget to gamma correct):\n            col = pow(mix(pow(sphereCol,vec3(2.2)),\n                          pow(col,vec3(2.2)),aaFactor),vec3(1.0/2.2));\n        }\n        \n        fragColor = vec4(col,1.0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1680884228",
+            "description": "A revised cartoon shader with halftone and edges.",
+            "flags": 2,
+            "hasliked": 0,
+            "id": "dsKSRw",
+            "likes": 2,
+            "name": "Cartoon 2",
+            "published": 3,
+            "tags": [
+                "halftone",
+                "comic",
+                "newsprint"
+            ],
+            "usePreview": 0,
+            "username": "DrieStone",
+            "viewed": 248
+        },
+        "renderpass": [
+            {
+                "code": "#define BLUR_SIZE 9\n#define THRESHOLD 0.8\n#define EDGES_AMNT 200.0\n#define DOTSIZE 1.48\n#define D2R(d) radians(d)\n#define MIN_S 2.5\n#define MAX_S 19.0\n#define SPEED 0.57\n#define SST 0.888\n#define SSQ 0.288\n#define ORIGIN (0.5 * iResolution.xy)\n#define KERNEL_SIZE 9\n#define KERNEL_OFFSET vec2[KERNEL_SIZE](vec2(-1, -1), vec2(0, -1), vec2(1, -1), vec2(-1, 0), vec2(0, 0), vec2(1, 0), vec2(-1, 1), vec2(0, 1), vec2(1, 1))\n\nfloat R;\nfloat S;\n\nvec3 rgb2hsv(vec3 c) {\n    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));\n    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));\n    \n    float d = q.x - min(q.w, q.y);\n    float e = 1.0e-10;\n    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n\nvec3 hsv2rgb(vec3 c) {\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\n\nvec4 rgb2cmyki(in vec3 c) {\n    float k = max(max(c.r, c.g), c.b);\n    return min(vec4(c.rgb / k, k), 1.0);\n}\n\nvec3 cmyki2rgb(in vec4 c) {\n    return c.rgb * c.a;\n}\n\nvec2 px2uv(in vec2 px) {\n    return vec2(px / iResolution.xy);\n}\n\nvec2 grid(in vec2 px) {\n    return px - mod(px, S);\n}\n\nvec4 ss(in vec4 v) {\n    return smoothstep(SST - SSQ, SST + SSQ, v);\n}\n\nmat2 rotm(in float r) {\n    float cr = cos(r);\n    float sr = sin(r);\n    return mat2(cr, -sr, sr, cr);\n}\n\nvec4 halftone(in vec2 fc, in mat2 m) {\n    vec2 smp = (grid(m * fc) + 0.5 * S) * m;\n    float s = min(length(fc - smp) / (DOTSIZE * 0.5 * S), 1.0);\n    vec3 texc = pow(texture(iChannel0, px2uv(smp + ORIGIN)).rgb, vec3(2.2));\n    vec4 c = rgb2cmyki(texc);\n    return c + s;\n}\n\nvoid make_kernel(out vec4[9] result, sampler2D tex, vec2 uv) {\n    vec2 offset = 1.0 / iResolution.xy;\n    result[0] = texture(tex, uv + vec2(-offset.x, -offset.y));\n    result[1] = texture(tex, uv + vec2(0.0, -offset.y));\n    result[2] = texture(tex, uv + vec2(offset.x, -offset.y));\n    result[3] = texture(tex, uv + vec2(-offset.x, 0.0));\n    result[4] = texture(tex, uv);\n    result[5] = texture(tex, uv + vec2(offset.x, 0.0));\n    result[6] = texture(tex, uv + vec2(-offset.x, offset.y));\n    result[7] = texture(tex, uv + vec2(0.0, offset.y));\n    result[8] = texture(tex, uv + vec2(offset.x, offset.y));\n}\n\nfloat crushBlacks(float value, float crushFactor, float cutoff) {\n    return value < cutoff ? pow(value, crushFactor) : value;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 currentColor = texture(iChannel0, uv);\n\n    // Find outlines\n    float intensity = 7.0; // Increase this value for more pronounced edges\n    vec4 n[9];\n    make_kernel(n, iChannel0, fragCoord / iResolution.xy);\n\n    // Calculate Sobel\n    vec4 sobel = vec4(0.0);\n    int kernel[9] = int[](0, 1, 2, 3, 4, 5, 6, 7, 8);\n    int kernel_v[9] = int[](6, 3, 0, 7, 4, 1, 8, 5, 2);\n\n    for (int i = 0; i < 9; i++) {\n        vec4 edge_h = intensity * (n[kernel[i]] - n[kernel[8 - i]]);\n        vec4 edge_v = intensity * (n[kernel_v[i]] - n[kernel_v[8 - i]]);\n        sobel += sqrt(edge_h * edge_h + edge_v * edge_v) * 0.5;\n    }\n\n    sobel = clamp(sobel / 5.0, 0.0, 1.0); // Adjust the division value (e.g., 5.0) to control edge threshold\n\n    vec4 colors = vec4(0.0);\n    float totalWeight = 1.0;\n\n    for (int i = 0; i < KERNEL_SIZE; i++) {\n        vec4 neighbor = texture(iChannel0, uv + KERNEL_OFFSET[i] / iResolution.xy);\n\n        float weight = 1.0 - length(neighbor.rgb - currentColor.rgb);\n        weight = weight > THRESHOLD ? 1.0 : 0.0;\n        totalWeight += weight;\n        colors.rgb += neighbor.rgb * weight;\n    }\n\n    colors.rgb /= totalWeight;\n    fragColor = vec4(colors.rgb, 1.0);\n\n    // Halftone effect\n    S = MIN_S + (MAX_S - MIN_S) * 2.0 * (iResolution.x / 20.0) / iResolution.x;\n    R = D2R(180.0 * (iResolution.x / 80.0) / iResolution.y);\n\n    vec2 fc = fragCoord.xy - ORIGIN;\n    mat2 mc = rotm(R + D2R(15.0));\n    mat2 mm = rotm(R + D2R(75.0));\n    mat2 my = rotm(R);\n    mat2 mk = rotm(R + D2R(45.0));\n\n    vec4 ht = vec4(\n        halftone(fc, mc).r,\n        halftone(fc, mm).g,\n        halftone(fc, my).b,\n        halftone(fc, mk).a\n    );\n    vec3 c = cmyki2rgb(ss(ht));\n    c = pow(c, vec3(1.0 / 1.2)); // Gamma encode.\n    fragColor = mix(fragColor, vec4(c, 1.0), 0.3); // mix in halftone\n\n    // Increase saturation\n    float saturationFactor = 1.3; // Adjust this value to control the saturation level\n    vec3 hsv = rgb2hsv(fragColor.rgb);\n    hsv.y *= saturationFactor;\n\n    // Increase contrast\n    float contrastFactor = 1.10; // Adjust this value to control the contrast level\n    hsv.z = (hsv.z - 0.5) * contrastFactor + 0.5;\n    fragColor.rgb = hsv2rgb(hsv);\n\n    fragColor = mix(fragColor, vec4(0.0, 0.0, 0.0, 1.0), sobel); // add outlines\n\n     fragColor.rgb += max(0., min(1., 1. - totalWeight / EDGES_AMNT)) * 0.55;\n\n    // Crush blacks\n    float crushFactor = 7.1; // Adjust this value to control the crushing of blacks\n    float cutoff = 0.65; // Adjust this value to control the cutoff for crushing blacks\n    fragColor.rgb = vec3(crushBlacks(fragColor.r, crushFactor, cutoff), crushBlacks(fragColor.g, crushFactor, cutoff), crushBlacks(fragColor.b, crushFactor, cutoff));\n\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "webcam",
+                        "id": 31,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/webcam.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

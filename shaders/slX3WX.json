@@ -1,0 +1,41 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1622970197",
+            "description": "More voxel traversing.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "slX3WX",
+            "likes": 7,
+            "name": "Raytraced 3D Truchet Pattern",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "torus",
+                "truchet",
+                "pattern",
+                "voxeltraversal"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 231
+        },
+        "renderpass": [
+            {
+                "code": "struct Intersect {\n    vec3 nor;\n    vec2 uv;\n    float t;\n};\n\n// The heart of the truchet pattern...\nfloat cbrt(in float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }\nvoid updateRoot(inout vec2 old, in vec2 new) { if (abs(new.y) < abs(old.y)) old = new; }\nint iTorus(in vec3 ro, in vec3 rd, in float radius, in float thickness, inout vec4 roots) {\n    float rr = radius * radius, rr4 = 4.0 * rr;\n    float qa = dot(rd, rd), qb = 2.0 * dot(ro, rd), qc = dot(ro, ro) + rr - thickness * thickness;\n\n    float a = qa * qa;\n    float b = 2.0 * qa * qb / a;\n    float c = (2.0 * qa * qc + qb * qb - rr4 * dot(rd.xz, rd.xz)) / a;\n    float d = (2.0 * qb * qc - 2.0 * rr4 * dot(ro.xz, rd.xz)) / a;\n    float e = (qc * qc - rr4 * dot(ro.xz, ro.xz)) / a;\n\n    // Quartic solver based on https://www.maa.org/sites/default/files/pdf/upload_library/22/Ford/auckly29.pdf\n    float bb = b * b;\n    float p = c - 3.0 * bb / 8.0;\n    float q = d - 0.5 * b * c + 0.125 * bb * b;\n    float r = e - 0.25 * b * d + 0.0625 * bb * c - 3.0 * bb * bb / 256.0;\n\n    // Solve for a root to (t^2)^3 + 2p(t^2)^2 + (p^2 - 4r)(t^2) - q^2 which resolves the\n    // system of equations relating the product of two quadratics to the depressed quartic\n    float ra =  2.0 * p;\n    float rb =  p * p - 4.0 * r;\n    float rc = -q * q;\n\n    // Depress using the method above\n    float ru = ra / 3.0;\n    float rp = rb - ra * ru;\n    float rq = rc - (rb - 2.0 * ra * ra / 9.0) * ru;\n\n    float lambda;\n    float rh = 0.25 * rq * rq + rp * rp * rp / 27.0;\n    if (rh > 0.0) { // Use Cardano's formula in the case of one real root\n        rh = sqrt(rh);\n        float ro = -0.5 * rq;\n        lambda = cbrt(ro - rh) + cbrt(ro + rh) - ru;\n    }\n\n    else { // Use complex arithmetic in the case of three real roots\n        float rm = sqrt(-rp / 3.0);\n        lambda = -2.0 * rm * sin(asin(1.5 * rq / (rp * rm)) / 3.0) - ru;\n    }\n\n    // Newton iteration to fix numerical problems (using Horners method)\n    // Suggested by @NinjaKoala\n    for(int i=0; i < 2; i++) {\n        float a_2 = ra + lambda;\n        float a_1 = rb + lambda * a_2;\n        float b_2 = a_2 + lambda;\n\n        float f = rc + lambda * a_1; // Evaluation of λ^3 + ra * λ^2 + rb * λ + rc\n        float f1 = a_1 + lambda * b_2; // Derivative\n\n        lambda -= f / f1; // Newton iteration step\n    }\n\n    // Solve for the roots of the factors\n    int n = 0; // Root counter\n    if (lambda < 0.0) return 0;\n    float sqrtLambda = sqrt(lambda);\n\n    float pLambda = p + lambda, qLambda = q / sqrtLambda;\n    float offs = 0.25 * b;\n\n    float foo = lambda - 2.0 * (pLambda + qLambda);\n    float bar = lambda - 2.0 * (pLambda - qLambda);\n\n    if (foo >= 0.0) {\n        roots.xy = (vec2(1.0, -1.0) * sqrt(foo) + sqrtLambda) * 0.5 - offs;\n        n += 2;\n    }\n\n    if (bar >= 0.0) {\n        vec2 others = (vec2(1.0, -1.0) * sqrt(bar) - sqrtLambda) * 0.5 - offs;\n        if (n > 0) roots.zw = others;\n        else roots.xy = others;\n        n += 2;\n    }\n\n    return n;\n}\n\n// align 0: x aligned, align 1: y aligned, align 2: z aligned\nvoid addTorus(inout Intersect isect, in vec3 ro, in vec3 rd, in float radius, in float thickness, in vec3 pos, in int align) {\n    if (align == 0) ro = ro.yxz, rd = rd.yxz, pos = pos.yxz;\n    if (align == 2) ro = ro.xzy, rd = rd.xzy, pos = pos.xzy;\n\n    vec4 roots;\n    int nroots = iTorus(ro - pos, rd, radius, thickness, roots);\n\n    // Optimizing things to be out of the loop hasn't worked yet...\n    for (int idx=0; idx < nroots; idx++) { // All intersections need to be checked against the cell boundaries\n        vec3 hitPos = ro + rd * roots[idx];\n        if (roots[idx] > 0.0 && (isect.t > 0.0 ? roots[idx] < isect.t : true) &&\n            all(lessThan(abs(hitPos), vec3(0.5)))) {\n            hitPos -= pos;\n            float r = length(hitPos.xz);\n            isect.nor = normalize(vec3(hitPos.xz - normalize(hitPos.xz) * radius, hitPos.y)).xzy;\n            isect.nor = align == 0 ? isect.nor.yxz : align == 1 ? isect.nor : isect.nor.xzy;\n            isect.uv = vec2(atan(hitPos.z, hitPos.x), atan(hitPos.y, r - radius));\n            isect.t = roots[idx];\n        }\n    }\n}\n\n// Hash from \"Hash without Sine\" by Dave_Hoskins (https://www.shadertoy.com/view/4djSRW)\nvec3 Hash33(in vec3 p) {\n\tp = fract(p * vec3(0.1031, 0.103, 0.0973));\n    p += dot(p, p.yxz + 33.33);\n    return fract((p.xxy + p.yxx) * p.zyx);\n}\n\nfloat sign2(in float x) { return x < 0.0 ? -1.0 : 1.0; } // Nonzero sign\nIntersect gridCell(in vec3 ro, in vec3 rd, in vec3 pos) {\n    ro -= pos;\n\n    vec3 rand = Hash33(pos) - 0.5;\n    vec3 flip = vec3(sign2(rand.x), sign2(rand.y), sign2(rand.z));\n\n    // Scramble the cell\n    ro *= flip;\n    rd *= flip;\n\n    // Arrange three tori connecting the three pairs of faces\n    Intersect isect = Intersect(vec3(0.0), vec2(0.0), -1.0);\n    addTorus(isect, ro, rd, 0.5, 0.05, vec3( 0.0, -0.5,  0.5), 0);\n    addTorus(isect, ro, rd, 0.5, 0.05, vec3( 0.5,  0.0, -0.5), 1);\n    addTorus(isect, ro, rd, 0.5, 0.05, vec3(-0.5,  0.5,  0.0), 2);\n\n    // Flip normal back into world space\n    isect.nor *= flip;\n\n    return isect;\n}\n\n// Learning from https://github.com/cgyurgyik/fast-voxel-traversal-algorithm/blob/master/overview/FastVoxelTraversalOverview.md\nIntersect traverse(vec3 ro, vec3 rd) {\n    vec3 invRd = 1.0 / rd, octant = sign(rd);\n    vec3 voxel = floor(ro) + 0.5;\n    vec3 corner = 0.5 * octant - ro;\n    for (int iter=0; iter < 15; iter++) {\n        Intersect cell = gridCell(ro, rd, voxel);\n        if (cell.t > 0.0) return cell;\n        vec3 tMax = (voxel + corner) * invRd; // Intersection with the cell boundaries\n        voxel += step(0.0, min(tMax.x, min(tMax.y, tMax.z)) - tMax) * octant; // Step in the direction of the nearest one\n    }\n\n    return Intersect(vec3(0.0), vec2(0.0), -1.0);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n    float time = iTime;\n\n    vec2 mouse = ivec2(iMouse) == ivec2(0) ? vec2(0.0) : (iMouse.xy - center) / iResolution.y * 3.14;\n    vec2 uv = (fragCoord - center) / iResolution.y;\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n\n    vec3 ro = vec3(0.0, 0.0, -iTime);\n    vec3 rd = normalize(vec3(uv, -1.0));\n\n    // Rotate with mouse\n    float cy = cos(mouse.x), sy = sin(mouse.x);\n    float cp = cos(mouse.y), sp = sin(mouse.y);\n\n    rd.yz *= mat2(cp, -sp, sp, cp);\n    rd.xz *= mat2(cy, -sy, sy, cy);\n\n    Intersect hit = traverse(ro, rd);\n    //Intersect hit = gridCell(ro, rd, vec3(0.0)); // Grid cell debugging\n\n    // Render\n    if (hit.t > 0.0) {\n        float diff = abs(dot(hit.nor, normalize(mix(normalize(vec3(-1.0, 1.0, 1.0)), hit.nor, 0.5))));\n        float checker = 0.5 + 0.5 * mod(floor(hit.uv.x / 6.28 * 32.0) + floor(hit.uv.y / 3.14 * 3.0), 2.0);\n        fragColor.rgb = mix(vec3(checker, 0.0, 0.0), vec3(0.0), 1.0 - exp(-hit.t * 0.15)) / max(1.0, 0.125 * hit.t); // Fog\n        fragColor.rgb *= diff;\n    }\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

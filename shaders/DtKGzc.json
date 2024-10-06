@@ -1,0 +1,215 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1684411857",
+            "description": "eyyy accurate volumetrics go brrrrr\n\nvolumetric code my own, scattering function by Poisson",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "DtKGzc",
+            "likes": 6,
+            "name": "Volumetric + PBR Pathtracer",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "textures",
+                "pathtracing"
+            ],
+            "usePreview": 0,
+            "username": "ThePlaneGuy45",
+            "viewed": 296
+        },
+        "renderpass": [
+            {
+                "code": "// Shader settings in Common\n// Scene editor in Buffer A\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    fragColor = texture(iChannel0, uv);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\nPathtracer by TPG45\n\nfeel free to use as a base for other projects, just give credit\nalso feel free to expand on this, just give credit for the base pathtracer\n\nIncludes:\n- lighting, diffuse + specular + anisotropic\n- refraction\n- volumetrics\n- DOF & blur\n- multipass sampling\n- normal maps\n*/\n\n// Shader Settings\n#define FOCAL_LENGTH 500.0\n#define CAM_DISTANCE 1150.0\n#define MAX_BOUNCES 10\n#define SAMPLES 4\n#define DOF_AMOUNT 1.0\n#define BLUR_AMOUNT 2.0\n#define SCENE 0\n\n#define VOLUME_STEP_SIZE 10.0\n\n// Other random definitions\n#define T true\n#define F false\n#define PHI 1.61803398874989484820459\n#define PI 3.1415926535897932384626433832795028841971\n\nstruct Material {\n\n    vec3 color;\n    vec3 emission;\n    float emissionStrength;\n    \n    float sheen;\n    float roughness;\n    float metallic;\n    float aniso;\n    float anisoStrength;\n    \n    float transparency;\n    float ior;\n    \n    float density;\n\n};\n\nstruct Sphere {\n\n    Material material;\n    vec3 center;\n    float radius;\n\n};\n\nstruct Triangle {\n\n    Material material;\n    vec3 a;\n    vec3 b;\n    vec3 c;\n    vec2 auv;\n    vec2 buv;\n    vec2 cuv;\n\n};\n\nstruct Plane {\n\n    Material material;\n    vec3 normal;\n    float height;\n    float scale;\n\n};\n\nstruct Cube {\n\n    Material material;\n    vec3 position;\n    vec3 size;\n\n};\n\nstruct Ray {\n\n    vec3 origin;\n    vec3 normal;\n\n};\n\nstruct Record {\n\n    Ray ray;\n    bool hit;\n    Material material;\n    vec3 normal;\n    vec3 intersect;\n    float dist;\n    vec3 offset;\n    vec3 tangent;\n    vec3 bitangent;\n    int refrac;\n    int objID;\n    int hitID;\n    bool inVolume;\n    vec3 volEmission;\n    float volDensity;\n\n};\n\nmat2 rot2( float a ){ vec2 v = sin(vec2(1.570796, 0) + a);\treturn mat2(v, -v.y, v.x); }\n// Extra trig + hyperbolic functions by me, if you want to use please credit.\nfloat cot(float x){return cos(x)/sin(x);}vec2 cot(vec2 x){return cos(x)/sin(x);}vec3 cot(vec3 x){return cos(x)/sin(x);}vec4 cot(vec4 x){return cos(x)/sin(x);}float sec(float x){return 1./cos(x);}vec2 sec(vec2 x){return 1./cos(x);}vec3 sec(vec3 x){return 1./cos(x);}vec4 sec(vec4 x){return 1./cos(x);}float csc(float x){return 1./sin(x);}vec2 csc(vec2 x){return 1./sin(x);}vec3 csc(vec3 x){return 1./sin(x);}vec4 csc(vec4 x){return 1./sin(x);}float coth(float x){float a=exp(x);float b=exp(-x);return(a+b)/(a-b);}vec2 coth(vec2 x){vec2 a=exp(x);vec2 b=exp(-x);return(a+b)/(a-b);}vec3 coth(vec3 x){vec3 a=exp(x);vec3 b=exp(-x);return(a+b)/(a-b);}vec4 coth(vec4 x){vec4 a=exp(x);vec4 b=exp(-x);return(a+b)/(a-b);}float sech(float x){return 2./(exp(x)+exp(-x));}vec2 sech(vec2 x){return 2./(exp(x)+exp(-x));}vec3 sech(vec3 x){return 2./(exp(x)+exp(-x));}vec4 sech(vec4 x){return 2./(exp(x)+exp(-x));}float csch(float x){return 2./(exp(x)-exp(-x));}vec2 csch(vec2 x){return 2./(exp(x)-exp(-x));}vec3 csch(vec3 x){return 2./(exp(x)-exp(-x));}vec4 csch(vec4 x){return 2./(exp(x)-exp(-x));}\n\nuint raySphere(in Sphere sph, inout Record rec) {\n    vec3 offset = rec.ray.origin - sph.center;\n    float a = 2.0 * dot(offset, rec.ray.normal);\n    float b = dot(offset, offset) - sph.radius * sph.radius;\n    float disc = a * a - 4.0 * b;\n    rec.objID++;\n    if (disc > 0.0) {\n        float s = sqrt(disc);\n        float dstNear = max(0.0,(-a-s)/2.0);\n        float dstFar = (-a+s)/2.0;\n        if(dstNear < rec.dist) {\n            if(dstNear > 0.0) {\n            \n                rec.intersect = (rec.ray.normal * dstNear) + rec.ray.origin;\n                rec.normal = normalize(rec.intersect - sph.center);\n                rec.dist = dstNear;\n                rec.material = sph.material;\n                rec.hit = true;\n                rec.offset = (rec.intersect - sph.center - sph.radius) / sph.radius - 0.5;\n                rec.tangent = normalize(vec3(rec.normal.z, 0.0, -rec.normal.x));\n                rec.bitangent = normalize(cross(rec.normal, rec.tangent));\n                rec.hitID = rec.objID;\n                rec.refrac = 1;\n                return uint(0x1);\n                \n            } else if(dstFar > 0.0) {\n            \n                rec.inVolume = rec.inVolume || sph.material.density > 0.0;\n                rec.volEmission += sph.material.emission * sph.material.emissionStrength;\n                rec.volDensity += sph.material.density;\n            \n                if(dstFar < rec.dist) {\n                \n                    rec.intersect = (rec.ray.normal * dstFar) + rec.ray.origin;\n                    rec.normal = normalize(rec.intersect - sph.center);\n                    rec.dist = dstFar;\n                    rec.material = sph.material;\n                    rec.hit = true;\n                    rec.offset = (rec.intersect - sph.center - sph.radius) / sph.radius - 0.5;\n                    rec.tangent = normalize(vec3(rec.normal.z, 0.0, -rec.normal.x));\n                    rec.bitangent = normalize(cross(rec.normal, rec.tangent));\n                    rec.hitID = rec.objID;\n                    rec.refrac = -1;\n                \n                    return uint(0x1);\n                \n                }\n            \n            }\n        }\n        return uint(0x0);\n    }\n}\nuint rayTri(in Triangle tri, inout Record rec) {\n    vec3 ab = tri.b - tri.a;\n    vec3 ac = tri.c - tri.a;\n    vec3 bc = tri.c - tri.b;\n    vec3 normal = ab.yzx * ac.zxy - ab.zxy * ac.yzx;\n    vec3 ao = rec.ray.origin - tri.a;\n    vec3 dao = cross(ao, rec.ray.normal);    \n    float det = 1.0 / (-dot(rec.ray.normal, normal));    \n    float dist = dot(ao, normal) * det;\n    float u = dot(ac, dao) * det;\n    float v = -dot(ab, dao) * det;\n    float w = 1.0 - u - v;    \n    bool hit = det >= 1e-6 && dist >= 0.0 && u >= 0.0 && v >= 0.0 && w >= 0.0;    \n    rec.objID++;\n    if(hit && dist < rec.dist) {    \n        rec.intersect = (rec.ray.normal * dist) + rec.ray.origin;\n        rec.normal = normalize(normal);\n        rec.dist = dist;\n        rec.material = tri.material;\n        rec.hit = true;\n        rec.offset = vec3(u, v, w);\n        \n        float xba = tri.buv.x - tri.auv.x;\n        float xcb = tri.cuv.x - tri.buv.x;\n        float yba = tri.buv.y - tri.auv.y;\n        float ycb = tri.cuv.y - tri.buv.y;\n        rec.tangent = normalize(ycb * ab - yba * bc);\n        rec.bitangent = normalize(-xcb * ab + xba * bc);\n        rec.hitID = rec.objID;\n        rec.refrac = 1;\n        \n        return uint(0x1);\n    }\n    return uint(0x0);\n}\nuint rayPlane(in Plane plane, inout Record rec) {\n\n    rec.objID++;\n    vec3 dao = cross(rec.ray.origin, rec.ray.normal);\n    float det = 1.0 / (-dot(rec.ray.normal, plane.normal));\n    float dist = dot(rec.ray.origin, plane.normal) * det;\n    \n    if(dist >= 0.0 && det >= 1e-6) {\n    \n        if(dist < rec.dist) {\n        \n            rec.intersect = (rec.ray.normal * dist) + rec.ray.origin;\n            rec.normal = plane.normal;\n            rec.dist = dist;\n            rec.material = plane.material;\n            rec.hit = true;\n            rec.offset = rec.intersect.xyz * plane.scale;\n            \n            rec.tangent = normalize(vec3(rec.normal.z, 0.0, -rec.normal.x));\n            if(rec.normal.x + rec.normal.z == 0.0) {\n            \n                rec.tangent = vec3(1.0, 0.0, 0.0);\n            \n            }\n            rec.bitangent = normalize(cross(rec.normal, rec.tangent));\n            rec.hitID = rec.objID;\n            rec.refrac = 1;\n            \n            return uint(0x1);\n        \n        }\n    \n    }\n    \n    return uint(0x0);\n\n}\nuint rayCube(in Cube cube, inout Record rec) {\n\n    vec3 o = rec.ray.origin - cube.position;\n\n    rec.objID++;\n\n    vec3 m = sign(rec.ray.normal) / max(abs(rec.ray.normal), 1e-8);\n\n    vec3 n = m * o;\n    vec3 k = abs(m) * cube.size;\n\t\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n\n\tfloat tN = max( max( t1.x, t1.y ), t1.z );\n\tfloat tF = min( min( t2.x, t2.y ), t2.z );\n    \n    float dist;\n\t\n    if (tN > tF || tF <= 0.) {\n    \n        return uint(0x0);\n        \n    } else {\n    \n        if (tN >= 0.0001) {\n        \n            if(tN < rec.dist) {\n        \n                rec.normal = -sign(rec.ray.normal) * step(t1.yzx,t1.xyz) * step(t1.zxy,t1.xyz);\n                rec.dist = tN;\n                rec.intersect = rec.dist * rec.ray.normal + rec.ray.origin;\n                rec.material = cube.material;\n                rec.hit = true;\n                rec.offset = vec3(0.0);\n                rec.tangent = normalize(vec3(rec.normal.z, 0.0, -rec.normal.x));\n                if(rec.normal.x + rec.normal.z == 0.0) {\n            \n                    rec.tangent = vec3(1.0, 0.0, 0.0);\n            \n                }\n                rec.bitangent = normalize(cross(rec.normal, rec.tangent));\n                rec.hitID = rec.objID;\n                rec.refrac = 1;\n                return uint(0x1);\n            \n            }\n            \n        } else if (tF >= 0.0001) {\n            \n            rec.inVolume = rec.inVolume || cube.material.density > 0.0;\n            rec.volEmission += cube.material.emission * cube.material.emissionStrength;\n            rec.volDensity += cube.material.density;\n            \n            if (tF < rec.dist) { \n            \n                rec.normal = -sign(rec.ray.normal) * step(t1.yzx,t1.xyz) * step(t1.zxy,t1.xyz);\n                rec.dist = tF;\n                rec.intersect = rec.dist * rec.ray.normal + rec.ray.origin;\n                rec.material = cube.material;\n                rec.hit = true;\n                rec.offset = vec3(0.0);\n                rec.tangent = normalize(vec3(rec.normal.z, 0.0, -rec.normal.x));\n                if(rec.normal.x + rec.normal.z == 0.0) {\n            \n                    rec.tangent = vec3(1.0, 0.0, 0.0);\n            \n                }\n                rec.bitangent = normalize(cross(rec.normal, rec.tangent));\n                rec.hitID = rec.objID;\n                rec.refrac = -1;\n                \n                return uint(0x1);\n            \n            }\n            \n        } else {\n        \n            return uint(0x0);\n            \n        }\n        \n    }\n\n}\n\nvec3 random(inout uvec3 v) {\n\n    v = v * 1664525u + 1013904223u;\n\n    v.x += v.y*v.z;\n    v.y += v.z*v.x;\n    v.z += v.x*v.y;\n\n    v ^= v >> 16u;\n\n    v.x += v.y*v.z;\n    v.y += v.z*v.x;\n    v.z += v.x*v.y;\n    \n    return vec3(v)*(1.0/float(0xffffffffU));\n\n}\nvec3 randomNormal(vec3 n, inout uvec3 state) {\n\n    vec2 rv2 = random(state).xy;\n\n    vec3  uu = normalize( cross( n, vec3(0.0,1.0,1.0) ) );\n\tvec3  vv = cross( uu, n );\n\t\n\tfloat ra = sqrt(rv2.y);\n\tfloat rx = ra*cos(6.2831*rv2.x); \n\tfloat ry = ra*sin(6.2831*rv2.x);\n\tfloat rz = sqrt( 1.0-rv2.y );\n\tvec3  rr = vec3( rx*uu + ry*vv + rz*n );\n\n    return normalize( rr );\n\n}\nvec3 randomScattering(uvec3 state) {\n    float a = random(state).x * 6.2831853;\n    float x = random(state).x * 2.0 - 1.0;\n    float z = random(state).x;\n    \n\treturn pow(z, 1.0 / 3.0) * vec3(sqrt(1.0 - x * x) * vec2(sin(a), cos(a)), x);\n}\n\nMaterial randomMaterial(in uvec3 state) {\n\n    vec3 color = random(state);\n\n    Material mat = Material(\n    \n        color,\n        color,\n        pow(random(state).x, 14.0) * 20.0,\n        random(state).x,\n        random(state).x,\n        random(state).x,\n        0.0,\n        0.0,\n        0.0,\n        1.5,\n        0.0\n    );\n    return mat;\n\n}\n\nfloat F_Schlick(float f0, float theta) {\n\n    return f0 + (1.0 - f0) * pow(1.0 - theta, 5.0);\n    \n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Materials:\n#define BRUSHED_STEAL Material(vec3(0.3, 0.3, 0.325), vec3(0.0), 0.0, 1.0, 0.5, 1.0, 0.6, 1.0, 0.0, 0.0, 0.0)\n#define BRUSHED_COPPER Material(vec3(1.0, 0.6, 0.2), vec3(0.0), 0.0, 0.9, 1.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.0)\n#define GREEN_PLASTIC Material(vec3(0.0, 0.6, 0.2), vec3(0.0), 0.0, 0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)\n#define BLUE_PLASTIC Material(vec3(0.0, 0.2, 0.6), vec3(0.0), 0.0, 0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)\n#define RED_PLASTIC Material(vec3(0.8, 0.1, 0.1), vec3(0.0), 0.0, 0.3, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)\n\n// Scene Editor ////////////////////////\nvoid distances( inout Record rec ) {\n\n    #if 1\n    raySphere( Sphere( Material(vec3(0.8, 0.8, 0.8), vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.004), vec3(0.0, 0.0, 0.0), 2000.0 ), rec );\n    for(float x = -1200.0; x <= 1200.0; x += 300.0) {\n    \n        for(float z = -600.0; z <= 600.0; z += 300.0) {\n    \n            #if SCENE == 0\n                raySphere( Sphere( randomMaterial(floatBitsToUint(vec3(x, z, 978))), vec3(x, 100.0, z), 100.0 ), rec );\n            #endif\n            #if SCENE == 1\n                rayCube( Cube( randomMaterial(floatBitsToUint(vec3(x, z, 978))), vec3(x, 100.0, z), vec3(100.0) ), rec );\n            #endif\n            \n        }\n    \n    }\n    #else\n    raySphere( Sphere( Material(vec3(0.8, 0.8, 1.0), vec3(0.2, 0.2, 1.0), 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), vec3(0.0), 100.0 ), rec );\n    raySphere( Sphere( Material(vec3(0.8, 0.8, 0.8), vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.004), vec3(0.0, 0.0, 0.0), 1000.0 ), rec );\n    #endif\n    rayPlane( Plane( Material(vec3(1.0), /**/ vec3(0.0), 0.0, 0.9, 0.6, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0 /**/), vec3(0.0, 1.0, 0.0 ), 0.0, 0.0 ), rec );\n    \n}\n////////////////////////////////////////\n\nvoid initRay( in vec2 fragCoord, inout Ray ray, uvec3 state ) {\n    vec2 mouse = iMouse.xy/iResolution.xy - 0.5;\n    ray.origin = vec3(0.0, 0.0, -FOCAL_LENGTH) + vec3(random(state).xy * DOF_AMOUNT, 0.0);\n    ray.normal = normalize(vec3(fragCoord + random(state).x * BLUR_AMOUNT, 0.0) - ray.origin);\n    ray.origin.z -= CAM_DISTANCE;\n    #if 0\n    mat2 rot = rot2(-0.7);\n    ray.origin.yz *= rot; ray.normal.yz *= rot;\n    rot = rot2(0.0);\n    ray.origin.xz *= rot; ray.normal.xz *= rot;\n    #else\n    mat2 rot = rot2(8.0 * mouse.y);\n    ray.origin.yz *= rot; ray.normal.yz *= rot;\n    rot = rot2(8.0 * mouse.x);\n    ray.origin.xz *= rot; ray.normal.xz *= rot;\n    #endif\n}\n\nvoid initRecord(inout Record rec, in Ray ray) {\n\n    rec.ray = ray;\n    rec.hit = false;\n    rec.dist = 100000.0;\n    rec.volEmission = vec3(0.0);\n    rec.volDensity = 0.0;\n    rec.objID = 0;\n\n}\n\nvec3 worldSpace(vec3 map, vec3 t, vec3 b, vec3 n) {\n\n    mat3x3 tbn = mat3x3(t.x, b.x, n.x, t.y, b.y, n.y, t.z, b.z, n.z);\n    return normalize(map * tbn);\n\n}\n\nvec3 Trace( in vec2 fragCoord, in uvec3 state ) {\n\n    vec3 final = vec3(0.0);\n\n    for( int i = 0; i < SAMPLES; i++ ) {\n\n        Ray ray;\n        Record rec;\n        initRay( fragCoord, ray, state );\n        initRecord( rec, ray );\n        rec.refrac = -1;\n    \n        vec3 color = vec3(0.0);\n        vec3 increment = vec3(1.0);\n    \n        for( int j = 0; j < MAX_BOUNCES; j++ ) {\n    \n            distances( rec );\n    \n            if( rec.hit ) {\n            \n                #if 0\n                \n                return rec.material.color;\n                \n                #endif\n            \n                #if 0\n                \n                return vec3(rec.material.sheen, rec.material.roughness, rec.material.metallic);\n                \n                #endif\n                \n                float c = 0.0;\n                \n                if(rec.inVolume) {\n                \n                    c = (rec.dist / VOLUME_STEP_SIZE) * rec.volDensity;\n                \n                }\n                \n                if(c > random(state).x) {\n                \n                    rec.ray.origin += (random(state).x * rec.dist) * rec.ray.normal;\n                    rec.ray.normal = randomScattering(state);\n                    \n                    color += rec.volEmission * increment;\n                \n                } else {\n            \n                    vec3 matColor = rec.material.color;\n                \n                    float det = (1.0/(rec.material.roughness+1.0));\n                \n                    float theta = dot(rec.normal, -rec.ray.normal);\n                    float sheen = F_Schlick(rec.material.sheen, theta);\n                    float refrac = rec.material.transparency / sheen;\n                \n                    float spec = float(sheen > random(state).x);\n                \n                    vec3 diffuseCol = matColor * (1.0 - rec.material.metallic);\n                    vec3 specCol = mix(vec3(1.0), matColor, rec.material.metallic * 0.5);\n                \n                    vec3 anisoNorm = normalize(vec3(0.0, random(state).x * sign(random(state).x * 2.0 - 1.0) * rec.material.anisoStrength, 1.0));\n                    vec3 diffuseNorm = mix(randomNormal(rec.normal, state), rec.normal, spec * det);\n                \n                    rec.ray.origin = rec.intersect + rec.normal * 0.05;\n                \n                    rec.normal = mix(diffuseNorm, worldSpace(anisoNorm, rec.tangent, rec.bitangent, rec.normal), rec.material.aniso);\n                \n                    if(refrac > random(state).x || rec.refrac == -1) {\n                                    \n                        if(rec.refrac == 1) {\n                    \n                            rec.ray.origin = rec.intersect - rec.normal * 0.05;;\n                            rec.ray.normal = refract(rec.ray.normal, rec.normal, clamp(1.0 / rec.material.ior, 0.0, 1.0));\n                    \n                        } else {\n                    \n                            rec.ray.origin = rec.intersect + rec.normal * 0.05;\n                            rec.ray.normal = refract(rec.ray.normal, -rec.normal, clamp(rec.material.ior, 0.0, 1.0));\n                    \n                        }\n                \n                    } else {\n                \n                        rec.ray.normal = reflect(rec.ray.normal, rec.normal);\n                    \n                    }\n                \n                    initRecord(rec, rec.ray);\n        \n                    color += (rec.material.emission * rec.material.emissionStrength) * increment;\n                    increment *= mix(diffuseCol, specCol, spec);\n                \n                }\n    \n            } else {\n    \n                color += texture(iChannel0, rec.ray.normal).xyz * increment;\n                break;\n    \n            }\n            \n        }\n    \n        final += color;\n        \n    }\n    \n    final /= float(SAMPLES);\n    \n    return final;\n\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    float ratio = 720.0/iResolution.y;\n    vec2 coord = ratio * fragCoord;\n\n    vec3 det = vec3(coord, iFrame);\n\n    uvec3 state = floatBitsToUint(det);\n    \n    fragColor = vec4(Trace( coord - ratio * iResolution.xy / 2.0, state ), 1.0);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec3 skyColor( in vec3 rd )\n{\n    vec3 sundir = normalize( vec3(.0, .1, 1.) );\n    \n    float yd = min(rd.y, 0.);\n    rd.y = max(rd.y, 0.);\n    \n    vec3 col = vec3(0.);\n    \n    col += vec3(.4, .4 - exp( -rd.y*20. )*.15, .0) * exp(-rd.y*9.); // Red / Green \n    col += vec3(.4, .6, .8) * (1. - exp(-rd.y*8.) ) * exp(-rd.y*.9) ; // Blue\n    \n    col = mix(col*1.2, vec3(.3),  1.-exp(yd*100.)); // Fog\n    \n    col += vec3(1.0, .8, .55) * pow( max(dot(rd,sundir),0.), 15. ) * 0.6; // Sun\n    col += pow(max(dot(rd, sundir),0.), 150.0) * 4.0;\n    \n    return col * 1.2;\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    //fragColor = texture(iChannel0, rayDir);\n    //fragColor = vec4(1.0);\n    fragColor = vec4(skyColor(rayDir), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 23,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// Save State Buffer\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texture(iChannel0, fragCoord/iResolution.xy);\n    \n    if(iMouse.z > 0.0) {\n    \n        fragColor = vec4(float(iFrame));\n        \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    vec2 uv = fragCoord / iResolution.xy;\n\n    fragColor = texture(iChannel0, uv);\n\n    float frame = float(iFrame + 1) - texture(iChannel1, vec2(0.6, 0.5)).x;\n    \n    vec4 current = texture(iChannel2, uv);\n    \n    if(iMouse.z > 0.0) {\n    \n        fragColor = current;\n    \n    } else {\n    \n        fragColor = mix(fragColor, current, 1.0 / frame);\n    \n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587849136",
+            "description": "GPU implementation of Jason Tarbell's Substrate algorithm.\n\nI couldn't figure out how to get the sand working (#define WIP_SAND), tried raymarching distance to nearest line in a voronoi diagram (jump-flooding) without success.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wsXfRN",
+            "likes": 7,
+            "name": "Substrate",
+            "published": 3,
+            "tags": [
+                "generative",
+                "cracks",
+                "substrate"
+            ],
+            "usePreview": 0,
+            "username": "darknoon",
+            "viewed": 479
+        },
+        "renderpass": [
+            {
+                "code": "\nvec3 a = vec3(0.5, 0.5, 0.5);\nvec3 b = vec3(0.5, 0.23, 0.9);\nvec3 c = vec3(1.0, 1.0, 1.0);\nvec3 d = vec3(0.00, 0.33, 0.67);\n\n#define RAYMARCH_DISTANCE 1\n#define RAYMARCH_SAMPLES 5\n\n\n#define WOS_SAMP 1\n#define WOS_E 1.\n#define WOS_MAX_ITER 16\n\n// isquilez color mapper\nvec3 colorMap(float t) {\n\treturn (a + b * cos(2. * PI * (c * t + d)));\n}\n\nfloat udSegment( in vec2 p, in vec2 a, in vec2 b )\n{\n    vec2 ba = b-a;\n    vec2 pa = p-a;\n    float h =clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length(pa-h*ba);\n}\n\n#if WIP_WOS\n\n\n\n// WoS\nvec4 march( in vec2 p ) {\n    vec2 invRes = 1. / iResolution.xy;\n\tfor(int i=0; i<WOS_MAX_ITER; i++) {\n        p = clamp(p, vec2(2.), iResolution.xy - 2.);\n        vec4 distData = texture(iChannel1, p * invRes);\n        float d = length(distData.xy - p);\n        \n        if (d < WOS_E) {\n\t    \tvec4 lineData = texture(iChannel0, p * invRes);\n\t\t    vec2 lineBasis = vec2(cos(lineData.z), sin(lineData.z));\n            vec3 lineColor = vec3(0.5 + 0.5 * cos(lineData.z));\n            return vec4(colorMap(lineData.z), 1.0);\n        }\n        p = p + d * randomInCircle();\n    }\n    return vec4(0.0);\n}\n\n#endif\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 invRes = 1. / iResolution.xy;\n    // For now, just dump out Buffer A\n    vec2 uv = fragCoord * invRes;\n    \n    vec4 distData = texture(iChannel1, uv);\n    vec2 lpt = distData.xy;\n    // vector from nearest line to current point\n    vec2 dto = fragCoord - lpt;\n\n    #if SHOW_DISTANCE_IMAGE\n    // Direction image\n    fragColor = vec4(0.5 + dto * invRes * 1.5, 0.5, 1.0);\n    // Distance\n    //fragColor.rgb = vec3(1.-4.0 * length(dto) * invRes.x);\n    \n    #elif DEBUG\n    vec4 data = texture(iChannel0, uv);\n    fragColor = vec4(data.xy, data.zw);\n\n    #else\n    // Accumulate contribution from neighbors (5x5 neighborhood allows for fatter lines, subpx)\n    float dist = 1000.0;\n    vec4 distLine = vec4(0.0);\n    for (int i=-2; i<=2; i++) {\n        for (int j=-2; j<=2; j++) {\n            vec2 offset = vec2(i, j);\n            vec4 data = texture(iChannel0, uv + offset * invRes);\n            \n            // Each point that a line transited projects a line via udSegment fn\n            vec2 frac = data.xy;\n            vec2 pos = frac + offset;\n            float angle = data.z;\n            vec2 dir = vec2(cos(angle), sin(angle));\n\n            bool filled = data.w != 0.0;\n            // Take the min distance to the surface\n            if (filled) {\n                float segDist = udSegment( vec2(0.0), pos - 0.5 * dir, pos + 0.5 * dir );\n                if (segDist < dist) {\n\t            \tdist = segDist;\n                    distLine = data;\n                }\n            }\n        }\n    }\n    // Read the nearest line (from buffer A) to our current point\n    vec4 lineData = texture(iChannel0, distData.xy * invRes);\n\n    float rmDist = 1.0;\n    #if WIP_SAND && RAYMARCH_DISTANCE\n    // Ray-march from current position away from nearest line\n    vec2 rmDir = normalize(dto);\n    vec2 rmPt = fragCoord;\n    //vec2 rmPt = lpt + vec2(sin(lineData.z), cos(lineData.z));\n    float distBound = length(dto);\n    rmDist = distBound;\n    for (int i = 0; i < RAYMARCH_SAMPLES; i++) {\n        // Ray march distance update to new point\n        vec2 ptNext = rmPt + rmDir * distBound;\n        ptNext = clamp(ptNext, vec2(0.0), iResolution.xy);\n        // opt: length() not really necessary\n        rmDist += length(ptNext - rmPt);\n\t\trmPt = ptNext;\n\n        // Sample distance field\n        vec4 distDataRm = texture(iChannel1, rmPt * invRes);\n        vec2 lptRm = distDataRm.xy;\n        \n        // We can safely step within a radius of the nearest line point\n        distBound = length(lptRm - rmPt);\n    }\n    #elif WIP_WOS\n    \n        // Walk on Circles\n        ivec2 q = ivec2(fragCoord);\n        srand( hash(q.x+hash(q.y + hash(iFrame))));\n        vec4 wc = vec4(0.);\n        for (int i=0; i<WOS_SAMP; i++) {\n            vec4 m = march(fragCoord);\n            wc += m;\n        }\n        vec3 color = wc.rgb / wc.a;\n    #endif\n    \n\n    #if WIP_SAND\n    // Randomize based on point in space\n    // Parameterize space along line angle\n    vec2 lineBasis = vec2(cos(lineData.z), sin(lineData.z));\n    //float str = hash12(lineData.xy);\n    // Distance along line (not from start)\n    float basis = dot(lineBasis, distData.xy);\n    // Distance from line\n    float dline = length(dto);\n\n    //float str = 0.5 + 0.2 * hash11(floor(0.25*basis));\n    float str = 0.5 + 0.2 * sin(0.5 * basis);\n    \n    float rmBright = 1. - clamp(rmDist * invRes.y, 0.0, 1.0);\n    //float str = ;\n    str = rmBright;\n    \n        \n    //vec3 color = str * colorMap(16. * lineData.z);\n    vec3 color = colorMap(rmDist * invRes.y);\n    \n    #elif WIP_WOS\n    \n    #else //WIP_SAND\n    vec3 color = vec3(0.95);\n    #endif //WIP_SAND\n    \n    float thick = 2.0;\n\t\n    // Falloff color\n    vec3 lineColor = vec3(0.0);\n    float lineBlend = clamp(thick - dist, 0.0, 1.0);\n    \n    fragColor.xyz = mix(color, lineColor, lineBlend);\n    \n    //fragColor.xyz = min(vec3(dist), 1.0) - 0.005*length(dto);\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define WIP_SAND 0\n\n// Turn on Walk on Sphere algorithm (PDE)\n#define WIP_WOS 1\n\n#define SLOW_ANIMATION 0\n#define DEBUG 0\n#define SHOW_DISTANCE_IMAGE 0\n#define PI 3.14159\n#define RESET (iFrame == 0 || iMouse.z > 0.0)\n// Number betweet 0 and 1-something, subpixel speed\n#define SPEED 0.85\n\n\n// The interesting code is in Buffer A.\n\n\n#define R(a) texture(iChannel0, (fragCoord + a) * invRes)\n\n// via https://www.shadertoy.com/view/4djSRW\nvec4 hash43(vec3 p)\n{\n\tvec4 p4 = fract(vec4(p.xyzx)  * vec4(.1031, .1030, .0973, .1099));\n    p4 += dot(p4, p4.wzxy+33.33);\n    return fract((p4.xxyz+p4.yzzw)*p4.zywx);\n}\n\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n\nfloat hash11(float p)\n{\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\n\n\n\n/// WoS\n\n// --------------------------------------\n// oldschool rand() from Visual Studio\n// --------------------------------------\nint  seed = 1;\nvoid srand(int s ) { seed = s; }\nint  rand(void) { seed = seed*0x343fd+0x269ec3; return (seed>>16)&32767; }\n// --------------------------------------\n\n\n// --------------------------------------\n// hash to initialize the random sequence (copied from Hugo Elias)\n// --------------------------------------\nint hash( int n )\n{\n\tn = (n << 13) ^ n;\n    return n * (n * n * 15731 + 789221) + 1376312589;\n}\n\n// --------------------------------------\n\nvec2 randomInCircle( void )\n{\n    float an = 6.283185*float(rand())/32767.0;\n    return vec2(cos(an),sin(an));\n}\n    \n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Crack occupancy buffer\n// xy = fract(xy)       : allows sub-pixel movement of each crack\n// z = angle            : angle of crack travel\n// w = tag              : 0 empty, 1 occupied, 2 active\n\n// RNG for crack init, branch creation\nvec4 hash4( vec3 p )\n{\n    vec4 q = vec4( dot(p,vec3(127.1,311.7,256.8)), \n\t\t\t\t   dot(p,vec3(269.5,183.3,012.5)), \n\t\t\t\t   dot(p,vec3(419.2,371.9,167.1)),\n                   dot(p,vec3(269.5,183.3,918.1))\n                 );\n\treturn fract(sin(q)*43758.5453);\n}\n\n// Update cracks\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 invRes = 1. / iChannelResolution[0].xy;\n    vec4 data = R(0.0);\n    \n    vec4 rng = hash43(vec3(fragCoord * 0.01, iTime + 132.4));\n    \n    // Seed initial cracks\n    if (RESET) {\n        bool init = rng.z < 0.005 && rng.y < 0.005 && rng.w < 0.5;\n        float angle = 2. * 3.14159 * rng.x;\n        if (init) {\n            //float angle = 1.5 + 1.4 * rng.x;\n            // Init frac to middle of the pixel\n            fragColor = vec4(0.0, 0.0, angle, 2.);\n            return;\n        } else {\n            fragColor = vec4(0.0, 0.0, angle, 0.);\n            return;\n        }\n    }\n    \n    // Slow animation\n    #if SLOW_ANIMATION\n    if (fract(iTime) > 1./30.) {\n        fragColor = data;\n        return;\n    }\n    #endif\n    \n    // If we're occupied and inactive, stay inactive with current angle\n    if (data.w == 1.) {\n        // Small chance of turning into an orthogonal line\n        // TODO: only do this if we have enough space\n        if (rng.y < 0.005 && rng.x < 0.005) {\n        \tfragColor = vec4(data.xy, data.z - 0.5 * PI, 2.0);\n        } else if (rng.y < 0.005 && rng.z < 0.005) {\n        \tfragColor = vec4(data.xy, data.z + 0.5 * PI, 2.0);\n        } else {\n            fragColor = data;\n        }\n        return;\n    }\n    \n    // Search neighbors for a particle coming into this cell\n    bool entered = false;\n    for (int i=-1; i<=1; i++) {\n        for (int j=-1; j<=1; j++) {\n            // There are some cases where the current cell could be the target\n            //if (i==0 && j==0) continue;\n            if (entered) break;\n            \n            vec2 offset = vec2(i, j);\n            vec4 other = R(offset);\n            \n            bool otherIsCrack = other.w == 2.0;\n            \n            vec2 frac = other.xy;\n\n            float angle = other.b;\n            \n            vec2 dir = SPEED * vec2(cos(angle), sin(angle));\n            \n            // If this falls within our square (-0.5 ... 0.5) x/y then we become this crack\n            vec2 minc = vec2(-0.5);\n            vec2 maxc = vec2(0.5);\n            vec2 otherNext = offset + frac + dir;\n            // Are we the cell this crack will enter?\n            if (otherIsCrack\n                && all(greaterThan(otherNext, minc))\n                && all(lessThan(otherNext, maxc))) {\n                // Become this crack\n                fragColor = vec4(otherNext.xy, other.z, other.w);\n                entered = true;\n                break;\n            }\n        }\n    }\n    \n    // done searching neighbors\n    if (!entered) {\n        float flag = data.w;\n        flag = min(flag, 1.0);\n        fragColor = vec4(data.xy, data.z, flag);   \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Jump-flood algorithm for voronoi / min-distance to lines\n// Problem is that this wasn't as useful for estimating distance to nearest line as I thought\n\n// xy = coordinate of nearest line\n// zw = \n\n// Take log(N) steps to resolve a distance image\n// https://computergraphics.stackexchange.com/questions/4830/understanding-jump-flooding-algorithm-jfa-for-voronoi-diagrams\n\n#define JFA_STEPS 9\n#define JFA_MAX_DIST (1<<JFA_STEPS)\n#define JFA_HUGE (100000.0)\n\n// Different algorithm\n\n#if WIP_SAND || WIP_WOS\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 invRes = 1. / iChannelResolution[0].xy;\n    int fi = iFrame % JFA_STEPS;\n    float progress = float(fi) / float(JFA_STEPS);\n    \n    // Can go up or down here\n    int jump = 1 << (JFA_STEPS - fi - 1);\n    \n    // Read data from occupancy texture\n    vec4 data = texture(iChannel0, fragCoord * invRes);\n    \n    // If we are an active cell, seed with our data\n    float minDist = data.w > 0. ? length(data.xy) : JFA_HUGE;\n    vec4  minData = data.w > 0. ? vec4(fragCoord.xy + data.xy, 1.0, 1.0) : vec4(0.0);\n    // Check -jump, cur, jump neighborhood\n    for (int i=-jump; i<=jump; i+=jump) {\n        if (RESET) {\n            break;\n        }\n        for (int j=-jump; j<=jump; j+=jump) {\n            vec2 off = vec2(i,j);\n            // This is our data, xy is coord of nearest point\n            vec4 neigh = texture(iChannel1, (fragCoord + off) * invRes);\n            \n\t\t\t// If neighbor dist is less, use it\n            float dist = length(neigh.xy - fragCoord);\n            if (dist < minDist) {\n                minDist = dist;\n                minData = neigh;\n            }\n        }\n    }\n    if (minDist < JFA_HUGE) {\n\t    fragColor.rgba = minData;\n    } else {\n    \tfragColor.rgba = vec4(0.0);\n    }\n}\n\n#else\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord ) {\n    fragColor.rgba = vec4(0.0);\n}\n\n\n#endif",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

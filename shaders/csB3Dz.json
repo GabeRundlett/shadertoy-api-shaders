@@ -1,0 +1,140 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667443845",
+            "description": "Using \"Fuzzy Signed Distance Fields\" over a perlin noise heightmap, one can easily generate highly detailed and natural looking erosion with branching rivers and cliffs!\nDiscovered by accident!",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "csB3Dz",
+            "likes": 34,
+            "name": "Procedural Erosion Heightmap",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "terrain",
+                "distance",
+                "field",
+                "signed",
+                "erosion"
+            ],
+            "usePreview": 0,
+            "username": "Hatchling",
+            "viewed": 788
+        },
+        "renderpass": [
+            {
+                "code": "vec2 compress(vec2 vec)\n{\n    float mag = sqrt(dot(vec, vec));\n\n    float newMag = mag;\n\n    // Softly compress the range \n    // from 0 to +Inf\n    // to 0 to +1 \n    // instead of clipping values\n    // when contrast is used for visualization.\n    newMag = newMag / (0.5 + newMag);\n\n    vec *= newMag / (mag + 0.00001);\n    return vec;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uvC = fragCoord.xy / iResolution.xy;\n\tvec2 uvR = (fragCoord.xy + vec2(1,0)) / iResolution.xy;\n\tvec2 uvT = (fragCoord.xy + vec2(0,1)) / iResolution.xy;\n\tvec2 uvL = (fragCoord.xy - vec2(1,0)) / iResolution.xy;\n\tvec2 uvB = (fragCoord.xy - vec2(0,1)) / iResolution.xy;\n    vec2 colC = texture(iChannel0, uvC).ra;\n    vec2 colR = texture(iChannel0, uvR).ra;\n    vec2 colT = texture(iChannel0, uvT).ra;\n    vec2 colL = texture(iChannel0, uvL).ra;\n    vec2 colB = texture(iChannel0, uvB).ra;\n    \n    colC.r /= colC.g;\n    colR.r /= colR.g;\n    colT.r /= colT.g;\n    colL.r /= colR.g;\n    colB.r /= colT.g;\n    \n    \n    vec2 gradient = vec2(colL.r - colR.r, colB.r - colT.r);\n    vec2 curvature = vec2\n    (\n        colL.r + colR.r - 2.0 * colC.r, \n        colB.r + colT.r - 2.0 * colC.r \n    ) * 0.5;\n    \n    \n    // Enhance gradient+curvature contrast.\n    vec2 both = compress(gradient * 50.0 - curvature * 1000.0);\n    \n    \n    // Unmodified gradients:\n    // vec2 gradient = vec2(colC.r - colR.r, colC.r - colT.r);\n    \n    fragColor = vec4(both * 0.5 + 0.5, colC.r, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float getOccupancy(vec2 uv) { return texture(iChannel0, uv).r; }\n\nbool isIn(vec2 uv, float threshold) { return getOccupancy(uv) > threshold; }\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // This buffer averages out multiple signed distance fields\n    // wherein the threshold that deliniates inside from outside\n    // varies (from 0 to 1) between different signed distance\n    // computations.\n    // This essentially allows a signed distance field\n    // where there is no binary distinction between inside and outside,\n    // where \"low occupancy\" pixels have lower influence\n    // rather than having no influence at all.\n\n    // Compute the \"noise\" which is used to generate\n    // and combine multiple samples.\n    // The noise vector contains:\n    //     x, y: offset to sampling position (antialiasing)\n    //     z:    threshold deliniating inside from outside,\n    //           as the input texture contains a range of values\n    //           from 0 to 1 and must be converted to binary\n    //           at a given threshold.\n    vec3 noise;\n    {\n        noise = vec3(0);\n        \n        // Calculate oising over time.\n        vec3 temporalNoise;\n        {\n            // Use the golden ratio as it should land\n            // on all fractional values eventually.\n            temporalNoise = vec3(iFrame, iFrame+1, iFrame+2);\n            temporalNoise *= 1.618033;\n            \n            // We floor this one early to prevent\n            // loss of precision when iFrame becomes large.\n            temporalNoise -= floor(noise);\n        }\n        noise += temporalNoise;\n    \n        #ifdef SPATIAL_NOISE\n        // Add noising over space.\n        // (Currently disabled; messes up the\n        // gradient and especially the curvature\n        // of the resulting map.)\n        vec3 spatialNoise;\n        {\n            // Noise is added to vary the threshold\n            // per pixel to speed up apparent convergence,\n            // but the converged result shouldn't change.\n            \n            vec2 noiseUV = fragCoord.xy / iChannelResolution[1].xy;\n            spatialNoise = texture(iChannel1, noiseUV).r;\n        }\n        noise += spatialNoise;\n        #endif\n        \n        // Wrap values around from 0 to 1.\n        noise -= floor(noise);\n        \n        // Center the sampling position offset\n        // to a range within -0.5 to +0.5.\n        noise.xy -= 0.5f;\n    }\n    \n    // Compute the signed distance to an edge\n    // (limited to a certain search distance)\n    // from -1 to 1.\n    float distanceToEdge;\n    {\n        // Sample with \"jitter\" for accumulative antialiasing.\n        vec2 samplingCenter = fragCoord + noise.xy;\n        vec2 samplingCenterUV = samplingCenter / iChannelResolution[0].xy;\n\n        const int iRange = 16;\n        const float range = float(iRange);\n        const float maxSqrDist = range*range;\n        vec2 startPosition = samplingCenter;\n\n        // We need to know whether our center pixel,\n        // the one we're currently calculating the signed distance for,\n        // is inside the volume or outside,\n        // as this determines its sign:\n        // Inside -> negative\n        // Outside -> positive\n        bool fragIsIn = isIn(samplingCenterUV, noise.z);\n        \n        float squaredDistanceToEdge = maxSqrDist;\n        for(int dx=-iRange; dx <= iRange; dx++)\n        {\n            for(int dy=-iRange; dy <= iRange; dy++)\n            {\n                vec2 delta = vec2(dx, dy);\n                vec2 scanPosition = startPosition + vec2(dx, dy);\n                float scanDistanceSqr = dot(delta, delta);\n\n                // Ideally we'd use a precomputed sampling pattern\n                // that avoids testing the corners that are out-of-range.\n                // Perhaps the compiler already unrolls the for loop \n                // and culls them?\n                if(scanDistanceSqr >= maxSqrDist)\n                    continue;\n                \n                // Already found one closer? Skip.\n                if(scanDistanceSqr >= squaredDistanceToEdge)\n                    continue;\n\n                bool scanIsIn = isIn(scanPosition / iChannelResolution[0].xy, noise.z);\n                \n                // Sign change?\n                if (scanIsIn != fragIsIn)\n                {\n                    // We found a boundary!\n                    squaredDistanceToEdge = scanDistanceSqr;\n                }\n            }\n        }\n\n        distanceToEdge = sqrt(squaredDistanceToEdge);\n\n        // The minimum distance is always 1,\n        // but the boundary lies between the pixels halfway.\n        // Correct the discontinuity this creates\n        // in the distance field (a flat region at the sign change\n        // boundary) by subtracting the pixel radius\n        // from the distance.\n        distanceToEdge -= 0.5;\n\n        // Make the distance signed:\n        // Inside -> negative\n        // Outside -> positive\n        distanceToEdge = fragIsIn ? -distanceToEdge : distanceToEdge;\n        \n        // Convert distance in pixels \n        // from -range to +range\n        // to 0 to 1 \n        distanceToEdge /= range * 2.;\n        distanceToEdge = 0.5 - distanceToEdge;\n    }\n    \n    // This step will prevent us from generating\n    // a true signed distance field, but is useful\n    // for terrain because it removes discontinuities\n    // in the gradient.\n    distanceToEdge = smoothstep(0., 1., distanceToEdge);\n    \n    // Optionally repeating this step will remove\n    // curvature discontinuities, but\n    // reduces the influence of distant pixels too much.\n    //distanceToEdge = smoothstep(0., 1., distanceToEdge);\n    \n    // NOTE: you can apply other transformations to\n    // \"distanceToEdge\" to change the character of the terrain.\n    // For example, squaring the values makes peaks pointier\n    // and cracks flatter.\n    // distanceToEdge *= distanceToEdge;\n    \n    fragColor = vec4(distanceToEdge, distanceToEdge, distanceToEdge, 1.0);\n\n    // Accumulate samples over time.\n    {\n        vec2 uv = (fragCoord.xy) / iChannelResolution[2].xy;\n        vec4 oldColor = texture(iChannel2, uv);\n\n        // This block of code was to make the terrain\n        // \"grow\" instead of expose the poorly resolved\n        // initial state with few samples.\n        /*if(oldColor.a == 0.)\n        {\n            oldColor.rgb = vec3(25.);\n            oldColor.a = 50.;\n        }*/\n\n        fragColor += oldColor;\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float perlin(vec2 uv)\n{\n    uv += vec2(8.2813, 1.42114);\n    uv /= 4.0;\n    vec2 occ = vec2(0);\n    float a = 1.0;\n    for(int i = 0; i < 7; i++)\n    {\n        occ += vec2(texture(iChannel0, uv).r, 1) * a;\n        uv *= 0.5;\n        a *= 2.0;\n    }\n    float v = occ.x / occ.y;\n    \n    // Increase contrast\n    // (though this will flatten the tops and bottoms).\n    v = v * 2.0 - 1.0;\n    v = tanh(v * 2.0);\n    v = v * 0.5 + 0.5;\n    \n    // Make peaks pointer and valleys flatter.\n    v *= v;\n    \n    return v;\n       \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iChannelResolution[0].xy;\n    float height = perlin(uv);\n    fragColor = vec4(height, height, height, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 15,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0a40562379b63dfb89227e6d172f39fdce9022cba76623f1054a2c83d6c0ba5d.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

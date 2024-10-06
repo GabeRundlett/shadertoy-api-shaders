@@ -1,0 +1,185 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1656107482",
+            "description": "Experiment based on Wolfenstein/Doom-style graphics, doing one raycast per column of pixels.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Nddyz4",
+            "likes": 4,
+            "name": "Old-School FPS Controller",
+            "published": 3,
+            "tags": [
+                "3d",
+                "multipass"
+            ],
+            "usePreview": 0,
+            "username": "cra_manning_w",
+            "viewed": 265
+        },
+        "renderpass": [
+            {
+                "code": "#define BUF_A iChannel0\n#define BUF_B iChannel1\n#define BUF_C iChannel2\n\n\nvec3 fogColor(vec3 viewDir)\n{\n    return mix(vec3(0.7, 0.7, 1.0),\n               vec3(0.4, 0.4, 1.0),\n               SATURATE(viewDir.z));\n}\n\nvec3 floorColor(vec2 horzPos)\n{\n    return vec3(0.0);\n}\nvec3 ceilingColor(vec2 horzPos)\n{\n    return vec3(0.5);\n}\n\nvec3 surfaceLighting(vec3 pos, vec2 normal2D, vec3 albedo)\n{\n    vec3 normal = vec3(normal2D, 0.0);\n    const vec3 LIGHT_DIR = normalize(vec3(1, 1, -1));\n    \n    float diffuse = max(0.1, dot(normal, -LIGHT_DIR));\n    \n    return diffuse * albedo;\n}\nvec3 materialColor1(vec3 surfacePos, vec2 surfaceNormal)\n{\n    return vec3(1, 0, 0);\n}\n\nfloat material2NoiseAxis(vec3 surfacePos, vec2 surfaceNormal, vec2 surfaceUV)\n{\n    const vec2 NOISE_SCALE = vec2(80, 200);\n    return perlinNoise(surfaceUV * NOISE_SCALE * 1.0, 5.423897);\n}\nvec3 materialColor2(vec3 surfacePos, vec2 surfaceNormal)\n{\n    //Use triplanar mapping, but optimize based on the fact\n    //    that surfaces always have a horizontal normal.\n    vec2 surfaceUvPlaneX = surfacePos.yz,\n         surfaceUVPlaneY = surfacePos.xz;\n    vec2 surfaceWeights = abs(surfaceNormal);\n    surfaceWeights = pow(surfaceWeights, vec2(10)); //Make a shorter transition between planes\n    surfaceWeights /= (surfaceWeights.x + surfaceWeights.y); //Normalize\n    \n    float noise = dot(surfaceWeights,\n                      vec2(material2NoiseAxis(surfacePos, surfaceNormal, surfaceUvPlaneX),\n                           material2NoiseAxis(surfacePos, surfaceNormal, surfaceUVPlaneY)));\n    \n    //Add a sort of cross-hatching effect.\n    vec2 crossHatchUV = vec2(dot(surfaceWeights, surfacePos.xy),\n                             surfacePos.z);\n    crossHatchUV *= vec2(30, 30) * 5.0;\n    float hatchStrength = max(OSCILLATE(crossHatchUV.x),\n                              OSCILLATE(crossHatchUV.y));\n    hatchStrength = pow(hatchStrength, 40.0);\n    return vec3(hatchStrength);\n}\n\nvec3 materialColor3(vec3 surfacePos, vec2 surfaceNormal)\n{\n    vec3 albedo1 = vec3(0, 0, 1),\n         albedo2 = vec3(1, 1, 0);\n         \n    vec2 surfaceUV1 = surfacePos.xz,\n         surfaceUV2 = surfacePos.yz;\n    \n    //Generate noise using that UV.\n    float noise1 = 0.5 * 2.0 * abs(perlinNoise(surfaceUV1 * vec2(100, 50), 1.2342) - 0.5),\n          noise2 = 0.5 * 2.0 * abs(perlinNoise(surfaceUV2 * vec2(50, 100), 5.3224) - 0.5);\n    float noiseFinal = min(noise1, noise2) / max(noise1, noise2);\n    \n    return mix(albedo1, albedo2, SHARPEN(SHARPEN(noiseFinal)));\n}\nvec3 materialColor(int id, vec3 surfacePos, vec2 surfaceNormal)\n{\n    vec3 albedo;\n    if (id == 0)\n        albedo = materialColor1(surfacePos, surfaceNormal);\n    else if (id == 1)\n        albedo = materialColor2(surfacePos, surfaceNormal);\n    else if (id == 2)\n        albedo = materialColor3(surfacePos, surfaceNormal);\n    else\n        albedo = vec3(1, 0, 1); //ERROR: Unknown material\n    \n    return albedo;//surfaceLighting(surfacePos, surfaceNormal, albedo);\n}\n\n\n\nvec3 sceneColor(Camera cam, ColumnCast surfaceHit, vec2 uv)\n{\n    //If nothing was hit, set the \"hit distance\" to the max value.\n    float hitMask = step(0.0, surfaceHit.hitDist);\n    bool hitNothing = (hitMask == 0.0);\n    surfaceHit.hitDist = TRY(surfaceHit.hitDist, MAX_DISTANCE, hitNothing);\n    \n    //Compute 2D ray/position data.\n    float camHeadingRadians = getPixelHeading(cam, uv.x);\n    vec2 viewDir = vec2(cos(camHeadingRadians),\n                        sin(camHeadingRadians));\n    vec2 surfacePos = cam.pos + (viewDir * surfaceHit.hitDist);\n    \n    //Compute 3D ray/position data.\n    float verticalFOVDegrees = CAM_HORIZONTAL_FOV_DEGREES * (iResolution.y / iResolution.x),\n          verticalFOVHalfRadians = verticalFOVDegrees / 360.0 * PI2 / 2.0,\n          pitch = mix(-verticalFOVHalfRadians,\n                      verticalFOVHalfRadians,\n                      uv.y),\n          camZPos = 0.0;\n    vec3 viewDir3D = rotateAround(vec3(viewDir, 0.0),\n                                  vec3(getPerpendicularRight(viewDir), 0.0),\n                                  pitch);\n    float hitDist3D = TRY((surfacePos.x - cam.pos.x) / viewDir.x,\n                          (surfacePos.y - cam.pos.y) / viewDir.y,\n                          viewDir.x == 0.0);\n    vec3 wallHitPos3D = vec3(cam.pos, camZPos) + (viewDir3D * hitDist3D);\n    \n\n    //Calculate the wall color.\n    vec3 wallColor = TRY(materialColor(surfaceHit.materialID, wallHitPos3D, surfaceHit.hitNormal),\n                         vec3(1, 0, 1), //No wall, so this color should be 100% obscured by fog\n                         hitNothing);\n\n    //Check for intersection with the floor or ceiling, occluding the wall intersection.\n    float floorIntersectionDist = TRY((MIN_POS_3D.z - camZPos) / viewDir3D.z,\n                                      999999.0,\n                                      viewDir3D.z == 0.0),\n          ceilingIntersectionDist = TRY((MAX_POS_3D.z - camZPos) / viewDir3D.z,\n                                        999999.0,\n                                        viewDir3D.z == 0.0);\n    float floorMask = step(floorIntersectionDist, hitDist3D) *\n                      step(0.0, floorIntersectionDist),\n          ceilingMask = step(ceilingIntersectionDist, hitDist3D) *\n                        step(0.0, ceilingIntersectionDist);\n    ceilingMask *= 1.0-step(ceilingIntersectionDist, floorIntersectionDist);\n    float wallMask = 1.0 - min(1.0, (floorMask + ceilingMask));\n    \n    //Recompute the ray length/hit pos, given the floor and ceiling intersections.\n    float hitDist = (floorMask * floorIntersectionDist) +\n                    (ceilingMask * ceilingIntersectionDist) +\n                    (wallMask * hitDist3D);\n    vec2 cutoffSurfacePos = cam.pos + (viewDir * hitDist);\n    \n    //Find the visible surface color.\n    vec3 hitColor = (floorMask * floorColor(cutoffSurfacePos)) +\n                    (ceilingMask * ceilingColor(cutoffSurfacePos)) +\n                    (wallMask * wallColor);\n    \n    //Apply fog.\n    vec3 foggedColor = mix(hitColor, fogColor(viewDir3D),\n                           pow(min(1.0, hitDist / MAX_DISTANCE_3D + 0.2),\n                               2.0));\n\n    return foggedColor;\n}\n\n\nvec4 minimapColor(Camera cam, vec2 pos)\n{\n    //Flip the Y position for the display.\n    //Not sure why this is needed.\n    pos = vec2(pos.x,\n               mix(MAX_POS.y, MIN_POS.y, INV_LERP(MIN_POS.y, MAX_POS.y, pos.y)));\n    \n    vec2 uv = posToUV(pos);\n    \n    //Add a circle to represent the camera.\n    float camCircleMask = step(distance(pos, cam.pos), CAM_RADIUS);\n    \n    //Add lines representing the view cone.\n    float viewLineMask = 0.0;\n    for (int i = 0; i < 2; ++i)\n    {\n        float heading = getPixelHeading(cam, float(i));\n        vec2 facingDir = vec2(cos(heading), sin(heading));\n        \n        float acrossLine = distToLine(cam.pos, facingDir, pos, true),\n              alongLine = dot(facingDir, (pos - cam.pos));\n        viewLineMask += border(acrossLine, 0.0,\n                               0.02, 12.0) *\n                        step(CAM_RADIUS, alongLine) *\n                        step(alongLine, 0.2);\n    }\n    viewLineMask = SATURATE(viewLineMask);\n                         \n    //Visualize the walls.\n    Surface surf = readSurfaceData(BUF_A, uv);\n    float surfMask = TRY(0.0, 1.0, surf.isSolid);\n    vec3 surfColor = materialColor(surf.materialID, vec3(pos, 0.0), surf.normal);\n\n    return vec4(SATURATE((camCircleMask * vec3(0, 0.3, 1.0)) +\n                         (viewLineMask * vec3(0.5, 0.75, 0.0)) +\n                         (surfMask * surfColor)),\n                mix(0.675, 1.0,\n                    max(camCircleMask,\n                        max(viewLineMask, surfMask * 0.75))));\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //Compute screen coordinates.\n    vec2 uv = fragCoord/iResolution.xy;\n    int pixelX = int(fragCoord.x - 0.49999);\n    vec2 pos = uvToPos(uv);\n    \n    Camera cam = readCamData(BUF_B);\n    \n    //Draw the minimap.\n    vec2 minimapUVMin = vec2(0.7),\n         minimapUVSize = vec2(0.27, 0.27),\n         minimapUVMax = minimapUVMin + minimapUVSize,\n         minimapUV = INV_LERP(minimapUVMin, minimapUVMax, uv);\n    float minimapMask = step(0.0, minimapUV.x) * step(0.0, minimapUV.y) *\n                        step(minimapUV.x, 1.0) * step(minimapUV.y, 1.0);\n    float minimapBorder = (1.0 / 4.0) *\n                          (border(minimapUV.x, 0.0, 1.0, 16.0) +\n                           border(minimapUV.y, 0.0, 0.05, 2.0) +\n                           border(minimapUV.x, 1.0, 1.0, 16.0) +\n                           border(minimapUV.y, 1.0, 0.05, 2.0));\n    vec4 cMinimap = minimapColor(cam, minimapUV); //TODO: Faster to skip the minimap if it's not covering this pixel?\n    cMinimap.rgb *= 1.0 - minimapBorder;\n\n    //Draw the world.\n    ColumnCast column = readColumnCast(BUF_C, pixelX);\n    vec3 cWorld = sceneColor(cam, column, uv);\n    \n    //Combine the various drawing layers.\n    fragColor = vec4(mix(cWorld, cMinimap.rgb, minimapMask * cMinimap.a),\n                     1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float wallThickness(vec2 pos)\n{\n    return 0.15;\n    return pow(fract(iTime), 5.0);\n    \n    //Below is a thickness value that decreases towards the edge of the screen.\n    vec2 uv = posToUV(pos);\n    \n    float edgeDist = min(uv.x, min(uv.y, min(1.0 - uv.x, 1.0 - uv.y)));\n    float edgeT = 2.0 * edgeDist;\n    edgeT = 1.0 - pow(edgeT, 0.42);\n    \n    return mix(0.15, 0.225, edgeT);\n}\nfloat wallNoise(vec2 pos)\n{\n    RUN_OCTAVE_NOISE(\n        octaved, vec2, pos * 2.0,\n        \n        //Normal octave noise:\n        //perlinNoise(p, floor(iTime)),\n        //Ridge noise:\n        abs(perlinNoise(p, 4.453) - 0.5),\n        \n        4,\n        noise = pow(noise, 1.0),\n        2.0\n    );\n    return octaved;\n}\nint wallBiome(vec2 pos)\n{\n    float noise = perlinNoise(pos * 4.0, 0.234);\n    \n    return int(mix(0.0, float(N_MATERIALS) - 0.0001, noise));\n}\n\nSurface getWall(vec2 pos)\n{\n    float fieldStrength = wallNoise(pos);\n    \n    //Sample the neighboring noise values, and use\n    //    finite differences to compute a normal.\n    const float EPSILON = 0.001;\n    float fieldMinX = wallNoise(vec2(pos.x - EPSILON, pos.y)),\n          fieldMinY = wallNoise(vec2(pos.x, pos.y - EPSILON));\n    vec2 normal = normalize(vec2(fieldMinX - fieldStrength,\n                                 fieldMinY - fieldStrength));\n    \n    int biome = wallBiome(pos);\n    \n    Surface surf;\n    surf.isSolid = (fieldStrength < wallThickness(pos));\n    surf.normal = normal;\n    surf.materialID = biome;\n    \n    return surf;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec2 worldPos = uvToPos(uv);\n    Surface surf = getWall(worldPos);\n    \n    fragColor = packSurfaceData(surf);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define PI (3.14159265)\n#define PI2 (PI * 2.0)\n\n#define INV_LERP(a, b, x) ((x - a) / (b - a))\n\n#define SATURATE(x) (clamp(x, 0.0, 1.0))\n\n#define SHARPEN(t) (smoothstep(0.0, 1.0, t))\n#define SHARPEN2(t) (SHARPEN(SHARPEN(t))\n#define SHARPENER(t) (t * t * t * (t * (t * 6. - 15.) + 10.))\n\n#define OSCILLATE(t) (0.5 + (0.5 * sin((t) * PI2)))\n\n#define TRY(value, backup, useBackup) ((useBackup) ? (backup) : (value))\n\nvec2 getPerpendicularRight(vec2 dir)\n{\n    //OpenGL's screen is left-handed.\n    return vec2(dir.y, -dir.x);\n}\n\nfloat distToLine(vec2 lineStart, vec2 lineDir, vec2 point, bool isRay)\n{\n    float t = dot(point - lineStart, lineDir);\n    if (isRay)\n        t = max(0.0, t);\n    vec2 closestLinePoint = lineStart + (lineDir * t);\n    \n    return distance(point, closestLinePoint);\n}\n\nfloat border(float x, float target, float thickness, float dropoff)\n{\n    float dist = abs(x - target);\n    float closeness = 1.0 - min(1.0, dist / thickness);\n    return pow(closeness, dropoff);\n}\n\nvec3 rotateAround(vec3 p, vec3 rotAxis, float rotAngleRadians)\n{\n    //Reference: https://en.wikipedia.org/wiki/Rotation_matrix#Rotation_matrix_from_axis_and_angle\n    float aCos = cos(rotAngleRadians),\n          aSin = sin(rotAngleRadians),\n          aCos1 = 1.0 - aCos;\n    vec3 dirSine = rotAxis * aSin,\n         dirSqrCos1 = rotAxis * rotAxis * aCos1;\n    mat3 rotMat = mat3(\n        //Column 1:\n        aCos + dirSqrCos1.x,\n        (rotAxis.y * rotAxis.x * aCos1) + dirSine.z,\n        (rotAxis.z * rotAxis.x * aCos1) - dirSine.y,\n        //Column 2:\n        (rotAxis.x * rotAxis.y * aCos1) - dirSine.z,\n        aCos + dirSqrCos1.y,\n        (rotAxis.z * rotAxis.y * aCos1) + dirSine.x,\n        //Column 3:\n        (rotAxis.x * rotAxis.z * aCos1) + dirSine.y,\n        (rotAxis.y * rotAxis.z * aCos1) - dirSine.x,\n        aCos + dirSqrCos1.z\n    );\n    return rotMat * p;\n}\n\n\n//////////////////\n// World Bounds //\n//////////////////\n\n#define MIN_POS vec2(0)\n#define MAX_POS vec2(1)\n#define MAX_DISTANCE (distance(MIN_POS, MAX_POS))\n\n//Define the floor and ceiling height\n#define MIN_POS_3D vec3(MIN_POS, -0.05)\n#define MAX_POS_3D vec3(MAX_POS, 0.1)\n#define MAX_DISTANCE_3D (distance(MIN_POS_3D, MAX_POS_3D))\n\nvec2 posToUV(vec2 pos) { return INV_LERP(MIN_POS, MAX_POS, pos); }\nvec2 uvToPos(vec2 uv) { return mix(MIN_POS, MAX_POS, uv); }\n\n\n//////////////\n// Buffer A //\n//////////////\n\n//Buffer A contains the walls of the level, in a sort of top-down view.\n//Each pixel represents a space that may be solid or empty.\nstruct Surface\n{\n    bool isSolid;\n    vec2 normal; //NOT normalized, for performance/sampling\n    int materialID; // From 0 to (N_MATERIALS-1)\n};\n\n#define N_MATERIALS 3\n\nSurface readSurfaceData(sampler2D bufferA, vec2 pos)\n{\n    Surface surf;\n    vec4 pixel = texture(bufferA, posToUV(pos));\n    \n    surf.isSolid = pixel.r > 0.5;\n    surf.normal = -1.0 + (2.0 * pixel.gb);\n    surf.materialID = int(round(pixel.a * float(N_MATERIALS)));\n    \n    return surf;\n}\n\nvec4 packSurfaceData(Surface surf)\n{\n    return vec4(\n        surf.isSolid ? 1.0 : 0.0,\n        0.5 + (0.5 * surf.normal),\n        float(surf.materialID) / float(N_MATERIALS)\n    );\n}\n\n\n//////////////\n// Buffer B //\n//////////////\n\n//Buffer B contains the player camera data in a small number of pixels.\n//The rest of the buffer texture is unused.\n\nstruct Camera\n{\n    vec2 pos;\n    float headingRadians, speed;\n};\n\n#define MAX_SPEED 0.1\n#define CAM_RADIUS 0.01\n#define CAM_HORIZONTAL_FOV_DEGREES 110.0\n\n\n#define BUF_B_COORD ivec2(0)\n#define BUF_B_FRAGCOORD vec2(0.5)\n#define BUF_B_UV vec2(0)\n\nCamera readCamData(sampler2D bufferB)\n{\n    vec4 color = texelFetch(bufferB, BUF_B_COORD, 0);\n    return Camera(mix(MIN_POS, MAX_POS, color.rg),\n                  color.b * PI2,\n                  color.a * MAX_SPEED);\n}\nvec4 packCamData(Camera data)\n{\n    return vec4(INV_LERP(MIN_POS, MAX_POS, data.pos),\n                mod(data.headingRadians, PI2) / PI2,\n                clamp(data.speed / MAX_SPEED, 0.0, 1.0));\n}\n\n//Define the FOV math for the camera.\nfloat getPixelHeading(Camera cam, float uvX)\n{\n    float fovRad = (CAM_HORIZONTAL_FOV_DEGREES / 360.0) * PI2,\n          halfFovRad = fovRad / 2.0,\n          headingOffset = mix(-halfFovRad, halfFovRad, uvX),\n          heading = cam.headingRadians + headingOffset;\n    return mod(heading, PI2);\n}\n\n\n\n//////////////\n// Buffer C //\n//////////////\n\n//Buffer C contains a raycast for each column of the output image,\n//    stored in the first row of the buffer.\n//All other rows are unused.\n\nstruct ColumnCast\n{\n    float hitDist; //A negative value means \"no hit\".\n    int materialID;\n    vec2 hitNormal;\n};\n\nColumnCast readColumnCast(sampler2D bufferC, int pixelX) //Taken as int because\n                                                         //The width of this buffer matches\n                                                         //    the width of the screen,\n                                                         //    so no linear filtering is needed.\n{\n    vec4 pixel = texelFetch(bufferC, ivec2(pixelX, 0), 0);\n    return ColumnCast(mix(-1.0, MAX_DISTANCE, pixel.r),\n                      int(round(pixel.g * float(N_MATERIALS))),\n                      -1.0 + (2.0 * pixel.ba));\n}\nvec4 packColumnCast(ColumnCast cc)\n{\n    return vec4(INV_LERP(-1.0, MAX_DISTANCE, cc.hitDist),\n                INV_LERP(0.0, float(N_MATERIALS), float(cc.materialID)),\n                0.5 + (0.5 * cc.hitNormal));\n}\n\n\n\n////////////////////\n//    Hashing     //\n////////////////////\n\n//Source: https://stackoverflow.com/a/17479300\n\n//Hashes 1D-4D uints to 1 uint,\n//    or 1D-4D floats to 1 float.\n\nuint hash( uint x ) {\n    x += ( x << 10u );\n    x ^= ( x >>  6u );\n    x += ( x <<  3u );\n    x ^= ( x >> 11u );\n    x += ( x << 15u );\n    return x;\n}\nuint hash( uvec2 v ) { return hash( v.x ^ hash(v.y)                         ); }\nuint hash( uvec3 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z)             ); }\nuint hash( uvec4 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z) ^ hash(v.w) ); }\nfloat floatConstruct( uint m ) {\n    const uint ieeeMantissa = 0x007FFFFFu; // binary32 mantissa bitmask\n    const uint ieeeOne      = 0x3F800000u; // 1.0 in IEEE binary32\n\n    m &= ieeeMantissa;                     // Keep only mantissa bits (fractional part)\n    m |= ieeeOne;                          // Add fractional part to 1.0\n\n    float  f = uintBitsToFloat( m );       // Range [1:2]\n    return f - 1.0;                        // Range [0:1]\n}\nfloat hash( float x ) { return floatConstruct(hash(floatBitsToUint(x))); }\nfloat hash( vec2  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\nfloat hash( vec3  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\nfloat hash( vec4  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\n\nvec2 randUnitVector(float uniformRandom)\n{\n    float theta = uniformRandom * PI2;\n    return vec2(cos(theta), sin(theta));\n}\n\n\n///////////////////////////////\n//    Value/Perlin Noise     //\n///////////////////////////////\n\nfloat valueNoise(float x, float seed)\n{\n    float xMin = floor(x),\n          xMax = ceil(x);\n\n    float noiseMin = hash(vec2(xMin, seed)),\n          noiseMax = hash(vec2(xMax, seed));\n\n    float t = x - xMin;\n    //t = SMOOTHERSTEP(t); //Actually gives worse results due to\n                           //  the dumb simplicity of the underlying noise\n    \n    return mix(noiseMin, noiseMax, t);\n}\nfloat valueNoise(vec2 x, float seed)\n{\n    vec2 xMin = floor(x),\n         xMax = ceil(x);\n    vec4 xMinMax = vec4(xMin, xMax);\n\n    vec2 t = x - xMin;\n    //t = SMOOTHERSTEP(t); //Actually gives worse results due to\n                           //  the dumb simplicity of the underlying noise\n    \n    #define VALUE_NOISE_2D(pos) hash(vec3(pos, seed))\n    return mix(mix(VALUE_NOISE_2D(xMinMax.xy),\n                   VALUE_NOISE_2D(xMinMax.zy),\n                   t.x),\n               mix(VALUE_NOISE_2D(xMinMax.xw),\n                   VALUE_NOISE_2D(xMinMax.zw),\n                   t.x),\n               t.y);\n}\n\n#define PERLIN_MAX(nDimensions) (sqrt(float(nDimensions)) / 2.0)\nfloat perlinNoise(float x, float seed)\n{\n    float xMin = floor(x),\n          xMax = ceil(x),\n          t = x - xMin;\n\n    float value = mix(t         * sign(hash(vec2(xMin, seed)) - 0.5),\n                      (1.0 - t) * sign(hash(vec2(xMax, seed)) - 0.5),\n                      SHARPENER(t));\n    return INV_LERP(-PERLIN_MAX(1), PERLIN_MAX(1), value);\n}\n\nvec2 perlinGradient2(float t)\n{\n    return randUnitVector(t);\n}\nfloat perlinNoise(vec2 p, float seed)\n{\n    vec2 pMin = floor(p),\n         pMax = pMin + 1.0,\n         t = p - pMin;\n    vec4 pMinMax = vec4(pMin, pMax),\n         tMinMax = vec4(t, t - 1.0);\n\n    float noiseMinXMinY = dot(tMinMax.xy,\n                              perlinGradient2(hash(vec3(pMinMax.xy, seed)))),\n          noiseMaxXMinY = dot(tMinMax.zy,\n                              perlinGradient2(hash(vec3(pMinMax.zy, seed)))),\n          noiseMinXMaxY = dot(tMinMax.xw,\n                              perlinGradient2(hash(vec3(pMinMax.xw, seed)))),\n          noiseMaxXMaxY = dot(tMinMax.zw,\n                              perlinGradient2(hash(vec3(pMinMax.zw, seed))));\n\n    t = SHARPENER(t);\n    float value = mix(mix(noiseMinXMinY, noiseMaxXMinY, t.x),\n                      mix(noiseMinXMaxY, noiseMaxXMaxY, t.x),\n                      t.y);\n    return INV_LERP(-PERLIN_MAX(2), PERLIN_MAX(2), value);\n}\n\n\n/////////////////////////\n//    Octave Noise     //\n/////////////////////////\n\n\n//Generates an implementation of octave noise.\n#define RUN_OCTAVE_NOISE(outputName, posType, inputPos, callNoiseOnP, \\\n                         nOctaves, modifyNoise, persistence) \\\nfloat outputName; { \\\n    float sum = 0.0, \\\n          scale = 1.0, \\\n          weight = 1.0, \\\n          totalWeight = 0.0; \\\n    for (int i = 0; i < nOctaves; ++i) { \\\n        posType p = inputPos * scale; \\\n        float noise = callNoiseOnP; \\\n        modifyNoise; \\\n        sum += weight * noise; \\\n        totalWeight += weight; \\\n        scale *= persistence; \\\n        weight /= persistence; \\\n    } \\\n    outputName = sum / totalWeight; \\\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define BUF_A iChannel0\n#define BUF_B iChannel1\n\n\nCamera initializeCamera()\n{\n    //TODO: Implement something more clever,\n    //         such as picking random starting points until one is empty.\n    return Camera(mix(MIN_POS, MAX_POS, vec2(0.3, 0.5)),\n                  PI2 * 0.75, 0.0);\n}\nvoid updateCamera(inout Camera cam)\n{\n    //TODO: Let the user control it.\n    cam.headingRadians = mod(cam.headingRadians + 0.005, PI2);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //Only a few pixels are used in this buffer to store the camera state.\n    if (fragCoord != BUF_B_FRAGCOORD)\n    {\n        fragColor = vec4(0, 0, 0, 0);\n        return;\n    }\n    \n    //On the first frame, pick a good initial position.\n    if (iFrame == 0)\n    {\n        Camera firstState = initializeCamera();\n        fragColor = packCamData(firstState);\n    }\n    //On subsequent frames, run the camera's control logic.\n    else\n    {\n        Camera currentState = readCamData(BUF_B);\n        updateCamera(currentState);\n        fragColor = packCamData(currentState);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define BUF_A iChannel0\n#define BUF_B iChannel1\n\n\nColumnCast getRayHit(vec2 rayStart, vec2 rayDir)\n{\n    vec2 texel = uvToPos(1.0 / iResolution.xy);\n    for (int i = 0; i < 500; ++i) //TODO: Max raymarch iterations based on map size\n    {\n        vec2 rayStep = rayDir * (texel * float(i)),\n             rayPos = rayStart + rayStep;\n        Surface surf = readSurfaceData(BUF_A, rayPos);\n        if (surf.isSolid)\n            return ColumnCast(length(rayStep), surf.materialID,\n                              normalize(surf.normal)); //Used linear filtering on this buffer\n        else if ((rayPos.x > MAX_POS.x) || (rayPos.x < MIN_POS.x) ||\n                 (rayPos.y > MAX_POS.y) || (rayPos.y < MIN_POS.y))\n            return ColumnCast(-1.0, 0, vec2(1, 0));\n    }\n    \n    return ColumnCast(-1.0, 0, vec2(1, 0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (fragCoord.y >= 1.0)\n    {\n        fragColor = vec4(0, 0, 0, 1);\n        return;\n    }\n    \n    float uvX = fragCoord.x / iResolution.x;\n    \n    Camera cam = readCamData(BUF_B);\n    cam.headingRadians = getPixelHeading(cam, uvX);\n    \n    //Raymarch from the camera into the world.\n    vec2 rayDir = vec2(cos(cam.headingRadians),\n                       sin(cam.headingRadians));\n    ColumnCast hit = getRayHit(cam.pos, rayDir);\n    \n    fragColor = packColumnCast(hit);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

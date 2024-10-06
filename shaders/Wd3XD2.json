@@ -1,0 +1,79 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1572867950",
+            "description": "Point cloud-like displacement of a 2d texture by a height map, similar to After Effects plugins.\nDrag anywhere on screen with left mouse button to look around",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Wd3XD2",
+            "likes": 5,
+            "name": "Planar point cloud parallax",
+            "published": 3,
+            "tags": [
+                "parallax"
+            ],
+            "usePreview": 0,
+            "username": "OskarSwierad",
+            "viewed": 573
+        },
+        "renderpass": [
+            {
+                "code": "const float PI = 3.14159265359;\nconst float DEG_TO_RAD = PI / 180.0;\nconst float FLT_EQUALITY_EPS = 1e-5;\n\nbool CompareAlmostEqual( vec2 v1, vec2 v2 )\n{\n    vec2 diff = abs( v1 - v2 );\n    vec2 cmp = max( vec2( 0.0 ), diff - vec2( FLT_EQUALITY_EPS ) );\n\treturn !any( bvec2( cmp ) );\n}\n\nfloat RemapTo01Unclamped(float val, float rangeMin, float rangeMax)\n{\n    return (val - rangeMin) / (rangeMax - rangeMin);\n}\n\nfloat RemapTo01(float val, float rangeMin, float rangeMax)\n{\n    return clamp((val - rangeMin) / (rangeMax - rangeMin), 0.0, 1.0);\n}\n\nvec4 quaternion_multiply( vec4 qa, vec4 qb )\n{\n    vec3 v = cross( qa.xyz, qb.xyz ) + (qa.xyz * qb.w) + (qb.xyz * qa.w);\n    float scalar = qa.w * qb.w - dot(qa.xyz, qb.xyz);\n    return vec4(v, scalar);\n}\n\nvec4 quaternion_from_axisangle(vec3 axisNorm, float angle)\n{\n    float halfAngle = angle * 0.5;\n    return vec4(axisNorm * sin( halfAngle ), cos( halfAngle ));\n}\n    \nvec4 quaternion_from_euler(vec3 rot)\n{\n    vec4 qx = quaternion_from_axisangle( vec3(1,0,0), rot.x );\n    vec4 qy = quaternion_from_axisangle( vec3(0,1,0), rot.y );\n    vec4 qz = quaternion_from_axisangle( vec3(0,0,1), rot.z );\n    vec4 q = quaternion_multiply( qx, qy );\n    return quaternion_multiply( q, qz );\n}\n\nvec3 RotateByQuaternion( vec3 v, vec4 q )\n{\n\t// from https://www.opengl.org/discussion_boards/showthread.php/160134-Quaternion-functions-for-GLSL\n\treturn v + 2.0f * cross( cross( v, q.xyz ) + q.w * v, q.xyz );\n}\n\nvec2 getUVDeriv(vec2 uv)\n{\n    // Sharper texture mip selection\n    // Idea based on http://petersikachev.blogspot.com/2018/10/minlod-cheap-method-to-increase-texture.html\n    vec2 absDDX = abs(dFdx(uv));\n    vec2 absDDY = abs(dFdy(uv));\n\tvec2 minDeriv = min(absDDX, absDDY);\n    vec2 maxDeriv = max(absDDX, absDDY);\n    return mix(minDeriv, maxDeriv, 0.333);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    float rotX = -90.0 + 89.9 * (RemapTo01(iMouse.y, 0.0, iResolution.y) * 2.0 - 1.0);\n    float rotZ = 89.9 * (RemapTo01(iMouse.x, 0.0, iResolution.x) * 2.0 - 1.0);\n    vec3 rotation = vec3(rotX, 0.0, rotZ) * DEG_TO_RAD;\n    //vec3 rotation = vec3(-90, 0, 0) * DEG_TO_RAD;\n    vec4 quat = quaternion_from_euler(rotation);\n    \n    float zoom = 0.3;\n    float aspect = max(iResolution.x, iResolution.y);\n    vec3 camPosScene = vec3(0,0,-1);\n    vec2 uvCentered = (fragCoord - iResolution.xy * 0.5) / aspect;\n    vec3 dirScene = normalize(vec3(uvCentered, zoom));\n    \n    vec3 camPos = RotateByQuaternion(camPosScene, quat);\n    vec3 dir = RotateByQuaternion(dirScene, quat);\n    \n    float parallaxDepth = -0.2;\n    int steps = 8;\n    float Opacity = 1.0;\n    float SliceMaskTiling = 10.7;\n    vec2 uvTiling = vec2(1, 1);\n    vec2 uvOffset = vec2(0.5, 0.5);\n    \n    float d = -camPos.y / dir.y;\n    vec2 UVcommon = (dir.xz * d + camPos.xz) * uvTiling + uvOffset;\n    \n    if (d <= 0.0)\n    {\n        fragColor = vec4(vec3(0.0), 1.0);\n    }\n    else\n    {\n        vec3 colorSum = vec3(0.0);\n    \tfloat alphaBudget = 1.0;\n        \n        for (int i = 0; i < steps; ++i)\n        {            \n\t\t\tfloat stepNorm = float(i) / float(steps);\n            \n            vec3 dirNorm = normalize(dir);\n            dirNorm.xz /= dir.y;\n\n\t\t\tvec2 UVcurrent = UVcommon + dirNorm.xz * stepNorm * parallaxDepth;\n\n            vec2 deriv = getUVDeriv(UVcurrent);\n\n            float sliceMask = textureGrad(iChannel1, UVcurrent * SliceMaskTiling, deriv, deriv).r * 0.6;\n            sliceMask += textureGrad(iChannel2, UVcurrent * 0.06 * SliceMaskTiling, deriv, deriv).r * 0.7;\n            sliceMask = clamp(sliceMask, 0.0, 1.0);\n            sliceMask = round(sliceMask * float(steps)) / float(steps);\n\n            float alpha = RemapTo01(abs(stepNorm - sliceMask), 0.001, 0.0);\n            alpha = min(alpha, alphaBudget);\n            alpha *= Opacity;\n\n            vec3 texSampled = textureGrad(iChannel0, UVcurrent, deriv, deriv).rgb;\n            vec3 texColor = texSampled.rgb;\n            \n            texColor *= mix(1.6, 0.0, stepNorm * 1.3); // fake lighting\n\n            vec2 UVcurrent01 = clamp(UVcurrent, vec2(0.0), vec2(1.0));\n            if ( !CompareAlmostEqual(UVcurrent, UVcurrent01) )\n            {\n                //alpha = 0.0;\n                texColor *= vec3(0.1, 0.2, 0.6);\n            }\n\t\t\t\n            colorSum += texColor * alpha;\n            \n            alphaBudget -= alpha;\n            if (alphaBudget < 0.0001)\n            {\n                break;\n            }\n        }\n        fragColor = vec4(colorSum, 1.0);\n    }\n    \n    //fragColor = vec4(dirScene, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

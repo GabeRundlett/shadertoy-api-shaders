@@ -1,0 +1,229 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1561146704",
+            "description": "More speed and vorticity to [url=https://www.shadertoy.com/view/tt2GRV]Optimized Fluid[/url]",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wt2GWK",
+            "likes": 15,
+            "name": "Deoptimized Fluid",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "advection",
+                "physics"
+            ],
+            "usePreview": 0,
+            "username": "TimoKinnunen",
+            "viewed": 716
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\tImprovements:\n\t\tfaster propagation with bigger area of influence\n\t\tTODO: use stackered sampling pattern to avoid aliasing near borders?\n\n\t\taccount for curl when advecting\n\t\tseparate advection step removes extra sampling steps\n\t\taccount for divergence of color\n\t\tacount for the magnus force\n\n*/\n\nfloat ln (vec3 p, vec3 a, vec3 b) {return length(p-a-(b-a)*min(dot(p-a,b-a),0.)/dot(b-a,b-a));}\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    float \n        n = length(C(U+vec2(0,1))),\n        e = length(C(U+vec2(1,0))),\n        s = length(C(U-vec2(0,1))),\n        w = length(C(U-vec2(1,0)));\n    vec4 a = A(U);\n    Q = C(U);\n    Q += .1*(0.25*(n+e+s+w)-Q);\n    vec3 no = normalize(vec3(e-w,n-s,.3+.2*Q.w));\n    float light = ln(vec3(2,2,2),vec3(U/R.y,0),vec3(U/R.y,0)+reflect(normalize(vec3((U-0.5*R)/R.y,1)),no));\n    Q *= .8*exp(-.5*vec4(1,2,3,4)*light)+.8*exp(-.06*vec4(1,2,3,4)*light);\n\tQ = atan(3.*Q)*.666;\n    \n    U = 0.5*R-abs(U-0.5*R);\n    Q += (0.5-0.5*cos(6.*a.z*(1.+.5*vec4(1,2,3,4))))*smoothstep(1.,-1.,min(U.x,U.y)-6.);\n    \n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define R iResolution.xy\n#define A(U) texture(iChannel0, (U)/R)\n#define C(U) texture(iChannel2, (U)/R)\n#define D(U) texture(iChannel3, (U)/R)\n\n#define N 5.\n#define WEIGHT_FUNC(x) (exp2(1.-x*x/128.))\n\n#define JET_FUNC ((vec2(.5,.15)+vec2(.25,.05)*sin(float(iFrame)/vec2(500,350)))*R)\n//#define JET_FUNC (vec2(.5+.25*sin(float(iFrame)/500.),0.1)*R)\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "vec2 pressureForceSum;\nvec2 magnusForceSum;\nfloat forceWeight;\nfloat divergenceSum;\nfloat divergenceWeight;\nfloat curlSum;\nfloat curlWeight;\nvoid add2(vec2 U, vec2 p) {\n    if(U.x - abs(p.x) >= 3.\n       && U.y - abs(p.y) >= 3.\n       && U.x + abs(p.x) < iResolution.x-3.\n       && U.y + abs(p.y) < iResolution.y-3.) {\n        vec4 e = A(vec2(U.x + p.x, U.y + p.y));\n        vec4 w = A(vec2(U.x - p.x, U.y - p.y));\n        float len = length(p);\n        vec2 l = normalize(p);\n        vec2 t = vec2(l.y, -l.x);\n        vec2 b = vec2(-t.x, -t.y);\n        float weight = WEIGHT_FUNC(len);\n        pressureForceSum.x += weight * (e.z - w.z) * l.x;\n        pressureForceSum.y += weight * (e.z - w.z) * l.y;\n        magnusForceSum.x += weight * (w.w - e.w) * b.x;\n        magnusForceSum.y += weight * (w.w - e.w) * t.y;\n        forceWeight += 2.0 * weight;\n        divergenceSum += weight * (dot(l, vec2(w.x,w.y)) - dot(l, vec2(e.x,e.y)) + (e.z + w.z));\n        divergenceWeight += 2.0 * weight;\n        curlSum += weight * (dot(t, vec2(w.x,w.y)) - dot(t, vec2(e.x,e.y)));\n        curlWeight += 2.0 * weight;\n    }\n}\n// Calculate forces and pressure\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    Q = A(U);\n    vec4 n = A(U+vec2(0,1));\n    vec4 e = A(U+vec2(1,0));\n    vec4 s = A(U-vec2(0,1));\n    vec4 w = A(U-vec2(1,0));\n\n    pressureForceSum=vec2(0);\n    magnusForceSum=vec2(0);\n\tforceWeight=0.0000001;\n    divergenceSum=0.;\n\tdivergenceWeight=0.0000001;\n    curlSum=0.;\n\tcurlWeight=0.0000001;\n    // neighborhood\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, 9.*vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, 3.*vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n\n    vec2 pressureForce;\n    vec2 magnusForce;\n    float divergence;\n    float curl;\n    pressureForce = pressureForceSum/forceWeight;\n    magnusForce = Q.w*magnusForceSum/forceWeight;\n    divergence = divergenceSum/divergenceWeight;\n    curl = curlSum/curlWeight;\n    \n    //pressureForce = 0.25*    vec2(e.z-w.z,n.z-s.z);\n    //magnusForce   = 0.25*Q.w*vec2(n.w-s.w,e.w-w.w);\n    //divergence    = 0.25*        (s.y-n.y+w.x-e.x+n.z+e.z+s.z+w.z);\n    //curl          = 0.25*        (s.x-n.x-w.y+e.y);\n\n    Q = vec4(Q.x-pressureForce.x-magnusForce.x,Q.y-pressureForce.y-magnusForce.y,divergence,curl);\n    //Boundary conditions\n    vec2 JET = JET_FUNC;\n    if (iMouse.z>0.) JET = iMouse.xy;\n    Q.xy = mix(Q.xy,vec2(0,.7),0.3*smoothstep(2.,-2.,length(U-JET)-6.));\n    if (iFrame<1) Q = vec4(0);\n    if (U.x<4.||U.y<4.||R.x-U.x<4.||R.y-U.y<4.)Q.xyw*=0.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Advect along velocity and curl feild\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    for (float i = 0.; i< N;i++) {\n        Q = A(U);\n        float co = cos(Q.w/N), si = sin(Q.w/N);\n        U -= Q.xy*mat2(co,-si,si,co)/N;\n    }\n    Q = A(U);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Advect along velocity and curl feild\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    for (float i = 0.; i< N;i++) {\n        Q = A(U);\n        float co = cos(Q.w/N), si = sin(Q.w/N);\n        U -= Q.xy*mat2(co,-si,si,co)/N;\n    }\n    Q = C(U);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float divergenceWeight;\nvec4 divergenceSum;\nvoid add2(vec2 U, vec2 p) {\n    vec4 u = vec4(U+p,U-p);\n    if(U.x - abs(p.x) >= 3.\n       && U.y - abs(p.y) >= 3.\n       && U.x + abs(p.x) < iResolution.x-3.\n       && U.y + abs(p.y) < iResolution.y-3.) {\n        vec4 se8 = A(u.xy);\n        vec4 nw8 = A(u.zw);\n        vec4 se8c = C(u.xy);\n        vec4 nw8c = C(u.zw);\n        float len = length(p);\n        vec2 n = normalize(p);\n        float weight = WEIGHT_FUNC(len);\n        divergenceSum += weight*(dot(n,nw8.xy)*nw8c-dot(n,se8.xy)*se8c);\n        divergenceWeight += 2.0*weight;\n    }\n}\n// draw color and account for divergence\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    Q = C(U);\n    Q = max(Q,0.);\n    divergenceSum = vec4(0);\n\tdivergenceWeight=0.0000001;\n    // neighborhood\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, 9.*vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, 3.*vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n    {const float iRad = 2., iSize = iRad*2.+1., iEnd = iSize*iSize, iBeg = iEnd*0.5+0.5; \n    for(float i = iBeg; i < iEnd; i++) {\n\t    add2(U, vec2(mod(i,iSize)-iRad,floor(i/iSize)-iRad));\n    }}\n\n    vec4 divergence = divergenceSum/divergenceWeight;\n\n    Q += divergence;\n    // boundary conditions\n    vec2 JET = JET_FUNC;\n    if (iMouse.z>0.) JET = iMouse.xy;\n    Q = mix(Q,0.5+0.5*cos(float(iFrame)/900.*(1.5+.5*vec4(1,2,3,4))),smoothstep(2.,-2.,length(U-JET)-5.));\n    if (iFrame<1)Q = vec4(0);\n    if (U.x<4.||U.y<4.||R.x-U.x<4.||R.y-U.y<4.)Q*=0.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,260 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1717260857",
+            "description": "click to smack a cube\nclick space to pause physics\nrotate camera with mouse\nctrl to zoom\nshift to move camera\n\ninfo and settings in Common",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "l33GDn",
+            "likes": 21,
+            "name": "Cube Physics",
+            "published": 3,
+            "tags": [
+                "3d",
+                "simulation",
+                "interactive",
+                "physics",
+                "engine",
+                "rigidbody"
+            ],
+            "usePreview": 0,
+            "username": "Borusse29",
+            "viewed": 257
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    GET_CAMERA(iChannel1, fragCoord, iResolution)\n    \n    scene(fragColor, ro, rd, iFrame, iChannel0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*  CC BY-NC 4.0\n    \n    Buffer A holds the cube data and applies velocity and angular velocity\n    Buffer B handles collision detection, contact generation, and contact resolution for all cubes in parallel\n    Buffer C holds the cube data and applies the collision resolutions\n    Buffer D handles the camera controller\n    Image    renders the image (from Buffer C)\n    \n    A and C are separated to apply the collision resolution at the end of the physics frame to minimize interpenetration.\n    \n    If nothing happens on reset, try hitting space.\n    \n    Inspirations and References:\n        - https://www.youtube.com/watch?v=EB6NY5sGd08\n        - Ian Millington: Game Physics Engine Development\n        - https://www.youtube.com/watch?v=4r_EvmPKOvY\n*/\n\n/// settings (physics)\n#define INIT_SCENE 3 // in 0..3\nconst int NUMBER_OF_CUBES = // < iResolution.x/3\n#if INIT_SCENE==1\n9\n#elif INIT_SCENE==2\n24\n#elif INIT_SCENE==3\n37\n#else\n200\n#endif\n;\nconst float G_CONST = 4.;\nconst float DYNAMIC_FRICTION = .2;\nconst float CLICK_STRENGTH = 1.7; // how hard you smack cubes\nconst float MOUSE_SENSITIVITY = .00125;\n\n/// settings (visuals)\n#define SHADOWS\nconst vec3 LIGHT_DIR = normalize(vec3(1,1,-2));\nconst float FLOOR_TILE_SIZE = 1.;\n\nconst float PI = 3.1415926535;\nconst float TAU = 6.2831853071;\nconst float INFINITY = intBitsToFloat(0x7f7fffff);\nconst float EPSILON = 1e-5;\n\n/// end of settings\n\n#define get(C,x,y) texelFetch(C, ivec2(x, y), 0)\n\n// creates variables vec3 ro, rd\n#define GET_CAMERA(C,U,R) vec2 camera_uv = vec2(2.*U.x/R.x-1., (2.*U.y-R.y)/R.x); vec3 camera_data = get(C,0,0).xyz; vec3 camera_pos = get(C,1,0).xyz; vec3 ro, rd; get_camera(camera_uv, camera_data.xy, camera_data.z, camera_pos, ro, rd);\n\n#define RETURN_STANDARD_CUBE(_s, p, v, n1, n2, fi) float s=_s, inv_m = 1./(50.*s*s*s); return Cube(s, inv_m, .6*inv_m/(s*s), .15, radiantGradient(.5*fi), p, v, vec3(1e-9), mat3(n1,n2,cross(n1, n2)));\n\nstruct Cube { // 100 bytes\n    float half_side_length;\n    float inverse_mass;\n    float inverse_inertia; // should be a tensor, but since we're using cubes, it's not terribly inaccurate\n    float restitution;\n    vec3 color;\n    vec3 position;\n    vec3 velocity;\n    vec3 angular_velocity;\n    mat3 normals;\n};\n\nint imod(int x, int y) {\n    return x - y*(x/y);\n}\n\n// from https://www.shadertoy.com/view/4djSRW\nvec3 hash31(float p)\n{\n   vec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n   p3 += dot(p3, p3.yzx+33.33);\n   return fract((p3.xxy+p3.yzz)*p3.zyx); \n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3) {\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nmat3 get_camera_matrix(float a, float b) {\n    return mat3(cos(-b)*cos(a),cos(-b)*sin(a),sin(-b),-sin(a),cos(a),0.,-sin(-b)*cos(a),-sin(-b)*sin(a),cos(-b));\n}\n\n// uv in [-1,1]\nvoid get_camera(vec2 uv, vec2 a, float r, vec3 p, out vec3 ro, out vec3 rd) {\n    a *= TAU;\n    \n    ro = r * vec3(-cos(a.x)*cos(a.y), -sin(a.x)*cos(a.y), sin(a.y));\n    ro += p;\n    mat3 cm = get_camera_matrix(a.x, a.y);\n    rd = cm * normalize(vec3(1., uv));\n}\n\nvec3 sky_color(vec3 rd) {\n    return mix(vec3(1), vec3(0.55, 0.76, 0.91), 2.*rd.z+1.5);\n}\n\n// filtered checker from https://www.shadertoy.com/view/XlcSz2\nvec3 floor_color(vec2 p)\n{\n    p *= FLOOR_TILE_SIZE;\n    vec2 w = vec2(.01);  \n    vec2 i = 2.0*(abs(fract((p-0.5*w)/2.0)-0.5)-abs(fract((p+0.5*w)/2.0)-0.5))/w;\n    float b = mix(.1, .95, 0.5 - 0.5*i.x*i.y);\n    b = clamp(b, 0., 1.);\n    return vec3(b);\n}\n\n// https://iquilezles.org/articles/palettes/\nvec3 radiantGradient(float a) // a in radiants!\n{\n    return vec3(.5) * cos(vec3(a)+2.*PI*vec3(.0, .33, .67)) + vec3(.5);\n}\n\n// plane with normal (0,0,1), h above the origin\nvec3 plane_intersection(float h, vec3 ro, vec3 rd) \n{\n    float d = (h-ro.z) / rd.z;\n    return ro + d * rd;\n}\n\nbool ray_cube_no_intersection(vec3 ro, vec3 rd, int i, out vec3 p, out vec3 n, sampler2D buffer) {\n    vec3 n1 = get(buffer, 3, i).rgb,\n         n2 = get(buffer, 4, i).rgb;\n    mat3 normals = mat3(n1, n2, cross(n1, n2));\n    \n    vec4 t0 = get(buffer, 0, i);\n\n    ro -= t0.rgb;\n    ro *= normals;\n    rd *= normals;\n    \n// https://iquilezles.org/articles/intersectors/\n    vec3 m = 1.0/rd;\n    n = m*ro;\n    vec3 k = abs(m)*t0.w;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n    float tN = max( max( t1.x, t1.y ), t1.z );\n    float tF = min( min( t2.x, t2.y ), t2.z );\n    if( tN>tF || tF<0.0) return true; // no intersection\n    n = step(vec3(tN),t1);\n    n *= sign(rd);\n    p = ro + tN*rd;\n    \n    mat3 inv = inverse(normals);\n    p *= inv;\n    p += t0.rgb;\n    n *= -inv; // why - ?\n    \n    return false;\n}\n\nint ray_trace_cubes(vec3 ro, vec3 rd, out vec3 out_p, out vec3 out_n, sampler2D buffer) {\n    float min_dist = INFINITY;\n    int hit_idx = -1;\n    for (int i; i < NUMBER_OF_CUBES; i++) {\n        vec3 p, n;\n        if (ray_cube_no_intersection(ro, rd, i, p, n, buffer)) continue;\n        float d = distance(ro, p);\n        if (d < min_dist) {\n            min_dist = d;\n            hit_idx = i;\n            out_n = n;\n            out_p = p;\n        }\n    }\n    \n    return hit_idx;\n}\n\nvoid scene(inout vec4 fragColor, vec3 ro, vec3 rd, int frame, sampler2D buffer) {\n    vec3 col;\n    vec3 p, n;\n    int cube_hit = ray_trace_cubes(ro, rd, p, n, buffer);\n\n    float shadow = 1.;\n\n    if (cube_hit == -1) {\n        vec3 plane = plane_intersection(0., ro, rd);\n\n        if (rd.z>0.|| length(plane.xy) > 25.) {\n            fragColor = vec4(sky_color(rd), 0);\n            return;\n        }\n        else {\n            col = floor_color(plane.xy);\n            p = plane;\n        }\n    }\n    else {\n        col = get(buffer, 5, cube_hit).rgb;\n#ifdef SHADOWS\n        shadow = max(dot(n, -LIGHT_DIR), 0.);\n    }\n        \n    shadow = min(shadow, float(ray_trace_cubes(p+EPSILON*n, -LIGHT_DIR, p, n, buffer) == -1));\n    shadow = 2. - exp(-.5*(shadow-1.));\n    \n#else\n        shadow = .5*dot(n, -LIGHT_DIR)+.5;\n    }\n#endif\n\n    fragColor = vec4(shadow*col, 1);\n}\n\nCube get_cube(int i, sampler2D buffer) {\n    vec4 t0 = get(buffer, 0, i);\n\n    if (t0.w != 0.) {\n        vec4 t1 = get(buffer, 1, i),\n             t2 = get(buffer, 2, i),\n             t3 = get(buffer, 3, i),\n             t4 = get(buffer, 4, i),\n             t5 = get(buffer, 5, i);\n        \n        vec3 n1 = t3.xyz,\n             n2 = t4.xyz;\n        return Cube (\n            t0.w,\n            t1.w,\n            t2.w,\n            t4.w,\n            t5.xyz,\n            t0.xyz,\n            t1.xyz,\n            t2.xyz,\n            mat3(n1,n2,cross(n1, n2))\n        );\n    }\n    else { // it's the first frame, hence the cube has to initialized\n        float fi = float(i);\n    #if INIT_SCENE == 0\n        vec3 n1 = normalize(hash31(PI*fi)), \n             n2 = normalize(cross(n1, hash31(fi)));\n        return Cube(.3, .74, 5., .05, radiantGradient(.5*fi), vec3(5.*hash31(TAU*fi).xy-2.5, 1.+.2*fi), vec3(0), vec3(1e-9), mat3(n1,n2,cross(n1, n2)));\n    #elif INIT_SCENE == 1\n        vec3 n1 = vec3(1,0,0), \n             n2 = vec3(0,1,0);\n        return Cube(.3+.1*sin(2.1*fi), .74, 4., .05, radiantGradient(.5*fi), vec3(0.7*cos(2.1*fi),0.7*sin(2.1*fi),.5+.3*fi), vec3(0), vec3(1e-9), mat3(n1,n2,cross(n1, n2)));\n    #elif INIT_SCENE == 2\n        float x = PI/12.*(fi);\n        vec3 n1 = vec3(0,0,1), \n             n2 = vec3(cos(x),sin(x),0);\n        RETURN_STANDARD_CUBE(.3, vec3(1.5*cos(x),1.5*sin(x),.3+.6*mod(fi,2.)), vec3(0), n1, n2, fi)\n    #elif INIT_SCENE == 3\n        if (i>35) return Cube (\n            .4, .125, .5, .0, vec3(.3), vec3(-5,.5,1.4), vec3(9,-1,-.1), vec3(4,1,5), mat3(1,0,0,0,1,0,0,0,1)\n        );\n        float x = PI/12.*(fi+.5*float(i>11&&i<24));\n        vec3 n1 = vec3(0,0,1), \n             n2 = vec3(cos(2.*x),sin(2.*x),0);\n        RETURN_STANDARD_CUBE(.3, vec3(1.5*cos(2.*x),1.5*sin(2.*x),.3+.6*float(i/12)), vec3(0), n1, n2, fi+4.5)\n    #endif\n    }\n}\n\nvoid cube_to_output(inout vec4 fc, in Cube cube, int x) {\n    switch (x) {\n        case 0:\n            fc = vec4(cube.position, cube.half_side_length); break;\n        case 1:\n            fc = vec4(cube.velocity, cube.inverse_mass); break;\n        case 2:\n            fc = vec4(cube.angular_velocity, cube.inverse_inertia); break;\n        case 3:\n            fc = vec4(cube.normals[0], 0); break;\n        case 4:\n            fc = vec4(cube.normals[1], cube.restitution); break;\n        case 5:\n            fc = vec4(cube.color, 0); break;\n    }\n}\n\nvec3[8] cube_to_verticies(Cube cube) {\n    vec3[8] verts;\n    \n    for (int i = 0; i < 8; i++) {\n        vec3 n1 = float(2 * int(i<4) - 1) * cube.normals[0];\n        vec3 n2 = float(2 * int(imod(i,4)<2) - 1) * cube.normals[1];\n        vec3 n3 = float(2 * int(imod(i,2)==0) - 1) * cube.normals[2];\n        verts[i] = cube.position + cube.half_side_length * (n1+n2+n3);\n    }\n    \n    return verts;\n}\n\n// q is point of contact\n// n is contact normal with the length being the depth of penetration\nvoid resolve_collision(Cube self, Cube other, vec3 q, vec3 n, float dt, out vec3 dp, out vec3 dv, out vec3 da) {\n    if (n == vec3(0)) return; // check if there acutally is a collision\n    \n    vec3 relative_contact = q - self.position;\n    vec3 relative_contact_other = q - other.position;\n\n    vec3 contact_velocity = self.velocity + cross(self.angular_velocity, relative_contact) \n                          - other.velocity - cross(other.angular_velocity, relative_contact_other);\n\n    // transform to collision coordinates (x-axis is the collision normal)\n    vec3 x_ = normalize(n);\n    vec3 y_ = normalize(n+vec3(1,0,0));\n    vec3 z_ = normalize(cross(x_, y_));\n    y_ = cross(x_, z_);\n    mat3 contact_basis = mat3(x_, y_, z_);\n    \n    contact_velocity *= contact_basis; // \"v = M*v\" is equivalent to \"v *= transpose(M)\" for some reason\n    vec3 q_rel_contact = relative_contact, \n         q_rel_other_contact = relative_contact_other;\n    q_rel_contact *= contact_basis, \n    q_rel_other_contact *= contact_basis;\n    \n    float dv_contact = -(self.restitution+1.) * contact_velocity.x;\n    float g = dv_contact / (self.inverse_mass + other.inverse_mass \n        + self.inverse_inertia * (q_rel_contact.y*q_rel_contact.y + q_rel_contact.z*q_rel_contact.z) // v.y*v.y+v.z*v.z = cross(cross(v, vec3(1,0,0)), v)\n        + other.inverse_inertia * (q_rel_other_contact.y*q_rel_other_contact.y + q_rel_other_contact.z*q_rel_other_contact.z));\n\n    // add contact impulse with force of dynamic friction \n    vec2 friction_force = DYNAMIC_FRICTION * G_CONST / self.inverse_mass * normalize(contact_velocity.yz);\n    vec3 impulse = vec3(g, -dt * friction_force);\n\n    // transform total impulse back to world coordinates\n    impulse *= inverse(contact_basis);\n\n    dp = n / ((1./self.inverse_mass + 1./other.inverse_mass)*other.inverse_mass);\n    dv = self.inverse_mass * impulse;\n    da = self.inverse_inertia * cross(relative_contact, impulse);\n}\n\n// plane with normal (0,0,1)\nvoid resolve_collision_plane(inout Cube self, vec3 q, vec3 n, float dt) {\n    if (n == vec3(0)) return; // check if there acutally is a collision\n    \n    vec3 relative_contact = q - self.position;\n\n    vec3 contact_velocity = self.velocity + cross(self.angular_velocity, relative_contact);\n\n    float dv = -(self.restitution+1.) * contact_velocity.z;\n    float g = dv / (self.inverse_mass + self.inverse_inertia * (relative_contact.x*relative_contact.x + relative_contact.y*relative_contact.y)); // v.x*v.x+v.y*v.y = cross(cross(v, vec3(0,0,1), v)\n\n    vec2 friction_force = -DYNAMIC_FRICTION *  G_CONST / self.inverse_mass * normalize(contact_velocity.xy);\n    vec3 impulse = vec3(dt * friction_force, g);\n\n    self.position += n;\n    self.velocity += self.inverse_mass * impulse;\n    self.angular_velocity += self.inverse_inertia * cross(relative_contact, impulse);\n}\n\n// q: point of contact\n// n: contact_normal (the length of the contact normal is the the depth of penetration)\n// plane including origin with normal (0,0,1)\nvoid collision_plane(inout Cube cube, out vec3 out_q, out vec3 out_n) {\n    float ret;\n    int vert;\n    vec3[8] verts = cube_to_verticies(cube);\n    for (int i = 0; i < 8; i++) {\n        float a = verts[i].z;\n        if (a < ret) {\n            ret = a;\n            vert = i;\n        }\n    }\n    \n    out_q = verts[vert];\n    out_n = vec3(0,0,-ret);\n}\n\n/* arbitrary planes with normal n, h above the origin:\nvoid collision_plane(inout Cube cube, float h, vec3 n, out vec3 out_q, out vec3 out_n) {\n    float ret;\n    int vert;\n    vec3[8] verts = cube_to_verticies(cube);\n    for (int i = 0; i < 8; i++) {\n        float a = dot(n, verts[i])-h;\n        if (a < ret) {\n            ret = a;\n            vert = i;\n        }\n    }\n    \n    out_q = verts[vert];\n    out_n = -ret*n;\n}*/\n\nvec2 overlap_on_axis(vec3 n, vec3[8] verts1, vec3[8] verts2) {\n    float min1 = INFINITY, min2 = INFINITY, \n          max1 = -INFINITY, max2 = -INFINITY;\n    int min_vert, max_vert;\n    for (int i = 0; i < 8; i++) {\n        float d1 = dot(n, verts1[i]),\n              d2 = dot(n, verts2[i]);\n        if (d1 < min1) {\n            min1 = d1;\n            min_vert = i;\n        }\n        if (d1 > max1) {\n            max1 = d1;\n            max_vert = i;\n        }\n        min2 = min(min2, d2);\n        max2 = max(max2, d2);\n    }\n    \n    float overlap;\n    int vert; // most overlapping vertex of verts1\n    \n    if (min1 < min2 && max1 < max2) {\n        overlap = max1-min2;\n        vert = max_vert;\n    }\n    else if (min1 > min2 && max1 > max2) {\n        overlap = max2-min1;\n        vert = min_vert;\n    }\n    else { // one projection is fully within the other\n        overlap = min(abs(max1-min2), abs(max2-min1));\n        // vert is not required here\n    }\n    \n    return vec2(overlap, vert);\n}\n\nvec3 closest_edge_to_other_cube_along_axis(inout Cube cube1, inout Cube cube2, int i/*index of cube1 normal*/, vec3 n/*axis*/) {\n    vec3 closest_vert;\n    float min_dist = INFINITY;\n    for (int j = 0; j < 4; j++) {\n        vec3 v = cube1.position + cube1.half_side_length\n            * ((float(2*int(j<2)-1)) * cube1.normals[imod(i+1, 3)] \n             + float(2*int(imod(j,2)==0)-1) * cube1.normals[imod(i+2, 3)]);\n\n        // distance between center of edge and other cube (cubes are convex, so the distance to the center is sufficient)\n        float d = abs(dot(n,v-cube2.position));\n        if (d < min_dist) {\n            min_dist = d;\n            closest_vert = v;\n        }\n    }\n    \n    return closest_vert; // middle vertex of edge\n}\n\n// q: point of contact\n// n: contact_normal (the length of the contact normal is the the depth of penetration)\n// cube1 has to be the cube the forces are applied on!\nvoid collision_cube(Cube cube1, Cube cube2, out vec3 q, out vec3 n) {\n    #define RETURN_IF_SEPARATED if (overlap.x < 0.) {q=n=vec3(0); return;}\n    \n    float min_overlap = INFINITY;\n    vec3 dir;\n    int collision_vert;\n    int vert_face_cube;\n    int e1, e2;\n    \n    vec3[8] verts1 = cube_to_verticies(cube1);\n    vec3[8] verts2 = cube_to_verticies(cube2);\n    \n    vec2 overlap;\n    // face-vertex detection\n    for (int i = 0; i < 3; i++) {\n        // vertex-face\n        overlap = overlap_on_axis(cube1.normals[i], verts2, verts1);\n        RETURN_IF_SEPARATED\n        if (overlap.x < min_overlap) {\n            min_overlap = overlap.x;\n            dir = cube1.normals[i];\n            collision_vert = int(overlap.y);\n            vert_face_cube = 2;\n        }\n        \n        // vertex-face\n        overlap = overlap_on_axis(cube2.normals[i], verts1, verts2);\n        RETURN_IF_SEPARATED\n        if (overlap.x < min_overlap) {\n            min_overlap = overlap.x;\n            dir = cube2.normals[i];\n            collision_vert = int(overlap.y);\n            vert_face_cube = 1;\n        }\n        \n        // edge-edge\n        for (int j = 0; j < 3; j++) {\n            vec3 n = normalize(cross(cube1.normals[i], cube2.normals[j]));\n            overlap = overlap_on_axis(n, verts1, verts2);\n            RETURN_IF_SEPARATED\n            if (overlap.x < min_overlap) {\n                min_overlap = overlap.x;\n                dir = n;\n                e1 = i;\n                e2 = j;\n                vert_face_cube = 0;\n            }\n        }\n    }\n    \n    n = dir;\n    vec3 vertex;\n    if (vert_face_cube == 0) {\n        vec3 d1 = cube1.normals[e1],\n             d2 = cube2.normals[e2],\n             o1 = closest_edge_to_other_cube_along_axis(cube1, cube2, e1, n),\n             o2 = closest_edge_to_other_cube_along_axis(cube2, cube1, e2, n),\n             od = o2 - o1,\n             perp = cross(n, d2);\n        \n        // closest point on edge of cube 1 to edge of cube 2\n        vertex = o1 - dot(od, perp)*d1; // averaging closest point on 1's edge with closest point on 2's edge would be a tad more accurate\n    }\n    else\n        vertex = vert_face_cube == 1 ? verts1[collision_vert] : verts2[collision_vert];\n\n    n *= min_overlap * sign(dot(n, cube1.position-cube2.position)); // the force always has to point away from the other cube\n    \n    q = vertex;\n}\n\n// rotation using Rodrigues' rotation formula\n// k has to be normalized!\nvoid rotate_around_axis(inout vec3 v, vec3 k, float a) {\n    v = v*cos(a) + cross(k,v)*sin(a) + k*(dot(k,v))*(1.-cos(a));\n}\n\nvoid rotate_normals_around_axis(inout mat3 m, vec3 k, float a) {\n    rotate_around_axis(m[0], k, a);\n    rotate_around_axis(m[1], k, a);\n    m[2] = cross(m[0], m[1]);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/*\n    layout (one row per cube): (same as Buffer C)\n    \n    (position, side length) (velocity, inverse mass) (angluar momentum, inverse inertia) (normal1, /) (normal2, restiution) (color, /) ...\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    int self_idx = int(fragCoord.y);\n    \n    if (self_idx >= NUMBER_OF_CUBES || int(fragCoord.x) > 5) discard;\n    \n    Cube self = get_cube(self_idx, iChannel0);\n    \n    // apply force on click\n    if (iMouse.xy == iMouse.zw && iMouse.xy != vec2(0)) {\n        GET_CAMERA(iChannel1, iMouse.zw, iResolution)\n        vec3 p, n;\n        int i = ray_trace_cubes(ro, rd, p, n, iChannel0);\n        if (i == self_idx) {\n            self.velocity += CLICK_STRENGTH * self.inverse_mass * rd;\n            self.angular_velocity += CLICK_STRENGTH * self.inverse_inertia * cross(normalize(p-self.position), rd);\n        }\n    }\n    \n    // gravity\n    self.velocity.z -= iTimeDelta * G_CONST;\n    \n    // update position\n    self.position += iTimeDelta * self.velocity;\n    \n    // update rotation\n    rotate_normals_around_axis(self.normals, normalize(self.angular_velocity), iTimeDelta*length(self.angular_velocity));\n    \n    cube_to_output(fragColor, self, int(fragCoord.x));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/* \n    layout:\n    \n  v ^\n    |\n    3-------+-------+-------+-------+-------+-------+-------+-------+-------+\n    | 3-1 p | 3-1 v | 3-1 a | 3-2 p | 3-2 v | 3-2 a |   /   |   /   |   /   |\n    2-------+-------+-------+-------+-------+-------+-------+-------+-------+\n    | 2-1 p | 2-1 v | 2-1 a |   /   |   /   |   /   | 2-3 p | 2-3 v | 2-3 a |\n    1-------+-------+-------+-------+-------+-------+-------+-------+-------+\n    |   /   |   /   |   /   | 1-2 p | 1-2 v | 1-2 a | 1-3 p | 1-3 v | 1-3 a |\n    0-------1-------2-------3-------4-------5-------6-------7-------8-------9--> u\n\n    where \n        n-m: resolution applied to cube n due to cube m\n        p: Δposition\n        v: Δvelocity\n        a: Δangular_velocity\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    int self_idx = int(fragCoord.x)/3, \n        other_idx = int(fragCoord.y);\n        \n    if (self_idx == other_idx || self_idx > NUMBER_OF_CUBES-1 || other_idx > NUMBER_OF_CUBES-1) discard;\n\n    Cube self = get_cube(self_idx, iChannel0),\n         other = get_cube(other_idx, iChannel0);\n    \n    vec3 q, n, dp, dv, da;\n    collision_cube(self, other, q, n);\n    resolve_collision(self, other, q, n, iTimeDelta, dp, dv, da);\n    \n    int i = imod(int(fragCoord.x), 3);\n    \n    fragColor.rgb = i == 0 ? dp : i == 1 ? dv : da;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*\n    layout (one row per cube): (same as Buffer A)\n    \n    (position, side length) (velocity, inverse mass) (angluar momentum, inverse inertia) (normal1, /) (normal2, restiution) (color, /) ...\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    int self_idx = int(fragCoord.y);\n    \n    if (self_idx >= NUMBER_OF_CUBES || int(fragCoord.x) > 5) discard;\n\n    // pause with space\n    if (get(iChannel3, 32, 2).x > 0.) {\n        fragColor = texelFetch(iChannel2, ivec2(fragCoord), 0);\n        return;\n    }\n    \n    Cube self = get_cube(self_idx, iChannel0);\n    \n    // cube-cube collsion\n    for (int i = 0; i < NUMBER_OF_CUBES; i++) {\n        if (i == self_idx) continue;\n        \n        // skip computation if cubes are too far appart (bounding sphere) (sqrt(3) ≈ 1.7321)\n        vec4 t0 = get(iChannel0, 0, i);\n        if (distance(self.position, t0.xyz) > 1.7321*(self.half_side_length + t0.w)) continue;\n             \n        self.position         += get(iChannel1, 3*self_idx  , i).rgb,\n        self.velocity         += get(iChannel1, 3*self_idx+1, i).rgb,\n        self.angular_velocity += get(iChannel1, 3*self_idx+2, i).rgb;\n    }\n\n    // cube-ground collision\n    vec3 q, n;\n    collision_plane(self, q, n);\n    resolve_collision_plane(self, q, n, iTimeDelta);\n    \n    cube_to_output(fragColor, self, int(fragCoord.x));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*\n    layout:\n        (0,0): (angle a, angle b, radius, last mouse.x)\n        (1,0): (position, last mouse.y)\n        all other pixels: discard\n*/\n\nbool keyPressed(int key) {\n    return get(iChannel1, key, 0).x > 0.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (fragCoord.x>2. || fragCoord.y > 1.) discard;\n    \n    bool ctrl = keyPressed(17);\n    bool shift = keyPressed(16);\n    \n    vec4 t1 = get(iChannel0, 0, 0);\n    vec4 t2 = get(iChannel0, 1, 0);\n    \n    vec2 prevMouse = iMouse.z < 0. || iMouse.xy == iMouse.zw ? iMouse.xy : vec2(t1.w, t2.w);\n    \n    vec2 mouse_delta = distance(prevMouse, iMouse.xy) < 70. ? MOUSE_SENSITIVITY * (prevMouse-iMouse.xy) : vec2(0);\n    \n    if (fragCoord.x == .5) {\n        fragColor = t1 + vec4(\n            ctrl ? 0. : -mouse_delta.x,\n            ctrl ? 0. : mouse_delta.y,\n            ctrl ? 12.5*mouse_delta.y : 0.,\n            0\n        );\n        \n        fragColor = shift ? t1 : fragColor;\n        \n        fragColor.y = clamp(fragColor.y, max(asin(-t2.z/fragColor.z)/TAU+.005, -.25), .25);\n        fragColor.z = max(fragColor.z, 0.);\n\n        fragColor = t1.x != 0. ? fragColor : // set camera on reset\n        #if INIT_SCENE == 0\n            vec4(-.12, .1, 7, 0);\n        #elif INIT_SCENE == 1\n            vec4(.08, .07, 3.5, 0);\n        #elif INIT_SCENE == 2\n            vec4(-.1, .13, 5.5, 0);\n        #elif INIT_SCENE == 3\n            vec4(.1, .08, 5.5, 0);\n        #endif\n        \n        fragColor.w = iMouse.x;\n    }\n    else if (fragCoord.x == 1.5) {\n        fragColor = t2;\n        \n        mat3 cm = get_camera_matrix(t1.x*TAU, t1.y*TAU);\n        fragColor.xyz += (2.5+t1.z) * cm * vec3(0, mouse_delta);\n        \n        fragColor = shift ? fragColor : t2;\n\n        fragColor.xyz = t1.x != 0. ? fragColor.rgb : // set camera on reset\n        #if INIT_SCENE == 1\n            vec3(0,0,1);\n        #elif INIT_SCENE == 3\n            vec3(0,0,.5);\n        #else\n            vec3(0);\n        #endif\n    \n        fragColor.z = max(fragColor.z, 0.);\n        \n        fragColor.w = iMouse.y;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

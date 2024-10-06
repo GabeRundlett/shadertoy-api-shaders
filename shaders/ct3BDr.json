@@ -1,0 +1,244 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1701120233",
+            "description": "A puddle in a rocky terrain with rain falling onto it. Use the mouse to create small water-bug like movement on the water.\nIMPORTANT: Works best with resolution of at least 800x400\nPress: L to move the light.\nC to rotate camera.\nP to see wave simulation.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ct3BDr",
+            "likes": 13,
+            "name": "Rocky Pudd caustics",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "waves",
+                "rain",
+                "rocks"
+            ],
+            "usePreview": 0,
+            "username": "ilia87",
+            "viewed": 374
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_STEPS 100\n#define SURFACE_DIST 0.01\n#define MAX_DIST 100.\n#define PI 3.1415927\n\n#define CLOUDS 0\n#define NO_SUN_BLOCKAGE 0\n#define GOO 0\n#define MURKY 1\n#define eta 0.5\n\nvec3 light = normalize(vec3(.4,-1.0,.75));\n\nfloat WaveHeight(vec2 p)\n{\n     return texture(iChannel2, WaterBuffPixelForXY(p.xy,iResolution.xy) / iResolution.xy).z * waterWaveHeight;\n}\n\nvec3 WaterNormal_fine(vec2 p)\n{\n    if ( any(greaterThan(abs(p.xy-waterSimCenter),waterSimSize*.5 )))\n        return vec3(0,0,-1);\n    vec4 data = texture(iChannel2, WaterBuffPixelForXY(p.xy,iResolution.xy) / iResolution.xy);\n    vec2 dh = data.xy * waterWaveHeight;\n    //return vec3(dh*1000.,-1.);\n    vec2 dxy = GetWaterDXYForPixel(iResolution.xy);\n    return normalize(-cross(vec3(dxy.x,0.,dh.x),vec3(0.,dxy.y,dh.y))); //minus sign because system is left-handed\n}\n\nfloat CloudsFBM(vec3 uvw)\n{\n    float x = 0.;\n    float factor=1.;\n    for ( int i=0;i<6;++i)\n    {\n        vec3 ijk = floor(uvw);\n        float a = noise(ijk);\n        float b = noise(ijk+vec3(1.,0.,0.));\n        float c = noise(ijk+vec3(0.,1.,0.));\n        float d = noise(ijk+vec3(1.,1.,0.));\n        \n        float az = noise(ijk+vec3(0.,0.,1.));\n        float bz = noise(ijk+vec3(1.,0.,1.));\n        float cz = noise(ijk+vec3(0.,1.,1.));\n        float dz = noise(ijk+vec3(1.,1.,1.));\n        \n        float sx = smoothstep(0.,1.,fract(uvw.x));\n        float sy = smoothstep(0.,1.,fract(uvw.y));\n        float sz = smoothstep(0.,1.,fract(uvw.z));\n        \n        \n        \n        float v =\n            a\n            + (b-a)*sx\n            + (c-a)*sy\n            + (a-b-c+d)*sx*sy;\n        float vz =\n            az\n            + (bz-az)*sx\n            + (cz-az)*sy\n            + (az-bz-cz+dz)*sx*sy;\n        x+= factor * (v + (vz-v)*sz);\n            \n        factor *=.59;\n        uvw += vec3(5.3241634,6.35134134,7.7654352);\n        uvw *= 2.2;\n        uvw.z*=1.02113;\n        uvw.xy*=m2;\n        //uvw *= m3;\n        //uvw = uvw.yzx;\n    }\n    return x;\n}\n\nvec3 Sky(vec3 ro, vec3 rd, out float sunBlockage)\n{\n    vec3 c0 = vec3(.6,.6,1.);\n    vec3 col=c0;\n    float v = 0.;\n#if CLOUDS\n    const float skyHeight = -1000.;\n    float dist = (skyHeight - ro.z)/rd.z; \n    const vec2 speed = vec2(0.,30.);\n    const float morphSpeed = 10.;\n    vec3 p = vec3(ro.xy + rd.xy * dist + iTime*speed,iTime*morphSpeed);\n    v = 1.-smoothstep(-.9,0.5,CloudsFBM(p*.001));\n    //for ( int j=0;j<1;++j)\n    //{\n    //    v *= 1.-smoothstep(-.9,0.5,CloudsFBM((p+rd*100.*float(j))*.001));\n    //}\n    v = smoothstep(0.,1.,sqrt(v))*2.-1.;\n    \n    vec3 c1 = vec3(1.5);\n    vec3 c2 = vec3(1.2);\n    vec3 c3 = vec3(.6);\n    col = mix(col,c1,smoothstep(-.8,1.,v));\n#endif\n    //col = mix(col,c2,smoothstep(-.2,.4,v));\n    //col = mix(col,c3,smoothstep(0.,1.,v));\n    vec3 L = light;\n    float cosSunAngle = dot(-L,rd);\n    //float sunRadius = radians(.25);\n    float sunRadius = radians(1.);\n    float sunFactor = (cosSunAngle > cos(sunRadius))? 1.0 : 0.0;;\n    float sunHalo = 1.-smoothstep(cos(sunRadius),cos(sunRadius*4.),cosSunAngle);\n    sunHalo = pow(sunHalo,2.5);\n    vec3 sun = (sunFactor*4. + sunHalo*2.)*vec3(1.,1.,.4);\n#if NO_SUN_BLOCKAGE\n    sunBlockage = 0.;\n#else\n    sunBlockage = smoothstep(-.4,1.,v);\n    sunBlockage*=sunBlockage;\n    sunBlockage*=.5;\n#endif\n    col += sun * (1.-sunBlockage);\n    return col*1.5;\n}\n\n\nfloat DX[9] = float[9](\n            -.25,0.,.25,\n            -.5,0.,.5,\n            -.25,0.,.25);\n\nvec3 RocksNormal(vec2 xy)\n{\n    const float d = 0.03;\n    float h = RocksTotal(xy, iChannel0, iChannel1);\n    float dh_dx = 0., dh_dy = 0.;\n    //float dh_dx = RocksHeight(xy + vec2(d,0.)) - h;\n    //float dh_dy = RocksHeight(xy + vec2(0.,d)) - h;\n    for ( int i=0;i<3;++i)\n    {\n        for ( int j=0;j<3;++j)\n        {\n            float dx = d*float(i-1);\n            float dy = d*float(j-1);\n            float v = RocksTotal(xy + vec2(dx,dy), iChannel0, iChannel1);\n            dh_dx += v * DX[j*3+i];\n            dh_dy += v * DX[i*3+j];\n        }\n    }\n    return -normalize(cross(vec3(d,0.,-dh_dx),vec3(0.,d,-dh_dy))); //minus sign because system is left handed\n}\n\nbool MarchTerrain(vec3 ro, vec3 rd, out vec3 p)\n{\n    p = ro;\n    float totalDist = 0.;\n    //float prevDE = 0.;\n    for ( int iStep = 0;iStep < MAX_STEPS;++iStep)\n    {\n        float h = -RocksTotal(p.xy, iChannel0, iChannel1);\n        float de = (h-p.z);\n        if (abs(de) < SURFACE_DIST)\n            return true;\n        //if (de < 0.)\n        //{\n        //    de=prevDE*-.5;\n        //    prevDE *= .5;\n        //}\n        //else\n        //{\n        //    prevDE = de;\n        //}\n        totalDist += .5*de;\n        p = ro + totalDist * rd;\n        if (totalDist > MAX_DIST)\n            return false;\n    }\n    return false;\n}\n\nmat3 MouseToRot()\n{\n    vec2 mouse = (2.*iMouse.xy-iResolution.xy) / iResolution.xy;\n    float phi = mouse.x*PI;\n    float theta = (1.+mouse.y)*PI*.5;\n    float cp = cos(phi);\n    float sp = sin(phi);\n    float ct = cos(theta);\n    float st = sin(theta);\n    mat3 Mp = mat3(\n        cp,-sp,0.,\n        sp,cp,0.,\n        0.,0.,1.);\n    mat3 Mt = mat3(\n        1.,0.,0.,\n        0.,ct,-st,\n        0.,st,ct);\n    return Mp*Mt;\n}\n\nfloat Shadow(vec3 dest, vec3 lightSrc)\n{\n    vec3 L = normalize(dest - lightSrc);\n    vec3 p = lightSrc;\n    float closestDist = MAX_DIST;\n    const float shadowMinDist = 0.1;\n    for ( int iStep = 0;iStep < 50;++iStep)\n    {\n        float h = -RocksTotal_ld(p.xy, iChannel0, iChannel1);\n        float de = (h-p.z);\n        closestDist = min(closestDist,de);\n        if (de < SURFACE_DIST)\n            return 0.;\n        if (abs(de) > MAX_DIST)\n            return 1.;\n        p += (.5*de) * L;\n        if ( dot(dest-p,L)<shadowMinDist )\n        {\n            return smoothstep(0.,0.1,closestDist);\n            return 1.0;\n        }\n        //prevDist = de;\n    }\n    return 0.;//smoothstep(0.,0.05,closestDist);\n}\n\nconst float shadowCheckDist = 100.;\n\nfloat FBM_goo(vec2 uv)\n{\n    float x = 0.;\n    float factor=1.;\n    for ( int i=0;i<8;++i)\n    {\n        vec2 ij = floor(uv);\n        float a = noise(ij);\n        float b = noise(ij+vec2(1.,0.));\n        float c = noise(ij+vec2(0.,1.));\n        float d = noise(ij+vec2(1.,1.));\n        float sx = smoothstep(0.,1.,fract(uv.x));\n        float sy = smoothstep(0.,1.,fract(uv.y));\n        x+= factor*(\n            a\n            + (b-a)*sx\n            + (c-a)*sy\n            + (a-b-c+d)*sx*sy);\n        factor *=.7;\n        uv *= 2.5;\n        uv *= m2;\n    }\n    return x;\n}\n\nvoid GetTerrainColor(vec3 p, vec3 light, out vec3 diffuse, out vec3 ambient)\n{\n    vec3 N = RocksNormal(p.xy);\n#if GOO\n    float goo = FBM_goo((p.xy-vec2(12.5,-3.))*.1);\n    goo = smoothstep(-1.,1.,goo)*.8;\n    goo *= smoothstep(-2.,-.5,p.z - waterLevel);\n#endif\n    if ( abs(p.z + Rocks1(p.xy, iChannel1)+Floor(p.xy)) < .05 )\n    {\n        diffuse = mix(texture(iChannel1,p.xy*.1).xyz,vec3(1.,1.,1.),.5);\n        ambient = diffuse;\n        diffuse *= vec3(1.,.8,.6);\n        ambient *= vec3(.8,.7,.5);\n#if GOO\n        diffuse = mix(diffuse,vec3(0.1,.2,.15),goo);\n        ambient = mix(ambient,vec3(0.2,.35,.3),goo);\n#endif\n    }\n    else\n    {\n        diffuse = mix(texture(iChannel1,p.xy*.2).xyz,vec3(1.,1.,1.),.5);\n        ambient = diffuse;\n        diffuse *= vec3(1.,.9,.8);\n        ambient *= vec3(.8,.75,.7);\n#if GOO\n        diffuse = mix(diffuse,vec3(0.1,.2,.15),goo*goo);\n        ambient = mix(ambient,vec3(0.2,.35,.3),goo*goo);\n#endif\n    }\n    diffuse *=  vec3(.6*sqrt(max(dot(light,-N),0.)))*1.5;\n    ambient *= .9;\n    diffuse *= .8;\n}\n\nvec3 MarchReflection(vec3 ro, vec3 rd)\n{\n    vec3 p;\n    MarchTerrain(ro,rd,p);\n    if ( dot(p-ro,p-ro) > 10000. )\n    {\n        float sunBlockage;\n        return Sky(ro,rd,sunBlockage);\n    }\n    float shadow = Shadow(p,p - light * shadowCheckDist);\n    float sunBlockage;\n    Sky(p,-light,sunBlockage);\n    shadow *= 1.-sunBlockage;\n    \n    vec3 diffuse,ambient;\n    GetTerrainColor(p,light,diffuse,ambient);\n    diffuse *= shadow;\n    return diffuse + ambient;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //fragColor = texelFetch(iChannel2,ivec2(fragCoord),0)*.5+.5;\n    //return;\n    mat3 mouseRot = MouseToRot();\n    if ( texelFetch(iChannel3,ivec2(76,0),0).x >0.)\n    {\n        light = mouseRot * vec3(0.,0.,-1.);\n    }\n    vec3 rd = vec3((2.*fragCoord-iResolution.xy) / iResolution.x,1.);\n    if ( texelFetch(iChannel3,ivec2(67,0),0).x >0.)\n    {\n        rd = mouseRot * rd;\n    }\n    else\n    {\n        rd = PixelToRay(fragCoord,iResolution.xy);\n    }\n    \n    vec3 ro = camPos + rd;\n    rd = normalize(rd);\n    //fragColor.xyz = Sky(camPos,rd);\n    //return;\n    //fragColor.xyz = TerrainNormal(ro.xy)*.5+.5;\n    //return;\n    \n    fragColor = vec4(0.,0.,0.,1.);\n    vec3 p;\n    if ( !MarchTerrain(ro,rd,p) )\n    {\n        //fragColor = vec4(0.,0.,1.,1.);\n        //return;\n    }\n\n    if (texelFetch(iChannel3,ivec2(80,0),0).x!=0.)\n    {\n        vec2 waterXY = p.xy-rd.xy*(p.z-waterLevel)/rd.z;\n        if ( all(lessThan(abs(waterXY - waterSimCenter),waterSimSize*.5 )) )\n        {\n            fragColor = texture(iChannel2, WaterBuffPixelForXY(waterXY,iResolution.xy) / iResolution.xy);\n            return;\n        }\n    }\n    \n    //\n    \n    float shadow = 1.;\n    vec3 lightEntryPoint = p;\n    float waterReflectionCoeff = 0.;\n    float waterReflectionLightCoeff=0.;\n    bool belowWater = p.z > waterLevel;\n    vec3 lightRefracted = light;\n    float shadowInsideWater = 1.0;\n    float caustics = 0.0;\n    vec3 reflectedLight = vec3(0.);\n    float depth = 0.;\n    if ( belowWater)\n    {\n        float waterDist = (waterLevel - ro.z)/rd.z;\n        vec3 waterPos = ro + waterDist*rd;\n        depth = p.z - (waterLevel + waterWaveHeight*2. + WaveHeight(waterPos.xy)*15.);\n        if ( depth < 0.)\n        {\n            belowWater = false;\n        }\n        else\n        {\n            vec3 waterNormal = WaterNormal_fine(waterPos.xy);\n            vec3 rd_t;\n            float rs,rp;\n            Fresnel(rd,rd_t,waterNormal,eta,rs,rp);\n            vec3 rd_r = reflect(rd,waterNormal);\n            waterReflectionCoeff = .5*(rp+rs);\n            reflectedLight = MarchReflection(waterPos,rd_r) * waterReflectionCoeff;\n            MarchTerrain(waterPos,rd_t,p);\n            rd = rd_t;\n\n            float rsl,rpl;\n            Fresnel(light,lightRefracted,waterNormal,eta,rsl,rpl);\n            waterReflectionLightCoeff = .5*(rsl+rpl);\n            float lightDistInsideWater = depth / lightRefracted.z;\n            lightEntryPoint = p - lightRefracted*lightDistInsideWater;\n            shadowInsideWater = Shadow(p,lightEntryPoint);\n            caustics = texture(iChannel2, WaterBuffPixelForXY(lightEntryPoint.xy,iResolution.xy) / iResolution.xy).w;\n        }\n    }\n    shadow = Shadow(lightEntryPoint,lightEntryPoint - light * shadowCheckDist);\n    float sunBlockage;\n    Sky(lightEntryPoint,-light,sunBlockage);\n    shadow *= 1.-sunBlockage;\n    //reflectedLight *= shadow;\n    shadow *= shadowInsideWater;\n    \n    //vec3 V = camPos - p;\n    vec3 diffuse;\n    vec3 ambient;\n\n    GetTerrainColor(p,lightRefracted,diffuse,ambient);\n    diffuse *= shadow;\n    diffuse *= 1.+max(-0.5, caustics*15.);\n\n\n    //fragColor.xyz *= 1.-.2*smoothstep(.02,3.5,L*.55);\n    //if ( p.z >2.)\n    //{\n    //p.z = max(p.z,2.)-2.;\n    //fragColor.xyz *= exp(-p.z*p.z*vec3(.05,.046,.036)*1.2)*8.;\n    if ( belowWater)\n    {\n#if MURKY\n        float waterDist = depth/rd.z;\n        \n        float depthFactor = clamp(1.-exp(-waterDist*.1)+.4,0.,1.);\n        diffuse = mix(diffuse,vec3(.2,.3,.1),depthFactor);\n        ambient = mix(ambient,vec3(.2,.3,.1),depthFactor);\n        ambient *= pow(abs(1.-depthFactor),0.3);\n#endif   \n        diffuse *= (1.-waterReflectionLightCoeff);\n        //ambient *= (1.-waterReflectionLightCoeff);\n    }\n    \n    fragColor.xyz += (1.-waterReflectionCoeff)*(diffuse + ambient);\n    fragColor.xyz += reflectedLight;\n    //fragColor.xyz = p*.1+.5;\n    //}\n    //else\n    //{\n    //    fragColor.xyz *= 6.;\n    //}\n    //fragColor.xyz = vec3(L*50.);\n\n    //fragColor = vec4(texture(iChannel0,uv).x);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define KEY_SPACE 32\nconst vec3 camPos = vec3(0.,-12.,-7.);\n\nconst vec2 puddleCenter = vec2(0.,0.);\nconst float waterLevel = 2.3;\nconst float waterWaveHeight = .01;\nconst vec2 waterSimCenter = vec2(2.,-8.5);\nconst vec2 waterSimSize = vec2(20.,40.);\nconst vec2 waterBufferIdealSize = vec2(800.,400.);\n\n//const mat2 m2 = mat2(5./13.,12./13.,-12./13.,5./13.);\nconst mat2 m2 = mat2(.6,.8,-.8,.6);\n//const mat3 m3 = mat3(\n//                .6,  0.,  .8,\n//                0.,  1., 0.,\n//                -.8, 0., -.6) \n//                * mat3(\n//                1.,0.,0.,\n//                0.,5./13.,12./13.,\n//                0.,-12./13.,5./13.)*mat3(\n//                .6,  0.,  .8,\n//                0.,  1., 0.,\n//                -.8, 0., -.6) ;\n\nvoid Fresnel(\n    vec3 i,       //incoming ray\n    out vec3 t,   //transmitted ray\n    vec3 n,       //normal\n    float eta,    //ratio of refractive indices (n1/n2)\n    out float rs, //reflection coefficient for s polarization\n    out float rp  //reflection coefficient for p polarization\n)\n{\n    float ci = -dot(i,n);\n    float si = sqrt(1.-ci*ci);\n    float st = si*eta;\n    float ct = sqrt(1.-st*st);\n    t = (eta*ci - ct) * n + eta * i;\n    //t = refract(i,n,eta);\n    rs = (eta * ci - ct)/(eta*ci + ct);\n    rs = rs*rs;\n    rp = (eta * ct - ci)/(eta*ct + ci);\n    rp = rp*rp;\n}\n\n/////////////////////////////////////////////\n\nconst float LaplacianSquaredKernel[25] = float[25](0.02777778,  0.22222222,   0.5,  0.22222222, 0.02777778,\n    0.22222222, -0.22222222,  -4. , -0.22222222, 0.22222222,\n    0.5       , -4.        ,  13. , -4.        , 0.5       ,\n    0.22222222, -0.22222222,  -4. , -0.22222222, 0.22222222,\n    0.02777778,  0.22222222,   0.5,  0.22222222, 0.02777778);\n\n\nconst int LaplacianKernelDeg = 5;\nconst int LaplacianKernelHalfDeg = 2;\n\nconst float LaplacianKernel[25] = float[25]\n(-0.00833333,  0.        , -0.06666667,  0.        , -0.00833333,\n 0.        ,  0.13333333,  1.06666667,  0.13333333,  0.        ,\n-0.06666667,  1.06666667, -4.5       ,  1.06666667, -0.06666667,\n 0.        ,  0.13333333,  1.06666667,  0.13333333,  0.        ,\n-0.00833333,  0.        , -0.06666667,  0.        , -0.00833333);\n\n/////////////////////////////\n\nfloat noise(float i)\n{\n    float x = fract(i*3.453462472+.45623426)*50.;\n    return 2.*fract(x*x)-1.;\n}\n\n\nfloat noise(vec2 ij)\n{\n    vec2 xy = fract(ij*vec2(3.453462472,6.76235421)+vec2(.45623426,.57422783))*50.;\n    return 2.*fract(xy.x*xy.y*(xy.x+xy.y))-1.;\n}\n\nfloat noise(vec3 ijk)\n{\n    vec3 xyz = fract(ijk*vec3(3.453462472,6.76235421,1.2452341)+vec3(.45623426,.57422783,.7552213513))*50.;\n    return 2.*fract((xyz.x*xyz.y + xyz.y*xyz.z + xyz.z*xyz.x)*(xyz.x+xyz.y+xyz.z))-1.;\n}\n\n\nfloat FloorFBM(vec2 uv)\n{\n    float x = 0.;\n    float factor=1.;\n    for ( int i=0;i<5;++i)\n    {\n        vec2 ij = floor(uv);\n        float a = noise(ij);\n        float b = noise(ij+vec2(1.,0.));\n        float c = noise(ij+vec2(0.,1.));\n        float d = noise(ij+vec2(1.,1.));\n        float sx = smoothstep(0.,1.,fract(uv.x));\n        float sy = smoothstep(0.,1.,fract(uv.y));\n        x+= factor*(\n            a\n            + (b-a)*sx\n            + (c-a)*sy\n            + (a-b-c+d)*sx*sy);\n        factor *=.4;\n        uv *= 1.8;\n        uv *= m2;\n    }\n    return x;\n}\n\nfloat Floor(vec2 p)\n{\n    float h =0.;\n    vec2 q = p-puddleCenter;\n    float lq2 = q.x*q.x + q.y*q.y;\n    const float r = 1./11.5;\n    h += -6./(1. + lq2*r*r);\n    float h_fbm = FloorFBM((q.xy+vec2(2.23523,6.75676))*0.1)*3.5;\n    //h_fbm += 1.;\n    h_fbm = pow(abs(h_fbm),2.2)*.4;\n    h_fbm = 1.-h_fbm;\n    h+=h_fbm*1.5;\n    //if ( h < -5.)\n        //h*=1.+pow((-5.-h)*.42,6.);// /pow(q.x*q.x+.4,2.);\n    h += 1.1;\n    //h += texture(iChannel0,(p.xy+vec2(5.8234,.67756))*0.04).x*3.;\n    //h += texture(iChannel0,m2*(p.xy+vec2(1.6246,3.68567))*0.02).x*3.;\n    return h;\n}\n\nfloat Rocks1(vec2 p, sampler2D channel1)\n{\n    float h2 = texture(channel1,(p.xy+vec2(6.23235,3.576588))*.02).x*.05;\n    h2 -= texture(channel1,(p.xy+vec2(8.23235,2.576588))*.04).x*.02;\n    //h2 *= 1.-smoothstep(4.0,10.0,distFromCenter);\n    h2 *= 2.;\n\n    return h2;\n}\n\n\nfloat Rocks2(vec2 p, sampler2D channel0)\n{\n    //float distFromCenter = length(p - puddleCenter);\n    float h = texture(channel0,(p.xy+vec2(-1.53242,5.65252))*0.04).x;\n    //h += texture(iChannel1,m2*(p.xy+vec2(.23235,4.576588))*.015).x*.05;\n    //h *= 1.-smoothstep(15.,100.0,distFromCenter);\n    \n    //h -= .5;\n    //h=max(h,0.);\n    //float h0 = .2;\n    //if ( h>h0)\n    //    h = h0 + pow(h-h0,.6); \n    h = smoothstep(0.5,1.,h*1.0);\n    h *= 3.5;\n        \n    return h;\n}\n\nfloat Rocks3(vec2 p, sampler2D channel0)\n{\n    //float distFromCenter = length(p - puddleCenter);\n    float h2 = texture(channel0,(p.xy+vec2(0.543521,.2766367))*0.16).x;\n    //h += texture(iChannel1,(p.xy+vec2(.23235,.576588)*.02)).x*.02;\n    //h2 *= 1.-smoothstep(15.,100.0,distFromCenter);\n    \n    //h -= .5;\n    //h=max(h,0.);\n    //float h0 = .2;\n    //if ( h>h0)\n    //    h = h0 + pow(h-h0,.6); \n    h2 = smoothstep(0.5,1.,h2*1.0);\n    h2 *= .3;\n    return h2;\n}\n\nfloat RocksTotal(vec2 p, sampler2D channel0, sampler2D channel1)\n{\n    return max(max(Rocks1(p,channel1),Rocks2(p,channel0)),Rocks3(p,channel0)) + Floor(p);\n}\n\nfloat RocksTotal_ld(vec2 p, sampler2D channel0, sampler2D channel1)\n{\n    return max(Rocks2(p,channel0),Rocks3(p,channel0)) + Floor(p);\n}\n\n////////////////////////////////////////\n\nvec2 GetWaterBufferSize(vec2 resolution)\n{\n    float ar = waterSimSize.y/waterSimSize.x;\n    float y = min(waterBufferIdealSize.y,resolution.y);\n    float x = min(y*ar,resolution.x);\n    y = min(y,x/ar);\n    return vec2(x,y);\n}\n\nvec2 GetWaterDXYForPixel(vec2 resolution)\n{\n    return waterSimSize.yx/GetWaterBufferSize(resolution);\n}\n\nvec2 WaterBuffPixelForXY(vec2 xy, vec2 resolution)\n{\n    return clamp(((xy-waterSimCenter) / waterSimSize + 0.5),0.,1.).yx * GetWaterBufferSize(resolution);\n}\n\nvec2 WaterBuffPixelToXY(vec2 pixelCoords, vec2 resolution)\n{\n    return (pixelCoords / GetWaterBufferSize(resolution) - 0.5).yx*waterSimSize + waterSimCenter;\n}\n\n\n\n\n////////////////////////////////////////\n\nvec3 PixelToRay(vec2 pixel,vec2 resolution)\n{\n    vec3 rd = vec3((2.*pixel-resolution) / resolution.x,1.);\n    float a = radians(45.);\n    float c = cos(a);\n    float s = sin(a);\n    mat2 M = mat2(c,-s,s,c);\n    rd.yz = M*rd.yz;\n    return rd;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\nvoid Rain(out vec4 fragColor, in vec2 fragCoord )\n{\n    const float freq = 2.;\n    float t = iTime;\n    float x = fract(t*freq);\n    float fallOff = 30.;\n    vec2 k = vec2(exp(-x*fallOff), -freq*fallOff*exp(-x*fallOff));\n    float i = floor(t*freq);\n    float u = noise(i)*.5+.5;\n    float v = noise(i*7.52341+.57424)*.5+.5;\n    vec2 uv = vec2(u,v);\n    vec2 d = fract(vec2(7.52624514,6.2365432)*texture(iChannel1,uv).xy - texture(iChannel1,fract((uv+vec2(.362456,.678562))*52.16572788)).xy);\n    vec2 waveSrc = d * GetWaterBufferSize(iResolution.xy);\n    float waveSrcSize = 3.0;\n    float srcStrength = .5+.5*u;\n    float d2 = dot(fragCoord - waveSrc,fragCoord-waveSrc);\n    fragColor.xy += srcStrength * exp(-d2/(waveSrcSize*waveSrcSize)) * k;\n}\n\nvec2 SineSrc(float t, float freq)\n{\n    //freq*=2.;\n    return vec2(sin(6.2831853*freq*iTime),6.2831853*freq*cos(6.2831853*freq*iTime));\n}\n\nvec2 KickSrc(float t,float freq)\n{\n    float x = fract(t*freq);\n    float fallOff = 30.;\n    return vec2(exp(-x*fallOff), -freq*fallOff*exp(-x*fallOff));\n}\n\nvec2 MixedSrc(float t,float freq)\n{\n    return SineSrc(t,freq) + KickSrc(t,freq);\n}\n\n//#define SrcFunc SineSrc\n//#define SrcFunc MixedSrc\n#define SrcFunc KickSrc\n\nvec2 waterBufferSize;\n\nvoid AddSource( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 waveSrc = iMouse.xy;\n    //if ( waveSrc.x == 0. && waveSrc.y == 0.)\n        waveSrc =  waterBufferSize * .5;\n    float waveSrcSize = 2.0;\n    float waveSrcFreq = .2;\n    float d2 = dot(fragCoord - waveSrc,fragCoord-waveSrc);\n    fragColor.xy += exp(-d2/(waveSrcSize*waveSrcSize)) * SrcFunc(iTime,waveSrcFreq);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    waterBufferSize = GetWaterBufferSize(iResolution.xy);\n    if ( iFrame < 5 \n    || fragCoord.x >= waterBufferSize.x || fragCoord.y >= waterBufferSize.y )\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    vec2 p = WaterBuffPixelToXY(fragCoord, iResolution.xy);\n    float depth = RocksTotal_ld(p,iChannel0,iChannel1) + waterLevel;\n    if ( depth > 0. )\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    float timeDelta = min(iTimeDelta,0.01);\n\n    fragColor = vec4(0.,0.,0.,1.);\n    \n    //float waveLength = 2.;\n    float waveSpeed = 50. - 15.*smoothstep(-.2,.0,depth);\n    //float waveSpeed = 50.;\n    //float dampRate = .5 + 2.5 * smoothstep(-.1,.0,depth);//waveSpeed * 100.;\n    float dampRate = .5;\n    //float diffusionRate = .1;\n    float k4thOrder = 1.;\n    float k2ndOrder = 1.;\n        \n    \n    //AddSource(fragColor,fragCoord);\n    Rain(fragColor,fragCoord);\n    \n    if ( iMouse.z >0.)\n    {\n        vec3 rd = PixelToRay(iMouse.xy,iResolution.xy);\n        rd = normalize(rd);\n        vec2 srcPos = WaterBuffPixelForXY(camPos.xy + rd.xy * (waterLevel-camPos.z)/rd.z, iResolution.xy);\n        fragColor.x = -.9*exp(-dot(fragCoord - srcPos,fragCoord - srcPos)/4.0);\n    }\n    \n    \n    vec4 prevPixel = texelFetch(iChannel3,ivec2(fragCoord),0);\n    float h = prevPixel.x;\n    float dh_dt = prevPixel.y;\n    \n    \n    //float L = 0.;\n    //float L2 = 0.;\n    //for ( int i=0;i<5;++i)\n    //{\n    //\tfor ( int j=0;j<5;++j)\n    //\t{\n    //\t\tfloat v = texelFetch(iChannel3,ivec2(int(fragCoord.x)+i-2,int(fragCoord.y)+j-2),0).x;\n    //\t\tL -= v;\n    //\t\tL2 += L2kernel[i*5+j] * v;\n    //\t}\n    //}\n    //L += 25.*h;\n    float L = 0.;\n    for ( int i=0;i<LaplacianKernelDeg;++i)\n    {\n        for ( int j=0;j<LaplacianKernelDeg;++j)\n        {\n            L -= LaplacianKernel[i*LaplacianKernelDeg+j] * texelFetch(iChannel2,ivec2(int(fragCoord.x)+i-LaplacianKernelHalfDeg,int(fragCoord.y)+j-LaplacianKernelHalfDeg),0).x;\n        }\n    }\n    float L2 = 0.;\n    for ( int i=0;i<5;++i)\n    {\n    \tfor ( int j=0;j<5;++j)\n    \t{\n    \t\tfloat v = texelFetch(iChannel2,ivec2(int(fragCoord.x)+i-2,int(fragCoord.y)+j-2),0).x;\n    \t\tL2 += LaplacianSquaredKernel[i*5+j] * v;\n    \t}\n    }\n    \n    float d2h_dt2 = (-L*k2ndOrder-L2*k4thOrder) *(waveSpeed*waveSpeed);\n    dh_dt += d2h_dt2 * timeDelta;\n    h += dh_dt * timeDelta;\n    \n    h *= exp(-timeDelta*dampRate);\n    \n    fragColor.x += h;\n    fragColor.y += dh_dt;\n    fragColor.z = L;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float G[25] = float[25]\n(0.00048091, 0.00501119, 0.01094545, 0.00501119, 0.00048091,\n0.00501119, 0.0522178 , 0.11405416, 0.0522178 , 0.00501119,\n0.01094545, 0.11405416, 0.2491172 , 0.11405416, 0.01094545,\n0.00501119, 0.0522178 , 0.11405416, 0.0522178 , 0.00501119,\n0.00048091, 0.00501119, 0.01094545, 0.00501119, 0.00048091);\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 waterBufferSize = GetWaterBufferSize(iResolution.xy);\n    if ( iFrame < 5 \n        || fragCoord.x >= waterBufferSize.x || fragCoord.y >= waterBufferSize.y )\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    //Apply gaussian kernel\n    fragColor = vec4(0.0,0.0,0.0,0.0);\n    for ( int i=0;i<5;++i)\n        for ( int j=0;j<5;++j)\n            fragColor.x += G[i*5+j] * texelFetch(iChannel0,ivec2(int(fragCoord.x)+i-2,int(fragCoord.y)+j-2),0).x;\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float D[9] = float[9]\n(-.5,0.,.5,\n -1.,0.,1.,\n -.5,0.,.5);\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 waterBufferSize = GetWaterBufferSize(iResolution.xy);\n    if ( iFrame < 5 \n        || fragCoord.x >= waterBufferSize.x || fragCoord.y >= waterBufferSize.y )\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    //Differentiate by x,y\n    fragColor = vec4(0.0,0.0,0.0,0.0);\n    for ( int i=0;i<3;++i)\n        for ( int j=0;j<3;++j)\n        {\n            float v = texelFetch(iChannel0,ivec2(int(fragCoord.x)+i-1,int(fragCoord.y)+j-1),0).x;\n            fragColor.x += D[i*3+j] * v;\n            fragColor.y += D[j*3+i] * v;\n        }\n    fragColor.z = texelFetch(iChannel0,ivec2(fragCoord),0).x;\n    fragColor.w = texelFetch(iChannel1,ivec2(fragCoord),0).z;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

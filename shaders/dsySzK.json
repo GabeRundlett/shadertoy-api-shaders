@@ -1,0 +1,63 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1681336681",
+            "description": "Anti-aliasing sphere tracing by keeping track of near-hits,\ncalculating the coverage and compositing them together with multiple shading calls.\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dsySzK",
+            "likes": 13,
+            "name": "Sphere Tracing Anti-aliasing",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "antialiasing",
+                "spheretracing",
+                "aa"
+            ],
+            "usePreview": 0,
+            "username": "gelami",
+            "viewed": 301
+        },
+        "renderpass": [
+            {
+                "code": "\n// Sphere Tracing Anti-aliasing by gelami\n// https://www.shadertoy.com/view/dsySzK\n\n/*\n *  Anti-aliasing sphere tracing by keeping track of near-hits,\n *  calculating the coverage and compositing them together with multiple shading calls.\n *  \n *  Does distance estimation (dividing by the length of the gradient)\n *  to improve anti-aliasing for inexact distance fields\n *  \n *  The anti-aliasing implementation adapted from:\n *  Bacterium - bgs\n *  https://www.shadertoy.com/view/MdBSDt\n *  \n *  Also another shader that does it:\n *  Neptune Racing - Dave_Hoskins\n *  https://www.shadertoy.com/view/XtX3Rr\n *\n *  The original sphere tracing paper that had a section about this AA technique:\n *  https://graphics.stanford.edu/courses/cs348b-20-spring-content/uploads/hart.pdf\n *          \n */\n\n\n// Fork of \"Gelami Raymarching Template\" by gelami. https://shadertoy.com/view/mslGRs\n// 2023-04-12 11:15:51\n\nvec4 debug = vec4(-1);\n\nfloat gyroid(vec3 p)\n{\n    return dot(sin(p), cos(p.yzx));\n}\n\nfloat map(vec3 p)\n{\n    float d = MAX_DIST;\n    \n    vec3 tpos = p * 0.6;\n    float h = sin(tpos.x * 1.0) + sin(tpos.z * 1.5) + cos((tpos.x - tpos.z) * 5.0) * 0.1 + cos(-tpos.x * 4.0 + tpos.z * 8.0) * 0.07;\n    d = p.y - h * 0.3 + 1.8;\n    \n    vec3 gp = p;\n    vec2 sgp = vec2(4.0);\n    gp.xz = mod(gp.xz + sgp*0.5, sgp) - sgp*0.5;\n    float g = (abs(gyroid(p * TAU + iTime)) - 0.3) / (TAU * 2.);\n    \n    d = smin(d, smax(g, (length(gp) - 1.), .01), .5);\n    \n    //d = min(d, length(gp) - 1.0);\n    \n    float s = length(p - vec3(2, 0, 2)) - 1.0 + sin((p.x + p.y + p.z)*8.0) * 0.05;\n    //d = min(d, s * 0.6);\n    \n    return d;\n}\n\nvec3 gradient(vec3 p)\n{\n    const vec2 e = vec2(0, 1e-3);\n    return (vec3(map(p + e.yxx),\n                 map(p + e.xyx),\n                 map(p + e.xxy)) - map(p)) / e.y;\n}\n\nvec3 normal(vec3 p)\n{\n    const vec2 e = vec2(0, 1e-3);\n    return normalize(\n        vec3(\n            map(p + e.yxx),\n            map(p + e.xyx),\n            map(p + e.xxy)) - map(p)\n        );\n}\n\nvec3 getSkybox(vec3 rd)\n{\n    return texture(iChannel1, rd).rgb;\n    //return rd*0.5+0.5;\n}\n\nvec3 shade(vec3 pos, vec3 rd, vec3 n)\n{\n    vec3 color = vec3(0.5);\n    color = vec3(n*.5+.5);\n\n    float f = pow(1.0 - max(dot(-rd, n), 0.0), 5.0);\n    vec3 ref = getSkybox(reflect(rd, n));\n\n    color = mix(color, ref, f * 0.2);\n    \n    return color;\n}\n\nvec3 render(vec3 ro, vec3 rd)\n{\n    vec3 color = vec3(0);\n    \n    // Anti-aliasing implementation adapted from:\n    // Bacterium - bgs\n    // https://www.shadertoy.com/view/MdBSDt\n    float t = 0.;\n    vec4 distStack = vec4(-1);\n    \n    // I think this should depend on FoV\n    float aa = 1.0 / iResolution.y;\n    \n    float pd = 0.0;\n    bool near = false;\n    for (int i = 0; i < STEPS; i++)\n    {\n        float d = map(ro + rd * t);\n        \n        if (d < pd)\n            near = true;\n        else if (near && pd < aa * (t - pd) && distStack.w < 0.0)\n        {\n            distStack.w = t - pd;\n            distStack = distStack.wxyz;\n            \n            near = false;\n        }\n        \n        t += d;\n        pd = d;\n        \n        if (d < EPS || t >= MAX_DIST)\n            break;\n    }\n    vec3 pos = ro + rd * t;\n    vec3 n = normal(pos);\n    \n    color = t < MAX_DIST ? shade(pos, rd, n) : getSkybox(rd);\n    \n    if (debug.x > debug.z)\n    {\n        for (int i = 0; i < 4; i++)\n        {\n            if (distStack[i] < 0.0)\n                break;\n\n            vec3 pos = ro + rd * distStack[i];\n            float d = map(pos);\n            \n            // Distance estimation by dividing the distance by the length of its gradient\n            // https://iquilezles.org/articles/distance/\n            vec3 grad = gradient(pos);\n            float lgrad = length(grad);\n            vec3 n = grad / lgrad;\n            \n            d /= lgrad;\n\n            #if 1\n            float alpha = saturate(d / (aa * distStack[i]));\n            #else\n            // Cone tracing alpha calculation from the original sphere tracing paper\n            // https://graphics.stanford.edu/courses/cs348b-20-spring-content/uploads/hart.pdf\n            // There's basically no difference lol\n            float r = aa * distStack[i];\n            float alpha = 0.5 - d * sqrt(r*r - d*d) / (PI * r*r) - (1.0 / PI) * asin(d / r);\n            alpha = 1.0-saturate(alpha * 2.0);\n            #endif\n            \n            #if 1\n            color = mix(color, shade(pos, rd, n), 1.0-alpha);\n            #else\n            color = mix(color, vec3(1,0,0), 1.0-alpha);\n            #endif\n        }\n    }\n    \n    //color = vec3(distStack.xyz);\n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pv = (2. * (fragCoord) - iResolution.xy) / iResolution.y;\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec3 ro = vec3(0, 0, 4);\n    vec3 lo = vec3(0, 0, 0);\n    \n    vec2 m = iMouse.xy / iResolution.xy;\n    \n    float ax = iMouse.x < 2. ? -PI * .7 + iTime * .2 : -m.x * PI;\n    float ay = iMouse.y < 2. ? 0.12 * PI : -m.y * PI + PI * 0.5;\n    \n    float fov = 2.0;\n    debug.xy = uv;\n    debug.z = sin(iTime * 0.6) * 0.5 + 0.5;\n    \n    ro.yz *= rot2D(ay);\n    ro.xz *= rot2D(ax);\n\n    mat3 cmat = getCameraMatrix(ro, lo);\n\n    vec3 rd = normalize(cmat * vec3(pv, fov));\n\n    vec3 col = render(ro, rd);\n    \n    //if (int(fragCoord.x) == int(iResolution.x * debug.z))\n    col = mix(col, vec3(1, 0.1, 0.1), smoothstep(1.0/iResolution.y, 0.5/iResolution.y, abs(uv.x - debug.z)));\n    \n    col = max(col, vec3(0));\n    col = col / (1. + col);\n    col = smoothstep(vec3(0), vec3(1), col);\n    //col = ACESFilm(col*0.45);\n    fragColor = vec4(linearTosRGB(col), 1);\n    fragColor += hash13(vec3(fragCoord, iTime)) / 256.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n\n#define STEPS 256\n#define MAX_DIST 100.\n#define EPS 1e-4\n\n#define PI (acos(-1.))\n#define TAU (PI*2.)\n\nmat3 getCameraMatrix(vec3 ro, vec3 lo)\n{\n    vec3 cw = normalize(lo - ro);\n    vec3 cu = normalize(cross(cw, vec3(0, 1, 0)));\n    vec3 cv = cross(cu, cw);\n\n    return mat3(cu, cv, cw);\n}\n\nfloat safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }\n\nfloat saturate(float x) { return clamp(x, 0., 1.); }\nvec2 saturate(vec2 x) { return clamp(x, vec2(0), vec2(1)); }\nvec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }\n\nfloat sqr(float x) { return x*x; }\nvec2 sqr(vec2 x) { return x*x; }\nvec3 sqr(vec3 x) { return x*x; }\n\nmat2 rot2D(float a)\n{\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n// https://iquilezles.org/articles/smin/\nfloat smin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n    \nfloat smax( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) + k*h*(1.0-h); }\n\n\n// https://iquilezles.org/articles/palettes/\nvec3 palette(float t)\n{\n    return .5 + .5 * cos(TAU * (vec3(1, 1, 1) * t + vec3(0, .33, .67)));\n}\n\n// Hash without Sine\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n\n}\n\nvec3 sRGBToLinear(vec3 col)\n{\n    return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));\n}\n\nvec3 linearTosRGB(vec3 col)\n{\n    return mix(1.055 * pow(col, vec3(1.0 / 2.4)) - 0.055, col * 12.92, lessThan(col, vec3(0.0031308)));\n}\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

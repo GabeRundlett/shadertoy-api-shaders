@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1722452692",
+            "description": "In shaders like https://www.shadertoy.com/view/4sKyzW I use a cubic solver to compute the sign of a cubic Bézier curve.\nHere, i tried to do it with implicitization and splitting at double points. I'm publishing it in a quite unfinished state, though.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lcjcDm",
+            "likes": 4,
+            "name": "Cubic bezier implicit sign POC",
+            "published": 3,
+            "tags": [
+                "2d",
+                "bezier",
+                "implicit",
+                "cubic",
+                "poc"
+            ],
+            "usePreview": 0,
+            "username": "NinjaKoala",
+            "viewed": 92
+        },
+        "renderpass": [
+            {
+                "code": "/*\nLoop and Blinn suggested drawing cubic Bézier curves by implicitization and splitting\nthem at double points if needed\n(Implicitization continues the curve to infinity, and cubic Bézier curves tend to turn around later sometimes).\nSee: https://www.microsoft.com/en-us/research/wp-content/uploads/2005/01/p1000-loop.pdf\n\nI did a quick proof of concept here, using the double point computation from\nhttps://www.shadertoy.com/view/3lsSzS\nand the distance approximation from\nhttps://www.shadertoy.com/view/3lsSzS\n\nIt would need quite more work for properly distinguishing different cases,\nbut I have other more time critical projects to do now :D\n*/\n\nfloat eps = .000001;\n\nconst int num_iterations=3;\nconst int num_start_params=3;\n\nfloat segment_dis(vec2 p, vec2 a, vec2 b)\n{\n\tp -= a;\n\tb -= a;\n    float h = max(min( dot(p,b)/dot(b,b), 1.), 0. );\n    return length(p - b*h);\n}\n\nfloat segment_sign(vec2 p, vec2 a, vec2 b)\n{\n\tp -= a;\n\tb -= a;\n    return sign(dot(b,vec2(-p.y,p.x)));\n}\n\nfloat triangle_sign(vec2 p, vec2 p0, vec2 p1, vec2 p2){\n\treturn max(max(segment_sign(p, p0, p1), segment_sign(p, p1, p2)), segment_sign(p, p2, p0));\n\n}\n\nfloat quad_sign(vec2 p, vec2 p0, vec2 p1, vec2 p2, vec2 p3){\n\treturn max(max(segment_sign(p, p0, p1), segment_sign(p, p1, p2)), max(segment_sign(p, p2, p3), segment_sign(p, p3, p0)));\n}\n\nfloat cub_bezier_sign(vec2 uv, vec2 p0, vec2 p1, vec2 p2, vec2 p3){\n\tvec2 a0=(-p0+3.*p1-3.*p2+p3);\n\tvec2 a1=(3.*p0-6.*p1+3.*p2);\n\tvec2 a2=(-3.*p0+3.*p1);\n\tvec2 a3=p0-uv;\n\n\tmat3 bezout=mat3(a1.x*a0.y-a0.x*a1.y,a2.x*a0.y-a0.x*a2.y,a3.x*a0.y-a0.x*a3.y,\n\t                 0,a2.x*a1.y-a1.x*a2.y+a3.x*a0.y-a0.x*a3.y,a3.x*a1.y-a1.x*a3.y,\n\t                 0,0,a3.x*a2.y-a2.x*a3.y);\n\n\t//exploit that bezout matrix is symmetric\n\tbezout[1][0]=bezout[0][1];\n\tbezout[2][0]=bezout[0][2];\n\tbezout[2][1]=bezout[1][2];\n\n\treturn sign(determinant(bezout));\n}\n\nint solve_quadric(vec3 coeffs, out vec2 roots){\n    float p, q, D;\n\n    // normal form: x^2 + px + q = 0\n\n    p = coeffs[1] / (2. * coeffs[0]);\n    q = coeffs[2] / coeffs[0];\n\n    D = p * p - q;\n\n    if (D < 0.){\n\t\treturn 0;\n    }\n    else if (D > 0.){\n\t\tfloat sqrt_D = sqrt(D);\n\n\t\troots[0] =   sqrt_D - p;\n\t\troots[1] = - sqrt_D - p;\n\t\treturn 2;\n    }\n}\n\nvec3 cub_bezier_double_point(vec2 p0, vec2 p1, vec2 p2, vec2 p3, out vec2 params, out int n_params){\n\tvec3 q0 = vec3(p0,1);\n\tvec3 q1 = vec3(p1,1);\n\tvec3 q2 = vec3(p2,1);\n\tvec3 q3 = vec3(p3,1);\n\n\tvec3 line00=3.*cross(q0,q1);\n\tvec3 line01=3.*cross(q0,q2);\n\tvec3 line02=cross(q0,q3);\n\n\tvec3 line10=line01;\n\tvec3 line11=cross(q0,q3)+9.*cross(q1,q2);\n\tvec3 line12=3.*cross(q1,q3);\n\n\tvec3 line20=line02;\n\tvec3 line21=line12;\n\tvec3 line22=3.*cross(q2,q3);\n\n\tfloat pre_factor1=line20.z/line00.z;\n\tfloat pre_factor2=line20.z/line10.z;\n\n\tfloat sub_factor=(line20.x-pre_factor2*line10.x)/(pre_factor1*line00.x-pre_factor2*line10.x);\n\n\tfloat factor1=pre_factor1*sub_factor;\n\tfloat factor2=pre_factor2*(1.-sub_factor);\n\n\tvec3 line31=line21-factor1*line01-factor2*line11;\n\tvec3 line32=line22-factor1*line02-factor2*line12;\n\tvec3 double_point=cross(line31,line32);\n\n\tfloat dpl00=dot(double_point,line00);\n\tfloat dpl01=dot(double_point,line01);\n\tfloat dpl02=dot(double_point,line02);\n\n\tvec3 dp_coeffs=vec3(dpl00-dpl01+dpl02,dpl01-2.*dpl00,dpl00);\n\n\tn_params=solve_quadric(dp_coeffs,params);\n\n\treturn double_point;\n}\n\nvoid cub_bezier_split1(float t, vec2 p0, vec2 p1, vec2 p2, vec2 p3, out vec2 q0, out vec2 q1, out vec2 q2, out vec2 q3){\n\tq0 = p0;\n\tq1 = mix(p0,p1,t);\n\tvec2 p1p2t = mix(p1,p2,t);\n\tq2 = mix(q1,p1p2t,t);\n\tq3 = mix(q2,mix(p1p2t,mix(p2,p3,t),t),t);\n}\n\nvoid cub_bezier_split2(float t, vec2 p0, vec2 p1, vec2 p2, vec2 p3, out vec2 q0, out vec2 q1, out vec2 q2, out vec2 q3){\n\tq3 = p3;\n\tq2 = mix(p2,p3,t);\n\tvec2 p1p2t = mix(p1,p2,t);\n\tq1 = mix(p1p2t,q2,t);\n\tq0 = mix(mix(mix(p0,p1,t),p1p2t,t),q1,t);\n}\n\nfloat cub_bezier_normal_iteration(float t, vec2 a0, vec2 a1, vec2 a2, vec2 a3){\n\t//horner's method\n\tvec2 a_2=a2+t*a3;\n\tvec2 a_1=a1+t*a_2;\n\tvec2 b_2=a_2+t*a3;\n\n\tvec2 uv_to_p=a0+t*a_1;\n\tvec2 tang=a_1+t*b_2;\n\n\tfloat l_tang=dot(tang,tang);\n\treturn t-dot(tang,uv_to_p)/l_tang;\n}\n\nfloat cub_bezier_dis_approx(vec2 uv, vec2 p0, vec2 p1, vec2 p2, vec2 p3){\n\tvec2 a3 = (-p0 + 3. * p1 - 3. * p2 + p3);\n\tvec2 a2 = (3. * p0 - 6. * p1 + 3. * p2);\n\tvec2 a1 = (-3. * p0 + 3. * p1);\n\tvec2 a0 = p0 - uv;\n\n\tfloat d0 = 1e38;\n\n\tfloat t0=0.;\n\tfloat t;\n\n\tfor(int i=0;i<num_start_params;i++){\n\t\tt=t0;\n\t\tfor(int j=0;j<num_iterations;j++){\n\t\t\tt=cub_bezier_normal_iteration(t,a0,a1,a2,a3);\n\t\t}\n\t\tt=clamp(t,0.,1.);\n\t\tvec2 uv_to_p=((a3*t+a2)*t+a1)*t+a0;\n\t\td0=min(d0,dot(uv_to_p,uv_to_p));\n\n\t\tt0+=1./float(num_start_params-1);\n\t}\n\n\treturn sqrt(d0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n\tvec2 uv = fragCoord.xy/iResolution.xy;\n\tuv -= .5;\n    uv.y *= iResolution.y/iResolution.x;\n\n\tvec2 mouse = iMouse.xy/iResolution.xy;\n\tmouse -= .5;\n    mouse.y *= iResolution.y/iResolution.x;\n\n\tfloat border = 2./iResolution.x;\n\n\tfloat dis = 1e38;\n\n\tfloat thickness = .01;\n\tfloat dot_size = .003;\n\n\tvec2 p0=vec2(-.3,-.1);\n\tvec2 p1=vec2(.1,-.2);\n\tvec2 p2=vec2(.3,.15);\n\tvec2 p3=vec2(.2,.15);\n\n\tvec3 color = vec3(1);\n\n\tfloat s0 = 1.;\n\n\tint dp_n;\n\tvec2 dp_params;\n\tvec3 dp = cub_bezier_double_point(p0,p1,p2,p3,dp_params, dp_n);\n\tif(abs(dp.z) > eps){\n\t\tfloat s1 = 1.;\n\n\t\tvec2 q0, q1, q2, q3;\n\n\t\tfloat param=-1.;\n\t\tif(dp_params.x > -eps && dp_params.x < 1.+eps){\n\t\t\tparam = dp_params.x;\n\t\t}\n\t\telse if(dp_params.y >-eps && dp_params.y < 1.+eps){\n\t\t\tparam = dp_params.y;\n\t\t}\n\n\t\tcub_bezier_split1(param,p0,p1,p2,p3,q0,q1,q2,q3);\n\n\t\ts0 = quad_sign(uv, q0, q1, q2, q3);\n\t\ts0 = max(s0, cub_bezier_sign(uv,p0,p1,p2,p3));\n\t\ts1 = min(s1, s0);\n\n\t\tcub_bezier_split2(param,p0,p1,p2,p3,q0,q1,q2,q3);\n\n\t\ts0 = quad_sign(uv, q0, q1, q2, q3);\n\t\ts0 = max(s0, -cub_bezier_sign(uv,p0,p1,p2,p3));\n\t\ts1 = min(s1, s0);\n\n\t\ts0 = triangle_sign(uv, p0, q0, p3);\n\t\ts1 = min(s1, s0);\n\n\t\tdis = min(dis, s1*min(segment_dis(uv, p0, p3),cub_bezier_dis_approx(uv,p0,p1,p2,p3)));\n\t}\n\telse{\n\t\ts0 = quad_sign(uv, p0, p1, p2, p3);\n\t\ts0 = max(s0, -cub_bezier_sign(uv,p0,p1,p2,p3));\n\t\tdis = min(dis, s0);\n\t}\n\n\tdis = min(dis,distance(uv,p0)-dot_size);\n\tdis = min(dis,distance(uv,p1)-dot_size);\n\tdis = min(dis,distance(uv,p2)-dot_size);\n\tdis = min(dis,distance(uv,p3)-dot_size);\n\n\tcolor = mix(vec3(0),color,smoothstep(-border/2.,border/2.,dis));\n\n\tfragColor = vec4(color,1);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,161 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1671750507",
+            "description": "What's better than writing a pathtracer!\n\nNext stop : BSDF!",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "cll3R4",
+            "likes": 100,
+            "name": "Path Tracing (Disney BRDF)",
+            "published": 3,
+            "tags": [
+                "pathtracing",
+                "brdf",
+                "pbr",
+                "ggx",
+                "disney"
+            ],
+            "usePreview": 0,
+            "username": "XT95",
+            "viewed": 3877
+        },
+        "renderpass": [
+            {
+                "code": "// ----------------------------------------------------------------\n// Path Tracing (Disney BRDF)\n// ----------------------------------------------------------------\n//\n// This is not optimized, I tried to keep it clear.\n// The BRDF has only the diffuse and specular parts (isotropic)\n// for now but others parameters should be easy to implement at\n// this point.\n// \n// I'm not sure about the pdf part, but I think it's ok.\n// If you want to give me some feedback about that you are welcome:)\n//\n//\n// You can move the camera with the mouse\n// and zoom in/out with 'w' and 's'.\n//\n// - Buffer A : Draw a raw frame\n// - Buffer B : Accumulate frame\n//              You can change the mode to get TAAish output\n// - Image : Basic ACES tonemapping\n// ----------------------------------------------------------------\n\nvec3 ACES(const vec3 x) {\n    const float a = 2.51;\n    const float b = 0.03;\n    const float c = 2.43;\n    const float d = 0.59;\n    const float e = 0.14;\n    return (x * (a * x + b)) / (x * (c * x + d) + e);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec3 col = texture(iChannel0, uv).rgb;\n    \n    #if !FURNACE_TEST\n    col = ACES(col);\n    #endif\n    \n    fragColor = vec4(pow(col, vec3(1./2.2)),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ----------------------------------------------------------------\n// Defines\n// ----------------------------------------------------------------\n// - Scene can go from 0 to 2\n// - The furnace_test show the energy loss, the image should be\n//   all white in a perfect pathtracer\n//   \n// ----------------------------------------------------------------\n#define SCENE 0\n#define FURNACE_TEST 0\n#define CAMERA_SENSITIVTY .01\n#define FOCAL_LENGTH 2.5\n\n\n// ---------------------------------------------\n// Hash & Random\n// From iq\n// ---------------------------------------------\nint   seed = 1;\nint   rand(void) { seed = seed*0x343fd+0x269ec3; return (seed>>16)&32767; }\nfloat frand() { return float(rand())/32767.0; }\nvec2 frand2() { return vec2(frand(), frand()); }\nvec3 frand3() { return vec3(frand(), frand(), frand()); }\nvoid  srand( ivec2 p, int frame )\n{\n    int n = frame;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589; // by Hugo Elias\n    n += p.y;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    n += p.x;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    seed = n;\n}\nvec3 hash3(vec3 p) {\n    uvec3 x = uvec3(floatBitsToUint(p));\n    const uint k = 1103515245U; \n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Maths\n// ---------------------------------------------\n#define saturate(x) clamp(x,0.,1.)\n#define PI 3.141592653589\n\nmat3 lookat(vec3 ro, vec3 ta)\n{\n    const vec3 up = vec3(0.,1.,0.);\n    vec3 fw = normalize(ta-ro);\n\tvec3 rt = normalize( cross(fw, normalize(up)) );\n\treturn mat3( rt, cross(rt, fw), fw );\n}\n\nmat2 rot(float v) {\n    float a = cos(v);\n    float b = sin(v);\n    return mat2(a,b,-b,a);\n}\n\n// From fizzer - https://web.archive.org/web/20170610002747/http://amietia.com/lambertnotangent.html\nvec3 cosineSampleHemisphere(vec3 n)\n{\n    vec2 rnd = frand2();\n\n    float a = PI*2.*rnd.x;\n    float b = 2.0*rnd.y-1.0;\n    \n    vec3 dir = vec3(sqrt(1.0-b*b)*vec2(cos(a),sin(a)),b);\n    return normalize(n + dir);\n}\n\n// From pixar - https://graphics.pixar.com/library/OrthonormalB/paper.pdf\nvoid basis(in vec3 n, out vec3 b1, out vec3 b2) \n{\n    if(n.z<0.){\n        float a = 1.0 / (1.0 - n.z);\n        float b = n.x * n.y * a;\n        b1 = vec3(1.0 - n.x * n.x * a, -b, n.x);\n        b2 = vec3(b, n.y * n.y*a - 1.0, -n.y);\n    }\n    else{\n        float a = 1.0 / (1.0 + n.z);\n        float b = -n.x * n.y * a;\n        b1 = vec3(1.0 - n.x * n.x * a, b, -n.x);\n        b2 = vec3(b, 1.0 - n.y * n.y * a, -n.y);\n    }\n}\n\nvec3 toWorld(vec3 x, vec3 y, vec3 z, vec3 v)\n{\n    return v.x*x + v.y*y + v.z*z;\n}\n\nvec3 toLocal(vec3 x, vec3 y, vec3 z, vec3 v)\n{\n    return vec3(dot(v, x), dot(v, y), dot(v, z));\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Color\n// ---------------------------------------------\nvec3 RGBToYCoCg(vec3 rgb)\n{\n\tfloat y  = dot(rgb, vec3(  1, 2,  1 )) * 0.25;\n\tfloat co = dot(rgb, vec3(  2, 0, -2 )) * 0.25 + ( 0.5 * 256.0/255.0 );\n\tfloat cg = dot(rgb, vec3( -1, 2, -1 )) * 0.25 + ( 0.5 * 256.0/255.0 );\n\treturn vec3(y, co, cg);\n}\n\nvec3 YCoCgToRGB(vec3 ycocg)\n{\n\tfloat y = ycocg.x;\n\tfloat co = ycocg.y - ( 0.5 * 256.0 / 255.0 );\n\tfloat cg = ycocg.z - ( 0.5 * 256.0 / 255.0 );\n\treturn vec3(y + co-cg, y + cg, y - co-cg);\n}\n\nfloat luma(vec3 color) {\n    return dot(color, vec3(0.299, 0.587, 0.114));\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Microfacet\n// ---------------------------------------------\nvec3 F_Schlick(vec3 f0, float theta) {\n    return f0 + (1.-f0) * pow(1.0-theta, 5.);\n}\n\nfloat F_Schlick(float f0, float f90, float theta) {\n    return f0 + (f90 - f0) * pow(1.0-theta, 5.0);\n}\n\nfloat D_GTR(float roughness, float NoH, float k) {\n    float a2 = pow(roughness, 2.);\n    return a2 / (PI * pow((NoH*NoH)*(a2*a2-1.)+1., k));\n}\n\nfloat SmithG(float NDotV, float alphaG)\n{\n    float a = alphaG * alphaG;\n    float b = NDotV * NDotV;\n    return (2.0 * NDotV) / (NDotV + sqrt(a + b - a * b));\n}\n\nfloat GeometryTerm(float NoL, float NoV, float roughness)\n{\n    float a2 = roughness*roughness;\n    float G1 = SmithG(NoV, a2);\n    float G2 = SmithG(NoL, a2);\n    return G1*G2;\n}\n\nvec3 SampleGGXVNDF(vec3 V, float ax, float ay, float r1, float r2)\n{\n    vec3 Vh = normalize(vec3(ax * V.x, ay * V.y, V.z));\n\n    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;\n    vec3 T1 = lensq > 0. ? vec3(-Vh.y, Vh.x, 0) * inversesqrt(lensq) : vec3(1, 0, 0);\n    vec3 T2 = cross(Vh, T1);\n\n    float r = sqrt(r1);\n    float phi = 2.0 * PI * r2;\n    float t1 = r * cos(phi);\n    float t2 = r * sin(phi);\n    float s = 0.5 * (1.0 + Vh.z);\n    t2 = (1.0 - s) * sqrt(1.0 - t1 * t1) + s * t2;\n\n    vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;\n\n    return normalize(vec3(ax * Nh.x, ay * Nh.y, max(0.0, Nh.z)));\n}\n\nfloat GGXVNDFPdf(float NoH, float NoV, float roughness)\n{\n \tfloat D = D_GTR(roughness, NoH, 2.);\n    float G1 = SmithG(NoV, roughness*roughness);\n    return (D * G1) / max(0.00001, 4.0f * NoV);\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Sky simulation\n// ---------------------------------------------\nfloat iSphere(vec3 ro, vec3 rd, float radius) {\n    float b = 2.0 * dot(rd, ro);\n    float c = dot( ro, ro ) - radius * radius;\n    float disc = b * b - 4.0 * c;\n    if (disc < 0.0)\n        return (-1.0);\n    float q = (-b + ((b < 0.0) ? -sqrt(disc) : sqrt(disc))) / 2.0;\n    float t0 = q;\n    float t1 = c / q;\n    return max(t0,t1);//vec2(t0,t1);\n}\n\nvec3 skyColor(vec3 rd, vec3 sundir)\n{\n#if FURNACE_TEST\n    return vec3(1.);\n#endif\n    rd.y = max(rd.y, .03);\n    const int nbSamples = 16;\n    const int nbSamplesLight = 16;\n    \n    vec3 absR = vec3(3.8e-6f, 13.5e-6f, 33.1e-6f);\n    vec3 absM = vec3(21e-6f);\n    \n    \n    vec3 accR = vec3(0.);\n    vec3 accM = vec3(0.);\n    \n    float mu = dot(rd, sundir); // mu in the paper which is the cosine of the angle between the sun direction and the ray direction \n    float g = 0.76f; \n    vec2 phase = vec2(3.f / (16.f * PI) * (1. + mu * mu), 3.f / (8.f * PI) * ((1.f - g * g) * (1.f + mu * mu)) / ((2.f + g * g) * pow(1.f + g * g - 2.f * g * mu, 1.5f)));\n\n    float radA = 6420e3;\n    float radE = 6360e3;\n    vec3 ro = vec3(0., radE+1., 0.);\n    float t = iSphere(ro, rd, radA);\n    float stepSize = t / float(nbSamples);\n    \n    vec2 opticalDepth = vec2(0.);\n    \n    for(int i=0; i<nbSamples; i++) {\n     \tvec3 p = ro + rd * (float(i)+.5) * stepSize;\n        \n        float h = length(p) - radE;\n        vec2 thickness = vec2(exp(-h/7994.), exp(-h/1200.)) * stepSize;\n        opticalDepth += thickness;\n        \n        float tl = iSphere(p, sundir, radA);\n        float stepSizeLight = tl / float(nbSamplesLight);\n        vec2 opticalDepthLight = vec2(0.);\n        int j;\n        for(j=0; j<nbSamplesLight; j++) {\n            vec3 pl = p + sundir * (float(j)+.5) * stepSizeLight;\n            float hl = length(pl) - radE;\n            if (hl < 0.) break;\n        \topticalDepthLight += vec2(exp(-hl/7994.), exp(-hl/1200.)) * stepSizeLight;\n        }\n        if (j == nbSamplesLight) {\n            vec3 tau = absR * (opticalDepth.x + opticalDepthLight.x) + absM * 1.1 * (opticalDepth.y + opticalDepthLight.y);\n            vec3 att = exp(-tau);\n            accR += att * thickness.x ;\n            accM += att * thickness.y;\n        }\n    }\n    \n    vec3 col = min((accR * absR * phase.x + accM * absM * phase.y)*10., vec3(1.));\n    return col;\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Data IO\n// ---------------------------------------------\nstruct Data {\n    float theta;\n    float phi;\n    float r;\n    \n    vec3 ro;\n    vec3 ta;\n    \n    vec3 oldRo;\n    vec3 oldTa;\n    \n    vec4 oldMouse;\n    \n    float refreshTime;\n};\n\nfloat readData1(sampler2D tex, int id) {\n    return texelFetch(tex, ivec2(id,0), 0).r;\n}\nvec3 readData3(sampler2D tex, int id) {\n    return texelFetch(tex, ivec2(id,0), 0).rgb;\n}\nvec4 readData4(sampler2D tex, int id) {\n    return texelFetch(tex, ivec2(id,0), 0);\n}\nvec4 writeData(vec4 col, vec2 fragCoord, int id, float value) {\n    if (floor(fragCoord.x) == float(id))\n        col.r = value;\n        \n    return col;\n}\nvec4 writeData(vec4 col, vec2 fragCoord, int id, vec3 value) {\n    if (floor(fragCoord.x) == float(id))\n        col.rgb = value.rgb;\n        \n    return col;\n}\nvec4 writeData(vec4 col, vec2 fragCoord, int id, vec4 value) {\n    if (floor(fragCoord.x) == float(id))\n        col = value;\n        \n    return col;\n}\nData initData() {\n\tData data;\n    \n    data.theta = PI;\n    data.phi = 1.;\n    data.r = 9.;\n    \n    data.ro = normalize(vec3(cos(data.theta), data.phi, sin(data.theta)))*data.r;\n    data.ta = vec3(0.,0.5,0.);\n    \n    data.oldRo = data.ro;\n    data.oldTa = data.ta;\n    \n    data.oldMouse = vec4(0.);\n    \n    data.refreshTime = 0.;\n    \n    return data;\n}\nData readData(sampler2D tex, vec2 invRes) {\n\tData data;\n    \n    data.theta = readData1(tex, 0);\n    data.phi = readData1(tex, 1);\n    data.r = readData1(tex, 2);\n    \n    data.ro = readData3(tex, 3);\n    data.ta = readData3(tex, 4);\n    \n    data.oldRo = readData3(tex, 5);\n    data.oldTa = readData3(tex, 6);\n    \n    data.oldMouse = readData4(tex, 7);\n    data.refreshTime = readData1(tex, 8);\n    data.ta = vec3(0.,0.5,0.);\n    \n    return data;\n}\nvec4 writeData(vec4 col, vec2 fragCoord, Data data) {\n    col = writeData(col, fragCoord.xy, 0, data.theta);\n    col = writeData(col, fragCoord.xy, 1, data.phi);\n    col = writeData(col, fragCoord.xy, 2, data.r);\n    col = writeData(col, fragCoord.xy, 3, data.ro);\n    col = writeData(col, fragCoord.xy, 4, data.ta);\n    col = writeData(col, fragCoord.xy, 5, data.oldRo);\n    col = writeData(col, fragCoord.xy, 6, data.oldTa);\n    col = writeData(col, fragCoord.xy, 7, data.oldMouse);\n    col = writeData(col, fragCoord.xy, 8, data.refreshTime);\n    return col;\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Distance field \n// ---------------------------------------------\nfloat box( vec3 p, vec3 b )\n{\n    vec3 q = abs(p) - b;\n    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat map(vec3 p) {\n\n        float d = 99999.;\n    \n    #if SCENE == 0\n        vec3 pp = p;\n        p.xz = mod(p.zx,1.)-.5;\n        d = min(d, length(p-vec3(0.,.4,0.))-.4);\n        //d = min(d, sheep(p*8.)/8.);\n        d = max(d, abs(pp.z)-5.);\n        d = max(d, abs(pp.x)-3.);\n    #endif\n    \n    #if SCENE == 1\n        vec3 pp = p;\n        p.xz = mod(p.zx,1.)-.5;\n        //p.xz = rot(p.y*.5)*p.xz;\n        d = min(d, box(p-vec3(0.,.4,0.),vec3(.4)));\n        //d = min(d, sheep(p*8.)/8.);\n        d = max(d, abs(pp.z)-5.);\n        d = max(d, abs(pp.x)-3.);\n    #endif\n    \n    #if SCENE == 2\n    {\n        vec3 ip = floor(p);\n        vec3 fp = fract(p)-.5;\n\n        vec3 id = hash3(ip+1000.);\n        fp.y = p.y-.2;\n        fp.xy = rot(id.x*PI*3.) * fp.xy;\n        fp.xz = rot(id.y*PI*3.) * fp.xz;\n        fp.yz = rot(id.z*PI*3.) * fp.yz;\n        d = min(d, box(fp,vec3(.3)));\n        d = max(d, abs(p.z)-5.);\n        d = max(d, abs(p.x)-3.);\n        \n    }\n    #endif\n    \n    #if !FURNACE_TEST\n        d = min(d, p.y);\n    #endif\n    return d;\n}\n\n\n\n\n\n\n\n\n\n// ---------------------------------------------\n// Ray tracing \n// ---------------------------------------------\nfloat trace(vec3 ro, vec3 rd, vec2 nf) {\n    float t = nf.x;\n    for(int i=0; i<256; i++) {\n        float d = map(ro+rd*t);\n        if (t > nf.y || abs(d)<0.001) break;\n        t += d;\n    }\n    \n    return t;\n}\n\nvec3 normal(vec3 p, float t) {\n    vec2 eps = vec2(0.0001,0.0);\n    float d = map(p);\n    vec3 n;\n    n.x = d - map(p - eps.xyy);\n    n.y = d - map(p - eps.yxy);\n    n.z = d - map(p - eps.yyx);\n    n = normalize(n);\n    return n;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------\n// Raw Frame\n// ---------------------------------------------\n#define sundir normalize( vec3(5.,1.,0.))\n\n\n// ---------------------------------------------\n// Material\n// ---------------------------------------------\nstruct Material {\n    vec3 albedo;\n    float metallic;\n    float roughness;\n    vec3 emissive;\n};\nMaterial newMaterial() {\n    Material mat;\n    mat.albedo = vec3(1.);\n    mat.metallic = 0.;\n    mat.roughness = .1;\n    mat.emissive = vec3(0.);\n    \n    return mat;\n}\nMaterial getMaterial(vec3 p, inout vec3 n) {\n    \n    Material mat = newMaterial();\n        \n    #if 1 // Random materials\n        if (abs(map(p)-p.y) > 0.001) {\n            vec3 rnd = hash3(floor(p+1000.));\n            mat.roughness = rnd.y*rnd.y;\n            mat.metallic = rnd.x;\n            mat.albedo = hash3(floor(p))*.75;\n            mat.emissive = mat.albedo*step(rnd.y,.02);\n        } else {\n            mat.metallic = 1.;\n            mat.roughness = .5;\n        }\n    #else // Roughness/Metallic axis\n        if (abs(map(p)-p.y) > 0.001) {\n            mat.roughness = pow(floor(p.z+5.)/9.,1.)*.99+0.01;\n            mat.metallic = saturate(floor(p.x+3.)/5.);\n            mat.albedo = vec3(1.);\n        } else {\n            mat.metallic = 1.;\n            mat.roughness = mod(floor(p.x)+floor(p.z),2.)*.25+.25;\n        }\n    #endif\n    \n    \n    #if FURNACE_TEST // Set it in the common tab\n        mat.albedo = vec3(1.);\n        mat.roughness = pow(floor(p.z+5.)/9.,1.)*.99+0.01;\n        mat.metallic = saturate(floor(p.x+3.)/5.);\n        mat.emissive = vec3(0.);\n    #endif\n    \n    return mat;\n}\n\n\n\n// ---------------------------------------------\n// BRDF\n// ---------------------------------------------\nvec3 evalDisneyDiffuse(Material mat, float NoL, float NoV, float LoH, float roughness) {\n    float FD90 = 0.5 + 2. * roughness * pow(LoH,2.);\n    float a = F_Schlick(1.,FD90, NoL);\n    float b = F_Schlick(1.,FD90, NoV);\n    \n    return mat.albedo * (a * b / PI);\n}\n\nvec3 evalDisneySpecular(Material mat, vec3 F, float NoH, float NoV, float NoL) {\n    float roughness = pow(mat.roughness, 2.);\n    float D = D_GTR(roughness, NoH,2.);\n    float G = GeometryTerm(NoL, NoV, pow(0.5+mat.roughness*.5,2.));\n\n    vec3 spec = D*F*G / (4. * NoL * NoV);\n    \n    return spec;\n}\n\nvec4 sampleDisneyBRDF(vec3 v, vec3 n, Material mat, inout vec3 l) {\n    \n    float roughness = pow(mat.roughness, 2.);\n\n    // sample microfacet normal\n    vec3 t,b;\n    basis(n,t,b);\n    vec3 V = toLocal(t,b,n,v);\n    vec3 h = SampleGGXVNDF(V, roughness,roughness, frand(), frand());\n    if (h.z < 0.0)\n        h = -h;\n    h = toWorld(t,b,n,h);\n\n    // fresnel\n    vec3 f0 = mix(vec3(0.04), mat.albedo, mat.metallic);\n    vec3 F = F_Schlick(f0, dot(v,h));\n    \n    // lobe weight probability\n    float diffW = (1.-mat.metallic);\n    float specW = luma(F);\n    float invW = 1./(diffW + specW);\n    diffW *= invW;\n    specW *= invW;\n    \n    \n    vec4 brdf = vec4(0.);\n    float rnd = frand();\n    if (rnd < diffW) // diffuse\n    {\n        l = cosineSampleHemisphere(n);\n        h = normalize(l+v);\n        \n        float NoL = dot(n,l);\n        float NoV = dot(n,v);\n        if ( NoL <= 0. || NoV <= 0. ) { return vec4(0.); }\n        float LoH = dot(l,h);\n        float pdf = NoL/PI;\n        \n        vec3 diff = evalDisneyDiffuse(mat, NoL, NoV, LoH, roughness) * (1.-F);\n        brdf.rgb = diff * NoL;\n        brdf.a = diffW * pdf;\n    } \n    else // specular\n    {\n        l = reflect(-v,h);\n        \n        float NoL = dot(n,l);\n        float NoV = dot(n,v);\n        if ( NoL <= 0. || NoV <= 0. ) { return vec4(0.); }\n        float NoH = min(dot(n,h),.99);\n        float pdf = GGXVNDFPdf(NoH, NoV, roughness);\n        \n        vec3 spec = evalDisneySpecular(mat, F, NoH, NoV, NoL);\n        brdf.rgb = spec * NoL;\n        brdf.a = specW * pdf;\n    }\n\n    return brdf;\n}\n\n\n// ---------------------------------------------\n// Pathtrace\n// ---------------------------------------------\nvec4 pathtrace(vec3 ro, vec3 rd) {\n    \n    float firstDepth = 0.;\n    vec3 acc = vec3(0.);\n    vec3 abso = vec3(1.);\n    \n    const int BOUNCE_COUNT = 6;\n    for(int i=0; i<BOUNCE_COUNT; i++) {\n        \n        // raytrace\n        float t = trace(ro,rd, vec2(0.01, 1000.));\n        vec3 p = ro + rd * t;\n        if (i == 0) firstDepth = t;\n        \n        // sky intersection ?\n        if (t > 1000.) {\n            acc += skyColor(rd, sundir) * abso;\n            break;\n        }\n        \n        // info at intersection point\n        vec3 n = normal(p, t);\n        vec3 v = -rd;\n        Material mat = getMaterial(p,n);\n        \n        // sample BRDF\n        vec3 outDir;\n        vec4 brdf = sampleDisneyBRDF(v,n, mat, outDir);\n        \n        // add emissive part of the current material\n        acc += mat.emissive * abso;\n        \n        // absorption (pdf are in brdf.a)\n        if (brdf.a > 0.)\n            abso *= brdf.rgb / brdf.a;\n        \n        // next direction\n        ro = p+n*0.01;\n        rd = outDir;\n    }\n\n    return vec4(acc, firstDepth);\n}\n\n\n// ---------------------------------------------\n// Entrypoint\n// ---------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 invRes = vec2(1.) / iResolution.xy;\n    srand(ivec2(fragCoord), iFrame);\n    \n    // read data\n    Data data = readData(iChannel1, invRes);\n    if (iFrame == 0) data = initData();\n    \n    // setup ray\n    vec2 uv = (fragCoord + vec2(frand(), frand())-.5) * invRes;\n    vec3 ro = data.ro;\n    vec2 v = uv*2.-1.;\n    v.x *= iResolution.x * invRes.y;\n    vec3 rd = lookat(data.ro, data.ta) * normalize(vec3(v,FOCAL_LENGTH));\n    \n    // pathtrace\n    vec4 col = pathtrace(ro, rd);\n    \n    // fog\n    col.rgb = mix(col.rgb, skyColor(rd,sundir), 1.-exp(-col.a*0.001));\n\n    \n    fragColor = vec4(min(col.rgb, 10.), col.a > 1000. ? -1. : col.a);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------\n// - Camera/data IO + Frames accumulation\n//\n//\n// MODE 0 - Raw frame\n// MODE 1 - Accumulate frames\n// MODE 2 - Temporal reprojection\n// ---------------------------------------------\n#define MODE 1\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 seed = hash3(vec3(fragCoord.xy, float((iFrame+1) % 10000)));\n    vec2 invRes = vec2(1.) / iResolution.xy;\n    vec2 uv = (fragCoord + seed.xy-.5) * invRes;\n    \n    // read input buffer\n    vec2 rawUv = fragCoord*invRes;\n    vec4 rawCol = texture(iChannel1, rawUv);\n    vec4 col = rawCol;\n    \n    // read data\n    bool needRefresh = false;\n    Data data = readData(iChannel0, invRes);\n    if (iFrame == 0) data = initData();\n    \n    // camera\n    if (iMouse.zw == data.oldMouse.zw) {\n        data.theta += (data.oldMouse.x - iMouse.x)  * CAMERA_SENSITIVTY;\n        data.phi += (data.oldMouse.y - iMouse.y)  * CAMERA_SENSITIVTY;\n        if (texelFetch( iChannel2, ivec2(87,0), 0 ).x > 0.) { // w\n            data.r *= 1.-CAMERA_SENSITIVTY;\n            needRefresh = true;\n        }\n        if (texelFetch( iChannel2, ivec2(83,0), 0 ).x > 0.) { // s\n            data.r *= 1.+CAMERA_SENSITIVTY;\n            needRefresh = true;\n        }\n        if (texelFetch( iChannel2, ivec2(32,0), 0 ).x > 0.) { // space\n            needRefresh = true;\n        }\n        if (iMouse.z > .5)\n            needRefresh = true;\n    }\n    data.phi = clamp(data.phi, 0.01, 3.);\n    \n    data.ro = normalize(vec3(cos(data.theta), data.phi, sin(data.theta)))*data.r;\n    data.ta = vec3(0.,0.5,0.);\n    \n    \n    // MODE 1 - accumulate frame\n    #if MODE == 1\n    vec4 lastCol = texture(iChannel0, fragCoord*invRes);\n    if (!needRefresh) {\n        float w = 1. / (float(iFrame)-data.refreshTime + 1.);\n        col = lastCol*(1.-w) + col * w;\n    }\n    else {\n        data.refreshTime = float(iFrame);\n    }\n    #endif\n    \n    // MODE 2 - temporal reprojection\n    #if MODE == 2\n    if (col.a > 0.) {\n        // reconstruct world space position\n        vec3 ro = data.ro;\n        vec2 v = uv*2.-1.;\n        v.x *= iResolution.x * invRes.y;\n        vec3 rd = lookat(data.ro, data.ta) * normalize(vec3(v,FOCAL_LENGTH));\n        float t = rawCol.a;\n        vec3 p = ro + rd * t;\n        \n        // reprojection\n        mat3 oldCam = lookat(data.oldRo, data.oldTa);\n        mat3x4 invOldCam = mat3x4( vec4( oldCam[0], -dot(oldCam[0],data.oldRo) ),\n                                   vec4( oldCam[1], -dot(oldCam[1],data.oldRo) ),\n                                   vec4( oldCam[2], -dot(oldCam[2],data.oldRo) ));\n        vec4 wpos = vec4(p,1.0);\n        vec3 cpos = wpos*invOldCam;\n        vec2 npos = FOCAL_LENGTH*cpos.xy/cpos.z;\n        vec2 spos = 0.5 + 0.5*npos*vec2(iResolution.y/iResolution.x,1.0) - (seed.xy-.5)*invRes;\n        vec2 rpos = spos * iResolution.xy;\n        vec4 lastCol = texture(iChannel0, spos);\n\n        float w = .0;\n        vec3 oldRd = lookat(data.oldRo, data.oldTa) * normalize(vec3(v,FOCAL_LENGTH));\n        vec3 oldwp = data.oldRo + oldRd * lastCol.w;\n\n        // depth rejection\n        for(int x=-1; x<=1; x++){\n            for(int y=-1; y<=1; y++){\n                float lastT = texture(iChannel0, spos + vec2(x, y) * invRes).a;\n                w = max(w, smoothstep(t*t*.005,0.,abs(t-lastT)));\n            }\n        }\n        w -= 0.02;\n        \n        // color clamping\n        #if 1\n        const int kernelSize = 2;\n        vec3 minCol = vec3(99999.);\n        vec3 maxCol = vec3(0.);\n        for(int x=-kernelSize; x<=kernelSize; x++){\n            for(int y=-kernelSize; y<=kernelSize; y++){\n                vec4 c = texture(iChannel1, spos + vec2(x, y) * invRes);\n                c.rgb = RGBToYCoCg(c.rgb);\n                minCol = min(minCol, c.rgb);\n                maxCol = max(maxCol, c.rgb);\n            }\n        }\n        lastCol.rgb = RGBToYCoCg(lastCol.rgb);\n        lastCol.rgb = clamp(lastCol.rgb, minCol, maxCol);\n        lastCol.rgb = YCoCgToRGB(lastCol.rgb);\n        #endif\n\n        //w = 0.99;\n        if (rpos.x < 7. && rpos.y < 1.) w = 0.;\n        if (abs(spos.x-.5) > .5) w = 0.;\n        if (abs(spos.y-.5) > .5) w = 0.;\n        \n        if (iFrame > 1)\n            col = mix(col, lastCol, saturate(w));\n    }\n    #endif\n   \n    \n    // write data\n    data.oldRo = data.ro;\n    data.oldTa = data.oldTa;\n    data.oldMouse = iMouse;\n    if (fragCoord.y < 1.)\n    col = writeData(col, fragCoord, data);\n    \n    // output pixel color\n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

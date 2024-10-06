@@ -1,0 +1,385 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1693960638",
+            "description": "A performance-improved do-over of Oil projector v2: https://www.shadertoy.com/view/clBcDt\n\nBasically the feedback buffer doesn't need much resolution at all (one might almost get away with 32x32 with bicubic sampling).\n\nUses cubemap for stable mimpmaps.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "Dl2fWz",
+            "likes": 3,
+            "name": "Oil Projector v3",
+            "published": 3,
+            "tags": [
+                "blobs",
+                "threshold",
+                "lava",
+                "feedback",
+                "gpmipmap"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 232
+        },
+        "renderpass": [
+            {
+                "code": "// Here we sample the blurred version of the feedback buffer,\n// and threshold it against its overall average value (the\n// deepest mipmap offset).\n//\n\nvec3 pal(in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec4 pal(in vec4 i, in vec2 uv) {\n    const vec3 a = vec3(0.5,0.5,0.5), b = vec3(0.5,0.5,0.5), c = vec3(1.0,1.0,1.0), d = vec3(0.0,0.33,0.67);\n    \n    const vec3 c64pal[16] = vec3[16](\n        vec3(0., 0., 0.), vec3(1., 1., 1.), vec3(0., 1., 0.), vec3(.5, 0., 0.),\n        vec3(.6, 1., .9), vec3(.7, .3, .7), vec3(0., .7, .4), vec3(0., 0., .6),\n        vec3(.9, .9, .5), vec3(.8, .5, .3), vec3(1., .5, .5), vec3(.2, .2, .2),\n        vec3(.5, .5, .5), vec3(.6, 1., .7), vec3(0., .5, 1.), vec3(.8, .8, .8)\n    );\n    vec3 result = vec3(0);\n    vec4 j = vec4(1.) - i;\n    for (int k = 0; k < 16; ++k) {\n        vec4 w4 = mix(i, j, equal(k & ivec4(8, 4, 2, 1), ivec4(0)));\n        float w = w4.x * w4.y * w4.z * w4.w;\n#if 0\n        result += w * pal(float(k) / 16.0, vec3(0.5),vec3(0.5),vec3(2.0,1.0,0.0),vec3(0.5,0.20,0.25) );\n#else\n        result += w * c64pal[k];\n#endif\n    }\n    return vec4(result, 1.0);\n}\n\n// Anti-aliasing version of a simple threshold.  Look at the slope\n// of the underlying curve being thresholded to figure out how much\n// of the pixel the threshold boundary would capture, so that we\n// don't get aliasing around the horizon.\n//\nvec4 aastep(vec4 threshold, vec4 f) {\n    vec4 margin = clamp(fwidth(f) * 0.7, 0.0, 0.4);\n    return smoothstep(threshold - margin, threshold + margin, f);\n}\nvec4 aastep(float threshold, vec4 f) {\n    return aastep(vec4(threshold), f);\n}\n\n\nvec2 w0(vec2 a) { return (a * (a * (-a + 3.0) - 3.0) + 1.0) / 6.0; }\nvec2 w1(vec2 a) { return (a * a * (3.0 * a - 6.0) + 4.0) / 6.0; }\nvec2 w2(vec2 a) { return (a * (a * (-3.0 * a + 3.0) + 3.0) + 1.0) / 6.0; }\nvec2 w3(vec2 a) { return (a * a * a) / 6.0; }\n\nvec4 texbicubic(sampler2D tex, vec2 uv, vec2 tsc) {\n    bool linear = texelFetch(iChannel3, ivec2(32,0),0).x >= 0.5;  // space\n    if (linear) return texture(tex, uv * tsc);\n\n    // If you zoom in or set `dimension` very low, then you'll see\n    // line segments rolling around the edges of the curve.  That's\n    // the linear interpolation of a low-resolution buffer, and\n    // bicubic sampling fixes that very nicely.\n    //\n    // Also, the meniscus shading brings out artefacts you shouldn't\n    // otherwise be able to see, so this would help a lot there.\n\n    uv *= dimension;\n    tsc /= dimension;\n    uv += 0.5;\n\n\tvec2 iuv = floor(uv);\n\tvec2 fuv = fract(uv);\n\n    vec2 g0 = w0(fuv) + w1(fuv);\n    vec2 g1 = w2(fuv) + w3(fuv);\n    vec2 h0 = -1.0 + w1(fuv) / (w0(fuv) + w1(fuv));\n    vec2 h1 = 1.0 + w3(fuv) / (w2(fuv) + w3(fuv));\n\n\tvec2 p00 = iuv + h0 - 0.5;\n\tvec2 p10 = iuv + vec2(h1.x, h0.y) - 0.5;\n\tvec2 p01 = iuv + vec2(h0.x, h1.y) - 0.5;\n\tvec2 p11 = iuv + h1 - 0.5;\n\n    return (textureLod(tex, p00 * tsc, 0.0) * g0.x  +\n            textureLod(tex, p10 * tsc, 0.0) * g1.x) * g0.y +\n           (textureLod(tex, p01 * tsc, 0.0) * g0.x  +\n            textureLod(tex, p11 * tsc, 0.0) * g1.x) * g1.y;\n}\n\nfloat hmax(vec4 x) {\n    x.xy = max(x.xy, x.zw);\n    return max(x.x, x.y);\n}\n\nfloat hsmoothmax(vec4 x) {\n    float k = 3.0;\n    return log(dot(exp(x * k), vec4(1))) / k;\n}\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord)\n{\n    // Unlike the other buffers, here we want to fill the whole\n    // output, so we'll be upscaling the feedback buffer.\n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.x + 0.5;\n    // dimension fixup, because we only use a sub-rectangle of each\n    // texture in the pipeline, but want to address that\n    // sub-rectangle as [0,1)\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n\n    vec4 colour = texbicubic(iChannel0, uv, tsc);\n    vec4 threshold = texture(iChannel1, 1.0 - 0.5 / iChannelResolution[1].xy);\n    vec4 meniscus = colour - threshold;\n    colour = aastep(threshold, colour);\n\n    bool lshift = texelFetch(iChannel3, ivec2(16,0),0).x >= 0.5;\n    if (lshift) {\n#if 1\n        tsc = dimension / iChannelResolution[1].xy;\n        colour = texture(iChannel1, uv * tsc);\n#else\n        tsc = dimension / iChannelResolution[2].xy;\n        colour = texcube(iChannel2, 0, uv * tsc);\n#endif\n        if (uv.x >= 0.8) {\n            vec4 fullness = texcubeLod(iChannel2, 0, vec2(0.5), 99.9) * mipmapfix;\n            float y = fragCoord.y / iResolution.y;\n            vec4 l = abs(uv.x * 20.0 - 16.5 - vec4(0.0, 1.0, 2.0, 3.0));\n            vec4 ll = 1.0 - aastep(0.05, l);\n            l = 1.0 - aastep(0.45, l);\n            colour = aastep(y, threshold) * l;\n            colour.yzwx += \n                    (aastep(y, max(fullness, setpoint))\n                   - aastep(y, min(fullness, setpoint))) * ll;\n        }\n    }\n    float alpha = hmax(colour);\n    colour = pal(colour, uv);\n\n#if 1\n    // shade the meniscus a little...\n    const float thinness = 4.0;\n    float meni = smoothstep(-1.0, 1.0, hsmoothmax(meniscus * thinness)) * 2.0 - 1.0;\n    vec4 shine = vec4(cos(atan(dFdy(meni), dFdx(meni)) + 1.2) * 0.5 + 0.5);\n    colour = mix(colour, shine, alpha * (1.0 - meni) * 0.75);\n#endif\n    fragColour = colour;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Length of one side of the feedback buffer (square).  The rest of\n// each buffer is left unused, but still has to be zeroed for\n// mipmaps and interpolation.\nconst float dimension = 128.0;\n\n// Volume of each blob colour to aim for.\nconst vec4 setpoint = vec4(0.15);\n\n// since we don't write the whole buffer, the deepest mipmap will be\n// averaged over the valid data plus a whole lot of black.  This is\n// the ratio needed to compensate for that.\nconst float mipmapfix = 1024.0 * 1024.0 / (dimension * dimension);\n\n// Number of samples to read for a gaussian blur.  This is done in\n// two passes and the buffer is reduced resolution, so it's not a\n// large cost, but we also don't need many taps.\nconst int blur_taps = 7;\n// Strength of gaussian blur curve.\nconst vec4 blur_radius = vec4(0.03, 0.08, 0.05, 0.13) * 2.0;\n\nconst float tau = 2.0 * 3.14159265358979;\n\n// Sample from one face of a cubemap.\nvec4 texcubeLod(samplerCube tex, int face, vec2 uv, float lod) {\n    uv = 2.0 * uv - 1.0;\n    switch (face) {\n    case 0: return textureLod(tex, vec3( uv.x,-uv.y,  1.0), lod);\n    case 1: return textureLod(tex, vec3(-uv.x,-uv.y, -1.0), lod);\n    case 2: return textureLod(tex, vec3( uv.x,  1.0, uv.y), lod);\n    case 3: return textureLod(tex, vec3( uv.x, -1.0,-uv.y), lod);\n    case 4: return textureLod(tex, vec3(  1.0,-uv.y,-uv.x), lod);\n    case 5: return textureLod(tex, vec3( -1.0,-uv.y, uv.x), lod);\n    }\n}\n\nvec4 texcube(samplerCube tex, int face, vec2 uv) {\n    return texcubeLod(tex, face, uv, 0.0);\n}\n\nvec2 dimclamp(vec2 uv) {\n    // incoming coordinate should be [0,1) representing coordinates\n    // in the first `dimension` pixels of the image.  We need to\n    // clamp these to the centre of the pixels at the two extremes\n    // in order to avoid interpolating into out-of-bounds data.\n    const float lo = 0.5 / dimension;\n    const float hi = 1.0 - lo;\n    return clamp(uv, lo, hi);\n}\n\nvec4 pdf(vec4 x) {\n#if 0\n    // pdf for s=0.1667: `sum(uniform(-.5,.5, 3)/3)`\n    return 2.39365 * exp(-18. * x * x);\n#else\n    // pdf for s=0.144: `sum(uniform(-.5,.5, 4)/4)`\n    return 2.77043 * exp(-24.1126 * x * x);\n#endif\n}\n\nvec4 texblur(sampler2D tex, vec2 uv, vec2 v, vec2 tsc) {\n    const float lod = 0.0;\n    vec4 sum = vec4(0);\n    vec4 den = vec4(0);\n\n    for (int i=-blur_taps; i <= blur_taps; i++) {\n        float f = float(i) / dimension;\n        vec4 w = pdf(f / blur_radius);\n        vec2 ofs = v * f;\n        sum += textureLod(tex, dimclamp(uv + ofs) * tsc, lod) * w;\n        den += w;\n    }\n    return sum / den;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Threshold the blurred buffer into a square POT texture (for more\n// predictable mipmapping), so that we can use the mipmap as an area\n// estimate.\n//\n// We should probably do several passes, here, with different biases\n// on the threshold to see how far off the true value we are.\n//\n\n// See which face index we're updating.\nint face(vec3 dir) {\n    vec3 absdir = abs(dir);\n    vec3 gt = vec3(greaterThan(absdir, max(absdir.yzx, absdir.zxy)));\n    return int(dot(vec3(4, 2, 0), gt)) + int(dot(dir, gt) < 0.0);\n}\n\nvoid mainCubemap(out vec4 fragColour, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir) {\n    vec2 uv = fragCoord / dimension;\n#if 1 // WINDOWS\n    fragColour = vec4(0);\n#else\n    if (iFrame == 0) fragColour = vec4(0);\n#endif\n    if (face(rayDir) != 0 || uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n    vec4 colour = texture(iChannel0, uv * tsc);\n    vec4 threshold = texture(iChannel1, 1.0 - 0.5 / iChannelResolution[0].xy);\n\n    colour = smoothstep(-0.001, 0.001, colour - threshold);\n\n    fragColour = colour;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// Generic feedback buffer with swirly patterns.\n//\n// We use all four channels to represent four slices of 'liquid'\n// which don't interact (much).  We use two stirring operations\n// (`swish0()` and `swish1()`) and share these between the four\n// layers with constantly-changing weights (`spinners`) between\n// the two.  This has dual effects of pushing several liquids in\n// the same direction sometimes, and halves the number of texture\n// fetches which would be required if every liquid had\n// independent flow.\n//\n// For a bit more complexity, where liquids overlap they squeeze\n// each other a little bit by (`decay()`).\n\n// A straight, blurred boundary which rotates around an axis which\n// itself circles the centre.  Separate parameters for each plane.\nvec4 spinners(vec2 uv, float t) {\n    uv -= 0.5;\n    vec4 ta = t * vec4(-113, 123, -133, 143) * 0.0009 * tau;\n    vec4 tb = t * vec4(-177, -137, 157, 127) * 0.0004 * tau;\n    vec4 cx = uv.x + cos(ta) * 0.3;\n    vec4 cy = uv.y - sin(ta) * 0.3;\n    vec4 th = mod(atan(cy, cx) + tb + tau, tau);\n    vec4 r = sqrt(cx * cx + cy * cy);\n    return smoothstep(-0.4, 0.4, (cos(th) - sin(th)) * r);\n}\n\n// Shove things around a bit to make swirly patterns\nvec2 swish0(vec2 uv, float t) {\n    uv += vec2(sin(t + uv.y * 16.1), cos(uv.x * 17.1)) * 0.0015;\n\n    vec2 o = vec2(sin(t * 0.567), cos(t * -0.521)) * 0.3 + 0.5;\n    const float c = cos(0.0019), s = sin(0.0019);\n    uv = (uv - o) * mat2(c, s, -s, c) * 0.9996 + o;\n\n    return uv;\n}\n\n// Shove things around a bit, but slightly differently\nvec2 swish1(vec2 uv, float t) {\n    uv += vec2(sin(t + uv.y * 13.1), cos(uv.x * 14.1)) * 0.0019;\n\n    vec2 o = vec2(sin(t * 0.367), cos(t * -0.321)) * 0.3 + 0.5;\n    const float c = cos(0.0015), s = -sin(0.0015);\n    uv = (uv - o) * mat2(c, s, -s, c) * 0.9996 + o;\n\n    return uv;\n}\n\n// When reading from outside the feedback buffer, fall back on a\n// rotating pattern so that there's always something present to\n// seed the buffer to be non-empty.\nvec4 texborder(sampler2D tex, vec2 uv, float t, vec2 tsc) {\n    if (uv == dimclamp(uv)) return texture(tex, uv * tsc);\n    uv -= 0.5;\n    vec4 th = atan(uv.y, uv.x) * 9.0 + t * vec4(0.8, 0.7, 0.9, 0.5);\n    return max(vec4(0), cos(th) * 0.4 - 0.1);\n}\n\nvec4 texborder(samplerCube tex, int face, vec2 uv, float t, vec2 tsc) {\n    if (uv == dimclamp(uv)) return texcube(tex, face, uv * tsc);\n    uv -= 0.5;\n    vec4 th = atan(uv.y, uv.x) * 9.0 + t * vec4(2.8, 1.7, 2.9, 3.5);\n    return max(vec4(0), cos(th) * 0.4 - 0.1);\n}\n\n// the main feebback operation.\nvec4 feedback(sampler2D tex, vec2 uv, float t, vec2 tsc) {\n    return mix(texborder(tex, swish0(uv, t), t, tsc),\n               texborder(tex, swish1(uv, t), t, tsc),\n               spinners(uv, t));\n}\n\nvec4 feedback(samplerCube tex, int face, vec2 uv, float t, vec2 tsc) {\n    return mix(texborder(tex, face, swish0(uv, t), t, tsc),\n               texborder(tex, face, swish1(uv, t), t, tsc),\n               spinners(uv, t));\n}\n\n// Decay where there's overlap.\nvec4 repel(vec4 c) {\n    return 1.0 - (c.yzwx + c.zwxy) * 0.019 - c.wxyz * 0.015;\n}\n\n\nvec4 updateThreshold() {\n    if (iFrame == 0) return vec4(0.05);\n\n    vec4 fullness = texcubeLod(iChannel1, 0, vec2(0.5), 99.9) * mipmapfix;\n    // TODO: use more faces of iChannel1 to get a better estimate\n    // of where the threshold should be.\n\n    vec4 incr = clamp(fullness - setpoint, -0.2, 0.2);\n\n    vec4 threshold = texture(iChannel0, 1.0 - 0.5 / iChannelResolution[0].xy);\n    threshold = mix(threshold, threshold + incr, 0.02);\n    threshold = clamp(threshold, 0.001, 0.999);\n    return threshold;\n}\n\n// A generic feedback buffer implementation.\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n\n    // Maintain a filtered copy of the threshold in an unused\n    // corner of buffer A:\n    if (all(greaterThanEqual(fragCoord, iResolution.xy - 1.0))) {\n        fragColour = updateThreshold();\n    }\n    if (uv != fract(uv)) return;\n\n    vec2 tsc0 = dimension / iChannelResolution[0].xy;\n    vec2 tsc1 = dimension / iChannelResolution[1].xy;\n\n    vec4 colour = feedback(iChannel0, uv, iTime, tsc0);\n    vec4 quantised = feedback(iChannel1, 0, uv, iTime, tsc1);\n\n    // Mix in a little feedback from the thresholded version to\n    // encourage the buffer to become more saturated.\n    colour = mix(colour, quantised, 0.035);\n\n    // A little interaction between layers.\n    colour *= repel(colour);\n    \n    fragColour = colour;    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// First pass of a gaussian blur of the feedback buffer\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n    if (uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n\n    fragColour = texblur(iChannel0, uv, vec2(0.0, 1.0), tsc);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Second pass of a gaussian blur of the feedback buffer\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n    if (uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n\n    fragColour = texblur(iChannel0, uv, vec2(1.0, 0.0), tsc);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Threshold the blurred buffer into a square POT texture (for more\n// predictable mipmapping), so that we can use the mipmap as an area\n// estimate.\n//\n// We should probably do several passes, here, with different biases\n// on the threshold to see how far off the true value we are.\n//\n\n// See which face index we're updating.\nint face(vec3 dir) {\n    vec3 absdir = abs(dir);\n    vec3 gt = vec3(greaterThan(absdir, max(absdir.yzx, absdir.zxy)));\n    return int(dot(vec3(4, 2, 0), gt)) + int(dot(dir, gt) < 0.0);\n}\n\nvoid mainCubemap(out vec4 fragColour, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir) {\n    vec2 uv = fragCoord / dimension;\n#if 1 // WINDOWS\n    fragColour = vec4(0);\n#else\n    if (iFrame == 0) fragColour = vec4(0);\n#endif\n    if (face(rayDir) != 0 || uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n    vec4 colour = texture(iChannel0, uv * tsc);\n    vec4 threshold = texture(iChannel1, 1.0 - 0.5 / iChannelResolution[0].xy);\n\n    colour = smoothstep(-0.001, 0.001, colour - threshold);\n\n    fragColour = colour;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// Generic feedback buffer with swirly patterns.\n//\n// We use all four channels to represent four slices of 'liquid'\n// which don't interact (much).  We use two stirring operations\n// (`swish0()` and `swish1()`) and share these between the four\n// layers with constantly-changing weights (`spinners`) between\n// the two.  This has dual effects of pushing several liquids in\n// the same direction sometimes, and halves the number of texture\n// fetches which would be required if every liquid had\n// independent flow.\n//\n// For a bit more complexity, where liquids overlap they squeeze\n// each other a little bit by (`decay()`).\n\n// A straight, blurred boundary which rotates around an axis which\n// itself circles the centre.  Separate parameters for each plane.\nvec4 spinners(vec2 uv, float t) {\n    uv -= 0.5;\n    vec4 ta = t * vec4(-113, 123, -133, 143) * 0.0009 * tau;\n    vec4 tb = t * vec4(-177, -137, 157, 127) * 0.0004 * tau;\n    vec4 cx = uv.x + cos(ta) * 0.3;\n    vec4 cy = uv.y - sin(ta) * 0.3;\n    vec4 th = mod(atan(cy, cx) + tb + tau, tau);\n    vec4 r = sqrt(cx * cx + cy * cy);\n    return smoothstep(-0.4, 0.4, (cos(th) - sin(th)) * r);\n}\n\n// Shove things around a bit to make swirly patterns\nvec2 swish0(vec2 uv, float t) {\n    uv += vec2(sin(t + uv.y * 16.1), cos(uv.x * 17.1)) * 0.0015;\n\n    vec2 o = vec2(sin(t * 0.567), cos(t * -0.521)) * 0.3 + 0.5;\n    const float c = cos(0.0019), s = sin(0.0019);\n    uv = (uv - o) * mat2(c, s, -s, c) * 0.9996 + o;\n\n    return uv;\n}\n\n// Shove things around a bit, but slightly differently\nvec2 swish1(vec2 uv, float t) {\n    uv += vec2(sin(t + uv.y * 13.1), cos(uv.x * 14.1)) * 0.0019;\n\n    vec2 o = vec2(sin(t * 0.367), cos(t * -0.321)) * 0.3 + 0.5;\n    const float c = cos(0.0015), s = -sin(0.0015);\n    uv = (uv - o) * mat2(c, s, -s, c) * 0.9996 + o;\n\n    return uv;\n}\n\n// When reading from outside the feedback buffer, fall back on a\n// rotating pattern so that there's always something present to\n// seed the buffer to be non-empty.\nvec4 texborder(sampler2D tex, vec2 uv, float t, vec2 tsc) {\n    if (uv == dimclamp(uv)) return texture(tex, uv * tsc);\n    uv -= 0.5;\n    vec4 th = atan(uv.y, uv.x) * 9.0 + t * vec4(0.8, 0.7, 0.9, 0.5);\n    return max(vec4(0), cos(th) * 0.4 - 0.1);\n}\n\nvec4 texborder(samplerCube tex, int face, vec2 uv, float t, vec2 tsc) {\n    if (uv == dimclamp(uv)) return texcube(tex, face, uv * tsc);\n    uv -= 0.5;\n    vec4 th = atan(uv.y, uv.x) * 9.0 + t * vec4(2.8, 1.7, 2.9, 3.5);\n    return max(vec4(0), cos(th) * 0.4 - 0.1);\n}\n\n// the main feebback operation.\nvec4 feedback(sampler2D tex, vec2 uv, float t, vec2 tsc) {\n    return mix(texborder(tex, swish0(uv, t), t, tsc),\n               texborder(tex, swish1(uv, t), t, tsc),\n               spinners(uv, t));\n}\n\nvec4 feedback(samplerCube tex, int face, vec2 uv, float t, vec2 tsc) {\n    return mix(texborder(tex, face, swish0(uv, t), t, tsc),\n               texborder(tex, face, swish1(uv, t), t, tsc),\n               spinners(uv, t));\n}\n\n// Decay where there's overlap.\nvec4 repel(vec4 c) {\n    return 1.0 - (c.yzwx + c.zwxy) * 0.019 - c.wxyz * 0.015;\n}\n\n\nvec4 updateThreshold() {\n    if (iFrame == 0) return vec4(0.05);\n\n    vec4 fullness = texcubeLod(iChannel1, 0, vec2(0.5), 99.9) * mipmapfix;\n    // TODO: use more faces of iChannel1 to get a better estimate\n    // of where the threshold should be.\n\n    vec4 incr = clamp(fullness - setpoint, -0.2, 0.2);\n\n    vec4 threshold = texture(iChannel0, 1.0 - 0.5 / iChannelResolution[0].xy);\n    threshold = mix(threshold, threshold + incr, 0.02);\n    threshold = clamp(threshold, 0.001, 0.999);\n    return threshold;\n}\n\n// A generic feedback buffer implementation.\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n\n    // Maintain a filtered copy of the threshold in an unused\n    // corner of buffer A:\n    if (all(greaterThanEqual(fragCoord, iResolution.xy - 1.0))) {\n        fragColour = updateThreshold();\n    }\n    if (uv != fract(uv)) return;\n\n    vec2 tsc0 = dimension / iChannelResolution[0].xy;\n    vec2 tsc1 = dimension / iChannelResolution[1].xy;\n\n    vec4 colour = feedback(iChannel0, uv, iTime, tsc0);\n    vec4 quantised = feedback(iChannel1, 0, uv, iTime, tsc1);\n\n    // Mix in a little feedback from the thresholded version to\n    // encourage the buffer to become more saturated.\n    colour = mix(colour, quantised, 0.035);\n\n    // A little interaction between layers.\n    colour *= repel(colour);\n    \n    fragColour = colour;    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// First pass of a gaussian blur of the feedback buffer\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n    if (uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n\n    fragColour = texblur(iChannel0, uv, vec2(0.0, 1.0), tsc);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Second pass of a gaussian blur of the feedback buffer\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec2 uv = fragCoord / dimension;\n    if (iFrame == 0) fragColour = vec4(0);\n    if (uv != fract(uv)) return;\n    vec2 tsc = dimension / iChannelResolution[0].xy;\n\n    fragColour = texblur(iChannel0, uv, vec2(1.0, 0.0), tsc);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

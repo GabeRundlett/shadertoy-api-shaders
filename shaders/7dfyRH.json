@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1641822786",
+            "description": "Printing floating point numbers (fairly) accurately.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7dfyRH",
+            "likes": 32,
+            "name": "Accurate Float Printing",
+            "published": 3,
+            "tags": [
+                "float",
+                "print",
+                "ieee754"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 520
+        },
+        "renderpass": [
+            {
+                "code": "/////////////////////////////////////////////////////////////////////////////////\n//\n// Accurate Float Printing, Matthew Arcus, mla, 2022\n//\n/////////////////////////////////////////////////////////////////////////////////\n//\n// Having only recently tried using the Shadertoy font textures, I thought\n// it would be fun see how well we can print floats - turns out pretty well, in fact.\n// Format is the same as C 'printf(\"%.*g\",digits,x)'. The printfloat function is\n// also (mostly) valid C++, so can be run in a test program over all floats,\n// which indicates we are out by one at most in the seventh digit\n// (but mostly we agree with the printf output). For 32 bit floats, that's about\n// as good as it gets (small differences in rounding can affect the last digit).\n// Testing for round trip ulp error, ie. print number (8 digit precision), read \n// back with scanf and see how many ulps we are from the original, average\n// error is well under 1 ulp, nothing with 4 or more, 142466 with 3 & all\n// with large magnitude exponents, eg. the number that printf prints as\n// 7.6135436e+25 is printed by this code as 7.6135448e+25 & I can live\n// with that, TBH.\n//\n// Output is the frame number (indicated in top left), hashed with the row and\n// column, then converted to a float with uintBitsToFloat (so it's completely\n// deterministic given the frame number). For comparison there is a C++ program\n// attached that generates and prints the same numbers.\n\n// In the shader, subnormals are highlighted in green, NaNs in blue. Note that\n// most GPUs (in WebGL mode anyway) flush subnormals to zero (subnormals are\n// asterisked in the C++ program).\n//\n/////////////////////////////////////////////////////////////////////////////////\n\nconst int digits = 7;\nconst int nrows = 15, ncols = 3;\n\nconst uint EXPONENTMASK = 0x7f800000U;\n\n// Wrapper for division to allow emulation of GPU style division\n// on CPU, not that this makes much difference to result.\nfloat fdiv(float x, float y) { return x/y; }\n\n// If we've found the character for the target index, return it.\n#define CHAR(c) { if (index++ == cindex) return(c); }\n\n// Get character at 'cindex' in printed representation of x, with\n// 'digits' significant digits. cindex is counted from the _right_\n// so right justified display is easier to handle.\nint printfloat(float x, int digits, int cindex) {\n  assert(digits >= 2);\n  assert(digits <= 9);\n  if (cindex < 0 || cindex >= digits+6) return 0; // Maximum number of chars\n  int index = 0;\n  const float pmax = 1e15; //  Large power of 10 with a nice representation\n  const int emax = 15; // Exponent of pmax\n  const float pow10[] = float[]( 1e1,1e2,1e3,1e4,1e5,1e6,1e7,1e8 );\n  const int ZERO = 0x30, POINT = 0x2e, MINUS = 0x2d, PLUS = 0x2b;\n  const int A = 0x61, E = 0x65, F = 0x66, I = 0x69, N = 0x6e;\n  if (isinf(x)) {\n    CHAR(F); CHAR(N); CHAR(I);\n    if (x < 0.0) CHAR(MINUS);\n  } else if (isnan(x)) {\n    CHAR(N); CHAR(A); CHAR(N);\n    if (floatBitsToInt(x) < 0) CHAR(MINUS);\n  } else if (x == 0.0) {\n    CHAR(ZERO);\n    if (1.0/x < 0.0) CHAR(MINUS);\n  } else {\n    bool needminus = x < 0.0;\n    x = abs(x);\n    int exp = 0; // Compute exponent here\n    float llimit = pow10[digits-2], ulimit = 10.0*llimit;\n    // Now put x in the range llimit <= x <= ulimit\n    // by multiplying or dividing by powers of 10.\n    // Need to be careful how we do this to minimize\n    // loss of accuracy, but it's basically equivalent to:\n    // while(x > ulimit) { x /= 10.0; exp++; }\n    // while(x < llimit) { x *= 10.0; exp--; }\n    // but with a little less rounding error.\n    while (x > llimit*pmax) { x /= pmax; exp += emax; }\n    while (x < ulimit/pmax) { x *= pmax; exp -= emax; }\n    if (x >= ulimit) {\n      float p = 1.0;\n      while (fdiv(x,p) > ulimit) {\n        exp++; p *= 10.0;\n      }\n      x = fdiv(x,p);\n    } else if (x < llimit) {\n      float p = 1.0;\n      while (x*p < llimit) {\n        exp--;  p *= 10.0;\n      }\n      x *= p;\n    }\n\n    assert(!isinf(x));\n    assert(!isnan(x));\n    assert(x >= llimit);\n    assert(x <= ulimit); // Equality is possible!\n    // Round to an integer which has exactly the significant figures we want.\n    int n = int(round(x));\n    if (n == int(ulimit)) {\n      // Just in case the round has taken us the wrong way\n      n /= 10; exp++;\n    }\n    assert(n >= int(llimit));\n    assert(n < int(ulimit));\n    // Now we have our (correctly rounded) integer representation\n    // together with the correct exponent.\n    // See if we want to use exponent notation\n    if (exp <= -digits-4) {\n      int e = -exp-digits+1;\n      CHAR(ZERO+e%10); CHAR(ZERO+e/10); CHAR(MINUS); CHAR(E);\n      exp = -digits+1;\n    } else if (exp > 0) {\n      int e = exp+digits-1;\n      CHAR(ZERO+e%10); CHAR(ZERO+e/10); CHAR(PLUS); CHAR(E);\n      exp = -digits+1;\n    }\n    while(n%10 == 0 && exp < 0) {\n      // Remove trailing zeros\n      n /= 10; exp++;\n    }\n    while(n != 0) {\n      // Write out the digits, with a decimal point in the right place\n      CHAR(ZERO+n%10);\n      n /= 10; exp++;\n      if (exp == 0) {\n        CHAR(POINT);\n        if (n == 0) CHAR(ZERO); // No more, so need leading zero\n      }\n    }\n    if (exp < 0) {\n      // Add leading digits for 0 < x < 1\n      while(exp < 0) {\n        CHAR(ZERO); exp++;\n      }\n      // Decimal point and leading zero\n      CHAR(POINT); CHAR(ZERO);\n    }\n    // Finally, a minus sign if needed\n    if (needminus) CHAR(MINUS);\n  }\n  return 0; // No character\n}\n\n// https://www.shadertoy.com/view/4sBfRd\nvec2 char(vec2 p, int c) {\n  // Compute uv for font texture.\n  // p is [0,1] coordinates in square character\n  return (p + vec2(c,15-c/16))/16.0;\n}\n\nvoid mainImage(out vec4 outColor, vec2 fragCoord) {\n  // Table structure\n  vec2 cellsize = iResolution.xy/vec2(ncols,nrows);\n  ivec2 cellindex = ivec2(fragCoord/cellsize);\n  float fsize = cellsize.y; // \"Font size\" = line height in pixels\n  int column = cellindex.x;\n  int row = nrows-cellindex.y-1; // Reverse order of rows\n  vec2 p = mod(fragCoord,cellsize)/fsize;\n\n  // Number to display in this cell\n  //uint seed = 130024071U;  // inf\n  //uint seed = 8184123U;  // -inf\n  uint seed = uint(iFrame);\n  float x = float(seed);\n  //x = uintBitsToFloat(0x1ffca1eu); //9.396223e-38 9.3962216e-38\n  //x = uintBitsToFloat(0x08780330u);\n  uint h = ihash(uint(row) ^ (uint(column)<<16) ^ ihash(seed));\n  if (row > 0 || column > 0) x = uintBitsToFloat(h);\n\n  // Background color\n  vec3 col = vec3(1);\n  if (row > 0 && (h & EXPONENTMASK) == 0U) col = vec3(0,1,0); // Subnormal\n  else if (isnan(x)) col = vec3(0,0,1);\n\n  // Draw the character\n  vec4 metrics = vec4(0.25,0.75,0,1);\n  float charwidth = metrics.y-metrics.x;\n  float colwidth = cellsize.x/fsize-1.0; // Cell width in chars, with padding\n  int charpos = int((colwidth-p.x)/charwidth);\n  vec2 uv = vec2(0);\n  int c = printfloat(x,digits,charpos); // Get character at charpos, 0 if out of range\n  if (c > 0) {\n    float charstart = colwidth-charwidth*float(charpos+1); // character start\n    uv = char(vec2(p.x-charstart+metrics.x,p.y),c);\n  }\n  // Get coords for mipmap scaling - p and uv have discontinuities\n  vec2 uvscale = 0.5*fragCoord/(16.0*fsize); // 0.5 to sharpen a little\n  vec4 t = textureGrad(iChannel0,uv,dFdx(uvscale),dFdy(uvscale));\n  if (c > 0) col *= 1.0-t.x;\n  if (alert) col.gb = 1.0-col.gb;\n  outColor = vec4(col,1);  \n}\n// C++ program to generate and print test data.\n// Specify number of digits and seed on command line.\n/*\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n// From Chris Wellons: https://nullprogram.com/blog/2018/07/31/\nuint ihash(uint x) {\n    x ^= x >> 16;\n    x *= 0x7feb352dU;\n    x ^= x >> 15;\n    x *= 0x846ca68bU;\n    x ^= x >> 16;\n    return x;\n}\n\nbool issubnormal(uint n) {\n  return n != 0 && (n & 0x7f800000) == 0;\n}\n\nint main(int argc, char *argv[]) {\n  if (argc < 3) {\n    fprintf(stderr, \"Usage: %s <digits> <frame>\\n\", argv[0]);\n    exit(0);\n  }\n  int digits = strtol(argv[1],0,0);\n  uint frame = strtoul(argv[2],0,0);\n  for (int row = 0; row < 15; row++) {\n    for (int col = 0; col < 3; col++) {\n      float x = frame;\n      uint n = 0;\n      if (row > 0 || col > 0) {\n        n = ihash(ihash(frame) ^ row ^ (col << 16));\n        memcpy(&x,&n,sizeof(x));\n      }\n      printf(\"%*.*g%s\",digits+7,digits,x,!issubnormal(n)?\" \":\"*\");\n    }\n    printf(\"\\n\");\n  }\n}\n*/",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "bool alert = false;\nvoid assert(bool b) {\n  if (!b) alert = true;\n}\n\n// From Chris Wellons: https://nullprogram.com/blog/2018/07/31/\nuint ihash(uint x) {\n    x ^= x >> 16;\n    x *= 0x7feb352dU;\n    x ^= x >> 15;\n    x *= 0x846ca68bU;\n    x ^= x >> 16;\n    return x;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

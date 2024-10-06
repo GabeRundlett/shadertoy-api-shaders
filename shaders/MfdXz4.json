@@ -1,0 +1,113 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1717485085",
+            "description": "The demo presents Quasar Approximation for efficient multi-sample interpolation, with the tradeoff of possible ‘quasar-like’ artifacts.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MfdXz4",
+            "likes": 15,
+            "name": "Multivariate Blend Approximation",
+            "published": 3,
+            "tags": [
+                "mix",
+                "fast",
+                "approximation",
+                "barycentric",
+                "blend",
+                "sampling",
+                "linear",
+                "height",
+                "optimization",
+                "interpolation",
+                "bilinear",
+                "weights",
+                "quasar"
+            ],
+            "usePreview": 0,
+            "username": "gehtsiegarnixan",
+            "viewed": 346
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2024 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/* Finished on: 10.Mai.2024\n\nI will share with you a heretical idea that was once revealed to me in a dream.\n\nThis demo introduces the Quasar Approximation, a method I devised to \napproximate multi-sample interpolation. This method works by blending only the \nsamples with the highest weights, smoothly decreasing the weights to zero as \ndifferent samples join the highest weights. If the number of weights isn’t \ndynamic, the algorithm can be significantly simplified. Moreover, if the \nweights and samples are static, they can be precomputed. This approach is \nparticularly effective when dealing with a large number of samples.\n\nWhile this method offers significant benefits, it does come with its own \npeculiarities. When more than the sampled weights have similar strength, this \nmethod will generate ‘quasar-like’ artifacts. These are singularities that \nappear as jet-like beams within the weights. The fewer samples you use, the \nmore likely it is you will see these artifacts.\n\nThis shader has mouse controls. The X-axis controls the dividing\nline, where left is the ground truth and right is the approximation. The\nY-axis controls the contrast of the weights. There are also a number of \nglobal constants you can experiment with below. \n\nFor a simpler example, see my 3-sample to 2-sample interpolation demo:\nhttps://www.shadertoy.com/view/mdKyDc\n\nAlternatively, see Quasar Approximation as a Desmos Graph:\nhttps://www.desmos.com/calculator/uvarcfsijc\n*/\n\n// Number of interpolation samples or dimensions\n#define VARIABLES 16\n\n// Number of samples taken in the approximation (values 1-VARIABLES)\n#define SAMPLES 4\n\n// Contrast for Height blending, 0 for none up to infinity for more contrast\n#define HEIGHT_CONTRAST 4.0\n\n// Enable this to sample texture, disable to blend just rainbow colors and\n// makes it easier to see the quasar artifacts. Setting SAMPLES 2 also helps.\n#define BLEND_TEXTURES\n\n// Uncomment and set index to isolate a variable-weight pair for debugging\n//#define SHOW_VARIABLE 3\n\n// Enable to show a debug outline where the Quasar artifacts are\n//#define SHOW_QUASAR\n\n// Function to either sample texture or generate nice rainbow colors + heightmap\n#define TWO_PI  6.28318530718\nvec4 sampleAlbedoHeight(int index, int maxIndex, vec2 uv, float speed) {\n\n    // Multiply by arbitrary scale\n    uv *= 2.5;\n\n    // Generate partial derivatives because branching disrupts MIPs\n    vec2 ddUVx = dFdx(uv);\n    vec2 ddUVy = dFdy(uv);\n\n    // Optional random float per index\n    float rnd = hash11(index) + speed;\n\n    // Arbitrary rotate and offset UVs for some variation, because pretty\n    uv = rotateUV(uv, vec2(sin(rnd * TWO_PI), cos(rnd * TWO_PI))) + rnd;\n\n    // Sample albedo texture from quasi texture array.                                       \n    vec3 albedo = textureArray(iChannel0, iChannel1, iChannel2, iChannel3, \n                               index % 4, uv, ddUVx, ddUVy).xyz;\n\n    #ifdef BLEND_TEXTURES \n        // Sample the highest mip to get the texture's average color\n        vec3 averageColor = textureArray(iChannel0, iChannel1, iChannel2, iChannel3, \n                                   index % 4, uv, 99.).xyz;\n                                   \n        // A neutral color variation vector to make colors more interesting, but optional\n        vec3 modulation = albedo - averageColor;\n        \n        // Generate unique hue color per index, optional obviously\n        vec3 color = hsv2rgb(vec3(float(index) / float(maxIndex), 0.75, 0.75));\n        \n        // Modulate the colors with texture modulation vector\n        color += modulation * 1.25;\n                \n    #else\n        // Generate unique hue color per index\n        vec3 color = hsv2rgb(vec3(float(index) / float(maxIndex), 1.0, 1.0));\n    #endif\n    \n    // return albedo and \"Height\" if you have use an actual height texture instead\n    return vec4(color, albedo.x);\n}\n\n// Struct to hold the data for the interpolation\nstruct DataPoint {\n    float weights[VARIABLES];\n    int IDs[VARIABLES];\n};\n\n// Generate arbitrary data for the interpolation\nDataPoint generateData(vec2 uvCoords, float speed, float contrast) {\n    DataPoint data;\n    \n    // Controls size of the dots\n    float adjustedContrast = contrast * float(VARIABLES);\n    \n    // Iterate over all points to sample the weights\n    for(int i = 0; i < VARIABLES; i++) {       \n\n        // Calculate a position from the index\n        vec2 offset = getOffset(float(i), float(VARIABLES), speed);\n\n        // Offset the coords\n        vec2 currentUV = uvCoords - offset;\n        \n        // Make UVs repeat in an arbitrary frequency\n        float repeat = 2.;\n        //currentUV = mod(currentUV + repeat*0.5, repeat) - repeat*0.5;\n\n        // Get distance to offset\n        float dist = dot(currentUV, currentUV); // Squared distance in this case\n        \n        // Weight from distance, but it's basically arbitrary and \n        // you could use hand-painted, or satellite clustering weights too\n        float weight = getWeight(dist, contrast);\n            \n        // Store the weight and ID\n        data.weights[i] = weight;\n        data.IDs[i] = i;\n    }\n    \n    return data;\n}\n\n// Multivariate interpolation between VARIABLES, (Default interpolation function as comparison)\n// This would normally be joined with generateData, but is separate for the purpose of the demo\nvec3 multivariateMix(DataPoint data, vec2 uvCoords, float speed, float contrast) {\n    \n    // Initialize the result data storage we will fill next\n    vec3 color = vec3(0.0);\n    float weightSum = 0.0;\n\n    // Iterate over all points to sample the colors and blend them\n    for(int i = 0; i < VARIABLES; i++) {\n    \n        // Sample the color, usually a texture which is expensive\n        vec4 albedoHeight = sampleAlbedoHeight(data.IDs[i], VARIABLES, uvCoords, speed);\n        vec3 albedo = albedoHeight.xyz;\n        float height = albedoHeight.w;\n\n        // sample our weight and do an optional stable height blend as well\n        // See: https://www.shadertoy.com/view/cdGfWt\n        float weight = data.weights[i] * pow(height + 1.0, contrast);\n\n        #if defined(SHOW_VARIABLE) && SHOW_VARIABLE < VARIABLES && SHOW_VARIABLE >= 0\n            // Debug Mode: Show only a single variable and its weight\n            if (i == SHOW_VARIABLE) {\n\n                // Add the contribution of the color with weight\n                color += albedo * weight;\n            }\n\n        #else\n            // Add the contribution of the color with its weight\n            color += albedo * weight;\n        #endif\n\n        // Add up weights for normalization\n        weightSum += weight;\n    }\n\n    // Normalize the color accordingly (only needed if the weights weren't normalized)\n    color /= weightSum;\n    \n    return color;\n}\n\n// Default bubble sort. Any stable sorting algorithm will do\nDataPoint bubbleSort(DataPoint data) {\n    for(int i = 0; i < VARIABLES-1; i++) {\n        for(int j = 0; j < VARIABLES-i-1; j++) {\n            if(data.weights[j] < data.weights[j+1]) {\n                // Swap weights\n                float tempWeight = data.weights[j];\n                data.weights[j] = data.weights[j+1];\n                data.weights[j+1] = tempWeight;\n\n                // Swap corresponding IDs\n                int tempID = data.IDs[j];\n                data.IDs[j] = data.IDs[j+1];\n                data.IDs[j+1] = tempID;\n            }\n        }\n    }\n    return data;\n}\n\n// Quasar approximation of multivariate interpolation between VARIABLES\n// See: https://www.desmos.com/calculator/uvarcfsijc\nvec3 quasarMix(DataPoint data, vec2 uvCoords, float speed, float contrast) {\n        \n    // Correct for wrong user input, no point in approximating with more samples than exist\n    #if SAMPLES >= VARIABLES\n        return multivariateMix(data, uvCoords, speed, contrast);\n        \n    #else\n        // Sort the data by weights.\n        // Technically, we don't need to sort all the data. We only need the SAMPLES highest data \n        // in any order, and additionally, the highest weight that is not sampled separately. Which \n        // would be faster however, this makes the code more complex and this demo is already \n        // challenging enough to understand.\n        data = bubbleSort(data);\n\n        // Initialize some variables to fill with the results next. \n        vec3 color = vec3(0.0);\n        float weightSum = 0.0;\n\n        // Iterate over all SAMPLES to sample the colors and blend them\n        for(int i = 0; i < SAMPLES; i++) {\n        \n            // Sample the color, usually a texture which is expensive\n            vec4 albedoHeight = sampleAlbedoHeight(data.IDs[i], VARIABLES, uvCoords, speed);\n            vec3 albedo = albedoHeight.xyz;\n            float height = albedoHeight.w;\n            \n            // Adjust the weight, so it becomes 0 when it stops being sampled\n            float weight = data.weights[i] - data.weights[SAMPLES];            \n            \n            // add an optional height blend. See: https://www.shadertoy.com/view/cdGfWt\n            weight *= pow(height + 1.0, contrast);\n\n            #if defined(SHOW_VARIABLE) && SHOW_VARIABLE < VARIABLES && SHOW_VARIABLE >= 0\n                // Debug Mode: Show only a single variable and its weight\n                if (data.IDs[i] == SHOW_VARIABLE) {\n\n                    // Add the contribution of the color with weight\n                    color += albedo * weight;\n                }\n\n            #else\n                // Add the contribution of the color with its weight\n                color += albedo * weight;\n            #endif\n\n            // Add up weights for normalization\n            weightSum += weight;\n        }\n\n        // Normalize the color accordingly (since we messed with the weights)\n        color /= weightSum;\n        \n        #ifdef SHOW_QUASAR\n            // Debug view to show where the Quasar artifacts appear\n\n            // Calculate the sum of the weights\n            float sum = 0.0;\n            for(int i = 0; i < VARIABLES; i++) {\n                sum += data.weights[i];\n            }\n\n            // Normalize the weights so they sum to 1\n            for(int i = 0; i < VARIABLES; i++) {\n                data.weights[i] /= sum;\n            }\n\n            // Calculate the cumulative difference between highest to samples +1\n            float cumulativeDiff = 0.0;\n            for(int i = 0; i < SAMPLES; i++) {\n                cumulativeDiff += data.weights[i] - data.weights[i+1];\n            } // Variance/STD and some over metrics also work, but are more complicated\n\n            // Add an outline if we get within 0.2 cumulative difference\n            float aa = fwidth(cumulativeDiff);\n            color += smoothstep(aa*0.5 +aa ,aa*0.5, abs(cumulativeDiff - 0.2));\n        #endif\n        \n        return color;\n    #endif\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    // Square UVs with (0,0) in the center\n    vec2 uvCoords = (fragCoord - iResolution.xy * 0.5) / iResolution.y;  \n\n    // Slow spinning animation\n    float rotationSpeed = iTime * 0.2;\n    vec2 direction = vec2(sin(rotationSpeed), cos(rotationSpeed));\n    vec2 position = rotateUV(uvCoords, direction) * 2.;\n    \n    // Enable mouse controls when clicked, otherwise animate\n    float contrast;\n    float border;    \n    if (iMouse.x > 0.0) {\n        // Mouse controls\n        vec2 mouse = (iMouse.xy - vec2(iResolution.x * 0.5, 0)) / iResolution.y;\n        border = mouse.x;\n        contrast = mix(3.0, 32.0, pow(mouse.y, 2.));\n    } else {\n        // Animated controls\n        float myTime = iTime * 0.5;\n        border = sin(myTime) * 0.5;\n        contrast = 16.;\n    }\n    \n    // Speed of centers orbiting their location\n    float orbitSpeed = iTime * 1.0;\n    \n    // Generate data for the interpolation\n    DataPoint data = generateData(position, orbitSpeed, contrast);\n    \n    // speed the texture rotate about their random centers\n    float texSpeed = iTime * 0.005;\n    \n    // Alternate between approximation and true interpolation\n    vec3 color;\n    if (uvCoords.x < border) {\n        // Default multivariate interpolation between all POINTS\n        color = multivariateMix(data, uvCoords, texSpeed, HEIGHT_CONTRAST);\n        \n    } else {    \n        // Quasar Approximation of interpolation between SAMPLES\n        color = quasarMix(data, uvCoords, texSpeed, HEIGHT_CONTRAST);\n    }\n       \n    // Saturate colors, to not create odd artifacts with the gamma or divider\n    color = clamp(color, 0.,1.);\n    \n    #ifndef BLEND_TEXTURES\n        // When mixing color (NOT weights), adjust Gamma. Thanks to xrx\n        color = pow(color, vec3(1./2.2));\n    #endif\n    \n    // Calculate anti-aliasing effect\n    vec2 uvFwidth = fwidth(uvCoords);\n    float aa = max(uvFwidth.x, uvFwidth.y);\n    \n    // Add a dividing line\n    float thickness = 0.008;\n    float line = smoothstep(thickness*0.33+aa, thickness*0.33-aa, abs(uvCoords.x - border));\n    color = mix(color, vec3(line), smoothstep(thickness+aa, thickness-aa, abs(uvCoords.x - border))); \n\n    // Output to screen\n    fragColor = vec4(color, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// GENERIC FUNCTIONS ____________________________________________________________\n\n// Rotate UV coordinates in a given direction\nvec2 rotateUV(vec2 uvCoords, vec2 direction) {\n    // Calculate the rotation matrix\n    mat2 rotationMatrix = mat2(direction.y, direction.x,\n                               -direction.x, direction.y);\n\n    // Rotate the UV coordinates\n    return rotationMatrix * uvCoords;\n}\n\n// Select a texture using an index, acting like a crude texture array\nvec3 textureArray(sampler2D texA, sampler2D texB, sampler2D texC, sampler2D texD, \n                  int index, vec2 uvCoords, vec2 duvdx, vec2 duvdy) {\n    vec3 color;    \n    if (index == 0) {\n        color = textureGrad(texA, uvCoords, duvdx, duvdy).xyz;\n    } else if (index == 1) {\n        color = textureGrad(texB, uvCoords, duvdx, duvdy).xyz;\n    } else if (index == 2) {\n        color = textureGrad(texC, uvCoords, duvdx, duvdy).xyz;\n    } else {\n        color = textureGrad(texD, uvCoords, duvdx, duvdy).xyz;\n    }\n    return color;\n}\n\n// Select a texture using an index, acting like a crude texture array\nvec3 textureArray(sampler2D texA, sampler2D texB, sampler2D texC, sampler2D texD, \n                  int index, vec2 uvCoords, float lod) {\n    vec3 color;    \n    if (index == 0) {\n        color = textureLod(texA, uvCoords, lod).xyz;\n    } else if (index == 1) {\n        color = textureLod(texB, uvCoords, lod).xyz;\n    } else if (index == 2) {\n        color = textureLod(texC, uvCoords, lod).xyz;\n    } else {\n        color = textureLod(texD, uvCoords, lod).xyz;\n    }\n    return color;\n}\n\n// Function to convert HSV to RGB\nvec3 hsv2rgb(vec3 hsv) {\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(hsv.xxx + K.xyz) * 6.0 - K.www);\n    return hsv.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), hsv.y);\n}\n\n// Function to convert RGB to HSV\nvec3 rgb2hsv(vec3 rgb) {\n    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n    vec4 p = mix(vec4(rgb.bg, K.wz), vec4(rgb.gb, K.xy), step(rgb.b, rgb.g));\n    vec4 q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r));\n\n    float d = q.x - min(q.w, q.y);\n    float e = 1.0e-10;\n    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n\n// This is a modified version of Dave_Hoskins' hash function: https://www.shadertoy.com/view/XdGfRR\n#define FPRIME 1317666547U\n#define VPRIME uvec2(3480082861U, 2420690917U)\n#define SMALLESTFLOAT (1.0 / float(0xffffffffU))\nfloat hash11(int prime) {\n\tuvec2 q = uvec2(prime) * VPRIME;\n\tuint n = (q.x & q.y) * FPRIME;\n\treturn float(n) * SMALLESTFLOAT;\n}\n\n// Generate offsets in a spiral pattern for evenly scattered points for the demo\n#define GOLDEN_ANGLE 2.39996322972865332\nvec2 getOffset(float index, float maxIndex, float speed) {\n    // Calculate the position of the center using the golden angle\n    float angle = GOLDEN_ANGLE * index;\n    float radius = sqrt(index / maxIndex);\n    vec2 offset = vec2(cos(angle), sin(angle)) * radius;\n\n    // Add some orbiting animation for more interesting results\n    vec2 orbit = vec2(cos(speed + angle), sin(speed + angle)) * 0.1;\n\n    return offset - orbit;\n}\n\n// Calculate gaussian weight from distance\nfloat getWeight(float dist, float contrast) {\n    // Normal distribution fading out slowly to infinity\n    return exp(-contrast * dist);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

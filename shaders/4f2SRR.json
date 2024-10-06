@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1705961349",
+            "description": "6x6 quintic Hermite filter.\nC2-continuous and interpolating (produces exactly texel values at texel centers).\nBottom-left - nearest.\nBottom-right - linear.\nTop-left - 36-taps Hermite.\nTop-right - 20-taps Hermite (likely broken).",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4f2SRR",
+            "likes": 3,
+            "name": "Hermite 6x6 filter",
+            "published": 3,
+            "tags": [
+                "texture",
+                "filter",
+                "interpolation",
+                "hermite"
+            ],
+            "usePreview": 0,
+            "username": "FordPerfect",
+            "viewed": 159
+        },
+        "renderpass": [
+            {
+                "code": "// Public Domain under http://unlicense.org, see link for details.\n\n// Expanding on https://www.shadertoy.com/view/lflSWn\n// (refer to it for the necessary background), this\n// shader provides a 6x6 quintic Hermite filter based on\n// https://www.shadertoy.com/view/XflXz7.\n// The filter is interpolating (produces exactly texel\n// values at texel centers) and C2-continuous.\n// Straightforward version is 36 taps.\n// 2-pass version (not provided) would bring it down to 12.\n// In an extremely questionable bit of effort, 20-taps\n// version (using HW samplers) is also provided. It\n// may produce visual artifacts (which were previously\n// attributed to HW samplers accuracy, see\n// https://www.shadertoy.com/view/MclXWs) which appear\n// to be fixed by e.g. using textureLod(). It is also\n// uncertain if it is actually faster. Still, for the\n// curious, the brief explaination is as follows:\n// We deal with a 6x6 kernel where weight's signs are\n//     +-++-+\n//     -+--+-\n//     +-++-+\n//     +-++-+\n//     -+--+-\n//     +-++-+\n// First, we process the central 4x4 region in the same manner\n// as https://www.shadertoy.com/view/lflSWn, except\n// the weights for its corner texels are doubled.\n// Next, we process all 4 of the 2x2 corners. After\n// compensating for the previously doubled weights\n// (which overlap one of our texels), the weight matrix\n// for a 2x2 corner turns from e.g.\n//     -X*y +x*y\n//     +X*Y -x*Y\n// into\n//     -X*y -x*y\n//     +X*Y -x*Y\n// which is easy to compute in 2 taps (essentially,\n// A*Bilinear(x/(X+x),y/(Y+y))+B*Nearest(0,0)).\n// Then we add the remaining 4 edges (2x1 and 1x2\n// patches), which is fairly straightforward.\n\n// \"Manual\" nearest. It is possible instead to bind\n// the same texture to a different channel set to nearest,\n// but whatever.\n// NOTE: this appears to be MUCH faster than\n// using texelFetch plus integer arithmetics\n// (especially if you want wrap for possibly\n// negative uv and nPOT textures to work right).\nvec4 texture_nearest(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    return texture(t,(floor(uv*wh)+0.5)/wh);\n}\n\n// Quintic Hermite spline weights.\n// See https://www.shadertoy.com/view/XflXz7.\nvoid quintic6(float t,out float W[6])\n{\n    W[0]=t*(2.0+t*(-1.0+t*(-9.0+t*(13.0+t*-5.0))))/24.0;\n    W[1]=t*(-16.0+t*(16.0+t*(39.0+t*(-64.0+t*25.0))))/24.0;\n    W[2]=(12.0+t*t*(-15.0+t*(-35.0+t*(63.0+t*-25.0))))/12.0;\n    W[3]=t*(8.0+t*(8.0+t*(33.0+t*(-62.0+t*25.0))))/12.0;\n    W[4]=t*(-2.0+t*(-1.0+t*(-33.0+t*(61.0+t*-25.0))))/24.0;\n    W[5]=t*t*t*(7.0+t*(-12.0+t*5.0))/24.0;\n}\n\nvec4 filter_x(float W[6],sampler2D t,vec2 c,vec2 d,int y)\n{\n    // NOTE: all texture() calls below\n    // fall on pixel centers, and\n    // so are, effectively, nearest.\n    return\n        W[0]*texture(t,c+d*vec2(-2, y))+\n        W[1]*texture(t,c+d*vec2(-1, y))+\n        W[2]*texture(t,c+d*vec2( 0, y))+\n        W[3]*texture(t,c+d*vec2( 1, y))+\n        W[4]*texture(t,c+d*vec2( 2, y))+\n        W[5]*texture(t,c+d*vec2( 3, y));\n}\n\n// Naive implementation of Hermite 6x6 sampling.\nvec4 hermite_36(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    uv*=wh;\n    uv-=0.5;\n    ivec2 iuv=ivec2(floor(uv));\n    uv-=vec2(iuv);\n    float Wx[6],Wy[6];\n    quintic6(uv.x,Wx);\n    quintic6(uv.y,Wy);\n    vec2 c=(vec2(iuv)+0.5)/wh,d=1.0/wh;\n    return\n        Wy[0]*filter_x(Wx,t,c,d,-2)+\n        Wy[1]*filter_x(Wx,t,c,d,-1)+\n        Wy[2]*filter_x(Wx,t,c,d, 0)+\n        Wy[3]*filter_x(Wx,t,c,d, 1)+\n        Wy[4]*filter_x(Wx,t,c,d, 2)+\n        Wy[5]*filter_x(Wx,t,c,d, 3);\n}\n\n#if 0 // Set to 1 to use SW bilinear.\n// This defeats the purpose, obviously,\n// and is considerably slow, but provides\n// a reference version.\nvec4 sampleSW(sampler2D t,vec2 uv)\n{\n    ivec2 s=textureSize(t,0);\n    uv=uv*vec2(s)-0.5;\n    ivec2 c=ivec2(floor(uv)),e=ivec2(0,1);\n    uv=uv-vec2(c);\n    // WARNING: this hardcodes the assumption\n    // that texture is power-of-two, and wrap mode\n    // is repeat.\n    return mix(\n        mix(texelFetch(t,(c+e.xx) & (s-1),0),texelFetch(t,(c+e.yx) & (s-1),0),uv.x),\n        mix(texelFetch(t,(c+e.xy) & (s-1),0),texelFetch(t,(c+e.yy) & (s-1),0),uv.x),\n        uv.y);\n}\n#define texture sampleSW\n#else\n// Sample using textureLod, not plain\n// texture(). Thanks, @fishy!\n#define texture(s,p) textureLod(s,p,0.0)\n#endif\n\n// Convert pair of weights into lerp form.\n// Returns interpolation factor in x, and weight in y,\n// so that w0*A+w1*B=y*mix(A,B,x).\nvec2 f(float w0,float w1)\n{\n    const float eps=1e-7; // Prevent 0/0 (assuming non-negative w0,w1).\n    return vec2(w1/(w0+w1+eps),w0+w1);\n}\n\nvec4 hermite_20(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    uv*=wh;\n    uv-=0.5;\n    ivec2 iuv=ivec2(floor(uv));\n    uv-=vec2(iuv);\n    float Wx[6],Wy[6];\n    quintic6(uv.x,Wx);\n    quintic6(uv.y,Wy);\n    vec2 c=(vec2(iuv)+0.5)/wh,d=1.0/wh;\n    // Central 4x4 region.\n    // Same as 8-tap Catmull-Rom from\n    // https://www.shadertoy.com/view/lflSWn,\n    // except the corner weights are doubled.\n    vec2 w=f(Wx[2],-sqrt(2.0)*Wx[1]);\n    vec2 e=f(Wx[3],-sqrt(2.0)*Wx[4]);\n    vec2 s=f(Wy[2],-sqrt(2.0)*Wy[1]);\n    vec2 n=f(Wy[3],-sqrt(2.0)*Wy[4]);\n    float SW=s.y*w.y,SE=s.y*e.y,NW=n.y*w.y,NE=n.y*e.y;\n    vec2 W=f(-Wx[1]*Wy[2]+SW*w.x*(1.0-s.x),-Wx[1]*Wy[3]+NW*w.x*(1.0-n.x));\n    vec2 E=f(-Wx[4]*Wy[2]+SE*e.x*(1.0-s.x),-Wx[4]*Wy[3]+NE*e.x*(1.0-n.x));\n    vec2 S=f(-Wx[2]*Wy[1]+SW*s.x*(1.0-w.x),-Wx[3]*Wy[1]+SE*s.x*(1.0-e.x));\n    vec2 N=f(-Wx[2]*Wy[4]+NW*n.x*(1.0-w.x),-Wx[3]*Wy[4]+NE*n.x*(1.0-e.x));\n    vec4 ret=\n        SW  *texture(t,c+d*(vec2( 0, 0)+vec2(-w.x,-s.x)))+\n        SE  *texture(t,c+d*(vec2(+1, 0)+vec2(+e.x,-s.x)))+\n        NW  *texture(t,c+d*(vec2( 0,+1)+vec2(-w.x,+n.x)))+\n        NE  *texture(t,c+d*(vec2(+1,+1)+vec2(+e.x,+n.x)))+\n        -W.y*texture(t,c+d*(vec2(-1, 0)+ W.x*vec2( 0,+1)))+\n        -E.y*texture(t,c+d*(vec2(+2, 0)+ E.x*vec2( 0,+1)))+\n        -S.y*texture(t,c+d*(vec2( 0,-1)+ S.x*vec2(+1, 0)))+\n        -N.y*texture(t,c+d*(vec2( 0,+2)+ N.x*vec2(+1, 0)));\n    // Corners.\n    w=f(-Wx[1],Wx[0]);\n    e=f(-Wx[4],Wx[5]);\n    s=f(-Wy[1],Wy[0]);\n    n=f(-Wy[4],Wy[5]);\n    ret+=\n        -s.y*w.y*texture(t,c+d*(vec2(-1,-1)+vec2(-w.x,-s.y)))\n        +2.0*Wx[0]*Wy[0]*texture(t,c+d*vec2(-2,-2))\n        -s.y*e.y*texture(t,c+d*(vec2(+2,-1)+vec2(+e.x,-s.y)))\n        +2.0*Wx[5]*Wy[0]*texture(t,c+d*vec2(+3,-2))\n        -n.y*w.y*texture(t,c+d*(vec2(-1,+2)+vec2(-w.x,+n.y)))\n        +2.0*Wx[0]*Wy[0]*texture(t,c+d*vec2(-2,+3))\n        -n.y*e.y*texture(t,c+d*(vec2(+2,+2)+vec2(+e.x,+n.y)))\n        +2.0*Wx[5]*Wy[0]*texture(t,c+d*vec2(+3,+3));\n    // Edges.\n    vec2 H=f(Wy[2],Wy[3]);\n    vec2 V=f(Wx[2],Wx[3]);\n    ret+=\n        Wx[0]*H.y*texture(t,c+d*(vec2(-2, 0)+H.x*vec2( 0,+1)))+\n        Wx[5]*H.y*texture(t,c+d*(vec2(+3, 0)+H.x*vec2( 0,+1)))+\n        Wy[0]*V.y*texture(t,c+d*(vec2( 0,-2)+V.x*vec2(+1,+1)))+\n        Wy[5]*V.y*texture(t,c+d*(vec2( 0,+3)+V.x*vec2(+1,+1)));\n    return ret;\n}\n\n#ifdef texture\n#undef texture\n#endif\n\nvoid mainImage(out vec4 fragColor,in vec2 fragCoord)\n{\n    vec2 xy=(2.0*fragCoord-iResolution.xy)/iResolution.y;\n    vec2 uv=xy/64.0+vec2(cos(iTime/128.0),sin(iTime/128.0));\n    vec3 col=vec3(0);\n    col=(xy.y<0.0?\n        (xy.x<0.0?texture_nearest(iChannel0,uv):texture(iChannel0,uv)):\n        (xy.x<0.0?hermite_36(iChannel0,uv):hermite_20(iChannel0,uv))).xyz;\n    if(false)\n    {\n        // Debug: display difference.\n        col-=hermite_36(iChannel0,uv).xyz;\n        col=0.5+32.0*col;\n    }\n    fragColor=vec4(col,1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

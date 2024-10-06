@@ -1,0 +1,66 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1520032191",
+            "description": "Quick shader showing simple post-processing AA using directed blurring. Left: no AA; Right: blurring along depth discontinuities. Bottom right (use mouse): blur weight.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4dtcWS",
+            "likes": 17,
+            "name": "minidemo #1: AA in post",
+            "published": 3,
+            "tags": [
+                "postprocessing",
+                "antialiasing",
+                "aa"
+            ],
+            "usePreview": 0,
+            "username": "mattz",
+            "viewed": 894
+        },
+        "renderpass": [
+            {
+                "code": "/* \"minidemo #1: AA in post\", by mattz\n   License Creative Commons Attribution 3.0 (CC BY 3.0) Unported License.\n\n   I've seen a handful of shaders that perform antialiasing \n   of raymarched SDF scenes by combining a number of samples \n   according to pixel coverage as the ray progresses, for\n   example:\n\n     - Antialiasing (Sort of) by iq\n       https://www.shadertoy.com/view/llXGR4\n\n     - Escaping Fleet by eiffie\n       https://www.shadertoy.com/view/MlX3zr\n\n     - Bacterium by vgs\n       https://www.shadertoy.com/view/MdBSDt\n  \n   While that method generally produces great results, I wanted\n   a quick-and-dirty alternative that just uses an extra render\n   pass to blend pixel values along depth discontinuities, in\n   case you don't want to put multisampling directly into your\n   ray marching loop.\n\n   I'm not sure how similar this is to FXAA because I've never\n   looked into its internals, but I thought this was a reasonable\n   first stab.\n\n   Click in the window to move the boundary between regions:\n\n     - Left: no AA\n     - Upper right: AA\n     - Lower right: blur mixing coefficient\n    \n   Many other shaders on this site feature some kind of AA, I \n   just wanted to post a minimal, self-contained example for my\n   own future reference.\n \n */\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    ivec2 fc = ivec2(fragCoord);\n\n    // fetch center texel and four surrounding texels\n    vec4 sa = texelFetch(iChannel0, fc+ivec2(0, 1), 0); \n    vec4 sb = texelFetch(iChannel0, fc+ivec2(-1, 0), 0);\n    vec4 sc = texelFetch(iChannel0, fc, 0);\n    vec4 sd = texelFetch(iChannel0, fc+ivec2(1, 0), 0);\n    vec4 se = texelFetch(iChannel0, fc+ivec2(0, -1), 0);\n    \n    // blur the center pixel horizontally and vertically\n    const vec3 bcoeff = vec3(0.25, 0.5, 0.25);\n    vec3 hblur = mat3(sb.xyz, sc.xyz, sd.xyz)*bcoeff;\n    vec3 vblur = mat3(sa.xyz, sc.xyz, se.xyz)*bcoeff;\n         \n    // get the (absolute) gradient of the depth map \n    // and its (approximate) norm\n    vec2 depth_grad = abs(vec2(sd.w - sb.w, se.w - sa.w));\n    float depth_grad_norm = depth_grad.x + depth_grad.y;\n  \n    // depth gradient now sums to 1\n    depth_grad /= max(1e-5, depth_grad_norm);\n    \n    // compute blur along depth gradient direction\n    vec3 directed_blur = hblur*depth_grad.y + vblur*depth_grad.x;\n    \n    // second depth derivatives in x & y\n    vec2 depth_grad2 = abs(vec2(sb.w - 2.*sc.w + sd.w,\n                                sa.w - 2.*sc.w + se.w));\n    \n    // laplacian of depth map\n    float depth_laplacian = dot(depth_grad2, depth_grad2);\n    \n    // weight on blur vs unblurred pixel - the 1.0 is a scene-dependent\n    // parameter but should represent a \"big enough\" depth discontinuity\n    float blur_amount = smoothstep(0.0, 0.5, depth_laplacian);\n\n    vec3 base_color = sc.xyz;\n    \n    // blend in blur where gradient is large\n    vec3 corrected_color = mix(base_color, directed_blur, blur_amount);  \n    \n    ////////////////////////////////////////////////////////////\n    // everything below this line just for visualization\n    \n    vec2 split;\n    if (max(iMouse.x, iMouse.y) < 20.) {\n        split = vec2(0.5*iResolution.x, 0);\n    } else {\n        split = iMouse.xy;\n    }\n    if (split.y < 10.) { split.y = -10.; }\n    split = floor(split) + 0.5;\n    \n    vec3 color;\n    \n    if (fragCoord.x < split.x) {\n        color = base_color;\n    } else {\n        if (fragCoord.y > split.y) {\n            color = corrected_color;\n        } else {\n            color = vec3(blur_amount);\n        }\n        color *= step(0.0, abs(fragCoord.y - split.y)-2.0);\n    }\n    \n    color *= step(0.0, abs(fragCoord.x - split.x)-2.0);\n    \n    color = pow(color, vec3(1.0/2.2));\n    \n    fragColor = vec4(color, 1);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const int rayiter = 60;\nconst float dmax = 20.0;\nvec3 L = normalize(vec3(-0.6, 0.8, -1.0));\nmat3 Rview;\n\n/* Rotate about x-axis */\nmat3 rotX(in float t) {\n    float cx = cos(t), sx = sin(t);\n    return mat3(1., 0, 0, \n                0, cx, sx,\n                0, -sx, cx);\n}\n\n\n/* Rotate about y-axis */\nmat3 rotY(in float t) {\n    float cy = cos(t), sy = sin(t);\n    return mat3(cy, 0, -sy,\n                0, 1., 0,\n                sy, 0, cy);\n\n}\n\n/* Adapted from https://iquilezles.org/articles/distfunctions */\nfloat sdCube(vec3 p, float r) {    \n    vec3 d = abs(p) - r;\n    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d,0.0));    \n}\n\n\n/* Distance function to scene -- small array of cubes/spheres */\nvec2 map(in vec3 pos) {\t\n    \n    float d_outer_cube = sdCube(pos, 2.5);\n    \n    vec3 cell_center = floor(pos + 0.5);\n    \n    pos -= cell_center;\n\n    float sphere_or_cube = mod(dot(cell_center, vec3(1)), 2.0);\n    \n    float d_cell_obj = sphere_or_cube == 1. ? length(pos)-0.25 : sdCube(pos, 0.25);\n\n    return vec2(max(d_outer_cube, d_cell_obj), sphere_or_cube);\n   \n\n}\n\n/* IQ's normal calculation. */\nvec3 calcNormal( in vec3 pos ) {\n    vec3 eps = vec3( 0.001, 0.0, 0.0 );\n    vec3 nor = vec3(\n        map(pos+eps.xyy).x - map(pos-eps.xyy).x,\n        map(pos+eps.yxy).x - map(pos-eps.yxy).x,\n        map(pos+eps.yyx).x - map(pos-eps.yyx).x );\n    return normalize(nor);\n}\n\n/* IQ's distance marcher. */\nvec2 castRay( in vec3 ro, in vec3 rd, in float maxd ) {\n\n    const float precis = 0.01;   \n    float h=2.0*precis;\n\n    float t = 0.0;\n    float m = -1.0;\n\n    for( int i=0; i<rayiter; i++ ) {\n        if( abs(h)<precis||t>maxd ) continue;//break;\n        t += h;\n        vec2 res = map( ro+rd*t );\n        h = res.x;\n        m = res.y;        \n    }    \n\n    if (t > maxd) {\n        m = -1.0;\n    }\n\n    return vec2(t, m);\n\n}\n\n/* Cast a ray - returns color and depth along ray */\nvec4 shade( in vec3 ro, in vec3 rd ){\n    \n    vec2 tm = castRay(ro, rd, dmax);        \n\n    vec3 c;\n\n    if (tm.y < 0.0) {\n\n        c = vec3(0.05);\n        tm.x = dmax;\n\n    } else {        \n\n        vec3 pos = ro + tm.x*rd;\n        vec3 n = calcNormal(pos);\n\n        vec3 p0 = floor(pos + 0.5);\n\n        pos -= n * map(pos).x;\n\n        vec3 cube = 0.125*p0 + 0.5;\n        vec3 sphere = vec3(dot(p0, vec3(-0.3333333))*0.2 + 0.6);\n\n        vec3 color = mix(cube, sphere, tm.y);\n\n        vec3 diffamb = (0.5*clamp(dot(n,L), 0.0, 1.0)+0.5) * color;\n        vec3 R = 2.0*n*dot(n,L)-L;\n        float spec = 0.5*pow(clamp(-dot(R, rd), 0.0, 1.0), 20.0);\n        c = diffamb + spec;\n        \n    }\n\n    return vec4(c, tm.x);\n\n    \n}\n\n/* Very bare-bones main function. Note we defer gamma correction to final render pass. */\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    vec2 uv = (fragCoord.xy - .5*iResolution.xy) * 0.8 / (iResolution.y);\n    \n    float thetay = 0.25*iTime;\n    float thetax = 0.5;\n      \n    Rview = rotY(thetay)*rotX(thetax); \n    L = Rview*L;\n\n    vec3 rd = Rview*normalize(vec3(uv, 1.));\n    vec3 ro = Rview*vec3(0,0, -10.);\n\n    fragColor = shade(ro - vec3(0, 0.5, 0), rd);\n\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

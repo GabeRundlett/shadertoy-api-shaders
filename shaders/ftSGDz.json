@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1623674370",
+            "description": "I'm gonna try to add GI to this, wish me luck!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ftSGDz",
+            "likes": 1,
+            "name": "No GI",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "sdf",
+                "cineshader"
+            ],
+            "usePreview": 0,
+            "username": "fraser",
+            "viewed": 5902
+        },
+        "renderpass": [
+            {
+                "code": "// A way of packaging together distance information with an object identifier \n// (uint standing in for an enum). Possibly expand to include more information \n// (blending, etc) later, though it'll be tough without even so much as a \n// c-union, never-mind something like rust-enums.\n#define SKY_MAT    0u\n#define MATTE_MAT  1u\n#define ORANGE_MAT 2u\n#define GREEN_MAT  3u\n#define LIGHT_MAT  4u\nstruct DistIden{\n\tfloat dist;\n\tuint  iden;\n};\n\n// speed isn't particularly important rn, so I'm going with an exponential \n// implementation for commutability. We can change this later for RTRT.  \nfloat smin(float a, float b, float k){\n\treturn -log2(exp2(-k*a) + exp2(-k*b))/k;\n}\nfloat smax(float a, float b, float k){\n\treturn log2(exp2(k*a) + exp2(k*b))/k;\n}\n\n#define windowPeriod 3.0\n#define boxwidth 3.0\n#define boxheight 1.5\n#define boxthickness 0.1\n\n#define ENABLE_boxroundness 0  // 1\n#define boxroundness 0.0       // 0.1\n\nfloat SDF_SPHERE(vec3 pos, float r){\n\treturn length(pos)-r;\n}\n\nfloat SDF_BOXTUBE(vec3 pos){\n\tvec2 q2 = abs(pos.yz) - vec2(boxheight/2.0, boxwidth/2.0);\n\tfloat d_tube = abs(length(max(q2,0.0)) + min(max(q2.x,q2.y),0.0)-boxroundness*3.0) - boxthickness;\n\tvec3 q3 = abs(vec3(mod(pos.x, windowPeriod)-windowPeriod*0.5, pos.y-boxheight/2.0, pos.z)) - vec3(0.5,0.5,0.5);\n\tfloat d_hole = length(max(q3,0.0)) + min(max(q3.x,max(q3.y,q3.z)),0.0)-boxroundness;\n#if ENABLE_boxroundness == 0\n\treturn max(d_tube, -d_hole);\n#else\n\treturn smax(d_tube, -d_hole, 50.0);\n#endif\n}\n\nDistIden DI_WORLD(vec3 pos){\n\tfloat d_sphere1   = SDF_SPHERE(vec3(mod(pos.x,2.62)-1.31, pos.y+0.6, pos.z+1.25), 0.85);\n\tfloat d_sphere2   = SDF_SPHERE(vec3(mod(pos.x-4.0,11.0)-5.5, pos.y-0.35, pos.z-1.1), 0.25);\n\tfloat d_left_wall = max(1.35-pos.z, abs(pos.y)-boxheight/2.0-boxthickness-0.1);\n\tfloat d_boxtube   = SDF_BOXTUBE(pos);\n\t\n\tDistIden di;\n\t\n\tdi.iden = MATTE_MAT; // as either option on this junction uses MATTE\n\tdi.dist = smin(d_boxtube, d_sphere1, 12.0);\n\t\n\tdi.iden = d_sphere2 < di.dist ? ORANGE_MAT : di.iden;\n\tdi.dist = min(d_sphere2, di.dist);\n\t\n\tdi.iden = d_left_wall < di.dist ? GREEN_MAT : di.iden;\n\tdi.dist = min(d_left_wall, di.dist);\n\t\n\treturn di;\n}\n\n#define RAY_ITERATIONS 512 // set via macro\nDistIden raycast(vec3 rayOrg, vec3 rayDir, float maxDist){\n\tfloat rayLength = 0.0;\n\tDistIden query;\n\tfor(int i=0;i<RAY_ITERATIONS;i++){\n\t\tquery = DI_WORLD(rayOrg + rayLength * rayDir);\n\t\tif(query.dist<0.001) break;\n\t\tif(rayLength>maxDist){\n\t\t\tquery.iden = SKY_MAT;\n\t\t\tbreak;\n\t\t}\n\t\trayLength += query.dist;\n\t}\n\tquery.dist = rayLength;\n\treturn query;\n}\n\n// using iq's \"tetrahedron technique\"\nvec3 calcNormal(vec3 pos){\n\tvec2 EPSILON = 0.0001*vec2(1,-1);\n\treturn normalize(EPSILON.xyy*DI_WORLD(pos+EPSILON.xyy).dist+ \n\t\t\t\t\t EPSILON.yyx*DI_WORLD(pos+EPSILON.yyx).dist+ \n\t\t\t\t\t EPSILON.yxy*DI_WORLD(pos+EPSILON.yxy).dist+ \n\t\t\t\t\t EPSILON.xxx*DI_WORLD(pos+EPSILON.xxx).dist);\t\n}\n\n\nvec3 skyColour(vec3 dir){\n\treturn vec3(0.639, 0.941, 1) - dir.y * 0.63;\n}\n\nconst vec3 sun_dir = normalize(vec3(-0.03,0.5,0.5));\n\n\n#define FAR_PLANE 5000.0 // set via macro, optionally non-existent via macro\nvec4 render(vec3 pos, vec3 dir){\n\tvec3 col = skyColour(dir);\n\t\n\tDistIden ray = raycast(pos, dir, FAR_PLANE);\n\tif(ray.iden != SKY_MAT){\n\t\tpos += ray.dist * dir;\n\t\tvec3 normal = calcNormal(pos);\n\t\t\n\t\tfloat ambient \t\t= clamp(1.0-normal.y,0.25,2.0)*0.4;\n\t\tambient \t\t\t+=clamp(1.0-normal.x,0.0 ,2.0)*0.1;\n\t\tfloat sun_diffuse\t= clamp(dot(sun_dir,normal),0.0,1.0);\n\t\tfloat sun_shadow\t= (raycast(pos+normal*0.001, sun_dir, FAR_PLANE).iden==SKY_MAT)?1.0:0.0;\n\t\tvec3 matte = vec3(0.2);\n\t\tswitch(ray.iden){\n\t\t\tcase ORANGE_MAT:\n\t\t\t\tmatte *= vec3(1.0,0.5,0.0);\n\t\t\t\tbreak;\n\t\t\tcase GREEN_MAT:\n\t\t\t\tmatte *= vec3(0.0,1.0,0.16);\n\t\t\t\tbreak;\n\t\t}\n\t\t\n\t\tcol =  matte*(vec3(1, 0.980, 0.839)*6.0*sun_shadow*sun_diffuse+ambient*vec3(1, 0.95, 0.93)*1.2);\n\t}\n\treturn vec4(col, 1.0/(1.0+ray.dist));\n}\n\nmat3 cameraMatrix(vec3 cameraPointingVec){\n\tvec3 x = normalize(vec3(cameraPointingVec.z, 0.0, -cameraPointingVec.x));\n\treturn mat3(x, cross(cameraPointingVec,x), -cameraPointingVec);\n}\n\nconst float FOV_OFFSET = 1.64; //=1/tan(0.5*FOV)\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n    //<Camera>\n\tvec2 uv = (2.0*fragCoord-vec2(iResolution.xy))/float(min(iResolution.x, iResolution.y));\n\t// 1.0≈1m\n\t// this following 4 var system is temporary, will be turned into a proper set of uniforms with more control later.\n\t\tvec3  subjectPos    = vec3(-iTime*0.75, -0.3, 0.0); \n\t\tfloat yawAngle      = -0.2 + sin(iTime*0.347)*0.05;\n\t\tfloat subjectXZDist = 2.0;\n\t\tfloat subjectYDist  = 0.6 + sin(iTime*0.6)*0.1;\n\tvec3 rayOrg = subjectPos + vec3(subjectXZDist*cos(yawAngle), subjectYDist, subjectXZDist*sin(yawAngle));\n\tvec3 rayDir = cameraMatrix(normalize(rayOrg - subjectPos)) * normalize(vec3(uv, FOV_OFFSET));\n\t//</Camera>\n\t\n\tfragColor = render(rayOrg, rayDir);\n\t\n\tfragColor.xyz = pow(fragColor.xyz,vec3(0.4545)); // gamma correction\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

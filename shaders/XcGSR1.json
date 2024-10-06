@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1718458483",
+            "description": "Learning how to raymarch repeated objects without glitches.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XcGSR1",
+            "likes": 3,
+            "name": "Repeated boxes",
+            "published": 3,
+            "tags": [
+                "reflection",
+                "domainrepetition",
+                "repetition"
+            ],
+            "usePreview": 0,
+            "username": "maksy",
+            "viewed": 178
+        },
+        "renderpass": [
+            {
+                "code": "/* \n* When raymarching repeated objects of unique sizes, glitches can occur due to overstepping. \n* To prevent this, there are at least two methods that work without changes to the raymarching routine:\n*\n* 1) Evaluate the adjacent cells\n* https://www.shadertoy.com/view/ltSGRG\n*\n* 2) Find the closest neighbour cell and assume the maximum height\n* https://www.shadertoy.com/view/3lcBD2\n*\n* \n* Tutorial on reflections by the Art of Code:\n* https://www.youtube.com/watch?v=beNDx5Cvt7M\n*/\n\n#define MAX_STEPS 160\n#define MAX_DIST 48.\n#define SURF_DIST .002\n\n#define GETDIST_TILES\n\n#define GROUND 0\n#define BOX 1\n\nfloat sdBox(vec3 p, vec3 s) {\n    p = abs(p)-s;\n\treturn length(max(p, 0.))+min(max(p.x, max(p.y, p.z)), 0.);\n}\n\n// https://iquilezles.org/articles/palettes\nvec3 palette(float t) {\n    return vec3(0.5) + vec3(0.5)*cos(6.28*(vec3(1.0)*t*0.18+vec3(0.0, 0.33, 0.67)));\n}\n\nstruct Obj {\n    vec2 id;\n\tint type;\n    float dist;\n};\n\n// Returns the grayscale value of the given pixel\nfloat heightMap(in vec2 p) {\n    \n     // Stretch the coordinates so that image is the same size as the window.\n     p *= vec2(iResolution.y/iResolution.x, 1);\n    \n    vec3 tex = texture(iChannel0, p/8.).xyz;\n    \n    // sRGB to linear conversion\n    tex *= tex;\n   \n    // https://en.wikipedia.org/wiki/Relative_luminance\n    return dot(tex, vec3(0.2126, 0.7152, 0.0722));\n}\n\nObj getDist(vec3 p) {\n  \n    float SCALE = 2.4;\n    \n    float planeDist = p.y;\n    \n    // Add small bumps to the plane to make it look better.\n    planeDist += sin(p.x*6. + p.z)*0.001;\n   \n    vec2 id = floor(p.xz / SCALE);\n    \n    float width = clamp(0.3, 0.7, heightMap(id.yx)*1.6);\n    float depth = width;\n    \n    // Repeat the xz domain\n    vec3 pRep = p;\n    pRep.xz = (fract(p.xz/SCALE)-.5)*SCALE;\n\n    float MAX_HEIGHT = 3.;\n    float height = heightMap(id)*MAX_HEIGHT;\n    \n    #ifdef GETDIST_TILES\n    \n    // Prevent artefacts due to overstepping by checking the distances to adjacent cells\n    Obj obj = Obj(id, GROUND, planeDist/SCALE);\n    \n    float cellDist = sdBox(pRep- vec3(0, height*0.5, 0), vec3(width, height, depth)) - 0.03; \n    vec2 cells[4] = vec2[4] (vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));                            \n\n    for (int i = 0; i < 4; i++) {\n  \n       if (cellDist/SCALE < obj.dist) {\n           obj = Obj(id, BOX, cellDist/SCALE);\n       }\n  \n       vec2 cellId = floor((p.xz + SCALE*cells[i]) / SCALE);\n       \n       vec3 pCell = pRep;\n       pCell.xz -= vec2(cells[i].x, cells[i].y)*SCALE;\n             \n       float height = heightMap(cellId)*MAX_HEIGHT;\n       cellDist = sdBox(pCell, vec3(width, height, depth)) - .03;\n    }\n    \n    return obj; \n    \n    // Do not evaluate the adjacent cells. Find the closest neighbour and assume the max height instead.\n    #else\n\n    vec2 neighbour;\n    vec2 pAbs = abs(p.xz);\n     \n    if (pAbs.x > pAbs.y) {\n       neighbour = vec2( (p.x < 0.) ? -1. : 1., 0.);\n    }\n    else {\n        neighbour = vec2(0., (p.y < 0.) ? -1. : 1.);\n    }\n    \n    float dist = sdBox(pRep - vec3(0, height*0.5, 0), vec3(width, height, depth)) - 0.03; \n    \n    vec3 pRepN = p;\n    pRepN.xz = (fract(neighbour/SCALE)-.5)*SCALE;\n    \n    float distNeighbour = sdBox(pRepN, vec3(width, MAX_HEIGHT, depth)) - 0.03; \n       \n    Obj obj = Obj(id, BOX, min(dist/SCALE, distNeighbour/SCALE));\n    if (planeDist < obj.dist)\n       obj = Obj(id, GROUND, planeDist);\n    \n    return obj;\n    #endif\n}\n\nObj rayMarch(vec3 ro, vec3 rd) {\n\t\n    float dO = 0.;\n    Obj obj;\n    for (int i=0; i < MAX_STEPS; i++) {\n    \n    \tvec3 p = ro + rd*dO;\n        \n        obj = getDist(p);\n        \n        float dS = obj.dist;\n        dO += dS;\n     \n        if (dO > MAX_DIST || abs(dS) < SURF_DIST) break;\n    }\n    \n    return Obj(obj.id, obj.type, dO);\n}\n\nvec3 getNormal(vec3 p) {\n\tfloat d = getDist(p).dist;\n    vec2 e = vec2(.0001, 0);\n    \n    vec3 n = d - vec3(\n        getDist(p-e.xyy).dist,\n        getDist(p-e.yxy).dist,\n        getDist(p-e.yyx).dist);\n    \n    return normalize(n);\n}\n\nvec3 lookAt(vec2 uv, vec3 ro, vec3 target, float zoom) {\n    vec3 forward = normalize(target-ro);\n    vec3 r = normalize(cross(vec3(0,1,0), forward));\n    vec3 u = cross(forward,r);\n    vec3 c = ro+forward*zoom;\n    vec3 i = c + uv.x*r + uv.y*u;\n    vec3 rd = normalize(i-ro);\n    return rd;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;    \n    vec3 col = vec3(0);\n    \n    float anim = iTime * 1.5;\n    vec3 ro = vec3(0., 5, anim - 3. );\n    \n    vec3 rd = lookAt(uv, ro, vec3(0, 4.5, anim + 4.), 1.);\n\n    Obj obj = rayMarch(ro, rd);\n    \n    if (obj.dist < MAX_DIST) {            \n    \tvec3 p = ro + rd * obj.dist;\n        vec3 normal = getNormal(p);\n        \n        // Light direction vector\n        vec3 lp = ro + vec3(0., 2., 4);\n        vec3 ld = normalize(lp - p);\n        \n        // Standard diffuse term\n        float diff = clamp(dot(normal, ld)*.5+.5, 0., 1.);\n        \n        // Standard specular term\n        float spec = pow(max( dot( reflect(-ld, normal), -rd ), 0.), 10.2);\n               \n        if (obj.type == BOX) {\n            col = palette(obj.id.x + obj.id.y);\n        } else {\n            col = vec3(0.1, 0.1, .2);\n        }\n        \n        vec3 sceneCol = col*diff + vec3(1.)*spec;\n       \n        // Add reflections        \n        vec3 refRo = p + normal*.003;\n\n        vec3 refRd = reflect(rd, normal);\n        Obj refObj = rayMarch(refRo, refRd);\n    \n        float ref = 0.23;\n        if (obj.type == GROUND)\n           ref = 0.05;\n  \n        if (refObj.dist < MAX_DIST) {\n           vec3 refCol = palette(refObj.id.y);\n           \n           // Makes the reflectivity to be based on the angle\n           float fresnel = 1.-dot(-rd, normal);\n           \n           sceneCol += refCol*ref * fresnel;\n        }\n           \n        // Attenuate light\n        float atten = smoothstep(0., .99, obj.dist/MAX_DIST*1.);\n \n        col = mix(sceneCol, vec3(0), atten);\n    }\n        \n    col = pow(col, vec3(.4545)); // gamma correction    \n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 16,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

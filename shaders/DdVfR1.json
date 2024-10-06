@@ -1,0 +1,57 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697923920",
+            "description": "This demo compares the very cheap single sample blurs with each other. On the left is mip blur and on the right is dithered blur. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DdVfR1",
+            "likes": 1,
+            "name": "Mip vs Noise Blur (1 Sample)",
+            "published": 3,
+            "tags": [
+                "noise",
+                "blur",
+                "cheap",
+                "cheap",
+                "dither",
+                "mip",
+                "gauss"
+            ],
+            "usePreview": 1,
+            "username": "gehtsiegarnixan",
+            "viewed": 264
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2023 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/*\nThis is more of an experiment. This compares Mip blur to dither blur, \nboth of which are extremely cheap with a single sample. \n\nThe right side uses dithering to offset the UV coordinates of the textures. \nIf you use Temporal Anti-Aliasing (TAA), it will automatically denoise your \nblur, giving you a cheap blur. Curiously, the hash functions look actually \nbetter for once compared to the dither functions from Valve or COD. This \ncould be useful if you can't use Mips.\n\nThe left side is mip blur where we simply use the stored mip level to blur \nthe textures. I would suggest using this one if you need a very cheap blur.\n\nThis demo includes mouse controls to adjust the noise strength and border.\nAlso, you can adjust the quasi motion blur sample count in the parameters \nbelow. \n\nI am not the first to try these, here is a noise blur from eliasku:\nhttps://www.shadertoy.com/view/7lGBzd\n\nAnd here is a Mip blur from the one and only IQ:\nhttps://www.shadertoy.com/view/4slGWn\n*/\n\n// The number of previous samples looked at to blur result, with a similar \n// effect to Temporal Anti-Aliasing (TAA) which you should use instead.\n#define TEMPORALBLUR 8\n\n// valve edition (slightly modified to be a true 12 dither)\n// http://alex.vlachos.com/graphics/Alex_Vlachos_Advanced_VR_Rendering_GDC2015.pdf\n// input in pixels (ie not normalized uv)\nvec2 ScreenSpaceDither22(vec2 vScreenPos, float time) {\n    float vDither = dot( vec2( 171.0, 231.0 ), vScreenPos.xy + time); \n    return fract( vDither / vec2(103.0, 71.0));\n}\n\n// Function that uses dithering to blur an image\nvec3 ditherblur(vec2 uv, vec2 fragCoord, float time, float blurStrength) {\n\n    // Sample your noise with animation, and scale to vector\n    vec2 dither = ScreenSpaceDither22(fragCoord,time) -0.5;\n    \n    // Calculate noisy UVs\n    vec2 noisyUV = fract(uv - dither * blurStrength);\n    \n    // Calulate the buffer size\n    vec2 texSize = vec2(textureSize(iChannel0, 0));\n    ivec2 texelCoord = ivec2(noisyUV * texSize);\n\n    // sample texels with random offsets   \n    vec3 color = texelFetch(iChannel0, texelCoord, 0).xyz;\n\n    return color;\n}\n\n// Blurs an image using the mip level, blurstrength is in UV scale\nvec3 mipBlur(vec2 uv, float blurStrength) {\n    // Sample texture resolution\n    vec2 texSize = vec2(textureSize(iChannel0, 0));\n    \n    // Find out the max mip level\n    float maxMipLevel = log2(max(texSize.x, texSize.y));\n    \n    // Calculate pixel range of the blur\n    float blurPixelRange = max(texSize.x, texSize.y) * blurStrength;\n    \n    // Calculate mip level based on blur pixel range\n    float mipLevel = log2(blurPixelRange);\n    \n    // Sample texture\n    vec3 color = textureLod(iChannel0, uv, mipLevel).xyz;\n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord) {\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // Enable mouse controls when clicked, otherwise animate\n    float border;\n    float blurStrength;\n    if (iMouse.x > 0.0) {\n        // Mouse controls\n        vec2 mouse = iMouse.xy / iResolution.xy;\n        border = mouse.x;\n        blurStrength = mix(0.0, 0.1, pow(mouse.y,2.));\n    } else {\n        // Animation\n        border = sin(iTime * 0.5) *0.5+0.5;\n        blurStrength = mix(0.0, 0.1, pow(cos(iTime * 0.3) *0.5+0.5,2.));\n    }\n    \n    // Correct blur for non-square aspect ratio\n    blurStrength *= iResolution.x/iResolution.y;   \n\n    // Alternate between mip blur and dithered blur\n    vec3 color;\n    if (uv.x > border) {\n        // Right dithered\n        #if TEMPORALBLUR <= 1\n            // We just take a single sample from the blurred function.\n            color += ditherblur(uv, fragCoord, iTime, blurStrength);\n        #else\n            // We take multiple samples from the ditheredSample function and average them.\n            // This is normally done automatically by your TAA or motion blur\n            for(int i = 0; i < TEMPORALBLUR; i++) {\n                color += ditherblur(uv, fragCoord, iTime - float(i), blurStrength);\n            }\n            color /= float(TEMPORALBLUR);\n        \n        #endif\n    } else {\n        // Left mip blur\n        color += mipBlur(uv, blurStrength).xyz;\n    }\n    \n    // Add a dividing line\n    color -= step(abs(uv.x - border), 0.002);\n\n    // Output to screen\n    fragColor = vec4(color,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

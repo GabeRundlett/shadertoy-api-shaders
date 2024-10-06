@@ -1,0 +1,83 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1566684707",
+            "description": "A basic Mandelbulb with ambient lighting/occlusion, point lights, depth of field and a very basic GI.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wt2Xzc",
+            "likes": 11,
+            "name": "Striped Mandelbulb",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "fractal",
+                "mandelbulb",
+                "dof",
+                "bokeh"
+            ],
+            "usePreview": 0,
+            "username": "loicvdb",
+            "viewed": 921
+        },
+        "renderpass": [
+            {
+                "code": "#define HalfPi 1.57079632679\n#define FocalDistance 1.4\n#define Aperture .04\n#define BlurAccuracy 1.0\n\nfloat dofRadius(float depth){\n\treturn Aperture*iResolution.y*atan(abs(depth-FocalDistance), depth);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec3 color;\n    float samples;\n    float rd = Aperture*iResolution.y/HalfPi; //might clip the DoF for close objects\n    float r = 0.0, phi;\n    int i = 0;\n    while(r < float(rd)){\n        r = sqrt(float(i)) / BlurAccuracy;\n        phi = 137.5*float(i);\n        vec2 d = r*vec2(cos(phi), sin(phi));\n        vec4 p = texture(iChannel0, (fragCoord.xy+d) / iResolution.xy);\n        float dr = dofRadius(p.a);\n        float influence = clamp(dr - length(d) + .5, 0.0, 1.0) / (dr*dr+.01);\n        color += influence * p.rgb;\n        samples += influence;\n        i++;\n    }\n  \tfragColor = vec4(color/samples, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define Pi  3.14159265359\n\n#define Epsilon .0025\n#define RenderDistance 2.75\n#define Steps 75\n#define ShadowSteps 50\n#define AoSteps 12\n#define GiSkipSteps 4\n#define AoStrength .2\n\nvec3 CamPos;\nvec3 CamDir;\nfloat CamFocalLength;\n\nfloat Power;\nfloat ThetaShift;\n\nfloat distanceEstimation(vec3 pos, out vec3 diffuseColor, out vec3 emissionColor) {\n    if(length(pos) > 2.5) return length(pos) - 2.0;\n    vec3 z = pos;\n    float dr = 1.0, r = 0.0, theta, phi;\n    for (int i = 0; i < 8; i++) {\n        r = length(z);\n        if (r>2.0) break;\n        dr =  pow( r, Power-1.0)*Power*dr + 1.0;\n        theta = acos(z.z/r) * Power + ThetaShift;\n        phi = atan(z.y,z.x) * Power;\n        float sinTheta = sin(theta);\n        z = pow(r,Power) * vec3(sinTheta*cos(phi), sinTheta*sin(phi), cos(theta)) + pos;\n    }\n    float val = abs(cos(theta/Power));\n    diffuseColor = vec3(.0);\n    emissionColor = vec3(.3, .5, .7)*6.0;\n    if(val > .15) {\n        diffuseColor = vec3(1.0);\n        emissionColor *= .05 + (1.0-val)*.1;\n    }\n    return 0.5*log(r)*r/dr;\n}\n\nfloat distanceEstimation(vec3 pos) {\n\tvec3 diffuseColor, emissionColor;\n\treturn distanceEstimation(pos, diffuseColor, emissionColor);\n}\n\nvec3 normalEstimation(vec3 pos){\n\tfloat dist = distanceEstimation(pos);\n\tvec3 xDir = vec3(dist, 0, 0);\n\tvec3 yDir = vec3(0, dist, 0);\n\tvec3 zDir = vec3(0, 0, dist);\n\treturn normalize(vec3(\tdistanceEstimation(pos + xDir),\n\t\t\t\t\t\t\tdistanceEstimation(pos + yDir),\n\t\t\t\t\t\t\tdistanceEstimation(pos + zDir))\n\t\t\t\t\t- vec3(dist));\n}\n\nbool trace(inout vec3 pos, in vec3 dir, out vec3 n,\n\t\t\tout vec3 diffuseColor, out vec3 emissionColor){\n    for(int i = 0; i < Steps; i++){\n        float dist = distanceEstimation(pos, diffuseColor, emissionColor);\n        if(dist < Epsilon){\n            n = normalEstimation(pos);\n            pos += n*Epsilon*2.0;\n            return true;\n        }\n        pos += dir * dist;\n        if(length(pos-CamPos) > RenderDistance) break;\n    }\n    return false;\n}\n\nvec3 nee(vec3 pos, vec3 n, vec3 lPos, vec3 lColor){\n    float d = length(lPos - pos);\n    vec3 rd = normalize(lPos-pos);\n    float dnrd = dot(n, rd);\n    if(dnrd < 0.0) return vec3(0);\n    for(int i = 0; i < ShadowSteps; i++){\n        float dist = distanceEstimation(pos);\n        if(dist < Epsilon) return vec3(0.0);\n        pos += rd * dist;\n        if(length(pos-CamPos) > RenderDistance || dot(rd, lPos-pos) <= 0.0) break;\n    }\n    return lColor * dnrd / (d*d);\n}\n\nvec3 directLight(vec3 pos, vec3 n){\n\tvec3 totLights = vec3(0.0);\n    //purple light\n\ttotLights += nee(pos, n, vec3(0, 5, -1), vec3(.7, .5, .3) * 20.0);\n    //yellow light\n\ttotLights += nee(pos, n, vec3(0, -5, -1), vec3(.7, .3, .5) * 20.0);\n\treturn totLights * 1.0;\n}\n\nvec3 background(vec3 dir){\n\treturn texture(iChannel0, dir.xzy).rgb;\n}\n\nvec3 ambientLight(vec3 pos){\n    vec3 oldPos = pos;\n    float expectedDist = distanceEstimation(pos) * pow(2.0, float(AoSteps));\n    vec3 n, ambientColor = vec3(0.0), gi = vec3(0.0);\n    for(int i = 0; i < AoSteps; i++){\n        n = normalEstimation(pos);\n        pos += distanceEstimation(pos) * n;\n        ambientColor += background(n);\n        if(i != 0 && fract(float(i)/float(GiSkipSteps)) == 0.0) gi += directLight(pos, n);\n    }\n    float ao = pow(length(pos-oldPos)/expectedDist, AoStrength);\n    return ao * ambientColor/float(AoSteps) + gi / float(AoSteps/GiSkipSteps);\n}\n\nvec4 colorAndDepth(vec3 pos, vec3 dir){\n    vec3 diffuseColor, emissionColor, n;\n    if(!trace(pos, dir, n, diffuseColor, emissionColor))\n        return vec4(background(dir), RenderDistance);\n    return vec4(emissionColor + diffuseColor * (directLight(pos, n)+ambientLight(pos)), length(CamPos - pos));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    CamPos = vec3(2.0 * cos(iTime/5.0), 2.0 * sin(iTime/5.0), 1.0);\n    CamDir = normalize(-CamPos);\n    float angle = .15;\n    CamDir = vec3(cos(angle) * CamDir.x - sin(angle) * CamDir.y, cos(angle) * CamDir.y + sin(angle) * CamDir.x, CamDir.z);\n    CamFocalLength = 1.0;\n    \n    Power = 2.0 + 6.0 * abs(sin(iTime/5.0));\n    ThetaShift = iTime * 2.0;\n    \n    vec2 screenPos = (fragCoord-iResolution.xy/2.0)/iResolution.y;\n    vec3 camX = normalize(vec3(-CamDir.y, CamDir.x, 0.0));\n    vec3 camY = cross(camX, CamDir);\n    vec3 centerSensor = CamPos - CamDir * CamFocalLength;\n    vec3 posOnSensor = centerSensor + camX * screenPos.x + camY * screenPos.y;\n    vec3 dir = normalize(CamPos - posOnSensor);\n    \n    vec4 colorAndDepth = colorAndDepth(CamPos, dir);\n    \n    fragColor = vec4(max(colorAndDepth.rgb, vec3(0.0)), max(min(colorAndDepth.a, RenderDistance), 0.0));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

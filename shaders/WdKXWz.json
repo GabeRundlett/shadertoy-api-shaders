@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1573802844",
+            "description": "A crystal with bizarre properties",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WdKXWz",
+            "likes": 6,
+            "name": "Stranger Crystal",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "reflection",
+                "refraction",
+                "crystal"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 358
+        },
+        "renderpass": [
+            {
+                "code": "#define FDIST 0.7\n#define PI 3.1415926\n\n\n#define GROUNDSPACING 0.5\n#define GROUNDGRID 0.05\n#define BOXDIMS vec3(0.6, 0.6, 1.)\n\n#define ABSORPTION_RATE vec3(0.7, 0.5, 0.4)\n#define IOR 1.33\n#define SCATTER_FACTOR 0.02\n#define SAMPLES 10\n#define REFLECTIONS 4\n\n\nvec2 rand2d(in vec2 uv) {\n    return fract(mat2(-199.258, 457.1819, -1111.1895, 2244.185)*sin(mat2(111.415, -184, -2051, 505)*uv));\n}\n\nvec2 box(in vec3 ro, in vec3 rd, in vec3 r, out vec3 ni, out vec3 no) {\n    vec3 dr = 1.0/rd;\n    vec3 n = ro * dr;\n    vec3 k = r * abs(dr);\n    \n    vec3 pin = - k - n;\n    vec3 pout =  k - n;\n    float tin = max(pin.x, max(pin.y, pin.z));\n    float tout = min(pout.x, min(pout.y, pout.z));\n    if (tin > tout) return vec2(-1.);\n    ni = -sign(rd) * step(pin.zxy, pin.xyz) * step(pin.yzx, pin.xyz);\n    no = sign(rd) * step(pout.xyz, pout.zxy) * step(pout.xyz, pout.yzx);\n    return vec2(tin, tout);\n}\n\nvec2 sphere(in vec3 ro, in vec3 rd, in float r, out vec3 ni) {\n\tfloat pd = dot(ro, rd);\n    float disc = pd*pd + r*r - dot(ro, ro);\n    if (disc < 0.) return vec2(-1.);\n    float tdiff = sqrt(disc);\n    float tin = -pd - tdiff;\n    float tout = -pd + tdiff;\n    ni = normalize(ro + tin * rd);\n    \n    return vec2(tin, tout);\n}\n\nvec3 bgcol(in vec3 rd) {\n    return mix(vec3(0., 0., 1.), vec3(0.6, 0.8, 1.), 1.-pow(abs(rd.z), 2.));\n}\n\n//raytrace the exterior surroundings\nvec4 background(in vec3 ro, in vec3 rd) {\n    float t = (-1. - ro.z)/rd.z;\n    vec3 col1;\n    if (t < 0.) {\n        t = 1000.;\n        col1 = bgcol(rd);\n    } else {\n        vec2 uv = ro.xy+t*rd.xy;\n        if (max(abs(uv.x), abs(uv.y)) > 8.) col1 = bgcol(rd);\n        else {\n            vec2 checkers = smoothstep(vec2(GROUNDGRID*0.75), vec2(GROUNDGRID), abs(mod(uv, vec2(GROUNDSPACING))*2.-GROUNDSPACING));\n            float aofac = smoothstep(-0.7, .4, length(abs(uv)-min(abs(uv), vec2(0.75))));\n            col1 = mix(vec3(0.2), vec3(0.8), min(checkers.x,checkers.y)) * aofac;\n        }\n    }\n    \n    vec3 ni;\n    vec2 t2 = sphere(ro - vec3(BOXDIMS.x + 0.6, 0., -0.4), rd, 0.6, ni);\n    float tea = mix(t, t2.x, step(0., t2.x));\n    return vec4(mix(col1, mix(vec3(1.), vec3(1., 1., 0.), (t2.x * rd + ro).z+0.5), step(0., t2.x)), tea);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - 0.5*iResolution.xy)/iResolution.x;\n    float mouseY = iMouse.y < 1. ? 0.5 : (1.0-1.15*iMouse.y/iResolution.y) * 0.5 * PI;\n    float mouseX = iMouse.x < 1. ? iTime*0.25 : -(iMouse.x/iResolution.x) * 2. * PI;\n    vec3 eye = 4.*vec3(cos(mouseX) * cos(mouseY), sin(mouseX) * cos(mouseY), sin(mouseY));\n    vec3 w = normalize(-eye);\n    vec3 up = vec3(0., 0., 1.);\n    vec3 u = normalize(cross(w, up));\n    vec3 v = cross(u, w);\n    \n    vec3 rd = normalize(w * FDIST + uv.x * u + uv.y * v);\n    \n    vec3 ni, no;\n    vec2 t = box(eye, rd, BOXDIMS, ni, no);\n    vec3 ro = eye + t.x * rd;\n    vec2 coords = ro.xy * ni.z + ro.yz * ni.x + ro.zx * ni.y;\n    \n    vec4 bgg = background(eye, rd);\n    \n    if (t.x > 0. && t.x < bgg.w) {\n        vec3 col = vec3(0.);\n        float R0 = (IOR-1.)/(IOR+1.);\n        R0*=R0;\n        for (int i=0; i<SAMPLES; i++) {\n            \n            vec2 theta = rand2d(coords + float(i) * vec2(1., 0.) * vec2(104., -30.6));\n            theta *= vec2(2.*PI, SCATTER_FACTOR*PI);\n            vec3 n = vec3(cos(theta.x)*sin(theta.y), sin(theta.x)*sin(theta.y), cos(theta.y));\n            // reflection\n            vec3 nr = n.zxy * ni.x + n.yzx * ni.y + n.xyz * ni.z;\n            vec3 rdr = reflect(rd, nr);\n            vec3 reflcol = background(ro, rdr).xyz;\n            \n            // refraction, absorption and internal reflection\n            vec3 rd_refr = refract(rd, nr, 1./IOR);\n            \n            vec3 insidecol = vec3(0.);\n            float accum = 1.;\n            vec3 transmission = vec3(1.);\n            \n            for (int j=0; j<REFLECTIONS; j++) {\n                \n                vec3 ni2, no2;\n                vec2 tout = box(ro, rd_refr, BOXDIMS, ni2, no2);\n                ro = ro + tout.y * rd_refr;\n                vec3 rd_refr_out = refract(rd_refr, -no2, IOR);\n\n                float fresnel2 = R0 + (1.-R0) * pow(1.-dot(rd_refr_out, no2), 5.);\n                vec3 reps = ro;\n                reps.z = max(reps.z, -0.999);            \n            \trd_refr = reflect(rd_refr, -no2);\n                transmission *= pow(ABSORPTION_RATE, vec3(tout.y));\n            \tinsidecol += accum * (1.-fresnel2) * background(reps, rd_refr_out).xyz * transmission;\n                accum *= fresnel2;\n            }    \n            \n            float fresnel = R0 + (1.-R0) * pow(1.-dot(-rd, nr), 5.);\n            col += mix(insidecol, reflcol, fresnel);\n        }\n        col /= float(SAMPLES);\n\n        fragColor = vec4(col, 1.);\n    } else {\n\t\tfragColor = vec4(bgg.xyz, 1.);\n    }\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

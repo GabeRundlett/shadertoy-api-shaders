@@ -1,0 +1,112 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1632129102",
+            "description": "Importance sampled glass with anti aliasing, dispersion, and background dof. (Lots of settings on this one)\nMove around it with the mouse\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "7sKGWG",
+            "likes": 43,
+            "name": "Importance sampled glass ",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "metaballs",
+                "glass",
+                "pathtracer",
+                "spectral",
+                "importance"
+            ],
+            "usePreview": 1,
+            "username": "NLIBS",
+            "viewed": 1537
+        },
+        "renderpass": [
+            {
+                "code": "//21/09/20 : Simplified the sdf, added new roughness settings, and fixed the spectrum function.\n//14/11/20 : Fixed the way light bounced\n\nvoid mainImage(out vec4 O, in vec2 U) {\n    O = texture(iChannel0,U/iResolution.xy);\n    O = 1. - exp(-O); //Tone mapping\n\tO = pow(max(O,0.), vec4(1./2.2)); //Gamma correction\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//0: no tint, 1: orange-blue tint, 2: orange-green-blue-red tint\n#define TINTED 2\n//Use environment cubemap\n#define USEENV\n//Depth of field radius\n#define DOF 0.06\n//New shape time inverval\n#define SHAPEINTERVAL 7.\n\n//1.0: realistic, 0.5: sharp, 0.0: off. (no performance impact)\n#define ANTIALIAS 1.0\n//Epsilons\n#define EPS_SDF 0.001\n#define EPS_GLASS 0.005\n\n//1.0: realistic, >1.0: sexy\n#define DISPERSION 10.\n//0.0: clear, 0.3: translucent\n#define ROUGHNESS 0.0\n//Recursion depth limit\n#define MAXBOUNCES 30\n\n\n//Refractive index of air\nconst float N_AIR = 1.0;\n\n//Glass properties\nconst vec3 GLASS_COL = vec3(.8,.9,.8);\n\n//Smooth minimum\nfloat smin(float a, float b, float k) {\n    float h = clamp(0.5 + 0.5*(a-b)/k, 0.0, 1.0);\n    return mix(a, b, h) - k*h*(1.0-h);\n}\n\n//Line sdf\nfloat line(vec3 p, vec3 a, vec3 b)\n{\n    vec3 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\n//Custom sdf\nfloat map(vec3 p, vec3 p1, vec3 p2, vec3 p3, vec3 p4)\n{ \n    const float k = 0.35;\n    float d = line(p, p1,p2);\n    d = smin(d,line(p, p1,p3),k);\n    d = smin(d,line(p, p1,p4),k);\n    d = smin(d,line(p, p2,p3),k);\n    d = smin(d,line(p, p2,p4),k);\n    d = smin(d,line(p, p3,p4),k);\n    return d-0.03;\n}\n\n//High quality sdf from finite difference\nvec3 get_norm(vec3 p, vec3 p1, vec3 p2, vec3 p3, vec3 p4)\n{\n    \n\tvec2 t = vec2(EPS_SDF,0.);\n\treturn normalize(-vec3(\n    \tmap(p - t.xyy,p1,p2,p3,p4) - map(p + t.xyy,p1,p2,p3,p4),\n    \tmap(p - t.yxy,p1,p2,p3,p4) - map(p + t.yxy,p1,p2,p3,p4),\n    \tmap(p - t.yyx,p1,p2,p3,p4) - map(p + t.yyx,p1,p2,p3,p4) \n    ));\n}\n\n//Raymarching loop\nfloat march(vec3 rd, vec3 ro, vec3 p1, vec3 p2, vec3 p3, vec3 p4)\n{\n    float sgn = sign(map(ro,p1,p2,p3,p4));\n    float t = 0.;\n    for (int i = 0; i<200; i++) {\n        vec3 p = ro+rd*t;\n        float h = map(p,p1,p2,p3,p4)*sgn;\n        t+=h;\n        if (h<EPS_SDF) return t;\n        if (h>2.5) return 0.;\n    }\n    return t;\n}\n\n//Some fresnel function I found\nfloat get_fresnel(vec3 rd, vec3 n, float n1, float n2)\n{\n    float cosI = abs(dot(rd, n));\n    float cosR = n1/n2 * sqrt(1.-cosI*cosI);\n    if(cosR > 1.0) return 1.0; // total internal reflection\n    cosR = sqrt(1.0 - cosR * cosR);\n    float Rs = (n1*cosI - n2*cosR)/(n1*cosI + n2*cosR);\n    float Rp = (n1*cosR - n2*cosI)/(n1*cosR + n2*cosI);\n    return (Rs*Rs+Rp*Rp)*0.5;\n}\n\n//Cube map sampling\nvec3 _sample(vec3 rd)\n{\n    #ifdef USEENV\n\tvec3 col = texture(iChannel0,rd).rgb;\n    col = pow(col*1.5,vec3(2.2+3.5));\n    #else\n    vec3 col = vec3(pow(rd.z*0.5+0.5,3.));\n    #endif\n    \n    #if TINTED > 0\n    col *= mix(vec3(0.1,0.3,0.9),vec3(0.9,0.27,0.08),rd.x*0.5+0.5);\n    #if TINTED > 1\n    col *= mix(vec3(0.1,0.9,0.3),vec3(1.,.5,.2),rd.z*0.5+0.5);\n    #endif\n    #endif\n    \n    return col;\n}\n\n//Cauchy's equation for Borosilicate glass (BK7), also applying dispersion factor\nfloat get_n_glass(float lambda, float disp)\n{\n    lambda *= 1e-3;\n    return 1.5046 + 0.0042*disp / (lambda*lambda);\n}\n\n//spectral_zucconi6 but corrected so it integrates to white (1,1,1) ---------------------\nvec3 bump3(vec3 x, vec3 yoffset)\n{\n    vec3 y = 1. - x * x;\n    y = clamp(y-yoffset,0.,1.);\n    return y;\n}\n\nvec3 spectral(float lambda)\n{\n    float x = (lambda - 400.)/ 300.;\n    const vec3 c1 = vec3(3.54585, 2.93225, 2.41594);\n    const vec3 x1 = vec3(0.69549, 0.49228, 0.27700);\n    const vec3 y1 = vec3(0.02313, 0.15225, 0.52608);\n    const vec3 c2 = vec3(3.90307, 3.21183, 3.96587);\n    const vec3 x2 = vec3(0.11749, 0.86755, 0.66078);\n    const vec3 y2 = vec3(0.84897, 0.88445, 0.73949);\n    return pow((bump3(c1 * (x - x1), y1) + bump3(c2 * (x - x2), y2)),vec3(2.2)) * vec3(3.64499, 4.4228, 15.6893);\n}\n//---------------------------------------------------------------------------------------\n\n//Hash function for blurring background (https://www.shadertoy.com/view/XlXcW4)\nconst uint k2 = 1103515245U;\nvec3 hash3(uvec3 x)\n{\n    x = ((x>>8U)^x.yzx)*k2;\n    x = ((x>>8U)^x.yzx)*k2;\n    x = ((x>>8U)^x.yzx)*k2;\n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\nvoid mainImage(out vec4 O, in vec2 U) {\n    vec2 R = iResolution.xy;\n    vec2 uv0 = (2.*U-R)/R.x;\n    \n    //Grab some blue noise\n    vec3 noise0 = texelFetch(iChannel1,ivec2(U)%1024,0).rgb;\n    vec3 noise = fract(noise0+vec3(2.7182818, 3.1415927, 1.6180340)*float(iFrame%1000))-vec3(0.5,0.5,0.);\n    \n    //Calculate point positions\n    float time = floor(iTime/SHAPEINTERVAL)*30.+30.;\n    vec3 s = vec2(0.85,0.7).xyx;\n    \n    vec3 p1 = vec3(sin((time+10.)*vec3(0.06045,0.23919,0.86241)));\n    vec3 p2 = vec3(sin((time+15.)*vec3(0.39773,0.48066,0.08272)));\n    vec3 p3 = vec3(sin((time+20.)*vec3(0.33694,0.49604,0.54413)));\n    vec3 p4 = vec3(sin((time+25.)*vec3(0.90110,0.47410,0.68659)));\n    \n    p1 *= s/length(p1);\n    p2 *= s/length(p2);\n    p3 *= s/length(p3);\n    p4 *= s/length(p4);\n    \n    vec3 avg = 0.25*(p1+p2+p3+p4);\n    p1 -= avg;\n    p2 -= avg;\n    p3 -= avg;\n    p4 -= avg;\n    \n    \n    //Find camera's origin and ray direction\n    float a = (iMouse.x/R.x+0.25)*6.283185;    \n    vec3 viewPos = vec3(0,0,-1.7);\n    vec2 uv = uv0 + noise.rg/R.x*2.*ANTIALIAS;\n    mat2 mat = mat2(cos(a),-sin(a),sin(a),cos(a));\n    vec3 ro = viewPos;\n    ro.xz = mat * ro.xz;\n    vec3 rd = normalize(vec3(uv,0.9));\n    rd.xz = mat * rd.xz;\n\n    //Hit depth, pos and normal\n    float t = march(rd,ro,p1,p2,p3,p4);\n    vec3 p = ro + rd*t;\n    vec3 n = get_norm(p,p1,p2,p3,p4);\n\n    vec3 col;\n    if (t>0.) {\n        //Initialise variables\n        float lambda = 400.+300.*noise.z;\n        float n_glass = get_n_glass(lambda,DISPERSION);\n\n        vec3 b_rd = rd;\n        vec3 b_p = p;\n        float b_t = t;\n        vec3 b_n = n;\n\n        float sgn = 1.;\n        vec3 factor = vec3(1.);\n        \n        //Loop through light bounces\n        for (int branch = 0; branch<MAXBOUNCES; branch++) {\n            float n1 = (sgn>0.) ? N_AIR : n_glass;\n            float n2 = n_glass+N_AIR-n1;\n\n            float fresnel = get_fresnel(b_rd,b_n,n1,n2);\n            float choice = fract(noise0.x+1.61803398*float(branch+(iFrame%1000)*MAXBOUNCES));\n            if (choice<fresnel) {\n                //Calculate reflected ray\n                b_rd = reflect(b_rd,b_n);\n                b_rd = normalize(b_rd+ROUGHNESS*normalize(hash3(uvec3(uvec2(U),branch*1000+iFrame%1000))));\n\n                b_t = march(b_rd,b_p+b_rd*EPS_GLASS,p1,p2,p3,p4);\n                \n                if (sgn<0.) factor *= pow(GLASS_COL,vec3(b_t));\n\n                if (b_t==0.) { col = _sample(b_rd)*factor; break; };\n\n                b_t += EPS_GLASS;\n                b_p += b_rd*b_t;\n                b_n = sgn*get_norm(b_p,p1,p2,p3,p4);\n            } else {\n                sgn *= -1.;\n                \n                //Calculate refracted ray\n                b_rd = refract(b_rd,b_n,n1/n2);\n                b_rd = normalize(b_rd+ROUGHNESS*normalize(hash3(uvec3(uvec2(U),branch*1000+iFrame%1000))));\n                \n                b_t = march(b_rd,b_p+b_rd*EPS_GLASS,p1,p2,p3,p4);\n                \n                if (sgn<0.) factor *= pow(GLASS_COL,vec3(b_t));\n\n                if (b_t==0.) { col = _sample(b_rd)*factor; break; }\n\n                b_t += EPS_GLASS;\n                b_p += b_rd*b_t;\n                b_n = sgn*get_norm(b_p,p1,p2,p3,p4);\n            }\n        }\n\n        //Use as a spectral componant\n        col *= spectral(lambda);\n    } else {\n        //Background with dof\n        vec3 hash = hash3(uvec3(uvec2(U),iFrame%1000));\n        vec2 pos = vec2(cos(6.283185*hash.x),sin(6.283185*hash.x))*sqrt(hash.y)*DOF;\n        \n        vec4 cs = vec4(cos(pos),sin(pos));\n        rd.yz = mat2(cs.y,cs.w,-cs.w,cs.y)*rd.yz;\n        rd.xz = mat2(cs.x,cs.z,-cs.z,cs.x)*rd.xz;\n        col += _sample(rd);\n    }\n    \n    //Blending with previous frame\n    vec4 prev = texture(iChannel2,U/R);\n    float w = mod(prev.w,1000.);\n    \n    if (floor(iTime/SHAPEINTERVAL)!=floor(prev.w/1000.) || iMouse.z>0.) w = 0.;\n    \n    col = prev.rgb*w/(w+1.) + col/(w+1.);\n    w = min(w+1.,1000.);\n    \n    w = w+floor(iTime/SHAPEINTERVAL)*1000.;\n    col = (U.y/R.y<0.015 && U.x/R.x < fract(iTime/SHAPEINTERVAL)) ? vec3(1) : col;\n    \n    O = vec4(col,w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

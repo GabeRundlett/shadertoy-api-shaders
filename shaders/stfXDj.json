@@ -1,0 +1,92 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1626542208",
+            "description": "Remake of my older shader Paint Spill: https://www.shadertoy.com/view/Mst3Rn\n\nI made a lot of improvements, mainly to the scene modelling and also shading. Move mouse left and right to rotate, up and down to zoom. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "stfXDj",
+            "likes": 8,
+            "name": "Paint Spill 2.0",
+            "published": 3,
+            "tags": [
+                "light",
+                "raymarcher",
+                "reflections",
+                "paint",
+                "liquid",
+                "spill"
+            ],
+            "usePreview": 0,
+            "username": "jackdavenport",
+            "viewed": 437
+        },
+        "renderpass": [
+            {
+                "code": "// if you're having major framerate issues, uncomment the following\n// line to enable low quality mode\n// #define LOW_QUALITY\n\n//\n#ifdef LOW_QUALITY\n    #define MAX_ITER 128\n    #define MAX_BOUNCE 4\n    #define MIN_DIST .001\n    #define MAX_DIST 20.\n#else\n    #define MAX_ITER 256\n    #define MIN_DIST .000001\n    #define MAX_DIST 20.\n    #define MAX_BOUNCE 8\n#endif\n\n\nconst vec3 lightDir = normalize(vec3(-.8,.6,0.));\n\nvec2 scene(vec3 p) {\n    // table\n    vec2 t = vec2(sdCappedCylinder(p, 3., .1), 0.);\n    \n    // paint can\n    vec3 q = p;\n    q.yz = rot2D(q.yz, PI / 2.);\n    q.xy = rot2D(q.xy, .6);\n    q += vec3(.7, .3, -.58);\n    \n    float can = sdCappedCylinder(q, .5, .5);\n    float hole = sdCappedCylinder(q+vec3(0.,-.01,0.), .45, .5);\n    float disp = noise(p*10.) * .003;\n    t = depthTest(t, max(can,-hole)+disp, 1.);\n    \n    // paint\n    q = p-vec3(.2,.1,-.6);\n    float displace = noise(vec3(normalize(q.xz)*4.,0.));\n    float paint = sdRoundedCylinder(q, .6 + .1 * displace, .03, .002 * p.y / .06);\n    t = depthTest(t, paint, 2.);\n    \n    return t;\n}\n\nvec2 raymarch(vec3 ro, vec3 rd) {\n    float t = 0.;\n    float id = -1.;\n    for(int i = 0; i < MAX_ITER; i++) {\n        vec3 p = ro + rd * t;\n        vec2 d = scene(p);\n        if(d.x < MIN_DIST || t > MAX_DIST) break;\n        t += d.x;\n        id = d.y;\n    }\n    return vec2(t,id);\n}\n\nvec3 normal(vec3 p, float t) {\n    vec2 e = vec2(t * .00001, 0.);\n    vec3 n = vec3(\n        scene(p+e.xyy).x-scene(p-e.xyy).x,\n        scene(p+e.yxy).x-scene(p-e.yxy).x,\n        scene(p+e.yyx).x-scene(p-e.yyx).x\n    );\n    return normalize(n);\n}\n\n// Source: https://iquilezles.org/articles/rmshadows\nfloat softshadow( in vec3 ro, in vec3 rd, float mint, float maxt, float k )\n{\n    float res = 1.0;\n    for( float t=mint; t<maxt; )\n    {\n        float h = scene(ro + rd*t).x;\n        if( h<0.001 )\n            return 0.0;\n        res = min( res, k*h/t );\n        t += h;\n    }\n    return res;\n}\n\nvoid material(inout Material mat, float id, vec3 p, vec3 n) {\n    if(id == 0.) {\n        mat.diffuse  = tex3D(p * .5, n, iChannel0).rgb;\n        mat.specular = vec3(1.);\n        mat.shine    = 10.;\n        mat.reflec   = .2;\n    } else if(id == 1.) {\n        mat.diffuse  = n * .5 + .5;\n        mat.specular = vec3(1.);\n        mat.shine    = 70.;\n        mat.reflec   = .8;\n    } else if(id == 2.) {\n        float rnd = noise(p*3.5);\n        vec3 col = mix(vec3(.2,.7,.4),vec3(.8,.2,.5),rnd);\n        mat.diffuse  = col * .9;\n        mat.specular = col * 1.5;\n        mat.shine    = 50.;\n        mat.reflec   = .5;\n    }\n}\n\nvec3 shade(vec3 ro, vec3 rd) {\n    vec3 col = vec3(0.);\n    vec3 mask = vec3(1.);\n    \n    for(int i = 0; i < MAX_BOUNCE; i++) {\n        vec2 t = raymarch(ro, rd);\n\n        // did the ray hit anything?\n        if(t.x < MAX_DIST) {\n            // calculate position and normal\n            vec3 p = ro + rd * t.x;\n            vec3 n = normal(p, t.x);\n            vec3 r = normalize(reflect(rd, n));\n\n            // get material data\n            Material mat;\n            material(mat, t.y, p, n);\n\n            // output the color\n            float shad = softshadow(p, lightDir, .02, MAX_DIST, 20.);\n            float diff = max(0.,dot(lightDir,n)) * shad;\n            float spec = pow(max(0.,dot(lightDir,r)),mat.shine) * shad;\n            \n            vec3 light = mat.diffuse * diff + mat.specular * spec;\n            col += light * mask * (1. - mat.reflec);\n            \n            // if this surface is reflective, change\n            // the ray for the next bounce\n            if(mat.reflec > 0.) {\n                mask *= mat.reflec * mat.specular;\n                rd = r;\n                ro = p + rd * .001;\n            } else {\n                break;\n            }\n        } else {\n            // ray hit nothing, output the background and\n            // stop further bounces\n            if(i < 1) col += texture(iChannel2, rd, 1.7).rgb * mask;\n            else col += texture(iChannel1, rd).rgb * mask;\n            break;\n        }\n    }\n    \n    return col;  \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5) / iResolution.y;\n    vec3 ro = vec3(0.,1.,-5.);\n    vec3 rd = vec3(uv, 1.);\n    \n    float a = iTime * .2;\n    if(iMouse.xy != vec2(0.)) {\n        a = PI * ((2. * iMouse.x / iResolution.x) - 1.);\n        ro *= .2 + .8 * (iMouse.y / iResolution.y);\n    }\n    ro.xz = rot2D(ro.xz, a);\n    rd.xz = rot2D(rd.xz, a);\n    \n    fragColor.rgb = shade(ro, normalize(rd));\n    fragColor.w   = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 6,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI 3.14159265359\n\nstruct Material {\n    vec3 diffuse;\n    vec3 specular;\n    float shine;\n    float reflec;\n};\n\nvec2 rot2D(vec2 p, float a) {\n    float s = sin(a), c = cos(a);\n    mat2 m  = mat2(c,s,-s,c);\n    return m * p;\n}\n\nvec2 depthTest(vec2 a, float bt, float bi) {\n    if(a.x < bt) return a;\n    else return vec2(bt, bi);\n}\n\n// 3d texture sampler by reinder (thanks!)\n// Source: https://www.shadertoy.com/view/4dj3Dw\nvec4 tex3D( in vec3 pos, in vec3 normal, sampler2D sampler )\n{\n\treturn \ttexture( sampler, pos.yz )*abs(normal.x)+ \n\t\t\ttexture( sampler, pos.xz )*abs(normal.y)+ \n            texture( sampler, pos.xy )*abs(normal.z);\n}\n\n// Source: https://iquilezles.org/articles/distfunctions\nfloat sdCappedCylinder( vec3 p, float h, float r )\n{\n  vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(h,r);\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\nfloat sdRoundedCylinder( vec3 p, float ra, float rb, float h )\n{\n  vec2 d = vec2( length(p.xz)-2.0*ra+rb, abs(p.y) - h );\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0)) - rb;\n}\n\n// Source: https://www.shadertoy.com/view/4sfGzS\nfloat hash(vec3 p)  // replace this by something better\n{\n    p  = fract( p*0.3183099+.1 );\n\tp *= 17.0;\n    return fract( p.x*p.y*p.z*(p.x+p.y+p.z) );\n}\nfloat noise( in vec3 x )\n{\n    vec3 i = floor(x);\n    vec3 f = fract(x);\n    f = f*f*(3.0-2.0*f);\n\t\n    return mix(mix(mix( hash(i+vec3(0,0,0)), \n                        hash(i+vec3(1,0,0)),f.x),\n                   mix( hash(i+vec3(0,1,0)), \n                        hash(i+vec3(1,1,0)),f.x),f.y),\n               mix(mix( hash(i+vec3(0,0,1)), \n                        hash(i+vec3(1,0,1)),f.x),\n                   mix( hash(i+vec3(0,1,1)), \n                        hash(i+vec3(1,1,1)),f.x),f.y),f.z);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

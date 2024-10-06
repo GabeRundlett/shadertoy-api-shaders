@@ -1,0 +1,46 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1700709880",
+            "description": "A simple change which improves normal 'pop' along sharp edges of the SDF.\ntop: Ordinary\nbot: With \"Normal BackOff\"\nright: pixelated\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mlVcWV",
+            "likes": 11,
+            "name": "back off, normals.",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "normals",
+                "artifacts"
+            ],
+            "usePreview": 0,
+            "username": "elenzil",
+            "viewed": 280
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\n    back off, normals\n    -----------------\n    \n    A simple technique which improves the glittery pop on some sharp edges.\n    The idea is that when choosing a point at which to sample the normal\n    of the SDF, back up a little but along the ray instead of using the\n    march point closest to the surface.\n    \"A little\" is on the order of your \"close enough\" epsilon for marching.\n    \n    This doesn't eliminate all 'popping' for me,\n    but it's a trivial change and it eliminates some of it.\n    \n    Theory: IANARME˟, but the thought I had was that right at these\n    surface boundaries the gradient is discontinuous,\n    so sample it 'farther away' from the surface.\n    Going 'farther away' by moving backwards along the ray seems like\n    a safe direction to move in, because we just raymarched along the ray,\n    so we know the SDF is getting larger in that direction.\n    \n    Orion Elenzil 20231122\n    \n    \n    ˟ i am not a ray marching expert\n*/\n\n#define RES    (iResolution.xy)\n#define MINRES (min(RES.x, RES.y))\n\nconst float gSceneCenterY  = 3.0;\nconst float gFOVFac        = 0.3;\n\nconst uint  gMarchMaxSteps = 150u;\nconst float gMarchEps      =   0.002;\nconst float gNormEps       = gMarchEps * 0.1;\n      float gNormBackoff   = gMarchEps * 1.0;\n\nconst vec3  gLightDir      = normalize(vec3(3.0, 0.1, 4.0));\nconst vec3  gAmbient       = v1 * 0.05;\nconst float reflectAmt     = 0.05;\n      float gT;\n\nvec3 sky(in vec3 ro, in vec3 rd) {\n    return mix(vec3(1.0, 0.9, 0.8), vZ * 0.5, pow(rd.y, 0.3));\n}\n\nvec3 albedo(in vec3 p) {\n    if (p.y < gMarchEps) {\n        return v1;\n    }\n    if (p.x > 0.0) {\n        return vec3(1.0, 1.0, 0.0);\n    }\n    else {\n        return vec3(0.0, 1.0, 1.0);\n    }\n}\n\nfloat sdScene(in vec3 p) {\n    float d = 1e9;\n    \n    float rad = gSceneCenterY;\n    \n    p.xz *= rot2(gT);\n    \n    vec3 q = p - vY * rad;\n    opUnn(d, sdCyl   (q.zy, rad));\n    opSub(d, sdCyl   (q.zy, rad * 0.8));\n    opInt(d, sdSphere(q   , rad * 2.5));\n    opSub(d, sdShell (q   , rad * 2.0, 1.0));\n    opSub(d, sdShell (q   , rad * 1.5, 1.0));\n    opSub(d, sdShell (q   , rad * 1.0, 1.0));\n    \n    return d;\n}\n\n// ∇(sdScene())\nvec3 gradScene(in vec3 p) {\n    float d = sdScene(p);\n    return vec3(\n        sdScene(p + vX * gNormEps) - d,\n        sdScene(p + vY * gNormEps) - d,\n        sdScene(p + vZ * gNormEps) - d\n    );\n}\n\nvec3 normScene(in vec3 p) {\n    return normalize(gradScene(p));\n}\n\nfloat march(in vec3 ro, in vec3 rd) {\n    \n    float t = 0.0;\n    for (uint n = 0u; n < gMarchMaxSteps; ++n) {\n        vec3  p = ro + rd * t;\n        float d = sdScene(p);\n        if (d < gMarchEps) {\n            // a hit\n            return t;\n        }\n        t += d;\n        if (t > 1e2) {\n            // too far away\n            return 1e9;\n        }\n    }\n    \n    return 1e9;\n}\n\nfloat rayVsScene(in vec3 ro, in vec3 rd) {\n    float t = 1e9;\n    opUnn(t, march(ro, rd));\n    opUnn(t, rayVsPlane(ro, rd, vY, 0.0));\n    return t;\n}\n\nvec3 runRaySegment(in vec3 ro, in vec3 rd, out vec3 p, out vec3 n) {\n    float t = rayVsScene(ro, rd);\n    \n    if (t > 1e4) {\n        p = v1 * 1e9;\n        return sky(ro, rd);\n    }\n    \n    vec3 rgb = v0;\n    \n    p        = ro + rd * t;\n    // floor is not part of SDF, so we cheat\n    if (p.y < gMarchEps) {\n        n = vY;\n    }\n    else {\n        n        = normScene(p - rd * gNormBackoff);\n    }\n    vec3 alb = albedo(p);\n    \n    rgb += gAmbient * alb;\n    float diffuseAmt = max(0.0, dot(n, gLightDir));\n    if (diffuseAmt > 0.0) {\n        float tShadow = rayVsScene(p + n * gMarchEps * 2.0, gLightDir);\n        if (tShadow > 1e4) {\n            rgb += alb * diffuseAmt;\n        }\n    }\n    \n    return rgb;\n}\n\nvec3 runRay(in vec3 ro, in vec3 rd) {\n    uint bouncesLeft = 4u;\n    \n    float rayAmt = 1.0;\n    \n    vec3 rgb = v0;\n    \n    while (bouncesLeft > 0u) {\n        vec3 p, n;\n        \n        vec3 c = runRaySegment(ro, rd, p, n);\n        \n        if (p.x < 1e8) {\n\n            rgb += c * rayAmt * (1.0 - reflectAmt);\n\n            // no fresnel\n            rayAmt *= reflectAmt;\n            ro = p + n * gMarchEps * 2.0;\n            rd = reflect(rd, n);\n\n            bouncesLeft -= 1u;\n        }\n        else {\n            rgb += c * rayAmt;\n            bouncesLeft = 0u;\n        }\n    }\n    \n    return rgb;\n}\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n    bool isUpperHalf = XY.y * 2.0 > RES.y;\n    if (isUpperHalf) {\n        gNormBackoff = 0.0;\n    }\n    bool isRightHalf = XY.x * 2.0 > RES.x;\n    vec2 xy = XY;\n    if (isRightHalf) {\n        const float pixelate = 5.0;\n        xy = round(XY / pixelate) * pixelate;\n    }\n\n    gT     = iTime * pi / 30.0;\n    const float zoom = 1.0;\n    vec2 p = (xy        * 2.0 - RES) / MINRES / zoom;\n    vec2 m = (iMouse.xy * 2.0 - RES) / MINRES / zoom;\n    if (iMouse.x < 20.0) {\n        m = vec2(-0.8, 0.5);\n    }\n    \n    // compose ray\n    vec3 lf = vec3(0.0, 5.0, 20.0);\n    lf.yz  *= rot2(smoothstep(1.0, -1.0, m.y) - 0.2);\n    lf.xz  *= rot2(smoothstep(1.0, -1.0, m.x) * pi * 3.0);\n    vec3 lt = vY * gSceneCenterY;\n    vec3 fw = normalize(lt - lf);\n    vec3 rt = normalize(cross(fw, vY));\n    vec3 up = cross(rt, fw);\n    vec3 ro = lf;\n    vec3 rd = normalize(fw + (rt * p.x + up * p.y) * gFOVFac);\n    \n    vec3 rgb = runRay(ro, rd);\n    \n    float splitsD = 1e9;\n    opUnn(splitsD, abs(RES.y / 2.0 - XY.y));\n    opUnn(splitsD, abs(RES.x / 2.0 - XY.x));\n    rgb = mix(rgb, vY * 0.4, smoothstep(2.0, 0.0, splitsD));\n    \n    RGBA.rgb = pow(rgb, vec3(1.0 / 1.8));\n    RGBA.a   = 1.0;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const vec3  vX = vec3(1, 0 ,0);\nconst vec3  vY = vX.yxy;\nconst vec3  vZ = vX.yyx;\nconst vec3  v0 = vX.yyy;\nconst vec3  v1 = vX.xxx;\n\nconst float pi = 3.14159265359;\n\n//--------------------------------------------------------------------------------\n\n// A = ∪(A, B)\nvoid opUnn(inout float A, in float B) {\n    A = min(A, B);\n}\n\n// A = A - B\nvoid opSub(inout float A, in float B) {\n    A = max(A, -B);\n}\n\n// A = ∩(A, B)\nvoid opInt(inout float A, in float B) {\n    A = max(A, B);\n}\n\n//--------------------------------------------------------------------------------\n\nmat2  rot2    (float theta) { float c = cos(theta); float s = sin(theta); return mat2(c, s, -s, c); }\n\n//--------------------------------------------------------------------------------\n\nfloat sdSphere(in vec3 p, in float r) { return length(p) - r; }\nfloat sdCyl   (in vec2 p, in float r) { return length(p) - r; }\nfloat sdShell (in vec3 p, in float r, in float t) {\n    float d  = length(p);\n    float d1 = d - (r + t / 2.0);\n    float d2 = d - (r - t / 2.0);\n    opSub(d1, d2);\n    return d1;\n}\n\n\n//--------------------------------------------------------------------------------\n// from https://www.cs.princeton.edu/courses/archive/fall00/cs426/lectures/raycast/sld017.htm\nfloat rayVsPlane(in vec3 ro, in vec3 rd, in vec3 n, in float d) { float t = -(dot(ro, n) + d) / (dot(rd, n)); if (t < 0.0) { t = 1e9; } return t; }\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

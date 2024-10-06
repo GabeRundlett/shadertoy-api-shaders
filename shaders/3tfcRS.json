@@ -1,0 +1,113 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1592981748",
+            "description": "- The glass container can be any SDF (see sdfContainer in Buf A)\n- Drag the container around to \"slosh\" the liquid\n- Inputs: Mouse, ASDF (No opacity, no refraction, steps, normal)",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "3tfcRS",
+            "likes": 151,
+            "name": "Liquid in glass",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "refraction",
+                "water",
+                "glass",
+                "liquid",
+                "pendulum",
+                "potion"
+            ],
+            "usePreview": 1,
+            "username": "tmst",
+            "viewed": 4366
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord / iResolution.xy;\n    fragColor = textureLod(iChannel0, uv, 0.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define LAST_FRAME iChannel0\n#define SKYBOX(v) texture(iChannel1, v).rgb\n#define KEY_SAMPLER iChannel2\n\n// ===============================\n// Generic Helpers/Constants\n// ===============================\n\n#define PI 3.141592653589793\n#define TWOPI 6.283185307179586\n#define HALFPI 1.570796326794896\n#define SQRT2INV 0.7071067811865475\n\n#define POLAR(theta) vec3(cos(theta), 0.0, sin(theta))\n#define SPHERICAL(theta, phi) (sin(phi)*POLAR(theta) + vec3(0.0, cos(phi), 0.0))\n\n// https://www.shadertoy.com/view/lsXGzf (iq: \"Input - Keyboard\")\n#define KEY_A 65\n#define KEY_S 83\n#define KEY_D 68\n#define KEY_F 70\n\n// Same as built-in 'refract' (cf. link) but replaces the case which would\n// normally result in 0 with a reflection (for total internal reflection)\n// https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/refract.xhtml\nvec3 refractFix(vec3 I, vec3 N, float eta) {\n    float k = 1.0 - eta * eta * (1.0 - dot(N, I) * dot(N, I));\n    return k < 0.0\n        ? reflect(I, N) // <- 'refract' returns 0 here\n    \t: eta * I - (eta * dot(N, I) + sqrt(k)) * N;\n}\n\nvec4 blendOnto(vec4 cFront, vec4 cBehind) {\n    return cFront + (1.0 - cFront.a)*cBehind;\n}\n\nvec4 blendOnto(vec4 cFront, vec3 cBehind) {\n    return cFront + (1.0 - cFront.a)*vec4(cBehind, 1.0);\n}\n\n// ===============================\n// Quaternion helpers\n// (Unit quaternions: w+xi+yj+zk)\n// ===============================\n\n#define QID vec4(0.0, 0.0, 0.0, 1.0)\n\nvec4 slerp(vec4 a, vec4 b, float t) {\n    float d = dot(a, b);\n    vec4 a2 = a;\n\n    if (d < 0.0) {\n        d = -d;\n        a2 = -a;\n    }\n    if (d > 0.999) {\n        return normalize(mix(a2, b, t));\n    }\n\n    float theta = acos(d);\n    return (sin((1.-t)*theta)*a2 + sin(t*theta)*b) / sin(theta);\n}\n\nvec4 qMul(vec4 a, vec4 b) {\n    return vec4(\n        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,\n        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,\n        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,\n        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z\n    );\n}\n\nvec4 qConj(vec4 q) {\n    return vec4(-q.xyz, q.w);\n}\n\nvec4 qRot(vec3 nvAxis, float angle) {\n    return vec4(nvAxis*sin(angle*0.5), cos(angle*0.5));\n}\n\nmat3 qToMat(vec4 q) {\n    float wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;\n    float xx = q.x*q.x, xy = q.x*q.y, xz = q.x*q.z;\n    float yy = q.y*q.y, yz = q.y*q.z, zz = q.z*q.z;\n    return mat3(\n        1. - 2.*(yy + zz),\n             2.*(xy + wz),\n             2.*(xz - wy),\n\n             2.*(xy - wz),\n        1. - 2.*(xx + zz),\n             2.*(yz + wx),\n\n             2.*(xz + wy),\n             2.*(yz - wx),\n        1. - 2.*(xx + yy)\n    );\n}\n\n// ===============================\n// Reading/writing state\n// ===============================\n\nstruct state {\n    vec3 p; // Pendulum pivot\n    vec3 q; // Accelerate p toward this point\n    vec3 v; // Pendulum \"bob\" (relative to pivot)\n    vec3 L; // Angular momentum\n    vec4 pr; // Object rotation (unit quaternion)\n};\n\nstate readState() {\n    state s = state(\n        vec3(0.0),\n        vec3(0.0),\n        vec3(0.0, -cos(0.25*PI), sin(0.25*PI)),\n        vec3(0.0, 0.5, 0.0),\n        QID\n    );\n    if (iFrame > 0) {\n        s.p = texelFetch(LAST_FRAME, ivec2(0, 0), 0).xyz;\n        s.q = texelFetch(LAST_FRAME, ivec2(1, 0), 0).xyz;\n        s.v = texelFetch(LAST_FRAME, ivec2(2, 0), 0).xyz;\n        s.L = texelFetch(LAST_FRAME, ivec2(3, 0), 0).xyz;\n        s.pr = texelFetch(LAST_FRAME, ivec2(4, 0), 0);\n    }\n    return s;\n}\n\nvoid writeState(in state s, in vec2 fragCoord, inout vec4 fragColor) {\n    if (abs(fragCoord.y - 0.0-0.5) < 0.5) {\n        if (abs(fragCoord.x - 0.0-0.5) < 0.5) {\n            fragColor = vec4(s.p, 1.0);\n        } else if (abs(fragCoord.x - 1.0-0.5) < 0.5) {\n            fragColor = vec4(s.q, 1.0);\n        } else if (abs(fragCoord.x - 2.0-0.5) < 0.5) {\n            fragColor = vec4(s.v, 1.0);\n        } else if (abs(fragCoord.x - 3.0-0.5) < 0.5) {\n            fragColor = vec4(s.L, 1.0);\n        } else if (abs(fragCoord.x - 4.0-0.5) < 0.5) {\n            fragColor = s.pr;\n        }\n    }\n}\n\n// ===============================\n// Camera setup\n// ===============================\n\n#define RES iResolution\n#define TAN_HALF_FOVY 0.5773502691896257\n\nvec3 nvCamDirFromClip(vec3 iResolution, vec3 nvFw, vec2 clip) {\n    vec3 nvRt = normalize(cross(nvFw, vec3(0.,1.,0.)));\n    vec3 nvUp = cross(nvRt, nvFw);\n    return normalize(TAN_HALF_FOVY*(clip.x*(RES.x/RES.y)*nvRt + clip.y*nvUp) + nvFw);\n}\n\nvoid getCamera(in state s, in vec2 uv, out vec3 camPos, out vec3 nvCamDir) {\n    vec2 mouseAng = vec2(HALFPI*0.75, PI*0.45) + 0.2*vec2(cos(0.5*iTime),sin(0.5*iTime));\n    camPos = vec3(0.0, 2.0, 0.0) + 5.0 * SPHERICAL(mouseAng.x, mouseAng.y);\n\n    vec3 lookTarget = mix(vec3(0.0), s.p, 0.05);\n    vec3 nvCamFw = normalize(lookTarget - camPos);\n\n    nvCamDir = nvCamDirFromClip(iResolution, nvCamFw, uv*2. - 1.);\n}\n\n// ===============================\n// Physics, reading/writing state\n// ===============================\n\nvoid updateState(inout state s) {\n\n    // p (object displacement) gets \"lerped\" towards q\n    if (iMouse.z > 0.5) {\n        vec2 uvMouse = iMouse.xy / iResolution.xy;\n        vec3 camPos;\n        vec3 nvCamDir;\n        getCamera(s, uvMouse, camPos, nvCamDir);\n\n        float t = -camPos.y/nvCamDir.y;\n        if (t > 0.0 && t < 50.0) {\n            vec3 center = vec3(0.0);\n            s.q = camPos + t*nvCamDir;\n            float qToCenter = distance(center, s.q);\n            if (qToCenter > 5.0) {\n                s.q = mix(center, s.q, 5.0/qToCenter);\n            }\n        }\n    }\n\n    // pr (object rotation unit quaternion) gets \"slerped\" towards qr\n    float tmod = mod(iTime+6.0, 9.0);\n    vec4 qr = (\n        tmod < 3.0 ? qRot(vec3( SQRT2INV, 0.0, SQRT2INV), 0.75*PI) :\n        tmod < 6.0 ? qRot(vec3(-SQRT2INV, 0.0, SQRT2INV), 0.5*PI) :\n        QID\n    );\n\n    // apply lerp p -> q and slerp pr -> qr\n    s.p += 0.25*(s.q - s.p);\n    s.pr = normalize(slerp(s.pr, qr, 0.075));\n\n    // object acceleration\n    vec3 a = -0.25*(s.q - s.p) + vec3(0.0, -1.0, 0.0);\n    mat3 prMatInv = qToMat(qConj(s.pr));\n    a = prMatInv*a;\n\n    // hand-wavy torque and angular momentum\n    vec3 T = cross(s.v, a);\n    s.L = 0.96*s.L + 0.2*T;\n\n    // hand-wavy angular velocity applied from torque\n    vec3 w = s.L;\n    float ang = 0.25*length(w);\n    if (ang > 0.0001) {\n        mat3 m = qToMat(qRot(normalize(w), ang));\n        s.v = normalize(m*s.v);\n    }\n}\n\n// ===============================\n// Geometry definitions\n// ===============================\n\n#define BOUNDING_SPHERE_RADIUS 4.0\n#define GLASS_THICKNESS 0.25\n\nfloat sdfPlane(vec3 planePoint, vec3 nvPlaneN, vec3 p) {\n    return dot(p - planePoint, nvPlaneN);\n}\n\nfloat sdfInterval(float a, float b, float x) {\n    return abs(x - 0.5*(a+b)) - 0.5*(b-a);\n}\n\n// From https://iquilezles.org/articles/distfunctions\nfloat opSubtraction( float d1, float d2 ) { return max(-d1,d2); }\nfloat opSmoothSubtraction( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );\n    return mix( d2, -d1, h ) + k*h*(1.0-h);\n}\n\nfloat sdfContainer(vec3 p, state s) {\n    vec3 d = abs(p - s.p);\n    vec3 d2 = d*d;\n    float sdBase = pow(dot(d2,d2), 0.25) - 2.0;\n\n    float sdInner = length(d.xz) - 0.6;\n\n    return opSmoothSubtraction(sdInner, sdBase, 0.5);\n}\n\nfloat sdfWater(vec3 p, state s) {\n    float dglass = sdfContainer(p, s);\n    float depth = -0.25; // Can add e.g. ripples to the surface here\n    float dsurf = sdfPlane(s.p + depth*s.v, -s.v, p);\n    return opSubtraction(opSmoothSubtraction(dsurf, dglass, 0.15), dglass);\n}\n\nfloat sdfGlass(vec3 p, state s) {\n    float etchDepth = 0.0; // Can sample from e.g. cubemap here for some texture\n    return sdfInterval(0.0, GLASS_THICKNESS - etchDepth, sdfContainer(p, s));\n}\n\n#define SDF_N_EPS 0.005\n#define SDF_NORMAL(sdfFn, p, s) \\\n    normalize(vec3( \\\n        sdfFn( p+vec3(SDF_N_EPS,0.0,0.0), s ) - sdfFn( p-vec3(SDF_N_EPS,0.0,0.0), s ), \\\n        sdfFn( p+vec3(0.0,SDF_N_EPS,0.0), s ) - sdfFn( p-vec3(0.0,SDF_N_EPS,0.0), s ), \\\n        sdfFn( p+vec3(0.0,0.0,SDF_N_EPS), s ) - sdfFn( p-vec3(0.0,0.0,SDF_N_EPS), s )  \\\n    ))\n\n// ===============================\n// Marching, lighting/materials\n// ===============================\n\n#define SDF_EPS 0.01\n#define DSTEP_ADJUST_EPS 0.02\n#define STEPS 80\n\n#define LIGHT_COLOR vec3(1.0)\n\n#define GLASS_COLOR vec3(0.01, 0.0, 0.4)\n#define GLASS_OPACITY 0.6\n#define WATER_COLOR vec3(1.0)\n#define WATER_OPACITY 0.15\n\n#define IR_AIR 1.0\n#define IR_GLASS 1.5\n#define IR_WATER 1.333\n\n// Enums\n#define SUBSTANCE_AIR 0\n#define SUBSTANCE_GLASS 1\n#define SUBSTANCE_WATER 2\n\nvec4 computeSpecular(\n    in float specularCoefficient,\n    in float specularExponent,\n    in vec3 nvNormal,\n    in vec3 nvFragToLight,\n    in vec3 nvFragToCam\n){\n    vec3 blinnH = normalize(nvFragToLight + nvFragToCam);\n    float valSpecular = pow(max(0.0, dot(nvNormal, blinnH)), specularExponent);\n    valSpecular *= specularCoefficient;\n\n    return valSpecular*vec4(LIGHT_COLOR, 1.0);\n}\n\nvoid march(in state s, in vec3 pRay, in vec3 nvRayIn, out vec4 color, out vec3 nvRayOut)\n{\n    bool skipOpacity = texelFetch(KEY_SAMPLER, ivec2(KEY_A,0), 0).x > 0.5;\n    bool skipRefraction = texelFetch(KEY_SAMPLER, ivec2(KEY_S,0), 0).x > 0.5;\n    bool debugSteps = texelFetch(KEY_SAMPLER, ivec2(KEY_D,0), 0).x > 0.5;\n    bool debugNormal = texelFetch(KEY_SAMPLER, ivec2(KEY_F,0), 0).x > 0.5;\n\n    // Light (in world coordinates)\n    vec3 pLightO = pRay + vec3(0.0, 10.0, 0.0);\n\n    // Light and camera (in object coordinates)\n    mat3 prMatInv = qToMat(qConj(s.pr));\n    vec3 pCam = prMatInv*(pRay - s.p) + s.p;\n    vec3 pLight = prMatInv*(pLightO - s.p) + s.p;\n\n    // Ray while marching (in object coordinates)\n    vec3 pCur = pCam;\n    vec3 nvRayCur = prMatInv*nvRayIn;\n\n    color = vec4(0.0);\n    int curSubstance = SUBSTANCE_AIR;\n\n    int i=0;\n    for (; i<STEPS; i++) {\n\n        // Quick exits\n        // ----------------\n        vec3 centerToCur = pCur - s.p;\n        if (\n            (length(centerToCur) > BOUNDING_SPHERE_RADIUS) &&\n            (dot(nvRayCur, centerToCur) > 0.0)\n        ) { break; }\n\n        if (color.a > 0.95) { break; }\n\t\t// ----------------\n\n        float sdGlass = sdfGlass(pCur, s);\n        float sdWater = sdfWater(pCur, s);\n        vec3 dpStep = abs(min(sdGlass, sdWater))*nvRayCur;\n\n        vec3 nvGlass = SDF_NORMAL(sdfGlass, pCur, s);\n        vec3 nvWater = SDF_NORMAL(sdfWater, pCur, s);\n\n        if (curSubstance == SUBSTANCE_AIR) {\n\n            if (sdGlass < SDF_EPS && dot(nvGlass,nvRayCur) < 0.0) {\n\n                curSubstance = SUBSTANCE_GLASS;\n\n                vec4 sColor = computeSpecular(\n                    0.8, 80.0, nvGlass, normalize(pLight-pCur), normalize(pCam-pCur)\n                );\n                color = blendOnto(color, sColor);\n\n                // Schlick approximation\n                float cosHitAngle = clamp(dot(nvGlass, -nvRayCur), 0.0, 1.0);\n                float r0 = pow((IR_GLASS-IR_AIR)/(IR_GLASS+IR_AIR), 2.0);\n                float valRefl = mix(r0, 1.0, pow(clamp(1.0 - cosHitAngle, 0.0, 1.0), 3.0)); // Modified exponent 5 -> 3\n\n                vec3 nvRefl = reflect(nvRayCur, nvGlass);\n                color = blendOnto(color, valRefl*vec4(SKYBOX(nvRefl), 1.0));\n\n                dpStep = sdGlass*nvRayCur;\n                dpStep += -DSTEP_ADJUST_EPS*nvGlass;\n                if (!skipRefraction) {\n                    nvRayCur = refractFix(nvRayCur, nvGlass, IR_AIR/IR_GLASS);\n                }\n\n            } else if (sdWater < SDF_EPS && dot(nvWater,nvRayCur) < 0.0) {\n\n                curSubstance = SUBSTANCE_WATER;\n\n                vec4 sColor = computeSpecular(\n                    1.0, 40.0, nvWater, normalize(pLight-pCur), normalize(pCam-pCur)\n                );\n                color = blendOnto(color, sColor);\n\n                // Schlick approximation\n                float cosHitAngle = clamp(dot(nvWater, -nvRayCur), 0.0, 1.0);\n                float r0 = pow((IR_WATER-IR_AIR)/(IR_WATER+IR_AIR), 2.0);\n                float valRefl = mix(r0, 1.0, pow(clamp(1.0 - cosHitAngle, 0.0, 1.0), 5.0));\n\n                vec3 nvRefl = reflect(nvRayCur, nvWater);\n                color = blendOnto(color, valRefl*vec4(SKYBOX(nvRefl), 1.0));\n\n                dpStep = sdWater*nvRayCur;\n                dpStep += -DSTEP_ADJUST_EPS*nvWater;\n                if (!skipRefraction) {\n                    nvRayCur = refractFix(nvRayCur, nvWater, IR_AIR/IR_WATER);\n                }\n\n            }\n\n        } else if (curSubstance == SUBSTANCE_GLASS) {\n\n            float sdGlassInv = -sdGlass;\n            vec3 nvGlassInv = -nvGlass;\n\n            dpStep = abs(sdGlassInv)*nvRayCur;\n\n            if (!skipOpacity) {\n                color = blendOnto(color, clamp(GLASS_OPACITY*sdGlassInv,0.0,1.0)*vec4(GLASS_COLOR, 1.0));\n            }\n\n            if (sdGlassInv < SDF_EPS && dot(nvGlassInv,nvRayCur) < 0.0) {\n\n                curSubstance = SUBSTANCE_AIR;\n\n                dpStep = sdGlassInv*nvRayCur;\n                dpStep += -DSTEP_ADJUST_EPS*nvGlassInv;\n                if (!skipRefraction) {\n                    nvRayCur = refractFix(nvRayCur, nvGlassInv, IR_GLASS/IR_AIR);\n                }\n\n            }\n\n        } else if (curSubstance == SUBSTANCE_WATER) {\n\n            float sdWaterInv = -sdWater;\n            vec3 nvWaterInv = -nvWater;\n\n            dpStep = abs(sdWaterInv)*nvRayCur;\n\n            if (!skipOpacity) {\n                color = blendOnto(color, clamp(WATER_OPACITY*sdWaterInv,0.0,1.0)*vec4(WATER_COLOR, 1.0));\n            }\n\n            if (sdWaterInv < SDF_EPS && dot(nvWaterInv,nvRayCur) < 0.0) {\n\n                curSubstance = SUBSTANCE_AIR;\n\n                dpStep = sdWaterInv*nvRayCur;\n                dpStep += -DSTEP_ADJUST_EPS*nvWaterInv;\n                if (!skipRefraction) {\n                    nvRayCur = refractFix(nvRayCur, nvWaterInv, IR_WATER/IR_AIR);\n                }\n\n            }\n\n        }\n\n        pCur += dpStep;\n\n    }\n\n    // Convert ray direction from object to world coordinates\n    nvRayOut = qToMat(s.pr)*nvRayCur;\n\n    if (debugSteps) {\n        color = vec4( vec3(float(i)/float(STEPS)), 1.0 );\n    } else if (debugNormal) {\n        color = vec4( 0.5 + 0.5*nvRayOut, 1.0 );\n    }\n}\n\n// ===============================\n// Main render\n// ===============================\n\nvec4 mainColor(vec2 fragCoord, state s) {\n    vec3 camPos;\n    vec3 nvCamDir;\n    vec2 uv = fragCoord / RES.xy;\n    getCamera(s, uv, camPos, nvCamDir);\n\n    vec4 color;\n    vec3 nvRayOut;\n    march(s, camPos, nvCamDir, color, nvRayOut);\n\n    return blendOnto(color, SKYBOX(nvRayOut));\n\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    state s = readState();\n\n    fragColor = mainColor(fragCoord, s);\n\n    updateState(s);\n    writeState(s, fragCoord, fragColor);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

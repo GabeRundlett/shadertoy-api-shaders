@@ -1,0 +1,231 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1690486977",
+            "description": "Analyses music by historic sound spectrum to estimate BPM, offset & beat count. Hope this is useful for designs where you need information on track structure.\n\n - Use with music in iChannel0 of Buffer A -",
+            "flags": 96,
+            "hasliked": 0,
+            "id": "ddBBWw",
+            "likes": 6,
+            "name": "Audio Analyser",
+            "published": 3,
+            "tags": [
+                "spectrum",
+                "music",
+                "audio",
+                "bpm",
+                "buffer"
+            ],
+            "usePreview": 0,
+            "username": "QuantumSuper",
+            "viewed": 270
+        },
+        "renderpass": [
+            {
+                "code": "// Audio Analyser 0.5.230727 by QuantumSuper\n// analyse audio spectrum to estimate bpm, offset & beat count\n// looks at spectrum history, assumes static resolution & frame rate\n// Buffer A: spectrum history\n// Buffer B: filter beats\n// Buffer C: analyse (filtered) spectrum\n// Image: design mockup to visualize results (& highlight use for designs to build upon & debugging/refining)\n// \n// - use with audio in iChannel0 of Buffer A -\n\n\n#define showBuffer true\n\n\nfloat aaStep( float fun){return smoothstep( fwidth(fun), .0, fun);} //simple antialiasing\nfloat sdCircle( vec2 p, float r){return length(p)-r;}\nfloat sdBox( vec2 p, vec2 b){vec2 d = abs(p) - b; return length(max(d,.0)) + min(max(d.x,d.y),.0);} //source: https://iquilezles.org/articles/distfunctions2d/\nfloat sdSegment( vec2 p, vec2 a, vec2 b){vec2 pa = p - a, ba = b - a; float h = clamp( dot(pa,ba)/dot(ba,ba), 0., 1.); return length(pa - ba*h);} //source: https://iquilezles.org/articles/distfunctions2d/\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord){\n\n    // TOOLS\n    \n    // Read compression values from Buffer A\n    vec4 fft, ffts;\n    for (int n=0;n<4;n++) \n        fft[n] = getDat( iChannel0, vec2( 0, n)).a,\n        ffts[n] = getDat( iChannel0, vec2( 0, n+4)).a;\n      \n    // Read analysis results from Buffer C\n    float count         = getDat( iChannel2, vec2(0,0)).a; //beat count (0..15)\n    float bpm           = getDat( iChannel2, vec2(0,1)).a; //bmp estimate (>90..180)\n    float frameRate     = getDat( iChannel2, vec2(0,2)).a; //frame rate average\n    float isPause       = getDat( iChannel2, vec2(0,3)).a; //is bass less high than average\n    float timeFirstBeat = getDat( iChannel2, vec2(0,4)).a; //time difference to beat drop (16 beat range)\n    float isBeat        = getDat( iChannel2, vec2(0,5)).a; //is bass high\n    float isFlank       = getDat( iChannel2, vec2(0,6)).a; //is bass just getting high\n                  \n\n    // DESIGN\n    \n    // Draw status display\n    vec2 uv = (2.*fragCoord-iResolution.xy) / max(iResolution.x, iResolution.y); //long edge -1 to 1, square aspect ratio\n    vec3 col = vec3(0);\n    \n    vec4 tmp = vec4(.46,.26,.34,.22); //top windows\n    col += (uv.y > tmp.y)?\n        aaStep( sdBox( uv-vec2(-1,1)*tmp.xy, tmp.zw)) * getDat( iChannel1, ((uv-vec2(-1,1)*tmp.xy)/tmp.zw+vec2(1))/2.*iResolution.xy).r : //filter\n        aaStep( sdBox( uv-vec2(-1,1)*tmp.xy, tmp.zw)) * getDat( iChannel0, ((uv-vec2(-1,1)*tmp.xy)/tmp.zw+vec2(1))/2.*iResolution.xy * vec2(1,8./512.)).r; //bass\n    col += aaStep( sdBox( uv-tmp.xy, tmp.zw)) * getDat( iChannel2, ((uv-tmp.xy)/tmp.zw+vec2(1))/2.*iResolution.xy).r / max(.001,getDat( iChannel2, vec2(0,(180./bpm-1.)*iResolution.y)).r); //bpm certainties\n    col += aaStep( sdBox( uv-tmp.xy, tmp.zw)) * aaStep( abs(uv.y - tmp.y + (3.-360./bpm)*tmp.w) - .001); //bpm line\n    \n    tmp = vec4(.0,.13,.8,.08); //long mid  window\n    col += aaStep( sdBox( uv+tmp.xy, tmp.zw)) * (getDat( iChannel0, ((uv+tmp.xy)/tmp.zw+vec2(1))/2.*iResolution.xy * vec2(1,4./512.)).bbb - .95)/.05 ; //pause   \n    \n    tmp = vec4(0,.26,.025,.1); //middle top dots\n    col += aaStep( sdCircle( uv-tmp.xy-tmp.xw, tmp.z)) * (isBeat*.95+.05) + clamp(.01/max(.001,sdCircle( uv-tmp.xy-tmp.xw, tmp.z)),.0,1.) * isFlank;\n    col += aaStep( sdCircle( uv-tmp.xy+tmp.xw, tmp.z)) * (float(isPause > .13)*.95+.05);\n    \n    for (float n=0.; n<4.; n++) //large dots bottom\n        col += aaStep( sdCircle( uv+vec2(.6-n*.4,.35), .08)) * float(abs(n-mod(count,4.)+.5)<.5); //count from 1 to 4\n       \n    for (float n=0.; n<16.; n++) //small dots bottom\n        col += aaStep( sdCircle( uv+vec2(.75-n*.1,.48), .01)) * float(abs(n-count+.5)<.5); //count from 1 to 16\n    \n    tmp = vec4(.9,-.5,.5,.003); //side bars\n    col += aaStep( sdSegment( vec2(abs(uv.x),uv.y), tmp.xy, tmp.xz) - tmp.w*4.) * aaStep(fract((uv.y-tmp.y)/abs(-tmp.y+tmp.z)*4.) - .03); //side scales\n    col += aaStep( sdSegment( uv, tmp.xy, tmp.xy + vec2( 0, abs(tmp.z-tmp.y) * frameRate/120.)) - tmp.w); //framerate percentage of 120fps\n    col += aaStep( sdSegment( vec2(-uv.x,uv.y), tmp.xy, tmp.xy + vec2( 0, abs(tmp.z-tmp.y) * pow(1.-isPause,10.))) - tmp.w); //isPause, inverted log\n\n    if (showBuffer){\n        tmp.x = mod((iTime-timeFirstBeat)/(60./bpm*2.),32.);\n             if (tmp.x< 8.) ;\n        else if (tmp.x<10.) col = getDat( iChannel0, fragCoord).ggg; //waveform\n        else if (tmp.x<12.) col = getDat( iChannel0, fragCoord).rrr; //audio spectrum\n        else if (tmp.x<14.) col = (uv.y<0.)? getDat( iChannel0, fragCoord*vec2(1,8./512.)).rrr : getDat( iChannel1, fragCoord).rrr; //filter beats\n        else if (tmp.x<16.) col = getDat( iChannel2, fragCoord).rrr / max(.001,getDat( iChannel2, vec2(0,(180./bpm-1.)*iResolution.y)).r); //bpm certainties\n        else if (tmp.x<17.) col = getDat( iChannel2, fragCoord).ggg / min(iResolution.x, iResolution.y); //maximum search\n        else if (tmp.x<18.) col = getDat( iChannel0, fragCoord).bbb; //average amplitude maximum\n        else if (tmp.x<19.) col = (getDat( iChannel0, fragCoord*vec2(1,8./512.)).b-.95)/.05 * vec3(.9); //filter average amplitude maximum\n        else if (tmp.x<20.) col = getDat( iChannel0, fragCoord/vec2(1,iResolution.y/8.)).aaa; //compression amplitudes over time \n        else if (tmp.x<22.) col = vec3(step(.0,(fragCoord.y/iResolution.y-.9))) + .7*dot( step(.0,fft-abs(floor(fragCoord.x/iResolution.x*4.-vec4(0,1,2,3)))-fragCoord.y/iResolution.y/.9),vec4(1)) + .3*dot( step(.0,ffts-abs(floor(fragCoord.x/iResolution.x*4.-vec4(0,1,2,3)))-fragCoord.y/iResolution.y/.9),vec4(1)); //compression amplitudes\n    }\n    \n    col += .1 * (1.-length(col)); //background\n    col -= length(uv) * .03; //vignette\n    fragColor = vec4( col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// COMMON (0.0) of Audio Analyser by QuantumSuper\n// \n// - use with audio in iChannel0 of Buffer A -\n\n#define getDat( buf, addr) texelFetch( buf, ivec2(addr), 0)\n#define getDatN( buf, addr) getDat( buf, addr).r / getDat( buf, addr).b",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// BUFFER A (1.0) of Audio Analyser by QuantumSuper\n// audio spectrum by brightness of frequency by y-axis at time by x-axis (0 now; >0 historic)\n// .r: amplitude \n// .g: waveform\n// .b: average amplitude\n// .a: ( fft, ffts, timestamp, 0..0) variables\n// \n// - use with audio in iChannel0 of Buffer A -\n\n\n#define TRACKDURATIONINFRAMES 3600.\nvec4 fft, ffts; //compressed frequency amplitudes\n\n\nvoid compressFft(){ //v1.2, compress sound in iChannel0 to simplified amplitude estimations by frequency-range\n    fft = vec4(0), ffts = vec4(0);\n\n\t// Sound (assume sound texture with 44.1kHz in 512 texels, cf. https://www.shadertoy.com/view/Xds3Rr)\n    for (int n=0;n<3;n++) fft.x  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //bass, 0-517Hz, reduced to 0-258Hz\n    for (int n=6;n<8;n++) ffts.x  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech I, 517-689Hz\n    for (int n=8;n<14;n+=2) ffts.y  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech II, 689-1206Hz\n    for (int n=14;n<24;n+=4) ffts.z  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech III, 1206-2067Hz\n    for (int n=24;n<95;n+=10) fft.z  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //presence, 2067-8183Hz, tenth sample\n    for (int n=95;n<512;n+=100) fft.w  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //brilliance, 8183-44100Hz, tenth2 sample\n    fft.y = dot(ffts.xyz,vec3(1)); //speech I-III, 517-2067Hz\n    ffts.w = dot(fft.xyzw,vec4(1)); //overall loudness\n    fft /= vec4(3,8,8,5); ffts /= vec4(2,3,3,23); //normalize\n\t\n\t//for (int n=0;n++<4;) fft[n] *= 1. + .3*pow(fft[n],5.); fft = clamp(fft,.0,1.); //limiter? workaround attempt for VirtualDJ [WIP]\n}\n\nfloat estMax(float p){ //estimate changing maximum over time of sound texel by weighted amplitude tracking\n    float curVal = clamp( getDat( iChannel0, vec2(p/iResolution.y*512.,0)).x, .0, 1.); //current amplitude\n    float maxVal = clamp( getDat( iChannel1, vec2(0,p)).z, .0, 1.); //latest max amp\n    \n    if (curVal >= maxVal) maxVal = 0.; //check for new max    \n    \n    if (maxVal != 0.) //avoid uninitialized state & deprecated maxVal\n        curVal *=    1./TRACKDURATIONINFRAMES,\n        maxVal *= 1.-1./TRACKDURATIONINFRAMES;\n  \n    return maxVal+curVal; //returns value between 0 and 1\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord){\n    compressFft(); //initializes fft, ffts\n    fragColor = (fragCoord.x<1.)? vec4( \n        getDat( iChannel0, vec2( fragCoord.y/iResolution.y*512., 0)).x, //.r amplitudes\n        getDat( iChannel0, vec2( fragCoord.y/iResolution.y*512., 1)).x, //.g waveform (does not work in VirtualDJ)\n        estMax( fragCoord.y), //.b average amplitude\n        (fragCoord.y<4.)? fft[int(fragCoord.y)] : //.a compression part 1\n        (fragCoord.y<8.)? ffts[int(fragCoord.y)-4] : //.a compression part 2\n        (fragCoord.y<9.)? iTime : //.a timestamp\n        0.) //.a empty\n        : getDat( iChannel1, fragCoord-vec2(1,0)); //history   \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "musicstream",
+                        "id": 34123,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/semangat/tina-tischler-aka-semangat-10-years-anniversary-set"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// BUFFER B (0.1) of Audio Analyser by QuantumSuper\n// filter of audio spectrum\n// .r: beats (1D)\n// .g: 0\n// .b: 0\n// .a: 0\n// \n// - use with audio in iChannel0 of Buffer A -\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord){\n    \n    if (fragCoord.x < 1.) { //new data\n    \n        vec3 pos = 5. * vec3(0,1,2); //defines spread over frames (max beat width)      \n\n        vec3 amp = vec3(\n            (getDatN( iChannel0, vec2(pos.x,1)) + getDatN( iChannel0, vec2(pos.x,2))), //average-normalized amplitudes of 86-258Hz\n            (getDatN( iChannel0, vec2(pos.y,1)) + getDatN( iChannel0, vec2(pos.y,2))),\n            (getDatN( iChannel0, vec2(pos.z,1)) + getDatN( iChannel0, vec2(pos.z,2)))\n            ) * .5; //normalize\n            \n        fragColor = vec4(0);\n        if (amp.y>.92 && amp.x<amp.y && amp.z<amp.y) //super simple max rise detection\n            fragColor.r = 1.;  //beat\n            \n    } else\n        fragColor = getDat( iChannel1, fragCoord-vec2(1,0)); //history \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// BUFFER C (0.9) of Audio Analyser by QuantumSuper\n// analyse filtered beats\n// .r: bpm estimation, brightness corresponds to certainty, linear 90-180bpm\n// .g: buffer to find maximum\n// .b: -\n// .a: variables ( count (0..15), bmp estimate (>90..180), frame rate estimate, isPause (fract), timeFirstBeat, beat (bool), flank (bool), 0..0)\n// \n// - use with audio in iChannel0 of Buffer A -\n\n\nfloat isFlank( float shift){ //simple comparison of bool-like data\n    return (getDat( iChannel1, vec2( mod(shift,iResolution.x), 0)).r > getDat( iChannel1, vec2( mod(shift+1.,iResolution.x), 0)).r)? 1. : 0.;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord){\n         \n    // Set space for search algorithm\n    float isVert = float(iResolution.x < iResolution.y); //vertical screen orientation, bool-like\n    vec2 orient = vec2( 1.-isVert, isVert); //(1,0) horizontal/square; (0,1) vertical\n    vec2 myResolution = bool(isVert)?\n        iResolution.yx : iResolution.xy;\n    vec2 myFragCoord = bool(isVert)?\n        fragCoord.yx : fragCoord.xy; \n    \n    \n    // Estimate average frame rate\n    float estFrameRate = (iFrame < int(iResolution.x))? //buffer not yet fully filled \n        (iFrame < 1)? //initialization\n            30. : //guess frame rate\n            float(iFrame) / (iTime - getDat( iChannel0, vec2( iFrame, 8)).a) : //estimate average frame rate with less accuracy\n        iResolution.x / (iTime - getDat( iChannel0, vec2( iResolution.x-1., 8)).a); //estimate average frame rate\n    \n    \n    // Estimate BPM certainties (comb-like sum)\n    float beat = getDat( iChannel1, vec2(0)).r; //beat ongoing, bool-like\n    float flank = isFlank(0.); //rising flank of beat, bool-like\n    float amp = 0.;\n    \n    if (bool(flank)) //recalculate bpm probability if there is a new beat\n    \n        if (fragCoord.x < 1.){\n        \n            float minStep = estFrameRate / 3.; //assume max 180 bpm (3bps)\n            float stepSize = minStep * (1.+myFragCoord.y/myResolution.y); //assume min >90bpm (>1.5bps)\n            \n            for ( float n=0.; n++ < myResolution.x/stepSize; ) //go through beat history at bpm-rate steps\n                amp += isFlank( n*stepSize); //add found beat flanks\n            amp /= myResolution.x/stepSize; //normalize          \n            \n            float prevAmp = getDat( iChannel2, myFragCoord*orient.yx).r;\n            amp = (amp + prevAmp*359.) / 360.; //weight, assume stable bpm over about 2 minutes at 180bpm (or 4 min at 90bpm)\n            \n        } else \n            amp = getDat( iChannel2, myFragCoord-orient).r; //history     \n    else \n        amp = getDat( iChannel2, fragCoord).r; //copy old data (no new info) \n        \n    fragColor.r = amp;\n\n    \n    // Find BPM estimate (search algorithm)\n    vec2 compPos = (myFragCoord.x < 1.)? //is first line\n        myFragCoord.y + orient.yx : //first neighbour\n        vec2(\n            getDat( iChannel2, myFragCoord - orient).g,\n            getDat( iChannel2, myFragCoord - orient + mod( myFragCoord.x + myFragCoord.y + 1., myResolution.y) * orient.yx ).g ); //next new neighbour\n    \n    amp = (getDat( iChannel2, compPos.x*orient.yx).r < getDat( iChannel2, compPos.y*orient.yx).r)? //compare current compPos-bpm-certainties\n        compPos.y : compPos.x ; //keep only position of higher certainty\n    fragColor.g = amp;  \n    \n    float bpm = (iFrame<1)?\n        127. : //guess\n        180. / (1. + getDat( iChannel2, ceil(iResolution.y*.5)*orient).g / iResolution.y); //most certain beat-rate, range from >90 to 180 bpm\n \n    \n    // Find Beat-offset (watchdog)\n    float isPause = 1. - clamp( getDat( iChannel0, vec2(0,1)).b + getDat( iChannel0, vec2(0,2)).b, .0, 2.)/2.; //inverse average max, bool-like intent but fract usage\n    \n    float timeFirstBeat = (iFrame < 1)? 0. : //initialization\n        (isPause<.05 && getDat( iChannel2, vec2(5,3)).a > .13)? //there was a pause but is no more\n            mod( iTime, 60./bpm*16.) : //new first beat\n            getDat( iChannel2, vec2(0,4)).a; //old first beat\n    \n    float count = mod( (mod( iTime, 60./bpm*16.)-timeFirstBeat) / 60.*bpm, 16.); //count to 16 at bpm from first beat\n    \n\n    // Save variables \n    if (fragCoord.x<1.)\n             if (fragCoord.y<1.) amp = count; //beat count (0..15)\n        else if (fragCoord.y<2.) amp = bpm; //bmp estimate (>90..180)\n        else if (fragCoord.y<3.) amp = estFrameRate; //frame rate average\n        else if (fragCoord.y<4.) amp = isPause; //is average max-bass low\n        else if (fragCoord.y<5.) amp = timeFirstBeat; //time difference to sudden bass increase\n        else if (fragCoord.y<6.) amp = beat; //is bass high\n        else if (fragCoord.y<7.) amp = flank; //is bass beginning\n        else amp = 0.; //empty\n    else amp = getDat( iChannel2, fragCoord-vec2(1,0)).a; //history\n        \n    fragColor.a = amp;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,87 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1701156070",
+            "description": " ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "DdVXzR",
+            "likes": 4,
+            "name": "Pathtracer 2 spheres",
+            "published": 3,
+            "tags": [
+                "raytracing"
+            ],
+            "usePreview": 0,
+            "username": "dankcatlord",
+            "viewed": 206
+        },
+        "renderpass": [
+            {
+                "code": "// https://github.com/dmnsgn/glsl-tone-map/blob/main/aces.glsl\n// https://github.com/dmnsgn/glsl-tone-map/blob/main/LICENSE.MD\nvec3 aces(vec3 x) {\n    const float a = 2.51;\n    const float b = 0.03;\n    const float c = 2.43;\n    const float d = 0.59;\n    const float e = 0.14;\n    return (x * (a * x + b)) / (x * (c * x + d) + e);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    fragColor = vec4(pow(aces(texture(iChannel0, fragCoord / iResolution.xy).rgb * .65), vec3(1.0 / 2.2)), 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "precision highp float;\n\nfloat floatConstruct(uint a) {\n\treturn uintBitsToFloat(0x3F800000u | (a >> 9)) - 1.0;\n}\n\n// Bob Jenkins' One-At-A-Time hashing algorithm https://stackoverflow.com/a/17479300\nuint hash( uint x ) {\n    x += ( x << 10u );\n    x ^= ( x >>  6u );\n    x += ( x <<  3u );\n    x ^= ( x >> 11u );\n    x += ( x << 15u );\n    return x;\n}\n\n// xoroshiro 128+ https://prng.di.unimi.it\nuint rotl(const uint x, int k) {\n\treturn (x << k) | (x >> (32 - k));\n}\n\nfloat rand(inout uint s[4]) {\n\tuint result = s[0] + s[3];\n\n\tuint t = s[1] << 9;\n\n\ts[2] ^= s[0];\n\ts[3] ^= s[1];\n\ts[1] ^= s[2];\n\ts[0] ^= s[3];\n\n\ts[2] ^= t;\n\n\ts[3] = rotl(s[3], 11);\n\n\treturn floatConstruct(result);\n}\nvec2 rand2(inout uint s[4]) { return vec2(rand(s), rand(s)); }\nvec3 rand3(inout uint s[4]) { return vec3(rand(s), rand(s), rand(s)); }\nvec4 rand4(inout uint s[4]) { return vec4(rand(s), rand(s), rand(s), rand(s)); }\n\nvoid genState(out uint s[4], ivec2 coord, int frame) {\n   s[0] = hash(uint(frame) ^ hash(uint(coord.y) ^ hash(uint(coord.x))));\n   s[1] = hash(s[0]);\n   s[2] = hash(s[1]);\n   s[3] = hash(s[2]);\n   rand(s);\n   rand(s);\n}\n\nfloat fresnel(vec3 dir, vec3 norm, float ior) {\n    float c = -dot(dir, norm);\n    float s = sqrt(1.0 - c * c);\n    float v = sqrt(max(0.0, 1.0 - (ior * ior) * (1.0 - c * c)));\n    float rs = (ior * c - v) / (ior * c + v);\n    float rp = (ior * v - c) / (ior * v + c);\n    return (rs * rs + rp * rp) / 2.0;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "struct MatData {\n    vec3 dir;\n    vec3 albedo;\n    vec3 emmission;\n};\n\nstruct TraceData {\n    float dist;\n    vec3 pos;\n    vec3 norm;\n    MatData matData;\n};\n\nfloat intFloor(vec3 pos, vec3 dir, float dist) {\n    float a = pos.y - dist;\n    if (a <= 0.0 || dir.y >= 0.0) return 1.0 / 0.0;\n    float b = sqrt((dir.x * dir.x + dir.z * dir.z) / (dir.y * dir.y) + 1.0) * a;\n//    if (b < 0.001) return 1.0 / 0.0;\n    return b;\n}\n\nfloat intSphere(vec3 pos, vec3 dir, vec3 sph, float rad) {\n    vec3 a = pos - sph;\n    float b = dot(a,dir);\n    float c = dot(a,a) - rad * rad;\n    float d = b * b - c;\n    if (d < 0.0) return 1.0 / 0.0;\n    float e = -b - sqrt(d);\n    if (e < 0.01) {\n        e = -b + sqrt(d);\n        if (e < 0.01) return 1.0 / 0.0;\n    }\n    return e;\n}\n\nvec3 randVec(inout uint s[4]) {\n    vec3 dir = rand3(s) * 2.0 - 1.0;\n    dir /= cos(dir);\n    dir = normalize(dir);\n    return dir;\n}\n\nMatData matDiffuse(inout uint s[4], vec3 dir, vec3 norm, vec3 albedo) {\n    MatData matData;\n    matData.dir = normalize(randVec(s) + norm);\n    matData.albedo = albedo;\n    return matData;\n}\n\nMatData matSpecular(inout uint s[4], vec3 dir, vec3 norm, vec3 albedo, float ior, float roughness, float metallic) {\n    MatData matData;\n    float fresnel = fresnel(dir, norm, ior);\n    if (rand(s) > fresnel * (1.0 - metallic) + metallic) matData = matDiffuse(s, dir, norm, albedo);\n    else {\n        matData.dir = normalize(reflect(dir, norm) + randVec(s) * roughness);\n        matData.albedo = (albedo * (1.0 - fresnel) + fresnel) * metallic + (1.0 - metallic);\n    }\n    return matData;\n}\n\nTraceData trace(inout uint s[4], vec3 pos, vec3 dir) {\n    float dists[] = float[](\n        intFloor(pos, dir, 0.0),\n        intSphere(pos, dir, vec3(-1.5, 1.0, 0.0), 1.0),\n        intSphere(pos, dir, vec3(1.5, 1.0, 0.0), 1.0)\n    );\n    float dist = 1.0 / 0.0;\n    int nearest = 1024;\n    for (int i = 0; i < 3; i++) {if (dists[i] < dist) {dist = dists[i]; nearest = i;}}\n    pos += dir * dist;\n    TraceData traceData;\n    traceData.dist = dist;\n    traceData.pos = pos;\n    switch (nearest) {\n        case 0:\n            traceData.norm = vec3(0.0, 1.0, 0.0);\n            bool a = mod(pos.x, 2.0) >= 1.0 ^^ mod(pos.z, 2.0) >= 1.0;\n            traceData.matData = matSpecular(s, dir, traceData.norm, a ? vec3(1.0) : vec3(0.25), 0.9, 0.0, 0.0);\n            break;\n        case 1:\n            traceData.norm = pos - vec3(-1.5, 1.0, 0.0);\n            traceData.matData = matSpecular(s, dir, traceData.norm, vec3(0.2, 0.7, 0.0), 0.8, 0.3, 0.0);\n            break;\n        case 2:\n            traceData.norm = pos - vec3(1.5, 1.0, 0.0);\n            traceData.matData = matSpecular(s, dir, traceData.norm, vec3(1.0, 0.4, 0.0), 0.8, 0.0, 1.0);\n            break;\n        case 1024:\n            traceData.matData.emmission = vec3(0.2, 0.3, 0.0) * pow(1.0 - max(0.0, dir.y), 2.0) + vec3(0.1, 0.2, 1.0);\n            if (dot(dir, normalize(vec3(-1.0, 3.0, -2.0))) > 0.99) traceData.matData.emmission = vec3(80.0);\n            break;\n    }\n    return traceData;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    uint[4] s;\n    genState(s, ivec2(fragCoord), iFrame);\n    \n    vec3 pos = vec3(0.0, 1.0, -6.0);\n    vec2 npos;\n    for (int i = 0; i < 4; i++) {\n        npos = rand2(s) * 2.0 - 1.0;\n        if (dot(npos,npos) < 1.0) break;\n    }\n    npos *= 0.03;\n    pos.xy += npos;\n    vec3 dir = normalize(vec3((fragCoord * 2.0 - iResolution.xy + rand2(s) * 2.0 - 1.0) / iResolution.x - npos / 3.0, 2.0));\n    \n    vec3 col;\n    {\n        TraceData traceData;\n        traceData.pos = pos;\n        traceData.matData.dir = dir;\n        vec3 alb = vec3(1.0);\n        for (int j = 0; j < 4; j++) {\n            traceData = trace(s, traceData.pos, traceData.matData.dir);\n            col += traceData.matData.emmission * alb;\n            alb *= traceData.matData.albedo;\n        }\n    }\n\n    fragColor = mix(\n        texture(iChannel0, fragCoord / iResolution.xy),\n        vec4(col, 1.0),\n        1.0 / float(iFrame + 1)\n    );\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

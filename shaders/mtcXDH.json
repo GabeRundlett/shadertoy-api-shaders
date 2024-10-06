@@ -1,0 +1,42 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1685361443",
+            "description": "Under the assumption that the SDF in the neighbourhood of the pixel is continuous and linear (true for almost all SDFs), this shader shows how to calculate the exact portion of a pixel covered by an SDF, useful for anti-aliasing.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mtcXDH",
+            "likes": 13,
+            "name": "Exact SDF Anti-Aliasing",
+            "published": 3,
+            "tags": [
+                "2d",
+                "aliasing",
+                "distance",
+                "field",
+                "aa",
+                "signed",
+                "anti"
+            ],
+            "usePreview": 0,
+            "username": "fad",
+            "viewed": 323
+        },
+        "renderpass": [
+            {
+                "code": "// Under the assumption that the SDF in the neighbourhood of the pixel\n// is continuous and linear (true for almost all SDFs), this shader\n// shows how to calculate the exact portion of a pixel covered by an\n// SDF, useful for anti-aliasing.\n\n// The SDF versions of these functions here assume that the provided\n// signed-distance values are in screen-space (i.e. 1 unit of distance\n// corresponds to the width of a pixel). The shader also provides the\n// aastep(edge, x) function that works for non-SDF values as a drop-in\n// replacement for step(edge, x) but with anti-aliased output in [0, 1].\n\n// These functions are pretty overkill for anti-aliasing though. The\n// difference between these functions and the regular smoothstep/fwidth/\n// dFdx/dFdy trick is only noticable if you do some hard pixel peeping.\n// I mainly made this just for peace of mind knowing that there is a\n// \"correct\" way to do anti-aliasing for SDFs.\n\nfloat areaSquareLine(vec2 n, float d) {\n    // https://www.desmos.com/calculator/dorvdj5nbq for visualization\n    n = abs(n);\n    n = vec2(max(n.x, n.y), min(n.x, n.y));\n    float a = abs(d);\n    float b;\n\n    if (n.y != 0.0 && n.x - n.y <= 2.0 * a) {\n        vec2 c = 1.0 + (n - 2.0 * a) / n.yx;\n        b = 1.0 - max(c.x, 0.0) * c.y / 8.0;\n    } else {\n        b = min(0.5 + a / n.x, 1.0);\n    }\n    \n    return d < 0.0 ? 1.0 - b : b;\n}\n\nfloat areaSquareLineAverage(float d) {\n    // Approximate average value of areaSquareLine(n, d) w.r.t. n\n    float a = abs(d);\n    float b;\n    \n    if (a < 1.0 / sqrt(2.0)) {\n        b = 4.1434218 * pow(a, 12.647891) -\n            1.3070394 * pow(a, 3.9787831) +\n            1.0998631 * a +\n            0.5012205;\n        b = clamp(b, 0.0, 1.0);\n    } else {\n        b = 1.0;\n    }\n    \n    return d < 0.0 ? 1.0 - b : b;\n}\n\nfloat sdfFill(float sd) {\n    // Return the fraction of the pixel covered by the SDF (i.e. where\n    // sd < 0.0)\n    vec2 n = vec2(dFdx(sd), dFdy(sd));\n    \n    if (n == vec2(0.0)) {\n        // Ambiguous case, so instead we just return the average. This\n        // is the problem with using dFdx/dFdy that would occur much\n        // less frequently if we had access to the analytic derivatives.\n        return areaSquareLineAverage(-sd);\n    }\n\n    n = normalize(n);\n    return areaSquareLine(n, -sd);\n}\n\nfloat sdfOutline(float sd, float width) {\n    // Return the fraction of the pixel covered by the outline of the\n    // SDF (i.e. where abs(sd) < width / 2.0)\n    return sdfFill(sd - width / 2.0) - sdfFill(sd + width / 2.0);\n}\n\nfloat aastep(float edge, float x) {\n    // Return the fraction of the pixel where step(edge, x) == 1.0 by\n    // approximating the distance to the edge with derivatives.\n    x -= edge;\n    vec2 n = vec2(dFdx(x), dFdy(x));\n    \n    if (n == vec2(0.0)) {\n        // Ambiguous case, so we resort to using regular step(edge, x).\n        // We can't use areaSquareLineAverage(x) because that function\n        // assumes that x measures distance across pixels but we have no\n        // information about distance here as the derivatives are zero.\n        return step(edge, x);\n    }\n    \n    float l = length(n);\n    return areaSquareLine(n / l, x / l);\n}\n\n\n//====================================================================//\n\n\nfloat sdCircle(vec2 p, vec2 c, float r) {\n    return distance(p, c) - r;\n}\n\nfloat sdSegment(vec2 p, vec2 a, vec2 b) {\n    // https://www.shadertoy.com/view/3tdSDj\n    vec2 ap = p - a;\n    vec2 ab = b - a;\n    return distance(ap, ab * clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0));\n}\n\nfloat sdStar(vec2 p, float r, float rf) {\n    // https://www.shadertoy.com/view/3tSGDy\n    const vec2 k1 = vec2(0.809016994375, -0.587785252292);\n    const vec2 k2 = vec2(-k1.x, k1.y);\n    p.x = abs(p.x);\n    p -= 2.0 * max(dot(k1, p), 0.0) * k1;\n    p -= 2.0 * max(dot(k2, p), 0.0) * k2;\n    p.x = abs(p.x);\n    p.y -= r;\n    vec2 ba = rf * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);\n    float h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);\n    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);\n}\n\nvec4 blendOver(vec4 front, vec4 back) {\n    float a = front.a + back.a * (1.0 - front.a);\n    return a > 0.0\n        ? vec4((front.rgb * front.a + back.rgb * back.a * (1.0 - front.a)) / a , a)\n        : vec4(0.0);\n}\n\nvoid blendInto(inout vec4 dst, vec4 src) {\n    dst = blendOver(src, dst);\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    vec4 color = vec4(0.918, 0.894, 0.843, 1.0);\n    vec2 p = fragCoord;\n    vec2 s = iResolution.xy;\n    float h = iResolution.y;\n    \n    { // Circle\n        vec2 c = (vec2(cos(iTime), cos(iTime + 2.3)) * 0.4 + 0.5) * s;\n        float r = (cos(iTime * 2.0 + 4.5) * 0.3 + 0.5) * h * 0.3;\n        float sd = sdCircle(p, c, r);\n        blendInto(color, vec4(0.471, 0.549, 0.471, sdfFill(sd)));\n        blendInto(color, vec4(0.171, 0.249, 0.171, sdfOutline(sd, h * 0.02)));\n    }\n    \n    { // Line\n        vec2 a = abs(iMouse.zw) + 0.5;\n        vec2 b = iMouse.xy + 0.5;\n        float sd = sdSegment(p, a, b) - h * 0.05;\n        blendInto(color, vec4(0.549, 0.471, 0.471, sdfFill(sd)));\n        blendInto(color, vec4(0.249, 0.171, 0.171, sdfOutline(sd, h * 0.01)));\n    }\n    \n    { // Star\n        vec2 c = (vec2(cos(iTime + 1.0), cos(iTime * 0.4 + 2.3)) * 0.5 + 0.5) * s;\n        float r = (cos(iTime * 1.5 + 2.5) * 0.3 + 0.4) * h * 0.4;\n        float sd = sdStar(p - c, r, 0.5);\n        blendInto(color, vec4(0.471, 0.471, 0.549, sdfFill(sd)));\n        blendInto(color, vec4(0.171, 0.171, 0.349, sdfOutline(sd, h * 0.03)));\n    }\n    \n    fragColor = vec4(pow(color.rgb * color.a, vec3(1.0 / 2.2)), 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

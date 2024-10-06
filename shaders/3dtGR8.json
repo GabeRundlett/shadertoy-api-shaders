@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1567898006",
+            "description": "Tests:\n  - triplanar mapping\n  - skybox from 2D texture\n  - normal map with tangent-space projection",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3dtGR8",
+            "likes": 11,
+            "name": "small planet",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "sdf",
+                "triplanar"
+            ],
+            "usePreview": 0,
+            "username": "Eseris",
+            "viewed": 765
+        },
+        "renderpass": [
+            {
+                "code": "mat2 rot(float a) { return mat2(cos(a), sin(a), -sin(a), cos(a)); }\n\nvec2 map(vec3 p) {\n    float d = length(p) - 4.;\n\treturn vec2(d, 1.);\n}\n\nvec3 calcNormal( in vec3 p ) {\n    const float h = 1e-4;\n    vec3 n = vec3(0.0);\n    for(int i = min(iFrame,0); i<4; i++) {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*map(p+e*h).x;\n    }\n    return normalize(n);\n}\n\nvec2 rayProcess(vec3 camPos, vec3 rayDir, float start, float end) {\n\tfloat depth = start;\n\tfor(int i = 0; i < 200; ++i) {\n        vec3 p = camPos + depth * rayDir;\n\t\tvec2 dist = map(p);\n\t\tif(abs(dist.x) < 1e-3) return vec2(depth, dist.y);\n\t\tdepth += dist.x;\n\t\tif(dist.x >= end) break;\n\t}\n\treturn vec2(end, 0.);\n}\n\nvec3 getBgnd(vec3 d) {\n    vec3 w = abs(d);\n    w = pow(w, vec3(40.));\n    w /= w.x + w.y + w.z;\n    \n    d *= 1.;\n    vec3 col = vec3(0);\n    col += w.x * texture(iChannel1, d.yz + .5).rgb;\n    col += w.y * texture(iChannel1, d.zx + .5).rgb;\n    col += w.z * texture(iChannel1, d.xy + .5).rgb;\n    \n    return col;\n}\n\nvec3 moonTexture(vec2 uv) {\n    float d = length(fract(uv) - .5);\n    //return exp(-40. * d * d) * vec3(1.);\n    return texture(iChannel0, uv / 16.).rgb;\n}\n\nfloat heightmap(vec2 uv) {\n    return .2 * moonTexture(uv).r;\n}\n\nvec3 normalmap(vec2 p) {\n    vec2 e = vec2(1e-3, 0);\n    return normalize(vec3(\n        heightmap(p - e.xy) - heightmap(p + e.xy),\n        heightmap(p - e.yx) - heightmap(p + e.yx),\n        2. * e.x));\n}\n\nvec3 triplanarNormal(vec3 p, vec3 nor, vec3 w) {\n    // compute rotation matrices for the 3 normal maps\n    vec3 xrY = cross(nor, vec3(0,1,0));\n    vec3 xrX = cross(xrY, nor);\n    mat3 xrot = mat3(xrX, sign(nor.x) * xrY, nor);\n\n    vec3 yrY = cross(nor, vec3(0,0,1));\n    vec3 yrX = cross(yrY, nor);\n    mat3 yrot = mat3(yrX, sign(nor.y) * xrY, nor);\n\n    vec3 zrY = cross(nor, vec3(1,0,0));\n    vec3 zrX = cross(zrY, nor);\n    mat3 zrot = mat3(zrX, sign(nor.z) * xrY, nor);\n\n    vec3 tnor = vec3(0);\n    tnor += w.x * xrot * normalmap(p.yz + 5.);\n    tnor += w.y * yrot * normalmap(p.zx + vec2(9., 14.));\n    tnor += w.z * zrot * normalmap(p.xy + vec2(12., 7.));\n    tnor = normalize(tnor);\n    \n    return tnor;\n}\n\nvec3 shading(vec3 ro, vec3 rd) {\n    vec3 ld = normalize(vec3(.5, 1, -.7));\n    vec3 sunCol = vec3(1, .8, .5);\n    vec2 rp = rayProcess(ro, rd, 0., 40.);\n    vec3 p = ro + rp.x * rd;\n    \n    vec3 col = vec3(0);\n    if(rp.y >= 1.) {\n        vec3 nor = calcNormal(p);\n        \n        vec3 w = pow(abs(nor), vec3(10.));\n        w /= w.x + w.y + w.z;\n\n        vec3 tnor = triplanarNormal(p, nor, w);\n        vec3 mat = vec3(0);\n        mat += w.x * moonTexture(p.yz + 5.);\n        mat += w.y * moonTexture(p.zx + vec2(9., 14.));\n        mat += w.z * moonTexture(p.xy + vec2(12., 7.));\n        \n        // lighting\n        vec3 hal = normalize(ld - rd);\n        float dif = max(dot(tnor, ld), 0.);\n        \n        // gspe is an atmospheric specular\n        float spe = dot(nor, ld) * pow(max(dot(-rd, reflect(-ld, tnor)), 0.), 10.);\n        float gspe = pow(max(dot(-rd, reflect(-ld, nor)) + .1, 0.), 7.);\n        float cs = max(dot(ld, rd), 0.);\n        \n        col += mat * .01;\n        col += mat *  dif * vec3(1., .9, .8);\n        col += .6 * mix(spe, gspe, cs*cs) * sunCol;\n        \n        // simplfied fresnel\n        float f = pow(1. - abs(dot(rd, nor)), 5.);\n        col = mix(col, pow(getBgnd(reflect(rd, nor)), vec3(4.)), f);\n        \n    }\n    else {\n        // sky color\n        col = pow(getBgnd(rd), vec3(6.));\n        \n        float ldot = clamp(dot(rd, ld) + .01, 0., 1.);\n        float sun = pow(ldot, 200.);\n        col = mix(col * pow(1. - ldot*ldot, 3.), sunCol, sun);\n        //col += spe * vec3(.1, 0, 0);\n    }\n    \n\treturn clamp(col, 0., 1.);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = (fragCoord - iResolution.xy / 2.) / iResolution.y;\n    vec3 rd = normalize(vec3(uv, -1.07));\n\n    vec2 ang = iMouse.xy / iResolution.xy;\n    float yaw = 7. * ang.x + .2 * iTime;\n    float pitch = -5. * ang.y + 1. + .07 * iTime;\n\n    vec3 camPos = vec3(0., 0., 12);\n    camPos.yz *= rot(pitch); camPos.zx *= rot(yaw);\n    rd.yz     *= rot(pitch);     rd.zx *= rot(yaw);\n    \n    vec3 col = shading(camPos, rd);\n    fragColor = vec4(pow(clamp(col, 0., 1.), vec3(.4545)), 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

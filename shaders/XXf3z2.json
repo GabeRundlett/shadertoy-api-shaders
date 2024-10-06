@@ -1,0 +1,60 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1707669933",
+            "description": "Voronoi terrain",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XXf3z2",
+            "likes": 6,
+            "name": "Voronoi terrain",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "terrain"
+            ],
+            "usePreview": 0,
+            "username": "ianertson",
+            "viewed": 193
+        },
+        "renderpass": [
+            {
+                "code": "#define R iResolution.xy\n#define T (iTime+0.85)\n#define ZERO min(iFrame, 0)\n\nvec3 thash(vec2 p, float s) {\n    return textureLod(iChannel3, fract(s*10.0398281)+((p+s)/256.0), 0.0).xyz;\n}\n\nvec3 snoise(vec2 p, float s) {\n    vec2 id = floor(p);\n    vec2 lv = fract(p);\n    lv = lv*lv*(3.0-2.0*lv);\n    \n    return mix(\n        mix(thash(id+vec2(0,0), s), thash(id+vec2(1,0), s), lv.x),\n        mix(thash(id+vec2(0,1), s), thash(id+vec2(1,1), s), lv.x),\n        lv.y\n    );\n}\n\nvec3 snoise(vec2 p, float s, float freq, const int oct) {\n    vec3 n = vec3(0.0);\n    float amp = 1.0;\n    float div = 0.0;\n    \n    for (int i = ZERO; i < oct; i++) {\n        n += amp*snoise(p*freq, s);\n        div += amp;\n        amp *= 0.5;\n        freq *= 2.0;\n    }\n    \n    return n / div;\n}\n\n#define NEAR 0.003\n#define FAR 90.0\n#define STEPS 50\n\nstruct Light {\n    vec3 p;\n    vec3 c;\n    float s;\n    int t;\n};\n\n#define LIGHT_AMBIENT 0\n#define LIGHT_POINT 1\n\nvec3 getLightDir(Light light, vec3 p) {\n    switch (light.t) {\n        case LIGHT_AMBIENT: return normalize(light.p); break;\n        case LIGHT_POINT: return normalize(light.p - p); break;\n    }\n    \n    return normalize(light.p - p);\n}\n\nvec3 getLightAtt(Light light, vec3 N, vec3 p) {\n    vec3 L = getLightDir(light, p);\n    switch (light.t) {\n        case LIGHT_AMBIENT: return max(0.0, dot(N, L)) * light.c * light.s;\n        case LIGHT_POINT: return (max(0.0, dot(N, L)) * light.s * light.c) /\n            max(0.00001, pow(distance(light.p, p), 2.0));\n    }\n    \n    return vec3(0.0);\n}\n\nstruct Material {\n    float spec;\n};\n\n#define NEW_MATERIAL Material(0.0)\n\nstruct Data {\n    vec3 p;\n    vec3 n;\n    float d;\n    int i;\n    Material m;\n};\n\n#define NEW_DATA Data(vec3(0.0), vec3(0.0), FAR, -1, NEW_MATERIAL)\n\n#define SEED 4.492815\n#define VO1(UV) voro((UV),      SEED + 3.4215, 0.5)\n#define VO2(UV) voro((UV)*0.15, SEED + 76.589, 0.5)\n#define VO3(UV) voro((UV)*10.,  SEED + 58.92764, 0.1)\n\nfloat heightmap(vec2 uv) {\n    mat3x2 vo1 = VO1(uv);\n    mat3x2 vo2 = VO2(uv);\n    mat3x2 vo3 = VO3(uv);\n    float d1 = vo1[2].x*2.0-1.0;\n    float d2 = vo2[1].x;\n    float d3 = vo3[2].x*0.02*d1;\n    vec3 d4 = snoise(uv, 4.049821, 2.0, 4);\n    float g = (d4.x*2.0-1.0)*0.25;\n    \n    float d = d1*d2*2.;\n    \n    float amp = abs(d);\n    amp = amp*amp;\n    return ((d + 0.005*(d * amp))+d3+g)/1.04215;\n}\n\nfloat sdf(vec3 p) {\n    if (p.y > 3.0) return p.y;\n    return (p.y + heightmap(p.xz))/1.87;\n}\n\nbool march(vec3 ro, vec3 rd, inout Data data) {\n    data.d = FAR;\n    float d = 0.0;\n    \n    for (int i = ZERO; i < STEPS; i++) {\n        vec3 p = ro+rd*d;\n        float next = sdf(p);\n        \n        if (abs(next) <= (NEAR * (1.0 + 0.25*d))) break;\n        if (abs(next) >= FAR) return false;\n        \n        d += next;\n    }\n    \n    vec3 p = ro+rd*d;\n    vec2 e = vec2(NEAR, 0.0);\n    vec3 n = normalize(sdf(p) - vec3(\n        sdf(p - e.xyy),\n        sdf(p - e.yxy),\n        sdf(p - e.yyx)\n    ));\n    data.p = p;\n    data.n = n;\n    data.d = d;\n    \n    return true;\n}\n\nvec3 forEachLight(Light light, Data data, vec3 ro, vec3 rd, vec3 diffuse) {\n    vec3 p = data.p;\n    vec3 N = data.n;\n    vec3 L = getLightDir(light, p);\n    vec3 att = getLightAtt(light, N, p);\n    vec3 ref = reflect(L, N);\n    float VdotR = max(0.0, dot(rd, ref));\n    float spec = data.m.spec*pow(VdotR, 32.0);\n    \n    return (diffuse + spec) * att;\n}\n\nvec3 snormalize(vec3 v) { return mix(v, normalize(v), ceil(length(v))); }\n\nvec3 getAlbedo(inout Data data) {\n    vec3 col = vec3(0.0);\n    vec3 p = data.p;\n    mat3x2 vo1 = VO1(p.xz);\n    mat3x2 vo2 = VO2(p.xz);\n    mat3x2 vo3 = VO3(p.xz);\n    vec3 hf1 = snoise(p.xz, 3.398281, 10.0, 4);\n    vec3 hf2 = snoise(p.xz, 16.689348, 50.0, 6);\n    vec3 lf = snoise(p.xz*4., 0.39215);\n    \n    float h = vo1[2].x;\n    \n    vec3 g1 = vec3(mix(0.05, 0.5, hf1.y), mix(0.78, 0.69, hf1.y), mix(0.005, 0.015, hf2.x));\n    vec3 rock1 = vec3(0.79, 0.76, 0.78);\n    \n    float pat = smoothstep(0.5, 0.0, hf1.x);\n    float rockpart = smoothstep(0.4, 0.0, h + pat);\n    float grasspart = 1.0 - rockpart;\n    \n    col = mix(g1, rock1, rockpart);\n    \n    col = mix(col, col*hf2.x, rockpart);\n    col = mix(col, col*col, hf2.y*grasspart*4.);\n    \n    float scr = vo3[2].x;\n    data.m.spec = rockpart*hf2.x*mix(smoothstep(0.3, 0.4, scr), 1.0, lf.x);\n    \n    col = mix(col, col*col, sgt(lf.y, 0.5, 0.5));\n    col = mix(col, 0.5*col+0.5*vec3(1, lf.y, 0), 0.7*grasspart*hf2.y);\n    \n    vec3 grain = abs(snormalize(reflect(cross(hf1*2.0-1.0, hf2*2.0-1.0), lf*2.0-1.0)));\n    col += 0.75*grain.x*grain.y;\n    \n    return clamp(col, 0.0, 1.0);\n}\n\nmat2x3 getRay(vec2 uv, vec4 m) {\n    vec3 ro = vec3(0, 1.0, -4.);\n    vec3 rd = normalize(vec3(uv, 1.0));\n    \n    float c = float(m.z > 0.001);\n    \n    ro.yz *= rot(m.y*TAU*c);\n    ro.xz *= rot(m.x*TAU*c);\n    rd.yz *= rot(m.y*TAU*c);\n    rd.xz *= rot(m.x*TAU*c);\n    \n    if (c <= 0.0) {\n        rd.xz *= rot(sin(T));\n    }\n    \n    \n    ro.z += T*2.5;\n    float h1 = heightmap(ro.xz);\n    float h2 = heightmap(ro.xz + vec2(0, 5.0));\n    float h3 = heightmap(ro.xz + vec2(0, -5.0));\n    float h = (h1+h2+h3)*0.33333333;\n    \n    float amp = smoothstep(0.05, 0.5, abs(h));\n    ro.y += 0.5+1.1*h*amp;\n    ro.y = max(ro.y, 1.0);\n    ro.x += 60.;\n    \n    return mat2x3(ro, rd);\n}\n\n\n#define NUM_LIGHTS 1\n\nvoid mainImage(out vec4 o, in vec2 fc) {\n  vec3 col = vec3(0.0);\n  vec2 uv = (fc-0.5*R.xy)/R.y;\n  vec4 m = vec4((iMouse.xy-0.5*R.xy)/R.y,iMouse.zw);\n  \n  Light lights[NUM_LIGHTS] = Light[](\n      Light(vec3(2, 1.25, 1), vec3(0.97, 0.79, 0.73), 4.0, LIGHT_AMBIENT)\n  );\n  \n  mat2x3 ray = getRay(uv, m);\n  Data data = NEW_DATA;\n  if (march(ray[0].xyz, ray[1], data)) {\n      vec3 albedo = getAlbedo(data);\n      vec3 diffuse = albedo / M_PI;\n      \n      for (int i = ZERO; i < NUM_LIGHTS; i++) {\n          Light light = lights[i];\n          col += forEachLight(light, data, ray[0], ray[1], diffuse);\n      }\n  }\n  \n  col += smoothstep(0.1, 0.5, data.d/FAR)*2.;\n  float VdotL = max(0.0, dot(ray[1], getLightDir(lights[0], ray[0])));\n  col += pow(VdotL, 12.0) * lights[0].c * lights[0].s;\n  \n  col += 0.5*col*luma(col);\n  col = aces(col);\n  col = pow(col, vec3(1.0 / 2.2));\n  \n  o = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define M_PI 3.14159265358979323846264338327950288\n#define TAU (M_PI*2.0)\n#define FUI floatBitsToUint\n\nmat2 rot(float a) { float s = sin(a); float c = cos(a); return mat2(c, s, -s, c); }\nvec3 aces(vec3 x) { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\nfloat luma(vec3 color) { return dot(color, vec3(0.299, 0.587, 0.114)); }\nfloat smin(float a, float b, float k) {float h = clamp(0.5 + 0.5*(a-b)/k, 0.0, 1.0); return mix(a, b, h) - k*h*(1.0-h); }\nfloat smax(float a, float b, float k) {return smin(a, b, -k); }\nfloat sabs(in float v, in float k) {return smax(-v, v, k);}\nfloat sclamp(in float v, in float mi, in float ma, in float k) {return smin(smax(v, mi, k), ma, k);}\nfloat sgt(in float a, in float b, in float s) {float h = clamp(0.5 + 0.5 * (a - b) / s, 0.0, 1.0); return mix(0.0, 1.0, h*h*(3.0-2.0*h));}\nfloat slt(in float a, in float b, in float s) {float h = clamp(0.5 + 0.5 * (b - a) / s, 0.0, 1.0); return mix(0.0, 1.0, h*h*(3.0-2.0*h));}\n\nfloat hash21(vec2 ip, float seed) {\n  uvec2 p = FUI(ip); uint s = FUI(seed); uvec2 k = ~p + ~s;\n  p ^= p << 17U; p ^= p >> 13U; p ^= p << 5U;\n  p += (p ^ k) + p * k; p *= 103U; p += (p ^ (p >> 4U));\n  return float((p.x * k.y + p.y + p.y * k.x + k.y) + (p.x + p.y)) / float(0xFFFFFFFFU);\n}\n\nmat3x2 voro(in vec2 p, in float seed, float k){\n  vec2 Pi = floor(p); vec2 Pf = fract(p);\n  float dmin = 3.0; float dmi = 10.0; float dma = -dmi;\n  vec2 off = vec2(0.0); vec2 dif = vec2(0.0);\n  for(int j=-1; j<=1; j++){\n    for(int i=-1; i<=1; i++){\n      vec2 lattice = vec2(i,j);\n      vec2 offset = vec2(\n      hash21(Pi+lattice, seed+3.328123),\n      hash21(Pi+lattice, seed+5.58931));\n      vec2 diff = lattice + offset - Pf;\n      float ne = dot(diff, diff);\n      float lt = slt(ne, dmi, k);\n      float gt = sgt(ne, dma, k);\n      dmi = smin(dmi, ne, k);\n      dma = smax(dma, ne, k);\n      off = mix(off, offset, lt);\n      dif = mix(dif, diff, lt);\n    }\n  }\n\n  return mat3x2(off, dif, vec2(dmi, dma));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

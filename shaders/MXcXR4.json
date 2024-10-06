@@ -1,0 +1,256 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1718720063",
+            "description": "Erosion params are in the Common tab",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MXcXR4",
+            "likes": 36,
+            "name": "Reintegration erosion",
+            "published": 3,
+            "tags": [
+                "particles",
+                "ca"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 388
+        },
+        "renderpass": [
+            {
+                "code": "//After messing around it seems that a ideal gas equation of state inside of the\n//terrain shaped potential is actually equivalent to (incompressible) water in that same terrain\n\n//It can be derived by stating that the heigh of the fluid + terrain must be constant\n//H = h + rho = const\n//-> grad(H) = 0 -> grad(h + rho) = 0\n//-> grad(h) = -grad(rho)\n\n//So if the gradient of the density (which is our force here) is equal to the \n//negative gradient of the terrain height then their sum should be flat\n//This can be done by adding the negative of the terrain gradient to the SPH \n//estimate of the density gradient\n\n//Since the simulation will tend to 0 net force, the surface will tend to flatness\n\n//Note that in this case mass is exactly proportional to water height\n\n#define FOV 1.5\n#define RAD iResolution.x*0.5\n#define size iResolution.xy\n#define MAX_D size.x*1.5\n\n#define HEIGHT_SCALE 150.0\n\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nvec2 minm(vec2 a, vec2 b)\n{\n    return (a.x < b.x)?a:b;\n}\n\nvec2 suface(vec3 pos, float height, float mat, float thick)\n{\n    return vec2(0.2*sdBox(pos - vec3(size, HEIGHT_SCALE*height - 2.0*thick)*0.5, vec3(size*10.0, thick)), mat);\n}\n\nvec2 DE(vec3 pos, bool underwater)\n{\n    vec2 de = vec2(1e10, -1.0);\n   \tvec4 water = pixel(ch0, pos.xy);\n    if(!underwater) de = minm(de, suface(pos, water.w, 1.0, 1.0));\n    de = minm(de, suface(pos, water.y+0.0005, 0.0, 100.0));\n    return de;\n}\n\n\nvec4 calcNormal(vec3 p, float dx, bool underwater) {\n\tconst vec3 K = vec3(1,-1,0);\n\treturn  (K.xyyx*DE(p + K.xyy*dx, underwater).x +\n\t\t\t K.yyxx*DE(p + K.yyx*dx, underwater).x +\n\t\t\t K.yxyx*DE(p + K.yxy*dx, underwater).x +\n\t\t\t K.xxxx*DE(p + K.xxx*dx, underwater).x)/vec4(4.*dx,4.*dx,4.*dx,4.);\n}\n\n#define M 256.\n#define min_d 0.1\nvec4 ray_march(vec3 p, vec3 r, out float mat, out float td, bool underwater)\n{\n    vec2 d;\n    td = 0.0;\n    for(float i = 0.; i < M; i++)\n    {\n        d = DE(p + td*r, underwater); \n        td += d.x;\n        if(d.x < min_d) break;\n        if(td > MAX_D) {\n            d.y = -1.0;\n            break;\n        }\n    }\n    mat = d.y;\n    return vec4(p + td*r, d.x);\n}\n\n#define SHADOW_RAY_STEPS 512\n#define SHADOW_MIN_DIST 0.01\n#define SHADOW_MAX_DIST 10.0\n#define SHADOW_SOFTNESS 0.05\n\nfloat trace_soft_shadow(vec3 pos, vec3 light_dir, bool underwater) {\n    float res = 1.0;\n    float t = SHADOW_MIN_DIST;\n\n    // March towards the light\n    for (int i = 0; i < SHADOW_RAY_STEPS; ++i) {\n        vec3 current_pos = pos + t * light_dir;\n        float d = DE(current_pos, underwater).x;\n        \n        // If an occluder is too close, reduce the light contribution\n        float r = d / (t * SHADOW_SOFTNESS);\n        res = min(res, r);\n\n        // Advance the ray\n        t += clamp(d, 0.01, 0.1);\n\n        // Early exit if the shadow is completely occluded or beyond max distance\n        if (res < 0.001 || t > SHADOW_MAX_DIST) break;\n    }\n\n    return clamp(res, 0.0, 1.0);\n}\n\nconst float Br = 0.0025;\nconst float Bm = 0.0003;\nconst float g =  0.9800;\nconst vec3 nitrogen = vec3(0.650, 0.570, 0.475);\nconst vec3 Kr = Br / pow(nitrogen, vec3(4.0));\nconst vec3 Km = Bm / pow(nitrogen, vec3(0.84));\n\nvec3 sky_color(in vec3 pos)\n{\n\t// Atmosphere Scattering\n    pos = pos.yzx;\n\tvec3 fsun = light.yzx;\n\tfloat brightnees = exp(-sqrt(pow(abs(min(5.*(pos.y-0.1),0.)),2.)+0.1));\n\tif(pos.y < 0.)\n\t{\n\t\tpos.y = 0.;\n\t\tpos.xyz = normalize(pos.xyz);\n\t}\n    float mu = dot(normalize(pos), normalize(fsun));\n\t\n\tvec3 extinction = mix(exp(-exp(-((pos.y + fsun.y * 4.0) * (exp(-pos.y * 16.0) + 0.1) / 80.0) / Br) * (exp(-pos.y * 16.0) + 0.1) * Kr / Br) * exp(-pos.y * exp(-pos.y * 8.0 ) * 4.0) * exp(-pos.y * 2.0) * 4.0, vec3(1.0 - exp(fsun.y)) * 0.2, -fsun.y * 0.2 + 0.5);\n\tvec3 sky_col = brightnees* 3.0 / (8.0 * 3.14) * (1.0 + mu * mu) * (Kr + Km * (1.0 - g * g) / (2.0 + g * g) / pow(1.0 + g * g - 2.0 * g * mu, 1.5)) / (Br + Bm) * extinction;\n\tsky_col = 0.4*clamp(sky_col,0.,1000.);\n\treturn pow(sky_col,vec3(1.5f)); \n}\n\n\nfloat traceRay(inout vec3 cpos, inout vec3 ray, inout vec3 incom, inout vec3 transm, bool underwater)\n{\n    vec4 fragColor = vec4(0.0);\n    float mat = 0.0;\n    float td = 0.0;\n    vec4 X = ray_march(cpos, ray, mat, td, underwater);\n    cpos = X.xyz;\n    if(td < MAX_D)\n    {\n        vec3 shadow_col = vec3(1.0);\n        if(underwater)\n        {\n            shadow_col = 0.98*exp(-0.05*vec3(0.235,0.110,0.043)*max(td,0.0));\n            transm *= shadow_col;\n            mat = 0.0;\n        }\n        vec4 N0 = calcNormal(X.xyz, 1.0, underwater);\n        vec3 n = normalize(N0.xyz);\n        vec3 l = light;\n        vec3 rd = reflect(ray, n);\n        vec3 col = sky_color(rd);\n        if(mat == 1.0)\n        {\n            float K = 0.025+0.*pow(1. - max(dot(n,rd),0.), 5.0);\n            incom += col*K*transm;\n            transm *= (1.0 - 0.8*K);\n            ray = refract(ray, n, 0.85);\n            cpos += ray*0.1;\n        }\n        if(mat == 3.0)\n        {\n            float K = 0.8+0.2*pow(1. - max(dot(n,rd),0.), 5.0);\n            incom += col*K*transm;\n            transm *= (1.0 - 0.8*K);\n            ray = refract(ray, n, 0.85);\n            cpos += ray*0.1;\n        }\n        if(mat == 0.0)\n        {\n            float ldotn = dot(l, n);\n            float dn0 = 0.5*ldotn+0.5;\n            float dn1 = max(ldotn,0.0);\n            float dn = mix(dn0, dn1, 0.0);\n            vec3 base_color = vec3(242,212,194)/256.0;\n            vec3 eroded_color = vec3(191,170,170)/350.0;\n            float eroded = abs(pixel(ch1, cpos.xy).y);\n            vec3 albedo = mix(base_color, eroded_color, smoothstep(0.0, 0.3, eroded));\n            //shadow_col *= 0.75*trace_soft_shadow(cpos+l*1.0, l, true) + 0.25;\n            incom += shadow_col * albedo * dn * transm;\n        }\n        if(mat == 2.0)\n        {\n            float dn = max(dot(l, n), 0.0);\n            incom += shadow_col * vec3(0.412,0.400,1.000) * dn * transm;\n        }\n    }\n    else\n    {    \n        //background\n        incom += sky_color(ray) * transm;\n    }\n    \n    \n    return mat;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    // Normalized pixel coordinates \n    vec2 pos = (fragCoord - iResolution.xy*0.5)/max(iResolution.x,iResolution.y);\n    \n    vec2 uv = iMouse.xy/iResolution.xy;\n    vec2 angles = vec2(1.5+uv.x*1.5, -0.3+uv.y*0.5)*PI;\n    \n    vec3 camera_z = vec3(cos(angles.x)*cos(angles.y),sin(angles.x)*cos(angles.y),sin(angles.y));\n    vec3 camera_x = normalize(vec3(cos(angles.x+PI*0.5), sin(angles.x+PI*0.5),0.)); \n    vec3 camera_y = -normalize(cross(camera_x,camera_z));\n    \n    //tracking particle\n    vec4 fp = vec4(size.xyxy*0.5);\n    \n    vec3 ray = normalize(camera_z + FOV*(pos.x*camera_x + pos.y*camera_y));\n    vec3 cam_pos = vec3(fp.xy, 0.0) - RAD*vec3(cos(angles.x)*cos(angles.y),sin(angles.x)*cos(angles.y),sin(angles.y));\n    \n    vec4 sphere = vec4(0.,0.,0., 1.);\n    \n    vec3 incom = vec3(0.0);\n    vec3 transm = vec3(1.0);\n    float mat = traceRay(cam_pos, ray, incom, transm,false);\n    \n    if(mat == 1.0) //refraction ray\n    {\n\n        traceRay(cam_pos, ray, incom, transm, true);\n    }\n    \n    //fragColor.xyz = vec3(mat/2.0);\n    fragColor.xyz = tanh(1.5*incom);\n    //fragColor.xyz = transm;\n    //fragColor.xyz = 0.5+0.5*ray;\n \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define Bf(p) mod(p,iResolution.xy)\n#define Bi(p) ivec2(mod(p,R))\n#define texel(a, p) texelFetch(a, Bi(p), 0)\n#define pixel(a, p) texture(a, Bf(p)/iResolution.xy)\n#define ch0 iChannel0\n#define ch1 iChannel1\n#define ch2 iChannel2\n#define ch3 iChannel3\n\n#define PI 3.14159265\n\n#define loop(i,x) for(int i = 0; i < x; i++)\n#define range(i,a,b) for(int i = a; i <= b; i++)\n\n#define dt 1.0\n//gravity\n#define GRAV 6.0 \n\n//how fast is the terrain eroding from water\n#define HYDRAULIC_EROSION 0.02\n//how fast is the terrain eroding from heat\n#define THERMAL_EROSION 0.0005\n//effectively makes sediment vanish (not realistic)\n#define SEDIMENT_DECAY 0.1\n//avoid sharp terrain\n#define STRUCTURAL_INSTABILITY 0.1\n//how fast is the water evaporating and depositing the sediment\n#define EVAPORATION 0.004\n//how hard is to erode deeper levels\n#define DEPTH_HARDNESS 400.0\n#define RAIN_AMOUNT 0.0001\n\n//distribution diameter\n// 0 - completely particle like\n// >1.0 - field-like\n#define dist 1.0\n//diffusion\n#define dif 0.1\n//estimation str\n#define difd 0.0\n\n//initial height\n#define mass -100.4\n\n#define VOID_POS vec2(1650)\n#define VOID_SIZE 100.0\n\n#define SOURCE_POS vec2(R.xy*0.5+0.0*200.0*vec2(sin(time),cos(time)))\n#define SOURCE_SIZE 0.0\n\n#define border_h 5.\nvec2 R;\nvec4 Mouse;\nfloat time;\nconst vec3 light = normalize(vec3(-3,1.0,1));\n\n\n//estimating the in-cell distribution size\nvec2 destimator(vec2 dx, float M)\n{\n    //size estimate by in-cell location\n    return dist*clamp(1.0 - difd*abs(dx), 0.002, 1.0) + M*dif*dt;\n}\n\n\n\n\n// random hash\nfloat hash( in ivec2 q )\n{\n    // You SHOULD replace this by something better. Again, Do Not Use in production.\n    int n = q.x*130 + q.y*57;\n    n = (n << 13) ^ n;\n    n = n * (n * n * 15731 + 789221) + 1376312589;\n    return float((n>>8)&0x007fffff)/float(0x007fffff);\n}\n\n// stolen from IQ\n// basic value noise\nfloat noise( in vec2 x, in int p )\n{\n    ivec2 i = ivec2(floor(x));\n     vec2 f =       fract(x);\n    \n    f = f*f*(3.0-2.0*f);\n    \n    return mix(mix( hash((i+ivec2(0,0))&(p-1)), \n                    hash((i+ivec2(1,0))&(p-1)),f.x),\n               mix( hash((i+ivec2(0,1))&(p-1)), \n                    hash((i+ivec2(1,1))&(p-1)),f.x),f.y);\n}\n\n// fractal noise\nfloat fbm( in vec2 x, in int p )\n{\n    float f = 0.0;\n    float s = 0.5;\n    for( int i=0; i<8; i++ )\n    {\n        f += s*noise( x, p );\n        s *= 0.45;\n        x *= 2.0;\n        p *= 2;\n    }\n    return f;\n}\n\nfloat terrainInit(vec2 pos)\n{\n    float h = (0.018*(fbm(pos/R, 1) - 0.62) + 0.003)*R.x;\n    return h;\n}\n\n\nmat2 Rot(float ang)\n{\n    return mat2(cos(ang), -sin(ang), sin(ang), cos(ang)); \n}\n\nvec2 Dir(float ang)\n{\n    return vec2(cos(ang), sin(ang));\n}\n\n\nfloat sdBox( in vec2 p, in vec2 b )\n{\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\n\nfloat sdCircle( vec2 p, float r )\n{\n    return length(p) - r;\n}\n\nfloat sdSegment( in vec2 p, in vec2 a, in vec2 b )\n{\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat sdArrow( in vec2 p, in vec2 a, in vec2 b )\n{\n    float sdl = sdSegment(p,a,b);\n    vec2 delta = normalize(b-a);\n    sdl = min(sdl, sdSegment(p,b,b-delta*0.05 + 0.05*delta.yx*vec2(-1,1)));\n    sdl = min(sdl, sdSegment(p,b,b-delta*0.05 - 0.05*delta.yx*vec2(-1,1)));\n    return sdl;\n}\n\nfloat border(vec2 p)\n{\n    float bound = -sdBox(p - R*0.5, R*vec2(0.5, 0.5)); \n    float box = sdBox(Rot(0.*time)*(p - R*vec2(0.5, 0.6)) , R*vec2(0.05, 0.01));\n    float drain = -sdBox(p - R*vec2(0.5, 0.7), R*vec2(1.5, 0.5));\n    return max(drain,min(bound, box));\n}\n\n#define h 1.\nvec3 bN(vec2 p)\n{\n    vec3 dx = vec3(-h,0,h);\n    vec4 idx = vec4(-1./h, 0., 1./h, 0.25);\n    vec3 r = idx.zyw*border(p + dx.zy)\n           + idx.xyw*border(p + dx.xy)\n           + idx.yzw*border(p + dx.yz)\n           + idx.yxw*border(p + dx.yx);\n    return vec3(normalize(r.xy), r.z + 1e-4);\n}\n\nvec2 decode(float x)\n{\n    uint X = floatBitsToUint(x);\n    return unpackSnorm2x16(X); \n}\n\nfloat encode(vec2 x)\n{\n    uint X = packSnorm2x16(clamp(x, vec2(-1.), vec2(1.)));\n    return uintBitsToFloat(X); \n}\n\nstruct particle\n{\n    vec2 X;\n    vec2 V;\n    vec2 M;\n};\n    \nparticle getParticle(vec4 data, vec2 pos)\n{\n    particle P; \n    P.X = decode(data.x) + pos;\n    P.V = decode(data.y);\n    P.M = data.zw;\n    return P;\n}\n\nvec4 saveParticle(particle P, vec2 pos)\n{\n    P.X = clamp(P.X - pos, vec2(-0.5), vec2(0.5));\n    return vec4(encode(P.X), encode(P.V), P.M);\n}\n\nvec3 hash32(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy+p3.yzz)*p3.zyx);\n}\n\nfloat G(vec2 x)\n{\n    return exp(-dot(x,x));\n}\n\nfloat G0(vec2 x)\n{\n    return exp(-length(x));\n}\n\n\nvec3 distribution(vec2 x, vec2 p, vec2 K)\n{\n    vec4 aabb0 = vec4(p - 0.5, p + 0.5);\n    vec4 aabb1 = vec4(x - K*0.5, x + K*0.5);\n    vec4 aabbX = vec4(max(aabb0.xy, aabb1.xy), min(aabb0.zw, aabb1.zw));\n    vec2 center = 0.5*(aabbX.xy + aabbX.zw); //center of mass\n    vec2 size = max(aabbX.zw - aabbX.xy, 0.); //only positive\n    float m = size.x*size.y/(K.x*K.y); //relative amount\n    //if any of the dimensions are 0 then the mass is 0\n    return vec3(center, m);\n}\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "float terrainHeight(vec2 pos)\n{\n    return texel(ch1, pos).x;\n}\n\nvec2 terrainGrad(vec2 pos)\n{\n    const float eps = 1.0;\n    vec2 n = vec2(terrainHeight(pos + vec2(eps, 0.0)) - terrainHeight(pos - vec2(eps, 0.0)),\n                  terrainHeight(pos + vec2(0.0, eps)) - terrainHeight(pos - vec2(0.0, eps))) / (2.0*eps);\n    return n;\n}\n\n//smooth out the heighfield\nvoid mainImage( out vec4 col, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    \n    col = texel(ch1, pos);\n    \n    float laplacian = terrainHeight(pos + vec2(1,0)) + terrainHeight(pos + vec2(0,1)) +\n                      terrainHeight(pos - vec2(1,0)) + terrainHeight(pos - vec2(0,1)) - 4.0*col.x;\n    \n    col.x = terrainInit(pos);\n    \n    pos = floor(pos);\n    vec4 data = texel(ch0, pos);\n    particle P = getParticle(data, pos);\n    \n    vec2 mass_delta = P.M/(1.0 - EVAPORATION*dt) - P.M;\n    \n    float momentum = length(P.V)*P.M.x;\n    float eroded = min(0.0, col.y);\n    col.z = HYDRAULIC_EROSION*momentum * dt * (1.0 - STRUCTURAL_INSTABILITY*laplacian) / (DEPTH_HARDNESS*eroded*eroded+1.0); //sediment erosion\n    col.y -= col.z;\n    col.y += THERMAL_EROSION * laplacian * dt;\n    col.z -= SEDIMENT_DECAY*dt*col.z;\n    col.y += mass_delta.y; //sediment deposition\n   // col.y = clamp(col.y, -0.15, 0.0);\n    \n    col.x += col.y;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float terrainHeight(vec2 pos)\n{\n    return pixel(ch1, pos).x;\n}\n\nvec2 terrainGrad(vec2 pos)\n{\n    const float eps = 1.0;\n    vec2 n = vec2(terrainHeight(pos + vec2(eps, 0.0)) - terrainHeight(pos - vec2(eps, 0.0)),\n                  terrainHeight(pos + vec2(0.0, eps)) - terrainHeight(pos - vec2(0.0, eps))) / (2.0*eps);\n    return n;\n}\n\n\n\n//diffusion and advection basically\nvoid Reintegration(sampler2D ch, inout particle P, vec2 pos)\n{\n    //basically integral over all updated neighbor distributions\n    //that fall inside of this pixel\n    //this makes the tracking conservative\n    range(i, -2, 2) range(j, -2, 2)\n    {\n        vec2 tpos = pos + vec2(i,j);\n        vec4 data = texel(ch, tpos);\n       \n        particle P0 = getParticle(data, tpos);\n       \n        vec2 dx0 = P0.X - tpos;\n        vec2 difR = destimator(dx0, P0.M.x);\n        P0.X += P0.V*dt; //integrate position\n\t    \n        vec3 D = distribution(P0.X, pos, difR);\n        //the deposited mass into this cell\n        vec2 m = P0.M*D.z;\n        \n        //add weighted by mass\n        P.X += D.xy*m.x;\n        P.V += P0.V*m.x;\n        \n        //add mass\n        P.M += m;\n    }\n    \n    //normalization\n    if(P.M.x != 0.)\n    {\n        P.X /= P.M.x;\n        P.V /= P.M.x;\n    }\n}\n\nvoid mainImage( out vec4 U, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    ivec2 p = ivec2(pos);\n\n    vec4 data = texel(ch0, pos); \n    \n    particle P;\n    \n   \tReintegration(ch0, P, pos);\n    \n    vec4 terrainData = pixel(ch1, pos);\n    //sediment added to flow\n    P.M.y += terrainData.z; \n    \n    //rain and such\n    P.M.x += RAIN_AMOUNT*dt;\n    \n    //evaporation and sediment deposition\n    P.M = P.M*(1.0 - EVAPORATION*dt);\n    \n   \t//initial condition\n    if(iFrame < 1)\n    {\n        //random\n        vec3 rand = hash32(pos + vec2(0., 1.0)+0.28);\n        P.X = pos;\n        P.V = 0.65*(rand.xy-0.5) + vec2(0., 0.);\n        float th = terrainHeight(P.X);\n        P.M = vec2(max(mass - th, 0.0001), 0.);\n    }\n    \n    U = saveParticle(P, pos);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float terrainHeight(vec2 pos)\n{\n    return pixel(ch1, pos).x;\n}\n\nvec2 terrainGrad(vec2 pos)\n{\n    const float eps = 1.0;\n    vec2 n = vec2(terrainHeight(pos + vec2(eps, 0.0)) - terrainHeight(pos - vec2(eps, 0.0)),\n                  terrainHeight(pos + vec2(0.0, eps)) - terrainHeight(pos - vec2(0.0, eps))) / (2.0*eps);\n    return n;\n}\n\n\n//force calculation and integration\nvoid Simulation(sampler2D ch, inout particle P, vec2 pos)\n{\n    //Compute the SPH force\n    vec2 F = vec2(0.);\n    vec2 F0 = vec2(0.);\n    vec3 avgV = vec3(0.);\n    range(i, -2, 2) range(j, -2, 2)\n    {\n        vec2 tpos = pos + vec2(i,j);\n        vec4 data = texel(ch, tpos);\n        particle P0 = getParticle(data, tpos);\n        vec2 dx = P0.X - P.X;\n        vec2 dx0 = P0.X - tpos;\n        float P1 = P.M.x;\n        float P2 = P0.M.x;\n        float avgP = GRAV*0.1*P0.M.x*(P1+P2); \n        F -= 0.5*G(1.*dx)*avgP*dx;\n        avgV += P0.M.x*G(1.*dx)*vec3(P0.V,1.);\n    }\n    //the condition of grad(terrain_heigh) = - grad(water_height) produces a flat surface\n    F -= GRAV*0.23*P.M.x*terrainGrad(pos); //magic number tuned to make mass == height\n    \n    #define MAX_F 0.075\n    float f = length(F);\n    F *= (f > MAX_F)?(MAX_F/f):1.;\n    avgV.xy /= avgV.z;\n\n    //viscosity\n    //F += .5*P.M.x*(avgV.xy - P.V);\n\n    if(Mouse.z > 0.)\n    {\n        vec2 dm =(Mouse.xy - Mouse.zw)/10.; \n        float d = distance(Mouse.xy, P.X)/20.;\n        F += 0.001*dm*exp(-d*d);\n        P.M.x += 0.0*exp(-d*d);\n    }\n    \n    if(distance(P.X, VOID_POS) < VOID_SIZE*0.1) \n    {\n        P.M.x -= P.M.x*0.1*dt;\n    }\n    \n    if(distance(P.X, SOURCE_POS) < SOURCE_SIZE*0.5) \n    {\n        P.M.x += 0.01*dt;\n    }\n    \n    //integrate\n    F -= P.V*0.0001; //friction with the ground\n    P.V += F*dt/P.M.x;\n\n    \n    //velocity limit\n    float v = length(P.V);\n    #define MAX_V 1.75\n    P.V  *= (v > MAX_V)?(MAX_V/v):1.;\n}\n\n\nvoid mainImage( out vec4 U, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    ivec2 p = ivec2(pos);\n        \n    vec4 data = texel(ch0, pos); \n    \n    particle P = getParticle(data, pos);\n    \n    if(P.M.x != 0.) //not vacuum\n    {\n        Simulation(ch0, P, pos);\n    }\n\n    U = saveParticle(P, pos);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float terrainHeight(vec2 pos)\n{\n    return pixel(ch1, pos).x;\n}\n\nvec2 terrainGrad(vec2 pos)\n{\n    const float eps = 1.0;\n    vec2 n = vec2(terrainHeight(pos + vec2(eps, 0.0)) - terrainHeight(pos - vec2(eps, 0.0)),\n                  terrainHeight(pos + vec2(0.0, eps)) - terrainHeight(pos - vec2(0.0, eps))) / (2.0*eps);\n    return n;\n}\n\n\n//smooth out the heighfield\nvoid mainImage( out vec4 col, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    float rho = 0.;\n    float hei = 0.;\n    float weight = 0.0;\n    vec2 grad = vec2(0.0);\n    range(i, -2, 2) range(j, -2, 2)\n    {\n        vec2 pos0 = pos + vec2(i,j);\n        vec4 data = texel(ch0, pos0);\n        particle P0 = getParticle(data, pos0);\n        vec2 dx = pos - P0.X;\n        float w = G(0.75*dx);\n        weight += w;\n        rho += P0.M.x * w;\n        hei += terrainHeight(pos0)*w;\n    }\n    col.x = rho/weight;\n    col.y = hei/weight;\n    col.w = col.x + col.y;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

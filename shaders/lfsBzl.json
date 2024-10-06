@@ -1,0 +1,157 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1724621309",
+            "description": "A less noisy version of my previous shader (https://www.shadertoy.com/view/lcXfW7) which uses blurring, both within a frame and between frames, to increase stability. There are a ton of changes, and this won't be the last iteration, but I'm happy with it.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lfsBzl",
+            "likes": 0,
+            "name": "Less Noisy RT Spheres",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "rt"
+            ],
+            "usePreview": 0,
+            "username": "triggthediscovery",
+            "viewed": 79
+        },
+        "renderpass": [
+            {
+                "code": "// This is an expansion of my previous RT demo.\n// It's primary focus is adding an accumulation/\n// blurring step to increase temporal stability.\n// The general layout is as follows.\n//\n// Image - Simply redisplays Buffer B.\n// Buffer A - Main buffer, does raycasting.\n// Buffer B - Accumultion buffer. blurs the light \n//            both within and between frames.\n// Buffer C - Copy of B, allows accumulation\n//            without overwriting issues.\n//\n// This shader is kinda messy and I'll probably\n// release another updated verison at some point\n// but I think this is decent enough to release.\n// The big thing I need to change is to add\n// colored bounce light. Currently diffuse light\n// is stored as a single number, which is\n// incorrect. That said, I do like this version.\n//\n// I've noticed this shader doens't well work on\n// my phone for some reason. If there's a simple\n// fix I'll apply it here, but I'd guess it won't\n// get fixed until the next version.\n//\n// all shaders provided under CC0.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    // Time varying pixel color\n    vec4 col = texture(iChannel0, uv);\n\n    // Output to screen\n    fragColor = vec4(col.xyz, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This is the main raycasting shader.\n// It produces and image with RGB representing\n// the surface colors, and A representing\n// both distance and diffuse light packed\n// together. This allows diffuse lighting\n// to be blended across multiple frames.\n\nvec3 light_dir;\n\nstruct Sphere {\n    vec3 pos;\n    float size;\n    vec3 col;\n    bool em;\n};\n\nstruct NormAndCol {\n    vec3 col;\n    vec3 norm;\n    float dist;\n    bool em;\n};\n\nSphere spheres[10];\n\n// Inverse of reflectivity, the higher it is, \n// the more scattered light will be.\nconst float reflectivity_i = 100.0;\n\nconst float floor_level = 0.0;\nconst float checkerboard = 0.5;\nconst float checkerboard2 = checkerboard/2.0;\n\n// I'd suggest not changing these, as the behavior\n// is wonky and even I don't fully understand it.\nconst float ambient_light = 0.1;\nconst float light_adj = 0.1;\n\nconst int num_spheres = 4;\n\nconst float randvals[30] = float[30](8919.1292, 1784.5088, 6216.0980, 6492.3341,\n    2646.1919, 4576.1178, 4730.7670, 7761.9003, 5326.5280, 3548.3277,\n    3548.3277, 7780.2459, 1535.5654, 4564.7646, 0958.7310, 7809.0190,\n    8593.0232, 9513.5604, 0941.2978, 5740.3064, 8812.9880, 4678.4305,\n    0878.8439, 1279.8077, 3661.6533, 8763.0873, 2675.9525, 2757.7824, 1535.5654, 4564.7646);\n    \nconst float randvals_r[6] = float[6](5989.3674, 8468.4691, 7914.5528, 9398.3939, 7914.5528, 9398.3939);\nconst float reflect_r[4] = float[4](16.0*reflectivity_i, 14.0*reflectivity_i, 12.0*reflectivity_i, 10.0*reflectivity_i);\n\nvec2 muv;\n\nSphere make_sphere(vec3 pos, float size, vec3 col, bool em) {\n    Sphere ret;\n    \n    ret.pos = pos;\n    ret.size = size;\n    ret.col = col;\n    ret.em = em;\n    \n    return ret;\n}\n\nNormAndCol n_a_c(vec3 col, vec3 norm, float dist) {\n    NormAndCol ret;\n    \n    ret.col = col;\n    ret.norm = norm;\n    ret.dist = dist;\n    ret.em = false;\n    \n    return ret;\n}\n\nNormAndCol n_a_c(vec3 col, vec3 norm, float dist, bool em) {\n    NormAndCol ret;\n    \n    ret.col = col;\n    ret.norm = norm;\n    ret.dist = dist;\n    ret.em = em;\n    \n    return ret;\n}\n\nNormAndCol sphere_check(vec3 in_vec, vec3 in_pos, int num) {\n    Sphere sphere = spheres[num];\n\n    float dist = dot(in_vec, normalize(sphere.pos - in_pos)) * distance(in_pos, sphere.pos);\n\n    float center_dist = distance(in_pos + (in_vec * dist), sphere.pos);\n    \n    if (dist < 0.001 || center_dist > sphere.size) {\n        return n_a_c(vec3(0), vec3(0), max_dist+1.0);\n    }\n \n    float surface_dist = dist - sqrt((sphere.size*sphere.size) - (center_dist*center_dist));\n\n    vec3 norm = normalize(in_pos + (in_vec * surface_dist) - sphere.pos);\n\n    return n_a_c(sphere.col, norm, surface_dist, sphere.em);\n}\n\nNormAndCol floor_check(vec3 in_vec, vec3 in_pos) {\n    if (in_pos.y < (floor_level+0.0011) || in_vec.y > -0.03) {\n        return n_a_c(vec3(0), vec3(0), max_dist+1.0);\n    }\n    \n    float dist = (in_pos.y - floor_level) / -in_vec.y;\n\n    vec3 int_point = in_pos + (in_vec*dist);\n    \n    bool x_int = mod(int_point.x, checkerboard) < checkerboard2;\n    bool z_int = mod(int_point.z, checkerboard) < checkerboard2;\n    \n    float fog = (clamp(pow(dist/10.0, 0.2)-0.65, 0.0, 0.5));\n\n    if (x_int ^^ z_int) {\n        return n_a_c(vec3(fog*0.8), vec3(0,1,0), dist);\n    } else {\n        return n_a_c(vec3((1.0-fog)*0.8), vec3(0,1,0), dist);\n    }\n}\n\n// Basic raycast to get surface properties of closest object.\nNormAndCol raycast(vec3 in_vec, vec3 in_pos, vec3 sky_col) {\n    NormAndCol best = n_a_c(sky_col, vec3(1,0,0), max_dist);\n    \n    NormAndCol floor_pt = floor_check(in_vec, in_pos);\n    \n    if (floor_pt.dist < best.dist) {\n        best = floor_pt;\n    }\n    \n    for (int i=0; i< num_spheres; i++) {\n        NormAndCol sphere_pt = sphere_check(in_vec, in_pos, i);\n\n        if (sphere_pt.dist < best.dist) {\n            best = sphere_pt;\n        }\n    }\n    \n    return best;\n}\n\n// Raycast with sun shadow.\nvec3 raycast_sun(vec3 in_vec, vec3 in_pos, vec3 sky_col) {\n    NormAndCol best = raycast(in_vec, in_pos, sky_col);\n    \n    vec3 hit_pos = in_pos + (in_vec * best.dist) + (best.norm*0.001);\n    \n    NormAndCol sun_ray = raycast(light_dir, hit_pos, sky_col);\n\n    if (best.dist < max_dist && !best.em) {\n        if (sun_ray.dist < 200.0 || dot(best.norm, light_dir) <= 0.0) {\n            return best.col * ambient_light;\n        } else {\n            return best.col * (dot(best.norm, light_dir)+light_adj);\n        }\n    } else {\n        return best.col;\n    }\n}\n\nfloat rtime;\n\n// Will produce a psuedorandom number based on reflectivity. \nfloat prand(float inp, float r) {\n    return (mod((inp * ((r*100.0) + muv.x + muv.y + rtime)), reflectivity_i)-(reflectivity_i/2.0));\n}\n\n// Will produce a psuedorandom number beween -0.5 and 0.5. \nfloat prandg(float inp, float r) {\n    return (mod((inp * ((r*134.342345) + muv.x + muv.y + rtime)), 1.0)-(0.5));\n}\n\n// Will produce a vector, perturbed by a random amount controled by reflec. \nvec3 vrand(vec3 n_norm, vec3 hit_pos, vec3 randval, float reflec) {\n    vec3 uv_off = vec3(prand(hit_pos.x, randval.x), prand(hit_pos.y, randval.y), prand(hit_pos.z, randval.z))/reflec; \n    return normalize((dot(n_norm, uv_off) < 0.0 ? -uv_off : uv_off) + n_norm);\n}\n\n// First bounce. Shoots out 2 rays to sample the environment.\nvec3 raycast_v1(vec3 in_vec, vec3 in_pos, vec3 sky_col) {\n    NormAndCol best = raycast(in_vec, in_pos, sky_col);\n    \n    if (best.dist >= max_dist) {\n        return sky_col;\n    }\n    \n    vec3 hit_pos = in_pos + (in_vec * best.dist) + (best.norm*0.001);\n    \n    NormAndCol sun_ray = raycast(light_dir, hit_pos, sky_col);\n\n    vec3 a_norm = best.norm;\n\n    vec3 bounce_col_a = vec3(0);\n\n    for (int i=0; i<2; i++) {\n        vec3 r_r = vec3(randvals[i+1], randvals[i+2], randvals[i+3]);\n        bounce_col_a += raycast_sun(vrand(a_norm, hit_pos, r_r, 1.0), hit_pos, sky_col/150.0);\n    }\n\n    bounce_col_a *= 2.0;\n     \n    vec3 col;\n    \n    if (best.dist < max_dist) {\n        if (sun_ray.dist < 200.0 || dot(best.norm, light_dir) <= 0.0) {\n            col = best.col * ambient_light;\n        } else {\n            col = best.col * (dot(best.norm, light_dir)+light_adj);\n        }\n    } else {\n        col = best.col;\n    }\n    \n    if (best.em) {\n        bounce_col_a = best.col*10.0;\n    }\n    \n    // This is a bit of a hack. I simply add the bounce color\n    // to the primary color.  \n    col += bounce_col_a*1.0;\n    \n    return col;\n}\n\n// Primary raycast with bounces.\nvec4 raycast_full(vec3 in_vec, vec3 in_pos, vec3 sky_col) {\n    NormAndCol best = raycast(in_vec, in_pos, sky_col);\n   \n    if (best.dist >= max_dist) {\n        return vec4(sky_col, packNums(best.dist, 0.0));\n    }\n    \n    vec3 hit_pos = in_pos + (in_vec * best.dist) + (best.norm*0.001);\n    \n    NormAndCol sun_ray = raycast(light_dir, hit_pos, sky_col);\n\n    // r_norm is the reflection of the input vector, a_norm is the\n    // surface vector. These are used to approximate reflections and\n    // ambient lighting.\n    vec3 r_norm = in_vec - (2.0*dot(best.norm, in_vec)*best.norm);\n    r_norm = normalize(r_norm);\n    \n    vec3 a_norm = best.norm;\n\n    // A quick explanation, bounce_col_r is for relections which override\n    // the surface color somewhat (as defined by reflection_strength).\n    // bounce_col_a overwrites the color somewhat, but is mostly multiplicative.\n    vec3 bounce_col_a = vec3(0);\n    vec3 bounce_col_r = vec3(0);\n\n    for (int i=0; i<2; i++) {\n        vec3 r_r = vec3(randvals_r[i], randvals_r[i+1], randvals_r[i+2]);\n        bounce_col_r += raycast_sun(vrand(r_norm, hit_pos, r_r, reflect_r[i]), hit_pos, sky_col);\n    }\n\n    for (int i=0; i<12; i++) {\n        vec3 r_r = vec3(randvals[i], randvals[i+1], randvals[i+2]);\n        bounce_col_a += raycast_v1(vrand(a_norm, hit_pos, r_r, 1.0), hit_pos, sky_col/150.0);\n    }\n\n    bounce_col_r /= 2.0;\n    bounce_col_a *= 2.0;\n\n    // This is intended to approximate fresnel. The reflection\n    // is stronger at shallow angles.\n    float reflection_strength = 1.0 - abs(dot(a_norm, in_vec));\n    \n    if (reflection_strength > 0.5) {\n        reflection_strength = (cos((reflection_strength)*6.28)+1.0)/2.0;\n    } else {\n        reflection_strength = 0.0;\n    }\n    \n    reflection_strength *= clamp(log(best.dist+1.0)/10.0, 0.01, 0.9);\n    reflection_strength = clamp(reflection_strength, 0.0, 1.0);\n    \n    vec3 col;\n    \n    if (best.dist < max_dist) {\n        if (sun_ray.dist > 200.0 && dot(best.norm, light_dir) > 0.0) {\n            bounce_col_a += vec3((dot(best.norm, light_dir))*40.0);\n        }\n        \n        col = best.col * ambient_light;\n\n        col *= (1.0-reflection_strength);\n        col += bounce_col_r*reflection_strength;\n    } else {\n        col = best.col;\n    }\n    \n    if (best.em) {\n        bounce_col_a = best.col*10.0;\n    }\n\n    return vec4(col, packNums(best.dist, (bounce_col_a.r+bounce_col_a.g+bounce_col_a.b)/3.0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    // This is where the spheres are defined.\n    spheres[0] = make_sphere(vec3(cos((iTime)/1.0)/2.5,0.7,0.7), 0.1, vec3(1,0,0), false);\n    spheres[1] = make_sphere(vec3(0.65,0.3,0.0), 0.55, vec3(0,1,0), false);\n    spheres[2] = make_sphere(vec3(-0.65,0.3,0.0), 0.55, vec3(0,0,1), false);\n    spheres[3] = make_sphere(vec3(0.0,0.8,1.0), 0.2, vec3(30), true);\n\n    vec2 uv = fragCoord/iResolution.xy;\n\n    uv -= vec2(0.5);\n\n    // some psuedorandom number mashing.\n    rtime = mod(iTime * 343455.535345, 100.0);\n    \n    muv = uv;\n    muv.x = prand(muv.x, 5989.367234534);\n    muv.y = prand(muv.y, 6752.21973456);\n\n    float ang = (iTime+30.0)/10.0;\n    float dist = 3.0;\n\n    vec3 in_vec_p = vec3(sin(ang)*dist, 0.8, -(cos(ang)*dist));\n    vec3 in_vec_d = normalize(-in_vec_p);\n    light_dir = normalize(vec3(0.0, 1.0, -1.0));\n    \n    float fov = 2.8;\n    vec3 in_vec_d_hold = in_vec_d;\n\n    in_vec_d.x += (in_vec_d_hold.z*(uv.x*fov));\n    in_vec_d.z -= (in_vec_d_hold.x*(uv.x*fov));\n    in_vec_d.y += uv.y*fov/(iResolution.x/iResolution.y);\n    \n    in_vec_d = normalize(in_vec_d);\n    \n    // Sky gradient.\n    vec3 col = mix(vec3(0.6,0.8,1), vec3(0.3,0.5,1), uv.y);\n\n    vec4 n_col = raycast_full(in_vec_d, in_vec_p, col);\n\n    fragColor = n_col;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// This is the accumulation shader. it applies a blur\n// To both the current frame, and the previous frame.\n// This allows samples to average out over time.\n// There's also a fair amount of logic to handle\n// disocclsion (when a fast moving object reveals/\n// obscures part of a frame).\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord;\n    vec2 uv2 = fragCoord/iResolution.xy;\n\n    vec4 col = texture(iChannel0, uv/iResolution.xy);\n    \n    float light = 0.0;\n    float plight = 0.0;\n\n    float m_comb = texture(iChannel0, (uv)/iResolution.xy).w;\n    float m_col = unpackNums(m_comb).y; \n    float m_dist = unpackNums(m_comb).x; \n    \n    // This determines how much blurring to perform.\n    // decently heavy past 4.\n    int dist = 4;\n    \n    // trig1 and 2 exist to keep track of how many valid\n    // samples exist. valid samples are those in the same\n    // plane as the raycast hit. samples in the same plane\n    // should share similar illumination.\n    float trig1 = 0.0;\n    float trig2 = 0.0;\n\n    // The idea is simple, draw a box around the current point\n    // whose width is defined by \"dist\". a dist of 1 goes 1 out\n    // on all sides, 2 goes 2 out. The strength of a sample\n    // decreases the farther out you go, and the average of\n    // all samples is then taken.\n    for (int x=-dist; x<=dist; x++) {\n        for (int y = -dist; y<=dist; y++) {\n            float l_d = texture(iChannel0, (uv + vec2(x, y))/iResolution.xy).w;\n            \n            float col = unpackNums(l_d).y;\n            float p_dist = unpackNums(l_d).x;\n            \n            float str = (float(abs(x)+abs(y))/float(dist+dist));\n            \n            float thresh = -0.2 + (m_dist / 5.0);\n            \n            // This is an occlusion test. only blur between\n            // points which are on the same plane.\n            if (abs(p_dist - m_dist) < thresh || p_dist==0.0) {\n                float adj = 1.0 - str;\n                \n                light += col * adj;\n                trig1 += adj;\n            }\n        }\n    }\n\n    // This does the same precess on the previous frame. This\n    // creates temporal accumulation while also continuing to\n    // blur previous rays.\n    for (int x=-dist; x<=dist; x++) {\n        for (int y = -dist; y<=dist; y++) {\n            float l_l = texture(iChannel2, (uv + vec2(x, y))/iResolution.xy).w;\n            \n            float col = unpackNums(l_l).y;\n            float p_dist = unpackNums(l_l).x;\n            \n            float str = (float(abs(x)+abs(y))/float(dist+dist));\n            \n            float thresh = -0.2 + (m_dist / 5.0);\n            \n            // This is an occlusion test. only blur between\n            // points which are on the same plane.\n            if (abs(p_dist - m_dist) < thresh || p_dist==0.0) {\n                float adj = 1.0 - str;\n                \n                plight += col * adj;\n                trig2 += adj;\n            }\n        }\n    }\n    \n    light /= trig1;\n    plight /= trig2;\n    \n    light = pow(light, 1.0)*0.06;\n\n    // As objects are moving, you can have a\n    // circumstance where there is no valid\n    // data from the previous frame (trig2 == 0), \n    // in that case, ignore accumulation.\n    if (trig2 > 0.0 && m_dist < 100.0) {\n        light = (light*0.015) + (plight*0.96);\n    } else {\n        light *= 0.35;\n    }\n    \n    if (m_dist < max_dist) {\n        light += m_dist / 10000.0;\n    } else {\n        light /= 2.0;\n    }\n\n    col.xyz += vec3(light/14.0);\n\n    light = clamp(light, 0.0, 5.0);\n    \n    col.xyz *= 1.0 + (light*1.5);\n\n    fragColor = vec4(col.xyz, packNums(m_dist, light));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float max_dist = 1000.0;\n\n// These functions allow you to store\n// two low percision numbers in a single\n// float.\nfloat packNums( float a, float b )\n{\n    float a_p = round(a*100.0)*200.0;\n    float b_p = clamp(b, 0.0, 195.0);\n\n    return a_p + b_p;\n}\n\nvec2 unpackNums(float inp) {\n    vec2 ret;\n    \n    ret.x = floor(inp/200.0)/100.0;\n    ret.y = mod(inp, 200.0);\n    \n    return ret;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Copy of Buffer B. Buffer B can use this to draw\n// the next frame without worrying about overwriting \n// the previous one.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    // Time varying pixel color\n    vec4 col = texture(iChannel0, uv);\n\n    // Output to screen\n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

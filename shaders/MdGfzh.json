@@ -1,0 +1,278 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1527594357",
+            "description": "This is my first attempt to render volumetric clouds in a fragment shader. I started this shader by trying to model the clouds of Horizon Zero Dawn and render them using the integration method of volumetric media as described by Sébastien Hillaire (SebH).",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MdGfzh",
+            "likes": 439,
+            "name": "Himalayas",
+            "published": 3,
+            "tags": [
+                "volume",
+                "clouds",
+                "light",
+                "sky",
+                "volumetric",
+                "scattering",
+                "realtime",
+                "atmospheric",
+                "cloudscape",
+                "himalayas"
+            ],
+            "usePreview": 1,
+            "username": "reinder",
+            "viewed": 34577
+        },
+        "renderpass": [
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n// I started this shader by trying to implement the clouds of Horizon Zero Dawn, as\n// described in \"The real-time volumetric cloudscapes of Horizon Zero Dawn\" by \n// Andrew Schneider and Nathan Vos.[1] To model the shape of the clouds, two look-up\n// textures are created with different frequencies of (Perlin -) Worley noise:\n//\n// Buffer A: The main look-up texture for the cloud shapes. \n// Buffer B: A 3D (32x32x32) look-up texture with Worley Noise used to add small details \n//           to the shapes of the clouds. I have packed this 3D texture into a 2D buffer.\n//           \n// Because it is not possible (yet) to create buffers with fixed size, or 3D buffers, the\n// look-up texture in Buffer A is 2D, and a slice of the volume that is described in the \n// article. Therefore, and because I didn't have any slots left (in Buffer C) to use a \n// cloud type/cloud coverage texture, the modelling of the cloud shapes in this shader is \n// in the end mostly based on trial and error, and is probably far from the code used in \n// Horizon Zero Dawn.\n//\n// Buffer D: Rendering of the clouds.\n//\n// I render the clouds using the improved integration method of volumetric media, as described \n// in \"Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite\" by \n// Sébastien Hillaire.[2]\n//\n// You can find the (excellent) example shaders of Sébastien Hillaire (SebH) here:\n//\n// https://www.shadertoy.com/view/XlBSRz\n// https://www.shadertoy.com/view/MdlyDs\n//\n// Buffer C: Landscape\n//\n// To create an interesting scene and to add some scale to the clouds, I render a \n// terrain using a simple heightmap, based on the work by Íñigo Quílez on value noise and its \n// analytical derivatives.[3]\n//\n// In fact, the heightmap of this shader is almost exactly the same as the heightmap that \n// is used in Íñigo Quílez' shader Elevated:\n//\n// https://www.shadertoy.com/view/MdX3Rr\n//\n// To reduce noise I use temporal reprojection (both for clouds (Buffer D) and the terrain \n// (Buffer C)) separatly. The temporal reprojection code is based on code from the shader\n// \"Rain Forest\" (again by Íñigo Quílez):\n//\n// https://www.shadertoy.com/view/4ttSWf\n// \n// Finally, in the Image tab, clouds and terrain are combined, a small humanoid is added\n// (by Hazel Quantock) and post processing is done.\n//\n// [1] https://www.guerrilla-games.com/read/the-real-time-volumetric-cloudscapes-of-horizon-zero-dawn\n// [2] https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf\n// [3] https://iquilezles.org/articles/morenoise\n//\n\n#define AA 3\n\n//\n// Cheap 2D Humanoid SDF for dropping into scenes to add a sense of scale.\n// Hazel Quantock 2018\n//\n// Based on: https://www.shadertoy.com/view/4scBWN\n//\nfloat RoundMax( float a, float b, float r ) {\n    a += r; b += r;    \n    float f = ( a > 0. && b > 0. ) ? sqrt(a*a+b*b) : max(a,b);    \n    return f - r;\n}\n\nfloat RoundMin( float a, float b, float r ) {\n    return -RoundMax(-a,-b,r);\n}\n\nfloat Humanoid( in vec2 uv, in float phase ) {\n    float n3 = sin((uv.y-uv.x*.7)*11.+phase)*.014; // \"pose\"\n    float n0 = sin((uv.y+uv.x*1.1)*23.+phase*2.)*.007;\n    float n1 = sin((uv.y-uv.x*.8)*37.+phase*4.)*.004;\n    float n2 = sin((uv.y+uv.x*.9)*71.+phase*8.)*.002;\n\n    \n    float head = length((uv-vec2(0,1.65))/vec2(1,1.2))-.15/1.2;\n    float neck = length(uv-vec2(0,1.5))-.05;\n    float torso = abs(uv.x)-.25 - uv.x*.3;\n\n    torso = RoundMax( torso, uv.y-1.5, .2 );\n    torso = RoundMax( torso, -(uv.y-.6), .0 );\n\n    float f = RoundMin(head,neck,.04);\n    f = RoundMin(f,torso,.02);\n    \n    float leg = abs(abs(uv.x+(uv.y-.9)*.1*cos(phase*3.))-.15+.075*uv.y)-.07-.07*uv.y; \n    leg = max( leg, uv.y-1. );\n    \n    f = RoundMin(f,leg,.1);\n\n    float stick = max(abs(uv.x+.4-uv.y*.04)-0.025, uv.y-1.15);\n    float arm = max(max(abs(uv.y-1.-uv.x*.3) - .06, uv.x), -uv.x-.4);\n    \n    f = RoundMin(f, stick, 0.0);\n    f = RoundMin(f, arm, 0.05);\n    \n    f += (-n0+n1+n2+n3)*(.1+.9*uv.y/1.6);\n    \n    return max( f, -uv.y );\n}\n\n//\n// Lens flare, original based on:\n// musk's lens flare by mu6k  \n//\n// https://www.shadertoy.com/view/4sX3Rs\n//\nfloat lensflare(vec2 fragCoord) {\n    vec3 ro, ta;\n    mat3 cam = getCamera( iTime, iMouse/iResolution.xyxy, ro, ta );\n    vec3 cpos = SUN_DIR*cam; \n    vec2 pos = CAMERA_FL * cpos.xy / cpos.z;\n    vec2 uv = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;\n    \n\tvec2 uvd = uv*(length(uv));\n\tfloat f = 0.1/(length(uv-pos)*16.0+1.0);\n\tf += max(1.0/(1.0+32.0*pow(length(uvd+0.8*pos),2.0)),.0)*0.25;\n\tvec2 uvx = mix(uv,uvd,-0.5);\n\tf += max(0.01-pow(length(uvx+0.4*pos),2.4),.0)*6.0;\n\tf += max(0.01-pow(length(uvx-0.3*pos),1.6),.0)*6.0;\n\tuvx = mix(uv,uvd,-0.4);\n\tf += max(0.01-pow(length(uvx+0.2*pos),5.5),.0)*2.0;\n    \n\treturn f;\n}\n\nbool intersectSphere ( in vec3 ro, in vec3 rd, in vec4 sph ) {\n    vec3  ds = ro - sph.xyz;\n    float bs = dot(rd, ds);\n    float cs = dot(ds, ds) - sph.w*sph.w;\n    float ts = bs*bs - cs;\n\t\n    if( ts > 0.0 ) {\n        ts = -bs - sqrt( ts );\n\t\tif( ts>0. ) {\n\t\t\treturn true;\n\t\t}\n    }\n    return false;\n}\n\nbool intersectPlane (in vec3 ro, in vec3 rd, in vec3 n, in vec3 p0, inout float dist) {   \n    dist = dot(p0 - ro, n)/dot(rd,n);\n    return dist > 0.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {  \n    if( letterBox(fragCoord, iResolution.xy, 2.35) ) {\n        fragColor = vec4( 0., 0., 0., 1. );\n    } else {\n        vec4 col = texelFetch(iChannel0, ivec2(fragCoord), 0);\n        vec4 clouds = texelFetch(iChannel1, ivec2(fragCoord), 0);\n    \t\n        col.rgb = clouds.rgb + col.rgb * clouds.a;\n       \n        vec3 ro, rd, ta;\n\t\tmat3 cam = getCamera( iTime, iMouse/iResolution.xyxy, ro, ta );\n        float dist;\n        vec4 tcol = vec4(0.);\n        vec2 p = (-iResolution.xy + 2.0*(fragCoord))/iResolution.y;\n        rd = cam * normalize(vec3(p,CAMERA_FL)); \n        \n        if (intersectSphere(ro,rd,vec4(FLAG_POSITION,HUMANOID_SCALE*INV_SCENE_SCALE*2.))) {\n            for(int x=0; x<AA; x++) {\n                for(int y=0; y<AA; y++) {\n                    vec2 p = (-iResolution.xy + 2.0*(fragCoord + vec2(x,y)/float(AA) - .5))/iResolution.y;\n                    rd = cam * normalize(vec3(p,CAMERA_FL)); \n\n                    if (intersectPlane(ro, rd, vec3(0,0,1), FLAG_POSITION, dist) && dist < col.w) {\n                        vec3 pos = ro + rd * dist;\n                        vec2 uv = (pos.xy - FLAG_POSITION.xy)*(SCENE_SCALE/HUMANOID_SCALE);\n                        uv.x = -uv.x + uv.y*0.05;\n                        float sdf = Humanoid( uv, 3. );\n                        float a = smoothstep(.4,.6,.5-.5*sdf/(abs(sdf)+.002));\n                        float sdf2 = Humanoid( uv+vec2(.025,0.05), 3. );\n                        float a2 = smoothstep(.4,.6,.5-.5*sdf2/(abs(sdf2)+.002));\n                        float c = (a-a2)*2.;\n                        c = clamp(c+uv.x*.2+.6,0.,1.); c*=c; c*=c;\n                        tcol += vec4(mix(vec3(.04,0.05,0.06),SUN_COLOR,c),a);\n                    }\n                }\n            }\n            tcol /= float(AA*AA);\n        }\n        \n        col.rgb = mix(col.rgb, tcol.rgb, tcol.w);    \n            \n        // lens flare\n        col.rgb += SUN_COLOR*lensflare(fragCoord)*smoothstep(-.3,.5,dot(rd,SUN_DIR));       \n        col.rgb = clamp(col.rgb, vec3(0), vec3(1));\n        \n        // gamma and contrast\n        col.rgb = mix(col.rgb, pow(col.rgb, vec3(1./2.2)), .85);\n        col.rgb = mix( col.rgb, col.bbb, 0.2 ); \n     \n        // vignette\n        vec2 uv = fragCoord / iResolution.xy;\n        col.rgb = mix(col.rgb*col.rgb, col.rgb, pow( 16.0*uv.x*uv.y*(1.0-uv.x)*(1.0-uv.y), 0.1 ));\n        \n        // noise\n        col.rgb -= hash12(fragCoord)*.025;\n        \n        fragColor = vec4( col.rgb, 1. );\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n// 1 unit correspondents to SCENE_SCALE meter.\n\n#define SCENE_SCALE (10.)\n#define INV_SCENE_SCALE (.1)\n\n#define MOUNTAIN_HEIGHT (5000.)\n#define MOUNTAIN_HW_RATIO (0.00016)\n\n#define SUN_DIR normalize(vec3(-.7,.5,.75))\n#define SUN_COLOR (vec3(1.,.9,.85)*1.4)\n\n#define FLAG_POSITION (vec3(3900.5,720.,-2516.)*INV_SCENE_SCALE)\n#define HUMANOID_SCALE (2.)\n\n#define CAMERA_RO (vec3(3980.,730.,-2650.)*INV_SCENE_SCALE)\n#define CAMERA_FL 2.\n\n#define HEIGHT_BASED_FOG_B 0.02\n#define HEIGHT_BASED_FOG_C 0.05\n\n\nmat3 getCamera( in float time, in vec4 mouse, inout vec3 ro, inout vec3 ta ) {\n    ro = CAMERA_RO;\n    vec3 cw;\n    if (mouse.z > 0.) {\n        vec2 m = (mouse.xy - .5) * 2.3;\n        float my = -sin(m.y);\n        cw = normalize(vec3(-sin(-m.x), my+.15, cos(-m.x)));\n    } else {\n    \tro.x += -cos(time*.13)*5.*INV_SCENE_SCALE;\n    \tro.z += (-cos(time*.1)*100.+20.)*INV_SCENE_SCALE;\n    \tcw = normalize(vec3(-.1,.18,1.));\n    }   \n    ta = ro + cw*(200.*INV_SCENE_SCALE);\n\tvec3 cp = vec3(0.0,1.0, 0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\nvoid getRay( in float time, in vec2 fragCoord, in vec2 resolution, in vec4 mouse, inout vec3 ro, inout vec3 rd) {\n\tvec3 ta;\n\tmat3 cam = getCamera( time, mouse, ro, ta );\n    vec2 p = (-resolution.xy + 2.0*(fragCoord))/resolution.y;\n    rd = cam * normalize(vec3(p,CAMERA_FL));     \n}\n\n//\n// To reduce noise I use temporal reprojection (both for clouds (Buffer D) and the terrain \n// (Buffer C) seperatly. The temporal repojection code is based on code from the shader\n// \"Rain Forest\" (again by Íñigo Quílez):\n//\n// https://www.shadertoy.com/view/4ttSWf\n// \nvec4 saveCamera( in float time, in vec2 fragCoord, in vec4 mouse ) {   \n    vec3 ro, ta;\n    mat3 cam = getCamera( time, mouse, ro, ta );\n    vec4 fragColor;\n    \n    if( abs(fragCoord.x-4.5)<0.5 ) fragColor = vec4( cam[2], -dot(cam[2],ro) );\n    if( abs(fragCoord.x-3.5)<0.5 ) fragColor = vec4( cam[1], -dot(cam[1],ro) );\n    if( abs(fragCoord.x-2.5)<0.5 ) fragColor = vec4( cam[0], -dot(cam[0],ro) );\n    \n    return fragColor;\n}\n\nvec2 reprojectPos( in vec3 pos, in vec2 resolution, in sampler2D storage ) {\n    mat4 oldCam = mat4( texelFetch(storage,ivec2(2,0),0),\n                        texelFetch(storage,ivec2(3,0),0),\n                        texelFetch(storage,ivec2(4,0),0),\n                        0.0, 0.0, 0.0, 1.0 );\n\n    vec4 wpos = vec4(pos,1.0);\n    vec3 cpos = (wpos*oldCam).xyz; \n    vec2 npos = CAMERA_FL * cpos.xy / cpos.z;\n    return 0.5 + 0.5*npos*vec2(resolution.y/resolution.x,1.0);\n}\n\n//\n// Fast skycolor function by Íñigo Quílez\n// https://www.shadertoy.com/view/MdX3Rr\n//\nvec3 getSkyColor(vec3 rd) {\n    float sundot = clamp(dot(rd,SUN_DIR),0.0,1.0);\n\tvec3 col = vec3(0.2,0.5,0.85)*1.1 - max(rd.y,0.01)*max(rd.y,0.01)*0.5;\n    col = mix( col, 0.85*vec3(0.7,0.75,0.85), pow(1.0-max(rd.y,0.0), 6.0) );\n\n    col += 0.25*vec3(1.0,0.7,0.4)*pow( sundot,5.0 );\n    col += 0.25*vec3(1.0,0.8,0.6)*pow( sundot,64.0 );\n    col += 0.20*vec3(1.0,0.8,0.6)*pow( sundot,512.0 );\n    \n    col += clamp((0.1-rd.y)*10., 0., 1.) * vec3(.0,.1,.2);\n    col += 0.2*vec3(1.0,0.8,0.6)*pow( sundot, 8.0 );\n    return col;\n}\n\nbool letterBox(vec2 fragCoord, const vec2 resolution, const float aspect) { \n    if( fragCoord.x < 0. || fragCoord.x > resolution.x ||\n        abs(2.*fragCoord.y-resolution.y) > resolution.x * (1./aspect) ) {\n        return true;\n    } else {\n        return false;\n    }\n}\n\n//\n// Noise functions\n//\n// Hash without Sine by DaveHoskins \n//\n// https://www.shadertoy.com/view/4djSRW\n//\nfloat hash12( vec2 p ) {\n    p  = 50.0*fract( p*0.3183099 );\n    return fract( p.x*p.y*(p.x+p.y) );\n}\n\nfloat hash13(vec3 p3) {\n    p3  = fract(p3 * 1031.1031);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 hash33(vec3 p3) {\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+19.19);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nfloat valueHash(vec3 p3) {\n    p3  = fract(p3 * 0.1031);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n//\n// Noise functions used for cloud shapes\n//\nfloat valueNoise( in vec3 x, float tile ) {\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n    f = f*f*(3.0-2.0*f);\n\t\n    return mix(mix(mix( valueHash(mod(p+vec3(0,0,0),tile)), \n                        valueHash(mod(p+vec3(1,0,0),tile)),f.x),\n                   mix( valueHash(mod(p+vec3(0,1,0),tile)), \n                        valueHash(mod(p+vec3(1,1,0),tile)),f.x),f.y),\n               mix(mix( valueHash(mod(p+vec3(0,0,1),tile)), \n                        valueHash(mod(p+vec3(1,0,1),tile)),f.x),\n                   mix( valueHash(mod(p+vec3(0,1,1),tile)), \n                        valueHash(mod(p+vec3(1,1,1),tile)),f.x),f.y),f.z);\n}\n\nfloat voronoi( vec3 x, float tile ) {\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\n    float res = 100.;\n    for(int k=-1; k<=1; k++){\n        for(int j=-1; j<=1; j++) {\n            for(int i=-1; i<=1; i++) {\n                vec3 b = vec3(i, j, k);\n                vec3 c = p + b;\n\n                if( tile > 0. ) {\n                    c = mod( c, vec3(tile) );\n                }\n\n                vec3 r = vec3(b) - f + hash13( c );\n                float d = dot(r, r);\n\n                if(d < res) {\n                    res = d;\n                }\n            }\n        }\n    }\n\n    return 1.-res;\n}\n\nfloat tilableVoronoi( vec3 p, const int octaves, float tile ) {\n    float f = 1.;\n    float a = 1.;\n    float c = 0.;\n    float w = 0.;\n\n    if( tile > 0. ) f = tile;\n\n    for( int i=0; i<octaves; i++ ) {\n        c += a*voronoi( p * f, f );\n        f *= 2.0;\n        w += a;\n        a *= 0.5;\n    }\n\n    return c / w;\n}\n\nfloat tilableFbm( vec3 p, const int octaves, float tile ) {\n    float f = 1.;\n    float a = 1.;\n    float c = 0.;\n    float w = 0.;\n\n    if( tile > 0. ) f = tile;\n\n    for( int i=0; i<octaves; i++ ) {\n        c += a*valueNoise( p * f, f );\n        f *= 2.0;\n        w += a;\n        a *= 0.5;\n    }\n\n    return c / w;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n// Buffer A: The main look-up texture for the cloud shapes. \n// Buffer B: A 3D (32x32x32) look-up texture with Worley Noise used to add small details \n//           to the shapes of the clouds. I have packed this 3D texture into a 2D buffer.\n// \nbool resolutionChanged() {\n    return floor(texelFetch(iChannel1, ivec2(0), 0).r) != floor(iResolution.x);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) { \n    if (resolutionChanged()) {\n        vec2 vUV = fragCoord / iResolution.xy;\n        vec3 coord = fract(vec3(vUV + vec2(.2,0.62), .5));\n        \n        vec4 col = vec4(1);\n        \n        float mfbm = 0.9;\n        float mvor = 0.7;\n        \n        col.r = mix(1., tilableFbm( coord, 7, 4. ), mfbm) * \n            \tmix(1., tilableVoronoi( coord, 8, 9. ), mvor);\n        col.g = 0.625 * tilableVoronoi( coord + 0., 3, 15. ) +\n        \t\t0.250 * tilableVoronoi(  coord + 0., 3, 19. ) +\n        \t\t0.125 * tilableVoronoi( coord + 0., 3, 23. ) \n            \t-1.;\n        col.b = 1. - tilableVoronoi( coord + 0.5, 6, 9. );\n        \n\t    fragColor = col;\n    } else {\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n// Buffer A: The main look-up texture for the cloud shapes. \n// Buffer B: A 3D (32x32x32) look-up texture with Worley Noise used to add small details \n//           to the shapes of the clouds. I have packed this 3D texture into a 2D buffer.\n// \nbool resolutionChanged() {\n    return floor(texelFetch(iChannel1, ivec2(0), 0).r) != floor(iResolution.x);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) { \n    if (resolutionChanged()) {\n        // pack 32x32x32 3d texture in 2d texture (with padding)\n        float z = floor(fragCoord.x/34.) + 8.*floor(fragCoord.y/34.);\n        vec2 uv = mod(fragCoord.xy, 34.) - 1.;\n        vec3 coord = vec3(uv, z) / 32.;\n\n        float r = tilableVoronoi( coord, 16,  3. );\n        float g = tilableVoronoi( coord,  4,  8. );\n        float b = tilableVoronoi( coord,  4, 16. );\n\n        float c = max(0., 1.-(r + g * .5 + b * .25) / 1.75);\n\n        fragColor = vec4(c,c,c,c);\n    } else {\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n//\n// To create an interesting scene and to add some scale to the clouds, I render a \n// terrain using a simple heightmap, based on the work by Íñigo Quílez on value noise and its \n// analytical derivatives.[3]\n//\n// In fact, the heightmap of this shader is almost exactly the same as the heightmap that \n// is used in Íñigo Quílez' shader Elevated:\n//\n// https://www.shadertoy.com/view/MdX3Rr\n//\n// To reduce noise I use temporal reprojection (both for clouds (Buffer D) and the terrain \n// (Buffer C)) separatly. The temporal reprojection code is based on code from the shader\n// \"Rain Forest\" (again by Íñigo Quílez):\n//\n// https://www.shadertoy.com/view/4ttSWf\n// \nvec3 noised( in vec2 x ) {\n    vec2 f = fract(x);\n    vec2 u = f*f*(3.0-2.0*f);\n    \n    vec2 p = vec2(floor(x));\n    float a = hash12( (p+vec2(0,0)) );\n\tfloat b = hash12( (p+vec2(1,0)) );\n\tfloat c = hash12( (p+vec2(0,1)) );\n\tfloat d = hash12( (p+vec2(1,1)) );\n    \n\treturn vec3(a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y,\n\t\t\t\t6.0*f*(1.0-f)*(vec2(b-a,c-a)+(a-b-c+d)*u.yx));\n}\n\nconst mat2 m2 = mat2(1.6,-1.2,1.2,1.6);\n\nfloat terrainMap( in vec2 x, const int OCTAVES ) {\n\tvec2 p = x*(MOUNTAIN_HW_RATIO*SCENE_SCALE);\n    float s = mix(1., smoothstep(.0,.4, abs(p.y)), .75);\n    \n    float a = 0.;\n    float b = 1.;\n\tvec2  d = vec2(0.0);\n    for( int i=0; i<OCTAVES; i++ ) {\n        vec3 n = noised(p);\n        d += n.yz;\n        a += b*n.x/(1.0+dot(d,d));\n\t\tb *= 0.5;\n        p = m2*p;\n    }\n\treturn s*a*(MOUNTAIN_HEIGHT*INV_SCENE_SCALE*.5);\n}\n\nfloat terrainMapB( in vec2 x, const int OCTAVES ) {\n\tvec2 p = x*(MOUNTAIN_HW_RATIO*SCENE_SCALE);\n    float s = mix(1., smoothstep(.0,.4, abs(p.y)), .75);\n    \n    float a = 0.;\n    float b = 1.;\n\tvec2  d = vec2(0.0);\n    for( int i=0; i<OCTAVES; i++ ) {\n        vec3 n = noised(p);\n        d += n.yz;\n        a += b*n.x/(1.0+dot(d,d));\n\t\tb *= 0.5;\n        p = m2*p;\n    }\n\treturn s*a*(MOUNTAIN_HEIGHT*INV_SCENE_SCALE*.5);\n}\nvec3 calcNormal(in vec3 pos, float t, const int OCTAVES) {\n    vec2  eps = vec2( (0.0015)*t, 0.0 );\n    return normalize( vec3( terrainMap(pos.xz-eps.xy, OCTAVES) - terrainMap(pos.xz+eps.xy, OCTAVES),\n                            2.0*eps.x,\n                            terrainMap(pos.xz-eps.yx, OCTAVES) - terrainMap(pos.xz+eps.yx, OCTAVES) ) );\n}\n\nvec4 render( in vec3 ro, in vec3 rd ) {\n\tvec3 col, bgcol;\n    \n    float tmax = 10000.;\n    // bouding top plane\n    float topd = ((MOUNTAIN_HEIGHT*INV_SCENE_SCALE)-ro.y)/rd.y;\n    if( rd.y > 0.0 && topd > 0.0 ) {\n        tmax = min(tmax, topd);\n    }\n    \n    // intersect with heightmap\n    float t = 1.;\n\tfor( int i=0; i<128; i++ ) {\n        vec3 pos = ro + t*rd;\n\t\tfloat h = pos.y - terrainMap( pos.xz, 7 );\n        if(abs(h)<(0.003*t) || t>tmax ) break; // use abs(h) to bounce back if under terrain\n\t    t += .9 * h;\n\t}\n   \t\n    bgcol = col = getSkyColor(rd);\n\tif( t<tmax) {\n\t\tvec3 pos = ro + t*rd;\n        vec3 nor = calcNormal( pos, t, 15);\n           \n        // terrain color - just back and white\n        float s = smoothstep(0.5,0.9,dot(nor, vec3(.3,1.,0.05)));\n        col = mix( vec3(.01), vec3(0.5,0.52,0.6), smoothstep(.1,.7,s ));\n\t\t\n        // lighting\t\n        // shadow is calculated based on the slope of a low frequency version of the heightmap\n        float shadow = .5 + clamp( -8.+ 16.*dot(SUN_DIR, calcNormal(pos, t, 5)), 0.0, .5 );\n        shadow *= smoothstep(20.,80.,pos.y);\n        \n        float ao = terrainMap(pos.xz, 10)-terrainMap(pos.xz,7);\n        ao = clamp(.25 + ao / (MOUNTAIN_HEIGHT*INV_SCENE_SCALE) * 200., 0., 1.);\n\n        float ambient  = max(0.5+0.5*nor.y,0.0);\n\t\tfloat diffuse  = max(dot(SUN_DIR, nor), 0.0);\n\t\tfloat backlight = max(0.5 + 0.5*dot( normalize( vec3(-SUN_DIR.x, 0., SUN_DIR.z)), nor), 0.0);\n\t \t\n        //\n        // use a 3-light setup as described by Íñigo Quílez\n        // https://iquilezles.org/articles/outdoorslighting\n        //\n\t\tvec3 lin = (diffuse*shadow*3.) * SUN_COLOR;\n\t\tlin += (ao*ambient)*vec3(0.40,0.60,1.00);\n        lin += (backlight)*vec3(0.40,0.50,0.60);\n\t\tcol *= lin;\n        col *= (.6+.4*smoothstep(400.,100.,abs(pos.z))); // dark in the distance\n    \n        // height based fog, see https://iquilezles.org/articles/fog\n        float fogAmount = HEIGHT_BASED_FOG_C * (1.-exp( -t*rd.y*HEIGHT_BASED_FOG_B))/rd.y;\n        col = mix( col, bgcol, fogAmount);\n    } else {\n        t = 10000.;\n    }\n\n\treturn vec4( col, t );\n}\n\n\nbool resolutionChanged() {\n    return floor(texelFetch(iChannel1, ivec2(0), 0).r) != floor(iResolution.x);\n}\n\nbool mouseChanged() {\n    return iMouse.z * texelFetch(iChannel1, ivec2(1,0), 1).w < 0.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    if( letterBox(fragCoord, iResolution.xy, 2.25) ) {\n        fragColor = vec4( 0., 0., 0., 1. );\n        return;\n    } else {\n        vec3 ro, rd;\n        vec3 o = hash33( vec3(fragCoord,iFrame) ) - 0.5; // dither\n        getRay( iTime, (fragCoord+o.xy), iResolution.xy, iMouse/iResolution.xyxy, ro, rd);\n\n        vec4 res = render( ro + rd*o.z, rd );\n\n        vec2 spos = reprojectPos(ro+rd*res.w, iResolution.xy, iChannel1);\n        spos -= o.xy/iResolution.xy; // undo dither\n        \n        vec2 rpos = spos * iResolution.xy;\n        \n        if( !letterBox(rpos.xy, iResolution.xy, 2.3) \n            && !resolutionChanged() && !mouseChanged()) {\n            vec4 ocol = texture( iChannel0, spos, 0.0 );\n            res.rgb = mix(max(ocol.rgb,vec3(0)), res.rgb, .125);\n        }\n\n        fragColor = res;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Himalayas. Created by Reinder Nijhoff 2018\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/MdGfzh\n//\n// This is my first attempt to render volumetric clouds in a fragment shader.\n//\n// I started this shader by trying to implement the clouds of Horizon Zero Dawn, as\n// described in \"The real-time volumetric cloudscapes of Horizon Zero Dawn\" by \n// Andrew Schneider and Nathan Vos.[1] To model the shape of the clouds, two look-up\n// textures are created with different frequencies of (Perlin -) Worley noise:\n//\n// Buffer A: The main look-up texture for the cloud shapes. \n// Buffer B: A 3D (32x32x32) look-up texture with Worley Noise used to add small details \n//           to the shapes of the clouds. I have packed this 3D texture into a 2D buffer.\n//           \n// Because it is not possible (yet) to create buffers with fixed size, or 3D buffers, the\n// look-up texture in Buffer A is 2D, and a slice of the volume that is described in the \n// article. Therefore, and because I didn't have any slots left (in Buffer C) to use a \n// cloud type/cloud coverage texture, the modelling of the cloud shapes in this shader is \n// in the end mostly based on trial and error, and is probably far from the code used in \n// Horizon Zero Dawn.\n//\n// Buffer D: Rendering of the clouds.\n//\n// I render the clouds using the improved integration method of volumetric media, as described \n// in \"Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite\" by \n// Sébastien Hillaire.[2]\n//\n// You can find the (excellent) example shaders of Sébastien Hillaire (SebH) here:\n//\n// https://www.shadertoy.com/view/XlBSRz\n// https://www.shadertoy.com/view/MdlyDs\n//\n#define CLOUD_MARCH_STEPS 12\n#define CLOUD_SELF_SHADOW_STEPS 6\n\n#define EARTH_RADIUS    (1500000.) // (6371000.)\n#define CLOUDS_BOTTOM   (1350.)\n#define CLOUDS_TOP      (2350.)\n\n#define CLOUDS_LAYER_BOTTOM   (-150.)\n#define CLOUDS_LAYER_TOP      (-70.)\n\n#define CLOUDS_COVERAGE (.52)\n#define CLOUDS_LAYER_COVERAGE (.41)\n\n#define CLOUDS_DETAIL_STRENGTH (.225)\n#define CLOUDS_BASE_EDGE_SOFTNESS (.1)\n#define CLOUDS_BOTTOM_SOFTNESS (.25)\n#define CLOUDS_DENSITY (.03)\n#define CLOUDS_SHADOW_MARGE_STEP_SIZE (10.)\n#define CLOUDS_LAYER_SHADOW_MARGE_STEP_SIZE (4.)\n#define CLOUDS_SHADOW_MARGE_STEP_MULTIPLY (1.3)\n#define CLOUDS_FORWARD_SCATTERING_G (.8)\n#define CLOUDS_BACKWARD_SCATTERING_G (-.2)\n#define CLOUDS_SCATTERING_LERP (.5)\n\n#define CLOUDS_AMBIENT_COLOR_TOP (vec3(149., 167., 200.)*(1.5/255.))\n#define CLOUDS_AMBIENT_COLOR_BOTTOM (vec3(39., 67., 87.)*(1.5/255.))\n#define CLOUDS_MIN_TRANSMITTANCE .1\n\n#define CLOUDS_BASE_SCALE 1.51\n#define CLOUDS_DETAIL_SCALE 20.\n\n//\n// Cloud shape modelling and rendering \n//\nfloat HenyeyGreenstein( float sundotrd, float g) {\n\tfloat gg = g * g;\n\treturn (1. - gg) / pow( 1. + gg - 2. * g * sundotrd, 1.5);\n}\n\nfloat interectCloudSphere( vec3 rd, float r ) {\n    float b = EARTH_RADIUS * rd.y;\n    float d = b * b + r * r + 2. * EARTH_RADIUS * r;\n    return -b + sqrt( d );\n}\n\nfloat linearstep( const float s, const float e, float v ) {\n    return clamp( (v-s)*(1./(e-s)), 0., 1. );\n}\n\nfloat linearstep0( const float e, float v ) {\n    return min( v*(1./e), 1. );\n}\n\nfloat remap(float v, float s, float e) {\n\treturn (v - s) / (e - s);\n}\n\nfloat cloudMapBase(vec3 p, float norY) {\n\tvec3 uv = p * (0.00005 * CLOUDS_BASE_SCALE);\n    vec3 cloud = texture(iChannel0, uv.xz).rgb;\n   \n    float n = norY*norY;\n    n *= cloud.b ;\n        n+= pow(1.-norY, 16.); \n\treturn remap( cloud.r - n, cloud.g, 1.);\n}\n\nfloat cloudMapDetail(vec3 p) { \n    // 3d lookup in 2d texture :(\n    p = abs(p) * (0.0016 * CLOUDS_BASE_SCALE * CLOUDS_DETAIL_SCALE);\n  \n    float yi = mod(p.y,32.);\n    ivec2 offset = ivec2(mod(yi,8.), mod(floor(yi/8.),4.))*34 + 1;\n    float a = texture(iChannel3, (mod(p.xz,32.)+vec2(offset.xy)+1.)/iResolution.xy).r;\n    \n    yi = mod(p.y+1.,32.);\n    offset = ivec2(mod(yi,8.), mod(floor(yi/8.),4.))*34 + 1;\n    float b = texture(iChannel3, (mod(p.xz,32.)+vec2(offset.xy)+1.)/iResolution.xy).r;\n    \n    return mix(a,b,fract(p.y));\n}\n\nfloat cloudGradient( float norY ) {\n    return linearstep( 0., .05, norY ) - linearstep( .8, 1.2, norY);\n}\n\nfloat cloudMap(vec3 pos, vec3 rd, float norY) {\n    vec3 ps = pos;\n    \n    float m = cloudMapBase(ps, norY);\n\tm *= cloudGradient( norY );\n\n\tfloat dstrength = smoothstep(1., 0.5, m);\n    \n    // erode with detail\n    if(dstrength > 0.) {\n\t\tm -= cloudMapDetail( ps ) * dstrength * CLOUDS_DETAIL_STRENGTH;\n    }\n\n\tm = smoothstep( 0., CLOUDS_BASE_EDGE_SOFTNESS, m+(CLOUDS_COVERAGE-1.) );\n    m *= linearstep0(CLOUDS_BOTTOM_SOFTNESS, norY);\n\n    return clamp(m * CLOUDS_DENSITY * (1.+max((ps.x-7000.)*0.005,0.)), 0., 1.);\n}\n\nfloat volumetricShadow(in vec3 from, in float sundotrd ) {\n    float dd = CLOUDS_SHADOW_MARGE_STEP_SIZE;\n    vec3 rd = SUN_DIR;\n    float d = dd * .5;\n    float shadow = 1.0;\n\n    for(int s=0; s<CLOUD_SELF_SHADOW_STEPS; s++) {\n        vec3 pos = from + rd * d;\n        float norY = (length(pos) - (EARTH_RADIUS + CLOUDS_BOTTOM)) * (1./(CLOUDS_TOP - CLOUDS_BOTTOM));\n\n        if(norY > 1.) return shadow;\n\n        float muE = cloudMap( pos, rd, norY );\n        shadow *= exp(-muE * dd);\n\n        dd *= CLOUDS_SHADOW_MARGE_STEP_MULTIPLY;\n        d += dd;\n    }\n    return shadow;\n}\n\nvec4 renderClouds( vec3 ro, vec3 rd, inout float dist ) {\n    if( rd.y < 0. ) {\n        return vec4(0,0,0,10);\n    }\n\n    ro.xz *= SCENE_SCALE;\n    ro.y = sqrt(EARTH_RADIUS*EARTH_RADIUS-dot(ro.xz,ro.xz));\n\n    float start = interectCloudSphere( rd, CLOUDS_BOTTOM );\n    float end  = interectCloudSphere( rd, CLOUDS_TOP );\n    \n    if (start > dist) {\n        return vec4(0,0,0,10);\n    }\n    \n    end = min(end, dist);\n    \n    float sundotrd = dot( rd, -SUN_DIR);\n\n    // raymarch\n    float d = start;\n    float dD = (end-start) / float(CLOUD_MARCH_STEPS);\n\n    float h = hash13(rd + fract(iTime) );\n    d -= dD * h;\n\n    float scattering =  mix( HenyeyGreenstein(sundotrd, CLOUDS_FORWARD_SCATTERING_G),\n        HenyeyGreenstein(sundotrd, CLOUDS_BACKWARD_SCATTERING_G), CLOUDS_SCATTERING_LERP );\n\n    float transmittance = 1.0;\n    vec3 scatteredLight = vec3(0.0, 0.0, 0.0);\n\n    dist = EARTH_RADIUS;\n\n    for(int s=0; s<CLOUD_MARCH_STEPS; s++) {\n        vec3 p = ro + d * rd;\n\n        float norY = clamp( (length(p) - (EARTH_RADIUS + CLOUDS_BOTTOM)) * (1./(CLOUDS_TOP - CLOUDS_BOTTOM)), 0., 1.);\n\n        float alpha = cloudMap( p, rd, norY );\n\n        if( alpha > 0. ) {\n            dist = min( dist, d);\n            vec3 ambientLight = mix( CLOUDS_AMBIENT_COLOR_BOTTOM, CLOUDS_AMBIENT_COLOR_TOP, norY );\n\n            vec3 S = (ambientLight + SUN_COLOR * (scattering * volumetricShadow(p, sundotrd))) * alpha;\n            float dTrans = exp(-alpha * dD);\n            vec3 Sint = (S - S * dTrans) * (1. / alpha);\n            scatteredLight += transmittance * Sint; \n            transmittance *= dTrans;\n        }\n\n        if( transmittance <= CLOUDS_MIN_TRANSMITTANCE ) break;\n\n        d += dD;\n    }\n\n    return vec4(scatteredLight, transmittance);\n}\n\n//\n//\n// !Because I wanted a second cloud layer (below the horizon), I copy-pasted \n// almost all of the code above:\n//\n\nfloat cloudMapLayer(vec3 pos, vec3 rd, float norY) {\n    vec3 ps = pos;\n\n    float m = cloudMapBase(ps, norY);\n\t// m *= cloudGradient( norY );\n\tfloat dstrength = smoothstep(1., 0.5, m);\n    \n    // erode with detail\n    if (dstrength > 0.) {\n\t\tm -= cloudMapDetail( ps ) * dstrength * CLOUDS_DETAIL_STRENGTH;\n    }\n\n\tm = smoothstep( 0., CLOUDS_BASE_EDGE_SOFTNESS, m+(CLOUDS_LAYER_COVERAGE-1.) );\n\n    return clamp(m * CLOUDS_DENSITY, 0., 1.);\n}\n\nfloat volumetricShadowLayer(in vec3 from, in float sundotrd ) {\n    float dd = CLOUDS_LAYER_SHADOW_MARGE_STEP_SIZE;\n    vec3 rd = SUN_DIR;\n    float d = dd * .5;\n    float shadow = 1.0;\n\n    for(int s=0; s<CLOUD_SELF_SHADOW_STEPS; s++) {\n        vec3 pos = from + rd * d;\n        float norY = clamp( (pos.y - CLOUDS_LAYER_BOTTOM ) * (1./(CLOUDS_LAYER_TOP - CLOUDS_LAYER_BOTTOM)), 0., 1.);\n\n        if(norY > 1.) return shadow;\n\n        float muE = cloudMapLayer( pos, rd, norY );\n        shadow *= exp(-muE * dd);\n\n        dd *= CLOUDS_SHADOW_MARGE_STEP_MULTIPLY;\n        d += dd;\n    }\n    return shadow;\n}\n\nvec4 renderCloudLayer( vec3 ro, vec3 rd, inout float dist ) {\n    if( rd.y > 0. ) {\n        return vec4(0,0,0,10);\n    }\n\n    ro.xz *= SCENE_SCALE;\n    ro.y = 0.;\n\n    float start = CLOUDS_LAYER_TOP/rd.y;\n    float end  = CLOUDS_LAYER_BOTTOM/rd.y;\n    \n    if (start > dist) {\n        return vec4(0,0,0,10);\n    }\n    \n    end = min(end, dist);\n    \n    float sundotrd = dot( rd, -SUN_DIR);\n\n    // raymarch\n    float d = start;\n    float dD = (end-start) / float(CLOUD_MARCH_STEPS);\n\n    float h = hash13(rd + fract(iTime) );\n    d -= dD * h;\n\n    float scattering =  mix( HenyeyGreenstein(sundotrd, CLOUDS_FORWARD_SCATTERING_G),\n        HenyeyGreenstein(sundotrd, CLOUDS_BACKWARD_SCATTERING_G), CLOUDS_SCATTERING_LERP );\n\n    float transmittance = 1.0;\n    vec3 scatteredLight = vec3(0.0, 0.0, 0.0);\n\n    dist = EARTH_RADIUS;\n\n    for(int s=0; s<CLOUD_MARCH_STEPS; s++) {\n        vec3 p = ro + d * rd;\n\n        float norY = clamp( (p.y - CLOUDS_LAYER_BOTTOM ) * (1./(CLOUDS_LAYER_TOP - CLOUDS_LAYER_BOTTOM)), 0., 1.);\n\n        float alpha = cloudMapLayer( p, rd, norY );\n\n        if( alpha > 0. ) {\n            dist = min( dist, d);\n            vec3 ambientLight = mix( CLOUDS_AMBIENT_COLOR_BOTTOM, CLOUDS_AMBIENT_COLOR_TOP, norY );\n\n            vec3 S = .7 * (ambientLight +  SUN_COLOR * (scattering * volumetricShadowLayer(p, sundotrd))) * alpha;\n            float dTrans = exp(-alpha * dD);\n            vec3 Sint = (S - S * dTrans) * (1. / alpha);\n            scatteredLight += transmittance * Sint; \n            transmittance *= dTrans;\n        }\n\n        if( transmittance <= CLOUDS_MIN_TRANSMITTANCE ) break;\n\n        d += dD;\n    }\n\n    return vec4(scatteredLight, transmittance);\n}\n\n//\n// Main function\n//\nbool resolutionChanged() {\n    return floor(texelFetch(iChannel1, ivec2(0), 0).r) != floor(iResolution.x);\n}\n\nbool mouseChanged() {\n    return iMouse.z * texelFetch(iChannel1, ivec2(1,0), 1).w < 0.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {            \n    if (fragCoord.y < 1.5) {\n        fragColor = saveCamera(iTime, fragCoord, iMouse/iResolution.xyxy);\n        if( abs(fragCoord.x-1.5)<0.5 ) fragColor = vec4(iMouse);\n        if( abs(fragCoord.x-0.5)<0.5 ) fragColor = mouseChanged() ? vec4(0) : vec4(iResolution.xy,0,0);\n    } else {\n        if( letterBox(fragCoord, iResolution.xy, 2.25) ) {\n        \tfragColor = vec4( 0., 0., 0., 1. );\n       \t\treturn;\n        } else {\n            float dist = texelFetch(iChannel2, ivec2(fragCoord),0).w * SCENE_SCALE;\n            vec4 col = vec4(0,0,0,1);\n            \n            vec3 ro, rd;\n    \t\tgetRay( iTime, fragCoord, iResolution.xy, iMouse/iResolution.xyxy, ro, rd);\n\n            if( rd.y > 0. ) {\n                // clouds\n                col = renderClouds(ro, rd, dist);\n                float fogAmount = 1.-(.1 + exp(-dist*0.0001));\n                col.rgb = mix(col.rgb, getSkyColor(rd)*(1.-col.a), fogAmount);\n            } else {\n                // cloud layer below horizon\n                col = renderCloudLayer(ro, rd, dist);\n                // height based fog, see https://iquilezles.org/articles/fog\n                float fogAmount = HEIGHT_BASED_FOG_C * \n                    (1.-exp( -dist*rd.y*(INV_SCENE_SCALE*HEIGHT_BASED_FOG_B)))/rd.y;\n                col.rgb = mix(col.rgb, getSkyColor(rd)*(1.-col.a), clamp(fogAmount,0.,1.));\n            }\n\n            if( col.w > 1. ) {\n                fragColor = vec4(0,0,0,1);\n            } else {\n                vec2 spos = reprojectPos(ro+rd*dist, iResolution.xy, iChannel1);\n                vec2 rpos = spos * iResolution.xy;\n\n        \t\tif( !letterBox(rpos.xy, iResolution.xy, 2.3) \n                    && !resolutionChanged() && !mouseChanged()) {\n                    vec4 ocol = texture( iChannel1, spos, 0.0 ).xyzw;\n                    col = mix(ocol, col, 0.05);\n                }\n                fragColor = col;\n            }\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

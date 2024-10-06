@@ -1,0 +1,123 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1510378040",
+            "description": "Light rays in spaaaace!\n\nIn case nebula doesn't work on your pc: https://my.mixtape.moe/rqlrwg.png",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ltSyDc",
+            "likes": 18,
+            "name": "Rays in Space",
+            "published": 3,
+            "tags": [
+                "stars",
+                "nebula",
+                "starfield"
+            ],
+            "usePreview": 1,
+            "username": "DrLuke",
+            "viewed": 2138
+        },
+        "renderpass": [
+            {
+                "code": "// This work is licensed under a Creative Commons Attribution 4.0 International License.\n// https://creativecommons.org/licenses/by/4.0/\n\n/*\n\nThere is a lot going on in this shader, let me try to break it down a bit.\n\n1.) Background Stars ( @xaot88 )\nThe small dotty starfield is generated with a hash function. I have found it in this shader: \nhttps://www.shadertoy.com/view/Md2SR3\nI applied a varying density field to give it some texture and added some random colors from noise texture.\n\n2.) Big shiny stars\t(Mine)\nThe big shiny stars take their color, position and size from the noise texture. Then I use some basic trigonometry\nto generate the rays and body, with some randomness applied to emulate real telescope imagery. Some of the stars\nare static, while other fade in and out at random positions.\n\n3.) Light beams (Mine)\nA volume is defined by a top and bottom rectangle whose corners are connected. I shoot rays through the volume\nand at each step I convert the ray position to a UV coordinate along the cross section rectangle. I then use this\nas the UV coordinate to sample from the noise volume. The W coordinate is time. I add some of the noise color\nto the beam's color to give it some additional texture.\nThe integration produced somewhat visible banding where the amount of integration steps changed. For this some\ntemporal dithering is applied by noisily varying the integration ray step length over time. The banding is\neliminated but noise is introduced.\n\n4.) Nebula ( @victor_shepardson )\nVictor found a fantastic way to generate chaotic cloud-like patterns out of thin air: \nhttps://www.shadertoy.com/view/XsSfWR\nI slightly modified it to move more slowly and then used it to generate the nebula. I use the blue channel\nas an alpha mask, as the pattern on this channel is especially nebulous. The nebula is masked so it only appears\nin the top-right and bottom-left corner, as it doesn't look very nice when overlaid over the beams.\n\n\n*/\n\n#define LIGHT_TEMP_DITH\n\n#define SHOW_BG_STARS\n#define SHOW_BRIGHT_STARS\n#define SHOW_LIGHTBEAMS\n#define SHOW_NEBULA\n#define NEBULA_COVER_STARS\n//#define SHOW_NEBULA_SOURCE\n//#define SHOW_UNMASKED_NEBULA\n\n\n\n/* Borrowed functions */\n\n// The MIT License\n// Copyright © 2014 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n// From: https://www.shadertoy.com/view/XsXSz4\nfloat sdTriangle( in vec2 p0, in vec2 p1, in vec2 p2, in vec2 p )\n{\n\tvec2 e0 = p1 - p0;\n\tvec2 e1 = p2 - p1;\n\tvec2 e2 = p0 - p2;\n\n\tvec2 v0 = p - p0;\n\tvec2 v1 = p - p1;\n\tvec2 v2 = p - p2;\n\n\tvec2 pq0 = v0 - e0*clamp( dot(v0,e0)/dot(e0,e0), 0.0, 1.0 );\n\tvec2 pq1 = v1 - e1*clamp( dot(v1,e1)/dot(e1,e1), 0.0, 1.0 );\n\tvec2 pq2 = v2 - e2*clamp( dot(v2,e2)/dot(e2,e2), 0.0, 1.0 );\n    \n    float s = sign( e0.x*e2.y - e0.y*e2.x );\n    vec2 d = min( min( vec2( dot( pq0, pq0 ), s*(v0.x*e0.y-v0.y*e0.x) ),\n                       vec2( dot( pq1, pq1 ), s*(v1.x*e1.y-v1.y*e1.x) )),\n                       vec2( dot( pq2, pq2 ), s*(v2.x*e2.y-v2.y*e2.x) ));\n\n\treturn -sqrt(d.x)*sign(d.y);\n}\n\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n// Return random noise in the range [0.0, 1.0], as a function of x.\n// From: https://www.shadertoy.com/view/Md2SR3\nfloat Noise2d( in vec2 x )\n{\n    float xhash = cos( mod(x.x * 37.0, 2.*3.14159) );\n    float yhash = cos( mod(x.y * 57.0, 2.*3.14159) );\n    return fract( 415.92653 * ( xhash + yhash ) );\n}\n\n// Convert Noise2d() into a \"star field\" by stomping everthing below fThreshhold to zero.\nfloat NoisyStarField( in vec2 vSamplePos, float fThreshhold )\n{\n    float StarVal = Noise2d( vSamplePos );\n    if ( StarVal >= fThreshhold )\n        StarVal = pow( (StarVal - fThreshhold)/(1.0 - fThreshhold), 6.0 );\n    else\n        StarVal = 0.0;\n    return StarVal;\n}\n\n// Stabilize NoisyStarField() by only sampling at integer values.\nfloat StableStarField( in vec2 vSamplePos, float fThreshhold )\n{\n    // Linear interpolation between four samples.\n    // Note: This approach has some visual artifacts.\n    // There must be a better way to \"anti alias\" the star field.\n    float fractX = fract( vSamplePos.x );\n    float fractY = fract( vSamplePos.y );\n    vec2 floorSample = floor( vSamplePos );    \n    float v1 = NoisyStarField( floorSample, fThreshhold );\n    float v2 = NoisyStarField( floorSample + vec2( 0.0, 1.0 ), fThreshhold );\n    float v3 = NoisyStarField( floorSample + vec2( 1.0, 0.0 ), fThreshhold );\n    float v4 = NoisyStarField( floorSample + vec2( 1.0, 1.0 ), fThreshhold );\n\n    float StarVal =   v1 * ( 1.0 - fractX ) * ( 1.0 - fractY )\n        \t\t\t+ v2 * ( 1.0 - fractX ) * fractY\n        \t\t\t+ v3 * fractX * ( 1.0 - fractY )\n        \t\t\t+ v4 * fractX * fractY;\n\treturn StarVal;\n}\n/* END OF borrowed functions */\n\n// The light volume is defined by a top and bottom rectangle.\n// The corners of the rectangles are then connected.\n// To simulate lightbeams, each horizontal slice of the volume gets the same noise texture.\n// Because the bottom end is bigger than the top, an illusion of spreading beams is achieved.\n#define TOPCENTER vec3(-4.4,2.,6)\n#define TOPVOLSIZE vec2(5.2,5.2)\n#define BOTTOMCENTER vec3(-0.3,-1.,4.7)\n#define BOTVOLSIZE vec2(7,7)\n#define LIGHTVOLTIME (iTime*0.005)\n#define LIGHTVOLCTIME (iTime*0.1)\nvec4 lightvolume(vec3 p)\n{\n    float py = (p.y - BOTTOMCENTER.y) / (TOPCENTER.y - BOTTOMCENTER.y);\t// Get position along height of volume\n    \n    vec2 size = mix(BOTVOLSIZE, TOPVOLSIZE, py);\t// Get size of slice of volume at y\n    vec2 poffset = mix(BOTTOMCENTER.xz, TOPCENTER.xz, py);\n    vec2 uv = (p.xz - poffset) / size;\t// Convert to UV coordinate along slice\n    \n    return texture(iChannel0, vec3(uv, LIGHTVOLTIME+cos(uv))).rgba;\t// Get sample of volume at this point\n}\n\n// Little bit of temporal dithering works wonders to get rid of banding!\n#define LMARCHSTEPS 70\n#ifdef LIGHT_TEMP_DITH\n#define LMARCHSCALE (5. + sin(noise*2.*3.14159)*0.02)\n#else\n#define LMARCHSCALE 5.\n#endif\n#define LMARCHSTEPDIST(x) (float(x)/float(LMARCHSTEPS))\nvec4 lightmarch(vec3 s, vec3 d, float noise)\n{    \n    vec4 intval = vec4(0.0);\n    for(int i = 0; i < LMARCHSTEPS; i++)\n    {\n        intval += lightvolume(s + d*LMARCHSTEPDIST(i)*LMARCHSCALE) + mix(-.5/255., .5/255., noise);\n    }\n    \n    intval /= float(LMARCHSTEPS);\n    \n    intval.r = pow(intval.r, 10.)*(100.+sin(LIGHTVOLCTIME * 3.14159 * 2.)*35.);\n    intval.g = pow(intval.g, 8.)*(25.+sin(-LIGHTVOLCTIME * 3.14159 * 2.)*25.);\n    intval.b = 0.;\n    intval.a = pow(intval.a, 8.)*100.;\n    \n\treturn intval;\n}\n\nvec3 bg(vec2 uv, vec2 fragCoord)\n{\n    float starmask = sdTriangle(vec2(1.8, 1.), vec2(1.2,-0.6), vec2(0.2, -0.86), vec2(uv.x + uv.x * uv.y * 0.6, uv.y));\n    starmask = min(starmask, sdTriangle(vec2(-2.5, 1.), vec2(-1.7,-0.6), vec2(-0.9, -0.86), vec2(uv.x + uv.x * uv.y * 0.6, uv.y))*0.5);\n    \n    float genericstardensity = 0.998 - smoothstep(0.2, -0.4, starmask + texture(iChannel1, uv*0.01).z*0.3 ) *0.2 - texture(iChannel1, uv*0.1).z*0.01;\n    float genericstars = StableStarField(fragCoord*2.5, genericstardensity);\n    vec3 starcol = (vec3(1) + texture(iChannel1, uv*0.1).rgb*0.4) * genericstars;\n    \n    return vec3(starcol) + vec3(1. - genericstardensity)*.2;\n}\n\nvec3 brightstars(vec2 c)\n{\n    #define STARSSTATIC 5\n    #define STARSDYNAMIC 3\n\n    #define STATICSTARDATE 100\n    #define STARDATE(xt) mod((iTime*.1+xt),iChannelResolution[1].y)\n    vec3 col = vec3(0);\n    for(int i = 0; i < STARSSTATIC; i++)\n    {\n        vec4 pdata = texelFetch(iChannel1, ivec2(i*2, int(STATICSTARDATE)), 0);\t// XY: Pos\n        vec4 sdata = texelFetch(iChannel1, ivec2(i*2 + 1, STATICSTARDATE), 0);\t// RGB: Color, A: Size\n        sdata.a = pow(sdata.a, 0.75);\n\t\t\n        vec2 loc = c - floor(pdata.rg*iResolution.xy) + 0.5;\n        float dist = length(loc/iResolution.x)*1000.;\n        float ang = atan(loc.y, loc.x);\n        \n        float peakydist = smoothstep(0.995, 1.0, cos(ang*4.));\n        float fuzzydist = (15. + texture(iChannel1, vec2((ang+float(i))/(3.14159*8.))).r * 5.)*pow(sdata.a, 2.);\n        col += (vec3(.8) + sdata.rgb * 0.4) * (1.-smoothstep(0., fuzzydist + peakydist*50.*smoothstep(0.3, 1., sdata.a), dist));\n    }\n    \n    for(int i = STARSSTATIC; i < (STARSSTATIC + STARSDYNAMIC); i++)\n    {\n        vec4 pdata = texelFetch(iChannel1, ivec2(i*2, int(STARDATE(float(i)*0.3))), 0);\t// XY: Pos\n        vec4 sdata = texelFetch(iChannel1, ivec2(i*2 + 1, int(STARDATE(float(i)*0.3))), 0);\t// RGB: Color, A: Size\n        sdata.a = pow(sdata.a, 0.75);\n\t\t\n        vec2 loc = c - floor(pdata.rg*iResolution.xy) + 0.5;\n        float dist = length(loc/iResolution.x)*2000.;\n        float ang = atan(loc.y, loc.x);\n        \n        float fade = sqrt(cos( (fract(STARDATE(float(i)*0.3))-0.5)*2.*3.14159 )*0.5 + 0.5); \n        float peakydist = smoothstep(0.995, 1.0, cos(ang*4.)) * fade;\n        float fuzzydist = (15. + texture(iChannel1, vec2(ang/(3.14159*8.))).r * 5.)*pow(sdata.a, 2.) * fade;\n        col += fade * (vec3(.8) + sdata.rgb * 0.4) * (1.-smoothstep(0., fuzzydist + peakydist*50.*smoothstep(0.3, 1., sdata.a), dist));\n    }\n    return col;\n}\n\nvec4 nebula(vec2 fragCoord, vec2 uv)\n{\n   \tvec4 neb = texture(iChannel2, fragCoord.xy/iResolution.xy).bgab;\n    \n    float nmask = sdTriangle(vec2(0.5, 1.), vec2(1.4,0.5), vec2(1.2, -0.6), uv);\n    nmask = min(nmask, sdTriangle(vec2(-1.8, -.3), vec2(-1.8,-1.8), vec2(-1., -1.1), uv));\n    nmask = smoothstep(0.6,-0.1, nmask);\n    \n    vec3 modifier = vec3(1., 0.4, 0.2)*0.8;\n    neb.rgb = neb.rgb * modifier + neb.a*0.2;\n    \n    // It takes 10 seconds for the nebula texture to stabilize, so only fade in after that\n    #ifndef SHOW_UNMASKED_NEBULA\n    return vec4(neb)*nmask*smoothstep(0.5, 1.5, iTime/10.);\n    #else\n    return vec4(neb)*smoothstep(0.5, 1.5, iTime/10.);\n    #endif\n    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = ((fragCoord.xy * 2.0) / iResolution.xy) - vec2(1);\t// Make UV go from -1 to 1 instead of 0 to 1\n    uv.x *= iResolution.x / iResolution.y;\n    \n    vec3 s = vec3(0,0,0);\n    #define FOCALLEN 1.1\n    vec3 d = vec3(uv, FOCALLEN);\n\n    float n = texture(iChannel1, fragCoord.xy/iChannelResolution[1].xy + vec2(iTime*10.5192, iTime*0.8542)).x;\t// Noise for dithering\n    vec4 lmarchval = lightmarch(s, d, n);\n\tfloat lmask = sdTriangle(vec2(-1.6, 1.), vec2(0.8,-0.6), vec2(-0.4, -0.86), uv);\n    vec4 beammask = smoothstep(0.6,-0.6, lmask)*lmarchval + mix(-0.5/256., 0.5/256., n);\n    \n    vec4 neb = nebula(fragCoord, uv);\n    \n    #define beamcolor (vec3(0.1, 0.5, 1.4)+beammask.rgb)\n    \n    #ifdef SHOW_BG_STARS\n    #ifdef NEBULA_COVER_STARS\n    fragColor = vec4(bg(uv, fragCoord), 0) * clamp(1.-neb.a*1.2, 0., 1.);\n    #else\n    fragColor = vec4(bg(uv, fragCoord), 0);\n    #endif\n    #endif\n    \n    #ifdef SHOW_NEBULA\n    fragColor.rgb += neb.rgb* neb.a;\n    #endif\n    #ifdef SHOW_BRIGHT_STARS\n    fragColor.rgb += brightstars(fragCoord);\n    #endif\n    #ifdef SHOW_LIGHTBEAMS\n    fragColor.rgb += beammask.a*(beamcolor*(1.5+uv.x*.6));\n    #endif\n\n    fragColor.a = 1.0;\n    \n    #ifdef SHOW_NEBULA_SOURCE\n    fragColor.rgb = texture(iChannel2, fragCoord.xy/iResolution.xy).rgb;\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// LICENSE:\n// Creative Commons Attribution 4.0 International License.\n// https://creativecommons.org/licenses/by/4.0/\n\n// Code by victor_shepardson, found here: https://www.shadertoy.com/view/XsSfWR\n// Once again thank you for this beautiful piece of magic <3\n\n#define T(x) texture(iChannel0, fract((x)/iResolution.xy))\n\nvoid mainImage(out vec4 c, vec2 u)\n{   \n    //c=1./u.yyyx;\n    c=u.yyyx/1e4;///iTime;\n    //for(float t=1.4; t<1e2; t+=t)\n    //    c += (c.gbar-c)/3.+T(u-c.wz*t);\n    for(float t=.6; t<4e2; t+=t)\n    \tc += c.gbar/4.-c*.3+T(u-c.wz*t);\n    \n    //\t\t\t\t\t\tModification to make it slow down after a bit of time.\n    //\t\t\t\t\t\tBefore that greater speed is needed to bootstrap pattern more quickly.\n\tc = mix(T(u), cos(c), 0.17 - clamp(iTime/10., 0., 1.)*0.165);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 16,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

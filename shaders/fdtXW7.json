@@ -1,0 +1,65 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1633383626",
+            "description": "Mandelbrot with anti-aliasing!",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "fdtXW7",
+            "likes": 2,
+            "name": "MandelBrot Shader",
+            "published": 3,
+            "tags": [
+                "fractal",
+                "postprocessing"
+            ],
+            "usePreview": 0,
+            "username": "Remming_Senegal",
+            "viewed": 453
+        },
+        "renderpass": [
+            {
+                "code": "/*\n    Here's what I'm learning with this shader:\n    How to properly implement proper UV distortion\n    https://en.wikipedia.org/wiki/Mandelbrot_set\n    \n    Cartesan mandelbrot set courtesy of Code Parade\n    https://www.youtube.com/watch?v=GiAj9WW1OfQ\n    \n    HSV to RGB math courtesy of Wikipedia\n    https://en.wikipedia.org/wiki/HSL_and_HSV#To_RGB\n    \n    Luminance numbers:\n    https://en.wikipedia.org/wiki/Relative_luminance\n    \n    FXAA algorithm thanks to: \n    https://catlikecoding.com/unity/tutorials/advanced-rendering/fxaa/\n    \n    TODO:\n        -Implement FXAA antialiasing\n        -Make the camera move around the edges of the mandelbrot set\n*/\n\n/*\n    BufferA renders the mandelbrot set\n    main image will apply post-processing effects\n*/\n\nfloat PIXELX;\nfloat PIXELY;\n\nfloat sampleLuminance(sampler2D channel, vec2 uv, float xoffset, float yoffset) {\n    vec3 col = texture(channel, uv + vec2(xoffset, yoffset)).rgb;\n    return (0.2126*col.r + 0.7152*col.g + 0.0722*col.b);\n}\n\nstruct kernel {\n    float m, n, s, w, e;\n    float ne, nw, se, sw;\n    float highest, lowest, contrast;\n};\n\nstruct edge {\n    //true = ishorizontal, false = isvertical\n    bool isHorizontal;\n    float pixelstepx;\n    float pixelstepy;\n\n};\n\nfloat blendFactor(kernel l) {\n    //adds everything and then averages it\n    float f = 2.0 * (l.n + l.s + l.e + l.w);\n    f += l.ne + l.nw + l.se + l.sw;\n    f /= 12.0;\n    f = abs(f - l.m);\n    f = clamp(0.0,1.0,f/l.contrast);\n    f = smoothstep(0.0f,1.0f,f);\n    return f*f;\n}\n\nedge detectEdges(kernel l) {\n    edge e;\n    \n    float horizontal = \n        2.0 * abs(l.n + l.s - 2.0 * l.m) +\n        abs(l.ne + l.se - 2.0 * l.e) +\n        abs(l.nw + l.sw - 2.0 * l.w);\n        \n    float vertical = \n        2.0 * abs(l.e + l.w - 2.0 * l.m) +\n        abs(l.ne + l.nw - 2.0 * l.n) +\n        abs(l.se + l.sw - 2.0 * l.s);\n    \n    e.isHorizontal = horizontal >= vertical;\n    \n    float positiveblur = e.isHorizontal ? l.n : l.e;\n    float negativeblur = e.isHorizontal ? l.s : l.e;\n    \n    float positivegradient = abs(positiveblur - l.m);\n    float negativegradient = abs(negativeblur - l.m);\n    \n    e.pixelstepx = PIXELX;\n    e.pixelstepy = PIXELY;\n    \n    if(positivegradient < negativegradient) {\n        e.pixelstepx *= -1.0;\n        e.pixelstepy *= -1.0;\n    }\n    \n    return e;\n\n}\n\n//samples pixels around the current pixel\n//returns local contrast\nfloat contrast(sampler2D channel, vec2 uv,out kernel l) {\n    //kernel l;\n    \n    l.m = sampleLuminance(channel, uv,0.0,0.0);\n    l.n = sampleLuminance(channel, uv,0.0,PIXELY);\n    l.s = sampleLuminance(channel, uv,0.0,-PIXELY);\n    l.w = sampleLuminance(channel, uv,PIXELX,0.0);\n    l.e = sampleLuminance(channel, uv,-PIXELX,0.0);\n    \n    l.ne = sampleLuminance(channel, uv, PIXELX, -PIXELY);\n    l.nw = sampleLuminance(channel, uv, PIXELX, PIXELY);\n    l.se = sampleLuminance(channel, uv, -PIXELX, -PIXELY);\n    l.sw = sampleLuminance(channel, uv, -PIXELX, PIXELY);\n    \n    l.highest = max(l.m,max(l.n,max(l.s,max(l.w,l.e))));\n    l.lowest = min(l.m,min(l.n,min(l.s,min(l.w,l.e))));\n    l.contrast = l.highest - l.lowest;\n    \n    return l.contrast;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    vec3 col;\n    \n    PIXELX = uv.x/iResolution.x;\n    PIXELY = uv.y/iResolution.y;\n    \n    //Anti-Alias the image with FXAA\n    kernel l;\n    float localcontrast = contrast(iChannel0, uv, l);\n    \n    //removing low-contrast areas\n    if(localcontrast < 0.0312) {\n        localcontrast = 0.0f;\n    }\n    \n    //removing areas within relative threshold\n    if(localcontrast < 0.063 * l.highest) {\n        localcontrast = 0.0f;\n    }\n    \n    l.contrast = localcontrast;\n    \n    //calculating blend factor\n    float blur = blendFactor(l);\n    \n    //detecting edges\n    edge e = detectEdges(l);\n    \n    col = texture(iChannel0, uv).rgb;\n    \n    //blending uv\n    if(e.isHorizontal)\n        uv.y += e.pixelstepy * blur;\n    else\n        uv.x += e.pixelstepx * blur;\n   \n    col = texture(iChannel0, uv).rgb;\n    \n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\n    This buffer is responsible for renderingthe mandelbrot set\n\n*/\n\n#define ANTIALIAS 4\n#define STEPS 50\n#define SPEED 60.0\n\nvec2 MandelBrotUV(vec2 uv, int steps) {\n    \n    vec2 olduv = vec2(0,0);\n    vec2 mbuv;\n    \n    for(int i = 0; i < steps; i++) {\n        mbuv.x = pow(olduv.x,2.0f) - pow(olduv.y,2.0f) + uv.x;\n        mbuv.y = (2.0f*olduv.x*olduv.y) + uv.y;\n        \n        olduv = mbuv;\n    }\n \n    return mbuv;\n}\n\n//HSV to RGB\nvec3 rgb(vec3 hsv) {\n    vec3 rgb;\n    \n    float chroma = hsv.y * hsv.z;\n    \n    hsv.x = mod(hsv.x,360.0);\n    hsv.x /= 60.0;\n    float x = chroma * (1.0 - abs(mod(hsv.x,2.0)-1.0));\n    \n    if(0.0 <= hsv.x && hsv.x < 1.0) {\n    \n        rgb = vec3(chroma,x,0.0);\n        \n    } else if(1.0 <= hsv.x && hsv.x < 2.0) {\n    \n        rgb = vec3(x,chroma,0.0);\n        \n    } else if(2.0 <= hsv.x && hsv.x < 3.0) {\n    \n        rgb = vec3(0.0,chroma,x);\n        \n    } else if(3.0 <= hsv.x && hsv.x < 4.0) {\n    \n        rgb = vec3(0.0,x,chroma);\n        \n    } else if(4.0 <= hsv.x && hsv.x < 5.0) {\n    \n        rgb = vec3(x,0.0,chroma); \n        \n    } else if(5.0 <= hsv.x && hsv.x < 6.0) {\n    \n        rgb = vec3(chroma,0.0,x);\n        \n    }\n    \n    return rgb;\n    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    //Normalize pizel coords (-1 to 1)\n    uv *= 2.0;\n    uv -= 1.0;\n    \n    //Maintain aspect ratio\n    uv.x *= iResolution.x/iResolution.y;\n\n    //At about uv *= 0.000001 precision starts to get lost.\n    uv *= 1.2;\n    uv -= vec2(.6,-0.024);\n\n    vec3 col = rgb(vec3(iTime*SPEED,1.0,1.0));\n    vec2 mbuv;\n    \n    for(int i = 1; i < STEPS; i++) {\n        mbuv = MandelBrotUV(uv,i);\n        vec3 stepcol;\n        //Lowers color range from 0-infinity to 0-1\n        float l = length(mbuv); \n        l = (log(l+0.01)/20.0f) + .2f;\n        if(l > 1.0) stepcol = vec3(1.0,1.0,1.0);\n        \n        if(l > .2) stepcol = vec3(0.0,0.0,0.0);\n        \n        //if(l <= .2) stepcol = vec3(1.0/float(STEPS));\n        //col += stepcol;\n        \n        if(l <= .2) stepcol = rgb(vec3(360.0*(float(i)/float(STEPS))+(iTime*SPEED),1.0,1.0));\n        if(l <= .2) col = stepcol;\n        \n        \n        //Final step. Inside Shading\n        if(i >= STEPS-2 && l  <=.2) {\n            //col = rgb(vec3(iTime*SPEED + 180.0,1.0,1.0));\n            col = vec3(0.0);\n        }\n    }\n    \n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

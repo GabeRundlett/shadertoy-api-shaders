@@ -1,0 +1,58 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1723386457",
+            "description": "mostly coded from scratch so spaghetti code + probably slower than it should be",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Mflfz8",
+            "likes": 21,
+            "name": "Reflective Voxels",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "raymarch",
+                "voxels",
+                "cube",
+                "shadows",
+                "dda",
+                "blocks",
+                "march"
+            ],
+            "usePreview": 0,
+            "username": "SnoopethDuckDuck",
+            "viewed": 182
+        },
+        "renderpass": [
+            {
+                "code": "#define R iResolution.xy\n#define ss(x) smoothstep(16./R.y, -16./R.y, x)\n#define rot(a) mat2(cos(a),-sin(a),sin(a),cos(a))\n#define M(O) (map(O + v) == 1) \n  \nvec3 ori;\n\n// bugs: \n// - sometimes hits block and calculates normal incorrectly\n//   causing uv / texture to break\n// - some blocks have grainy bits on them\n// - more reflections -> more graininess\n// - some blocks have lines between them where its marched past\n//   the block boundary\n// - aliasing at shallow angles and far blocks\n\nint map(vec3 v)\n{\n    if (length(v.xy) < 6.5) return 0;\n    \n    v.y -= 30.;\n    v.z = mod(v.z, 8.*60.);\n\n    float d1 = texture(iChannel0, v / 4e2).x;\n    float d2 = texture(iChannel0, v / 3e2).y;\n    float d = mix(d1, d2, .5 + .5 * cos(v.z/37.));\n\n    if (d < .1-.01*v.y)\n        return 1;\n    \n    return 0;\n}\n\n// return hit, steps i, distance s\nvec3 blockMarch(inout vec3 v, inout vec3 p, vec3 rd, int maxSteps) \n{\n    vec3 q;  // Old position\n    float s; // Total distance\n    \n    for (int i; i < maxSteps; i++) {\n        // Old position = current position               \n        q = p; \n        \n        // Update current position\n        float e = 5e-5;\n        vec3 b = (fract(p*sign(-rd) - e) + e) / abs(rd);   \n        float d = min(b.x, min(b.y, b.z));       \n        p += d * rd;\n                \n        // Voxel position\n        v = floor((p+q)/2.);\n        \n        if (map(v) == 1) {\n            p = q;\n            return vec3(1, i, s);\n        }\n        else s += d;\n    }\n    \n    return vec3(0, maxSteps, s);\n}\n\nvec4 bgColor(vec3 rd) \n{\n    vec4 bg = vec4(.5+.5*rd,0);\n    bg = mix(bg, vec4(.7,1,.3,0), .23);\n    return sqrt(bg+.3);\n}\n\nvoid applyFog(inout vec4 col, vec3 p, vec3 rd) \n{\n    float mx = smoothstep(80., 140., length(p - ori));\n    col = mix(col, bgColor(rd), mx);\n}\n\n// n: normal,  ref: reflectivity\n// v: voxel, p: position, rd: ray dir, bm: block march output\nvec4 blockColor(inout vec3 n, inout float ref, vec3 v, vec3 p, vec3 rd, vec3 bm) \n{\n    // Out color\n    vec4 o;\n    \n    // n is face normal\n    \n    vec3 fp = fract(p), \n         dif = abs(fp - fract(v)),\n         sd = sign(rd),\n         X, // Normals to n\n         Y; //\n                 \n    vec2 uv;         // Face uv\n    vec4 bcol, ocol; // Block, outline color\n    float bw = .1;   // Border width\n\n    // Hit in x\n    float e = 5e-5;\n    if (dif.x < e) { \n         n.x += sd.x;              // Face normal\n         ref = .3;                 // Reflectivity\n         uv = fp.yz;               // Face uv\n         X = vec3(0, 1, 0);        // Normals to n\n         Y = vec3(0, 0, 1);        //\n         bcol = vec4(.2,.7,1,0);   // Block color\n         ocol = vec4(.1,.45,.7,0); // Outline color\n    }\n    // Hit in y\n    else if (dif.y < e) { \n        n.y += sd.y; \n        ref = .15;\n        uv = fp.xz;\n        X = vec3(1, 0, 0);\n        Y = vec3(0, 0, 1);\n        bcol = vec4(1,1,.7,0);\n        if (n.y == -1.) ocol = vec4(.2,.2,.15,0);\n        else ocol = .75 * bcol;\n        bw = .14;\n    }\n    // Hit in z\n    else if (dif.z < e) {\n        n.z += sd.z;\n        ref = .22;\n        uv = fp.xy;\n        X = vec3(1, 0, 0);\n        Y = vec3(0, 1, 0);\n        bcol = vec4(.7,1,.3,0);\n        ocol = vec4(.4,.7,.2,0);\n    }\n    // ^ \n    // This may break near block corners since we may have\n    // dif < e in more than one axis\n\n    // Block Color \n    o = bcol;\n            \n    // Subtle pattern\n    o += .01*cos(16.*dot(abs(p-.5-v), vec3(1)));\n            \n    // Offset uv for outlines\n    vec2 U = abs(uv),\n         V = abs(uv-1.);\n            \n    // Check neighbours\n    bool ML  = M(-X), \n         MR  = M( X), \n         MB  = M(-Y), \n         MT  = M( Y), \n         MLn = M(-X-n),\n         MRn = M( X-n),\n         MBn = M(-Y-n),\n         MTn = M( Y-n);\n                 \n    // Distance to border\n    float db = 1e5; \n            \n    // Sides\n    if (!ML || MLn) db = min(db, U.x);\n    if (!MR || MRn) db = min(db, V.x);\n    if (!MB || MBn) db = min(db, U.y);\n    if (!MT || MTn) db = min(db, V.y);\n                  \n    // Corners\n    if (ML && MB && !M(-X-Y) || !MLn && !MBn && M(-X-Y-n))\n        db = min(db, max(U.x, U.y));\n    if (ML && MT && !M(-X+Y) || !MLn && !MTn && M(-X+Y-n))\n        db = min(db, max(U.x, V.y));\n    if (MR && MB && !M( X-Y) || !MRn && !MBn && M( X-Y-n))\n        db = min(db, max(V.x, U.y));\n    if (MR && MT && !M( X+Y) || !MRn && !MTn && M( X+Y-n))\n        db = min(db, max(V.x, V.y));\n            \n    // Draw borders (less detail with distance)\n    float fade = clamp(35./bm.z, 0., 1.);\n    ocol = mix(ocol, o, 1. - fade);\n    float outlineMix = ss(db - bw);\n    o = mix(o, ocol, outlineMix);  \n             \n    // Make outline more reflective\n    ref = mix(ref, .35, outlineMix);\n        \n    // Checkerboard\n    o = mix(o, vec4(0), .12 * fade * (1. - mod(v.x+v.y+v.z, 2.)));\n        \n    return o;            \n}\n\nvoid mainImage( out vec4 o, vec2 u )\n{\n    vec2 u0 = u / R; \n    u = (u+u-R)/R.y;\n    o *= 0.;\n           \n    ori = vec3(0, -.5, 8.*mod(iTime, 60.)); // Origin     \n      \n    vec3 v,                                 // Voxel\n         p = ori,                           // Position                          \n         rd = normalize(vec3(u, 2.5)),      // Ray direction\n         ld = normalize(vec3(-1, -1, 1));   // Light direction\n      \n    rd.xz *= rot(-min(.14*iTime, 6.283));  \n      \n    vec3 bm1 = blockMarch(v, p, rd, 200), // 1st hit  \n         bm1s,                            // 1st shadow\n         bm2,                             // 2nd hit (reflection)\n         bm2s;                            // 2nd shadow\n          \n    if (bm1.x == 1.) \n    {   \n        // 1st hit\n        vec3 n;\n        float ref = 1.; // Reflectivity\n        o = blockColor(n, ref, v, p, rd, bm1);\n        \n        // 1st Shadows\n        vec3 vs, ps = p;\n        bm1s = blockMarch(vs, ps, -ld, 120);\n\n        // 2nd hit - Reflection \n        float refr; // (unused reflectivity)\n        vec3 nr, vr, pr = p, rdr = reflect(rd, n);\n        bm2 = blockMarch(vr, pr, rdr, 200);  \n        vec4 rcol = blockColor(nr, refr, vr, pr, rdr, bm2);\n          \n        // 2nd Shadows and fog\n        ps = pr;\n        bm2s = blockMarch(vs, ps, -ld, 120);\n        if (bm2s.x == 1.) rcol *= .33;\n        applyFog(rcol, pr, rdr);\n        \n        // Mix reflection\n        o = mix(o, rcol, ref);\n        \n        // 1st shadows and fog\n        if (bm1s.x == 1.) o *= .33;\n        applyFog(o, p, rd);\n    }\n    else \n    {\n        o = bgColor(rd);\n    }\n    \n    // Vignette\n    float vig = pow(16.*u0.x*u0.y*(1.-u0.x)*(1.-u0.y), .028);\n    o = mix(vec4(1,.5,.2,0), o, vig);\n    \n    // Gamma\n    o = sqrt(o);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

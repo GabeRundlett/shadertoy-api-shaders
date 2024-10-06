@@ -1,0 +1,43 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1645618734",
+            "description": "This is how I've been drawing these primitives in all my programs for a decade.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ssSfRz",
+            "likes": 34,
+            "name": "Gaussian-blurred primitives",
+            "published": 3,
+            "tags": [
+                "blur",
+                "line",
+                "circle",
+                "antialiasing",
+                "rectangle",
+                "gaussianblur",
+                "dot",
+                "loopless"
+            ],
+            "usePreview": 0,
+            "username": "Michel_Rouzic",
+            "viewed": 447
+        },
+        "renderpass": [
+            {
+                "code": "/*\nUnlike the polygon drawing algorithm in my previous shader the algorithms for drawing these primitives\nwith Gaussian are rather simple. The line, dot and rectangle formulas match exactly what Gaussian\nfiltering would yield, the circle algorithms on the other hand might not be quite accurate, but they\nlook about right. The line, dot and thin circle algorithms represent Gaussian filtering of infinitely\nthin lines and dots, therefore their intensities need to be modified according to the blurring radius.\nThe full circle and rectangle algorithms on the other hand naturally scale themselves.\nThe full circle is probably too bright when blurred a lot, I'd need to look into Gaussian circles more.\n*/\n\nfloat sq(float x)\n{\n    return x * x;\n}\n\nfloat gaussian(float x)\n{\n\treturn exp(-x*x);\t// ~6 FR\n}\n\nfloat erf_fast(float x)\n{\n\tfloat y, xa = abs(x);\n\n\t// erf(x) ~= 1 - exp(<polynomial>) for x >= 0, max error 1/4249\n\t// 2 mad, 1 mul, 1 +-, 1 copysign, 1 exp = ~9 FR\n\ty = ((-0.06388*xa - 0.66186)*xa - 1.123613)*xa;\n\ty = 1. - exp(y);\n\ty *= sign(x);\n\n\treturn y;\n}\n\nfloat lsrgb(float l)\t// converts a [0.0, 1.0] linear value into a [0.0, 1.0] sRGB value\n{\n\tfloat x, line, curve;\n\n\t// 13 FR every time + 2 FR once\n\tline = l * 12.92;\t// 1 FR\n\tx = sqrt(l);\t// 4 FR\n\tcurve = ((((0.455*x - 1.48)*x + 1.92137)*x - 1.373254)*x + 1.51733216)*x - 0.0404733783;\t// 5 FR + 2 FR once, error 0.145 sRGB units\n\n\treturn l <= 0.0031308 ? line : curve;\t// 3 FR\n}\n\nvec2 point_rot(vec2 p, float costh, float sinth)\n{\n    vec2 rp;\n\trp.x = p.x * costh - p.y * sinth;\n\trp.y = p.x * sinth + p.y * costh;\n    return rp;\n}\n\nfloat thin_line_weight(float r1x, float r1y, float r2x, float costh, float sinth, vec2 pf)\n{\n\tfloat v;\n\tvec2 rp;\n\n    rp = point_rot(pf, costh, sinth);\n\tv = (erf_fast(rp.x-r1x) - erf_fast(rp.x-r2x)) * 0.5;\n\tv *= gaussian(rp.y-r1y);\n\n\treturn v;\n}\n\nfloat point_weight(vec2 dp, float rad, vec2 pf)\n{\n\tfloat d = distance(dp, pf) * rad;\t// distance of the pixel from the centre of the dot, scaled\n\n\treturn gaussian(d);\n}\n\nfloat circle_full_weight(vec2 pc, float circrad, float rad, vec2 pf)\n{\n\tfloat dc, dn, df;\n\n\tdc = distance(pf, pc);\t\t// Distance to center\n\tdn = (circrad - dc) * rad;\t// Near edge distance\n\tdf = -(circrad + dc) * rad;\t// Far edge distance\n\n\treturn (erf_fast(dn) - erf_fast(df)) * 0.5;\n}\n\nfloat circle_hollow_weight(vec2 pc, float circrad, float rad, vec2 pf)\n{\n\tfloat dc, dn, df;\n\n\tdc = distance(pf, pc);\t\t// Distance to center\n\tdn = (circrad - dc) * rad;\t// Near edge distance\n\tdf = -(circrad + dc) * rad;\t// Far edge distance\n\n\treturn gaussian(dn) + gaussian(df);\n}\n\nfloat rect_full_weight(vec2 p0, vec2 p1, float rad, vec2 pf)\n{\n\tfloat d;\n\tvec2 d0, d1, gv;\n\n\td0 = (pf - p0) * rad;\n\td1 = (pf - p1) * rad;\n\n\tgv.x = erf_fast(d0.x) - erf_fast(d1.x);\n\tgv.y = erf_fast(d0.y) - erf_fast(d1.y);\n\n\treturn gv.x * gv.y * 0.25;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{    \n    // Pixel to world coordinates\n    float scrscale = 18. / iResolution.y;\n    vec2 uv = (fragCoord-iResolution.xy*0.5) * scrscale;\n    \n    // Tetragon rotation\n    float th = iTime * 6.2831853 / 40.;\n    float costh = cos(th);\n    float sinth = sin(-th);\n    \n    // Varying blurriness\n    float rad = sq(1.-abs(cos(iTime * 6.2831853 / 16.))) * 6.;\n    float min_rad = 0.8*scrscale;\n    rad = length(vec2(rad, min_rad));\n\n    // Add all the primitives\n    vec3 pv = vec3(0.);\n    pv += thin_line_weight(-3.5/rad, 0./rad, 5./rad, costh/rad, -sinth/rad, uv) * min_rad/rad;\n    pv += vec3(0., 0.44, 1.) * circle_full_weight(point_rot(vec2(-5., 0.), costh, sinth), 1.5, 1./rad, uv);\n    pv += vec3(0.5, 1., 0.) * circle_hollow_weight(point_rot(vec2(5., 0.), costh, sinth), 1.5, 1./rad, uv) * min_rad/rad;\n    for (float dt=-3.25; dt <= 3.25; dt += 0.5)\n        pv += mix(vec3(1., 1., 0.), vec3(1., 0., 0.), (dt+3.5)/7.) * point_weight(point_rot(vec2(0., dt), costh, sinth), 1./rad, uv) * sq(min_rad/rad);\n    pv += vec3(1., 0., 0.06) * rect_full_weight(vec2(-1.5, 3.5), vec2(1.5, 6.5), 1./rad, point_rot(uv, costh, -sinth));\n    pv += vec3(1., 1., 0.) * \n            (rect_full_weight(vec2(-1.5, -6.5), vec2(1.5, -3.5), 1./rad, point_rot(uv, costh, -sinth)) -\n            rect_full_weight(vec2(-1., -6.), vec2(1., -4.), 1./rad, point_rot(uv, costh, -sinth)));\n\n    // Output to screen\n    fragColor = vec4(lsrgb(pv.r), lsrgb(pv.g), lsrgb(pv.b), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

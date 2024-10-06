@@ -1,0 +1,104 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1642991866",
+            "description": "Uses the cubemap buffer to compute a 1024x1024 FFT by pipelining 10 FFT stages (5x horizontal, 5x vertical) with 4 samples per stage.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "sdlcW8",
+            "likes": 10,
+            "name": "1024x1024 Pipelined FFT",
+            "published": 3,
+            "tags": [
+                "fft",
+                "cubemap",
+                "frequency",
+                "fourier"
+            ],
+            "usePreview": 0,
+            "username": "Flyguy",
+            "viewed": 419
+        },
+        "renderpass": [
+            {
+                "code": "#define SPLIT 0\n#define MAGNITUDE 1\n#define PHASE 2\n\n#define VIEW_MODE SPLIT\n\nvec3 rainbow(float x)\n{\n    vec3 col = vec3(0);\n    col.r = cos(x * tau - (0.0/3.0)*tau);\n    col.g = cos(x * tau - (1.0/3.0)*tau);\n    col.b = cos(x * tau - (2.0/3.0)*tau);\n    \n    return col * 0.5 + 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tfloat cubeRes = float(textureSize(iChannel0,0).x);\n    \n    #if(VIEW_MODE == SPLIT)\n        vec2 uv = floor(fragCoord.xy) / (iResolution.x/2.);\n        float side = floor(uv.x);\n        uv.x = fract(uv.x);\n        uv.y -= (iResolution.y - iResolution.x/2.)/iResolution.x;\n\n        vec2 uvIn = floor(uv*cubeRes);\n        uvIn.x = reverseBits(uvIn.x, ceil(log2(float(cubeRes))));\n        vec2 fftIn = textureCubeFace(iChannel0,0., uvIn/cubeRes).xy;\n\n        vec2 uvFFT = mod(uv.yx-0.5, 1.);\n        vec2 fftHV = textureCubeFace(iChannel0,5., uvFFT).zw;\n        \n        fragColor = (side == 0.) ? vec4(length(fftIn)) : \n                                   vec4(log(0.1+fftHV.x)/log(cubeRes*cubeRes));                      \n        fragColor *= step(uv.y,1.0)*step(0.0,uv.y);\n    #endif\n    \n    #if(VIEW_MODE == MAGNITUDE)\n        vec2 uv = floor(fragCoord.xy) / iResolution.y;\n        uv.x -= (iResolution.x/iResolution.y-1.0)/2.;\n        float clip = step(uv.x,1.0)*step(0.0,uv.x);\n        uv = mod(uv.yx-0.5, 1.);\n        vec2 fftHV = textureCubeFace(iChannel0,5., uv).zw;\n        fragColor = vec4(log(0.1+fftHV.x)/log(cubeRes*cubeRes));\n        fragColor *= clip;\n    #endif\n    \n    #if(VIEW_MODE == PHASE)\n        vec2 uv = floor(fragCoord.xy) / iResolution.y;\n        uv.x -= (iResolution.x/iResolution.y-1.0)/2.;\n        float clip = step(uv.x,1.0)*step(0.0,uv.x);\n        uv = mod(uv.yx-0.5, 1.);\n        vec2 fftHV = textureCubeFace(iChannel0,5., uv).zw;\n        fragColor = vec4(rainbow(fftHV.y),0);\n        fragColor *= clip;\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// -- Constants --\nconst float pi = 3.14159265;\nconst float tau = 6.28318531;\n\n// -- Math Functions --\n\n//Complex multiply\nvec2 cmul(vec2 a,vec2 b)\n{\n\treturn vec2(dot(a,b*vec2(1,-1)), dot(a,b.yx));\n}\n\n//Reverse 0 to 'n' in integer 'x'\nfloat reverseBits(float x, const float n)\n{\n    int r = 0;\n    int xi = int(x);\n    for(int i = 0;i < int(n);i++)\n    {\n        r = r << 1 | (xi & 1);\n        xi >>= 1;\n    }\n    return float(r);\n}\n\n/*\nButterfly operation\n\n(x0)____________(+)_(xy)\n            \\  /\n             \\/\n             /\\\n(x1)_W(i,n)_/__\\(-)_(zw)\n\nxy = x0 + W(i,n)*x1\nzw = x0 - W(i,n)*x1\n\n*/\nvec4 butterfly(vec2 x0, vec2 x1, float i, float n)\n{\n    float a = -floor(i)*tau/floor(n);\n    vec2 w = vec2(cos(a),sin(a));\n    x1 = cmul(x1, w);\n    return vec4(x0 + x1, x0 - x1);\n}\n\n// -- Windowing Functions --\n\n//Rectangular window\nfloat Rectangle(float i, float N)\n{\n    return 1.0;\n}\n\n//Hann Window\nfloat Hann(float i, float N)\n{\n    float w = sin((pi*floor(i))/floor(N));\n    return w*w;\n}\n\n//Triangular window\nfloat Triangle(float i, float N)\n{\n    return 1.0-abs(2.0*floor(i)/floor(N) - 1.0);\n}\n\n// -- Cubemap Sampling Helper Functions --\n\n//Converts a ray direction to uv coords (xy, normalized) & a face id (z, 0-5).\n//for the cubemap face it's pointing to.\nvec3 rayToFace(vec3 rd)\n{\n    vec3 asign = sign(rd);\n    rd = abs(rd);\n    float amax = max(max(rd.x,rd.y),rd.z);\n    \n    vec3 face = (rd.x == amax) ? vec3(asign.yz*rd.yz, floor(1.+.5*asign.x)) :\n                (rd.y == amax) ? vec3(asign.xz*rd.xz, floor(3.+.5*asign.y)) :\n                (rd.z == amax) ? vec3(asign.xy*rd.xy, floor(5.+.5*asign.z)) : \n                                 vec3(0,0,-1);\n    face.xy = .5+.5*(face.xy/amax);\n    face.xy = floor(face.xy*1024.)/1024.; \n    return face;\n}\n\n//opposite of rayToFace\n//Converts normalized uv coords & a face id to a ray direction\n//for cubemap sampling\nvec3 faceToRay(vec3 face)\n{\n    face.xy = (face.xy) + 0.5/1024.;\n    vec3 rd = vec3(2.0*fract(face.xy)-1.0, sign(mod(face.z,2.)-.5));\n    rd = (face.z <= 1.) ? rd.zxy :\n         (face.z <= 3.) ? rd.xzy :\n         (face.z <= 5.) ? rd.xyz :\n                          vec3(0);\n    return normalize(rd);\n}\n\n//Sample a cubemap face (0-5) with normalized uv coords.\nvec4 textureCubeFace(samplerCube cube, float face, vec2 uv)\n{\n    //uv+=0.5/float(textureSize(cube,0));\n    vec3 rd = faceToRay(vec3(uv,floor(face)));\n    return texture(cube, rd, 0.0).rgba;  \n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "const float fftSize = 1024.;\nconst float numStages = ceil(log2(float(fftSize)));\n\n//Input Windowing Function (Rectangle/Triangle/Hann)\n#define WINDOW_FUNCTION Hann\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 ro, in vec3 rd )\n{\n    vec3 face = rayToFace(rd);\n    vec2 uv = floor(face.xy*fftSize);\n\n    float idx = uv.x;\n    float stage = face.z;\n    vec4 cout = vec4(0.0); \n    \n    if(stage == 0.)\n    {\n        //XY = Horizonal FFT Input (Channel 1)\n        //Input image is mapped 1:1 into the input buffer with no scaling.\n        //Input image centered in the 1024x1024 buffer.\n        vec2 tres = iChannelResolution[1].xy;\n        vec2 tuv = vec2(reverseBits(uv.x, numStages), uv.y);\n        tuv = tuv - vec2(fftSize/2.) + vec2(tres/2.);\n        \n        vec3 col = texelFetch(iChannel1, ivec2(tuv), 0).rgb;\n        \n        cout.xy = vec2((col.x+col.y+col.z)/3.0, 0);\n        cout.xy *= WINDOW_FUNCTION(tuv.x, tres.x);\n        cout.xy *= WINDOW_FUNCTION(tuv.y, tres.y);\n        \n        //ZW = Vertical FFT Input (Horizontal FFT output rotated 90deg)\n        uv.x = float(reverseBits(uv.x, numStages));\n        cout.zw = textureCubeFace(iChannel0, 5.0, uv.yx/fftSize).xy;\n    }\n    else\n    {\n        //2x Horizontal 4-sample FFTs on XY & ZW components\n        float stage1Size = exp2(float(stage)*2.);\n        float stage0Size = stage1Size/2.;\n\n        float offs = floor(idx / stage1Size)*stage1Size;\n        idx -= offs;\n        \n        float w0 = mod(idx, stage0Size/2.);\n        float w1 = mod(idx, stage1Size/2.);\n        \n        vec4 soffs = vec4(offs + w0 + vec4(0,1,2,3)*stage0Size/2.);\n        vec4 x0 = textureCubeFace(iChannel0, stage-1., vec2(soffs[0], uv.y) / fftSize);\n        vec4 x1 = textureCubeFace(iChannel0, stage-1., vec2(soffs[1], uv.y) / fftSize);\n        vec4 x2 = textureCubeFace(iChannel0, stage-1., vec2(soffs[2], uv.y) / fftSize);\n        vec4 x3 = textureCubeFace(iChannel0, stage-1., vec2(soffs[3], uv.y) / fftSize);\n\n        vec4 y0y1_H = butterfly(x0.xy, x1.xy, w0, stage0Size);\n        vec4 y2y3_H = butterfly(x2.xy, x3.xy, w0, stage0Size);\n\n        vec4 y0y1_V = butterfly(x0.zw, x1.zw, w0, stage0Size);\n        vec4 y2y3_V = butterfly(x2.zw, x3.zw, w0, stage0Size);\n        \n        vec4 z0z1_H, z0z1_V;\n        \n        if(mod(idx, stage0Size) < stage0Size/2.)\n        {\n            z0z1_H = butterfly(y0y1_H.xy, y2y3_H.xy, w1, stage1Size);            \n            z0z1_V = butterfly(y0y1_V.xy, y2y3_V.xy, w1, stage1Size);\n        }\n        else\n        {\n            z0z1_H = butterfly(y0y1_H.zw, y2y3_H.zw, w1, stage1Size);            \n            z0z1_V = butterfly(y0y1_V.zw, y2y3_V.zw, w1, stage1Size);\n        }\n        \n        cout = (idx < stage1Size/2.) ? vec4(z0z1_H.xy,z0z1_V.xy): \n                                       vec4(z0z1_H.zw,z0z1_V.zw);\n    }\n    \n    if(face.z == 5.) //Convert to magnitude/phase on last stage of vertical FFT\n    {\n        cout.zw = vec2(length(cout.zw), atan(cout.w, cout.z)/pi + 0.5);\n    } \n    \n    fragColor = vec4(cout);\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "video",
+                        "id": 11,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/c3a071ecf273428bc72fc72b2dd972671de8da420a2d4f917b75d20e1c24b34c.ogv"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

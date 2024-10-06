@@ -1,0 +1,45 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1547324842",
+            "description": "Noise functions from https://thebookofshaders.com/11/",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tsl3zl",
+            "likes": 10,
+            "name": "Simple Terrain Raymarching",
+            "published": 3,
+            "tags": [
+                "noise",
+                "terrain"
+            ],
+            "usePreview": 0,
+            "username": "Assossa",
+            "viewed": 504
+        },
+        "renderpass": [
+            {
+                "code": "#define LOD_CLOSE 50.\n#define LOD_FAR    8.\n\n#define COL_STONE_1 vec3(.50, .50, .50)\n#define COL_STONE_2 vec3(.35, .35, .35)\n#define COL_SNOW_1  vec3(1.4, 1.4, 1.4)\n#define COL_GRASS_1 vec3(.47, .56, .19)\n#define COL_GRASS_2 vec3(.30, .56, .19)\n#define COL_SAND_1  vec3(.92, .79, .59)\n#define COL_WATER_1 vec3(1.2, 0.8, 1.2)\n#define COL_WATER_2 vec3(0.8, .60, 0.8)\n\nconst vec3 sunDir = normalize(vec3(1, 1, -1));\n\nfloat calculateLOD(float dist) {\n    return mix(LOD_CLOSE, LOD_FAR, smoothstep(0., 6., dist - 2.));\n}\n\nvec3 raymarch(vec3 pos, inout vec3 dir, out vec3 reflNml, out float depth) {\n    vec3 startPos = pos;\n    for(int i = 0; i < 32; ++i) {\n        float dist = pos.y - terrainHeight(pos.xz * 0.5, 2., 0.1) * 2.;\n        if(dist < 0.32) {\n            float lod = calculateLOD(distance(pos, startPos));\n            dist = pos.y - terrainHeight(pos.xz * 0.5, lod, 0.1) * 2.;\n        }\n        \n        pos += dir * dist;\n        \n        if(abs(0.2 - pos.y) < 0.01) {\n            reflNml = terrainNormal(pos.xz * vec2(20., 60.) + vec2(iTime), 4.);\n            reflNml = normalize(sign(reflNml) * sqrt(abs(reflNml)) * vec3(.2, 1., .2));\n            depth = 0.2 - terrainHeight(pos.xz * 0.5, 4., 0.);\n            \n            dir = reflect(dir, reflNml);\n            pos += vec3(0, 0.04, 0);\n            i = 0;\n        }\n    }\n    return pos;\n}\n\n// https://www.shadertoy.com/view/Ms2SD1\nvec3 skyColor(vec3 e) {\n    e.y = max(e.y,0.);\n    return vec3(pow(.9-e.y,4.), .9-e.y, .6+(.9-e.y)*.4);\n}\n\nvec3 terrainColor(vec3 pos, inout vec3 nml) {\n\tfloat debugFactor = step(0.5, fract(pos.x));\n\n    float slope = dot(nml, vec3(0,1,0));\n    vec2 roundedPos = floor(pos.xz * 1000.) * 0.001;\n    \n    float sparkle = smoothstep(.9, 1., hash22(roundedPos).r + hash22(pos.xz).r * 0.1) * .2 + 1.;\n    float altCol = gradientNoise(pos.xz * 20.);\n    \n    vec3 grass = mix(COL_GRASS_1, COL_GRASS_2, altCol) * (hash22(roundedPos).r * .10 + .90);\n    vec3 stone = mix(COL_STONE_1, COL_STONE_2, altCol) * (hash22(roundedPos).r * .05 + .95);\n    vec3 sand  = COL_SAND_1 * sparkle;\n    vec3 snow  = COL_SNOW_1 * sparkle;\n    \n    vec3 stoneNml = terrainNormal(pos.zx * 10. - 100., 16.);\n    stoneNml = normalize(mix(nml, stoneNml, 0.5));\n    nml = normalize(mix(stoneNml, nml, smoothstep(.7, .8, slope)));\n    \n    float variation = gradientNoise(pos.xz * 100.0);\n    float height = pos.y + (pow(variation, 2.) * 0.02);\n    slope += variation * 0.1;\n    \n    return mix(\n\t\tstone,\n        mix(\n            mix(sand, grass, smoothstep(.1, .2, height)),\n            snow,\n            smoothstep(.3, .35, height)\n        ),\n    \tsmoothstep(.7, .8, slope)\n    );\n}\n\nmat3 viewMatrix(vec3 eye, vec3 center, vec3 up) {\n    vec3 f = normalize(center - eye);\n    vec3 s = normalize(cross(f, up));\n    vec3 u = cross(s, f);\n    return mat3(s, u, f);\n}\n\nvec3 camPos(float time) {\n    return vec3(cos(time * .005) * 100., 1.2, sin(time * .005) * 100.);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = (2. * fragCoord - iResolution.xy) / iResolution.y;\n    \n    vec3 pos = camPos(iTime);\n    vec3 lookat = camPos(iTime + 2.);\n    \n    vec3 dir = normalize(vec3(uv, 1.));\n    dir *= viewMatrix(pos, lookat, vec3(0,1,0));\n    \n    vec3 reflNml = vec3(0);\n    float depth = 0.;\n    vec3 hit = raymarch(pos, dir, reflNml, depth);\n    \n    float lod = calculateLOD(distance(pos, hit));\n    vec3 nml = terrainNormal(hit.xz * .5, lod);\n    vec3 terrainCol = terrainColor(hit * .5, nml);\n    float diffuse = dot(nml, sunDir) * 0.5 + 0.5;\n    \n    float fog = clamp(distance(pos, hit) * 0.1, 0., 1.);\n    fragColor = vec4(mix(\n        terrainCol * diffuse,\n        skyColor(dir),\n    \tfog\n    ), 1);\n    \n    if(length(reflNml) > 0.1) {\n        depth = clamp(pow(depth * 8., 6.), 0., 1.);\n        float refraction = clamp(pow(clamp(dot(reflNml, dir), 0., 1.), 2.) * 0.4 / depth, 0.0, 0.5);\n\t\tvec3 water = mix(COL_WATER_2, COL_WATER_1, depth);\n        \n        fragColor *= vec4(water, 1.);\n        fragColor += vec4(1. - water, 0.);\n        fragColor = vec4(mix(fragColor.rgb, pow(COL_SAND_1 * (1. - depth), vec3(.6)), refraction), 1.);\n    }\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// https://www.shadertoy.com/view/4djSRW\nvec2 hash22(vec2 st) {\n    st = vec2( dot(st,vec2(127.1,311.7)),\n              dot(st,vec2(269.5,183.3)) );\n    return -1.0 + 2.0*fract(sin(st)*43758.5453123);\n}\n\nfloat gradientNoise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    vec2 u = f*f * (3. - 2.*f);\n    \n    return mix(\n    \tmix(\n            dot(hash22(i), f),\n            dot(hash22(i + vec2(1., 0.)), f - vec2(1., 0.)),\n            u.x\n        ),\n        \n        mix(\n            dot(hash22(i + vec2(0., 1.)), f - vec2(0., 1.)),\n            dot(hash22(i + vec2(1., 1.)), f - vec2(1., 1.)),\n            u.x\n        ),\n        \n        u.y\n    );\n}\n\nfloat terrainHeight(vec2 p, float lod, float water) {\n    float height = 0.;\n    \n    for(float i = 1.; i < lod; i += 2.) {\n        height += gradientNoise((p + i) * i) / pow(i, 1.8);\n    }\n    \n    return max(pow(height * .5 + .5, 2.), water);\n}\n\n#define EPSILON 0.01\nvec3 terrainNormal(vec2 p, float lod) {\n    vec2 e = vec2(EPSILON, 0);\n    return normalize(vec3(\n        (terrainHeight(p + e.xy, lod, 0.) - terrainHeight(p - e.xy, lod, 0.)),\n        EPSILON,\n        (terrainHeight(p + e.yx, lod, 0.) - terrainHeight(p - e.yx, lod, 0.))\n    ));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,62 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1691287730",
+            "description": "Extracts all ridges from a scalar field (height map) by setting gradient orthogonal to ridge to 0, and the 2nd derivative to be negative.\n\nCan do valley extraction via ridge extraction of the negative scalar field. (see flag in Common tab)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dtsyWX",
+            "likes": 7,
+            "name": "Ridge extraction",
+            "published": 3,
+            "tags": [
+                "extraction",
+                "scivis",
+                "ridge",
+                "featureextraction"
+            ],
+            "usePreview": 0,
+            "username": "Gegell",
+            "viewed": 196
+        },
+        "renderpass": [
+            {
+                "code": "#define SOURCE_TEXTURE iChannel0\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    float scale = 2.2;\n    float grid_size = 4.;\n    float grad_zero_eps = 0.01;\n    float eigen_val_neg_eps = 0.01;\n\n    // Compute needed values for ridge extraction\n    vec2 pos = fragCoord / scale;\n    mat2 hessian = hessian(pos, grid_size);\n    vec2 grad = gradient(pos, grid_size);\n    vec2 eigen_val = eigenvalues(hessian);\n    vec2 eigen_vec_2 = eigenvector(hessian, eigen_val.y);\n    \n    // We know that on a ridge the following have to hold:\n    // 1. The gradient in direction orthogonal to the ridge is 0 (for this direction take smaller eigenvector)\n    float dir_grad = dot(eigen_vec_2, grad);\n    float dir_grad_zero_mask = smoothstep(grad_zero_eps, 0.0, abs(dir_grad));\n    // 2. The eigenvalue of the corresponding eigenvector is smaller than 0. (2nd derivative < 0)\n    float eval2_neg_mask = smoothstep(0.0, -eigen_val_neg_eps, eigen_val.y);\n    float ridge_mask = dir_grad_zero_mask * eval2_neg_mask;\n    \n    \n    // Output to screen\n    switch(int(clamp(iMouse.x / iResolution.x, 0., 1.) * 5.)) {\n    // Actual output\n    case 0: \n        fragColor = vec4(mix(vec3(abs(loadTex(pos))), vec3(1., 0., 0.), ridge_mask), 1.);\n        break;\n    // Debug views\n    case 1: // Show gradient\n        fragColor = (vec4(grad, 0, 0)) * 20.;\n        break;\n    case 2: // Show hessian matrix entries\n        fragColor = abs(vec4(hessian[0][0], hessian[1][1], hessian[0][1], 0) * 50.);\n        break;\n    case 3: // Eigenvalues of hessian\n        fragColor = abs(vec4(-eigen_val, 0, 0)) * 50.;\n        break;\n    case 4: // Separate masks\n        fragColor = vec4(dir_grad_zero_mask, eval2_neg_mask, 0, 0);\n        break;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Uncomment the following to extract valleys (continuous low points) instead of ridges. \n//#define VALLEY_EXTRACTION\n\n\n\n#define normalizeSafe(v) (v * min(1./length(v), 1e20))\n\nfloat loadTex( sampler2D source, vec2 p ) {\n    vec2 ts = vec2(textureSize(source, 0));\n    float f = texture(source, (p+.5)/ts).r;\n#ifdef VALLEY_EXTRACTION\n    return -f;\n#else\n    return f;\n#endif\n}\n\nuniform sampler2D SOURCE_TEXTURE;\nfloat loadTex( vec2 p ) {\n    return loadTex(SOURCE_TEXTURE, p);\n}\n\nvec2 gradient( vec2 p, float h ) {\n    return vec2(\n        loadTex(p + vec2(h, 0)) - loadTex(p + vec2(-h, 0)),\n        loadTex(p + vec2(0, h)) - loadTex(p + vec2(0, -h))\n    ) / (2. * h);\n}\n\nmat2 hessian( vec2 p, float h ) {\n    mat2x2 hessian;\n    hessian[0][0] = loadTex(p + vec2(-h,  0)) - 2. * loadTex(p) + loadTex(p + vec2(h, 0));\n    hessian[1][1] = loadTex(p + vec2( 0, -h)) - 2. * loadTex(p) + loadTex(p + vec2(0, h));\n    hessian[0][1] = 0.25*(loadTex(p + vec2(-h, -h)) - loadTex(p + vec2(h, -h)) - loadTex(p + vec2(-h, h)) + loadTex(p + vec2(h, h)));\n    hessian[1][0] = hessian[0][1];\n    return hessian / (h * h);\n}\n\nvec2 eigenvalues( mat2 M ) {\n    // Assume all eigenvalues are real. Solve the following:\n    //                    | a-λ b   |\n    // det |M - λI| = det | c   d-λ | = λ^2 - (a + d)λ + (ad - bc) = 0\n    float b = -(M[0][0] + M[1][1]);\n    float c = determinant(M);\n    \n    float d = sqrt(b*b - 4.*c);\n    vec2 ev = (-b + vec2(d, -d)) / 2.;\n    return ev;\n}\n\nvec2 eigenvector( mat2 M, float ev ) {\n    // For a given eigenvalue ev of matrix M, we know that we only have 1 linear independent equation.\n    // Simply choose a value for x (e.g. 1) and normalize.\n    // (M - λI) v = 0  <->  (a-λ)x + by = 0  <->  x = -b/(a-λ) y\n    return normalizeSafe(vec2(-M[0][1], M[0][0] - ev));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,129 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1616024715",
+            "description": "Use click and drag to move the camera",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "4d2BWc",
+            "likes": 0,
+            "name": "Volumetric clouds test",
+            "published": 3,
+            "tags": [
+                "cloudsvolumetric"
+            ],
+            "usePreview": 0,
+            "username": "Karambit",
+            "viewed": 121
+        },
+        "renderpass": [
+            {
+                "code": "#define Scale vec3(.8, .8, .8)\n#define K 19.19\nconst float PI = 3.141592;\n\nconst ivec2 POSITION = ivec2(1, 0);\n\nconst ivec2 VMOUSE = ivec2(1, 1);\nvec3 LightPosition = vec3(0.0, -50.0, 0.0);\nfloat metallic = 1.0;\nfloat roughness = 1.0;\nfloat udBox( vec3 p, vec3 b )\n{\n  return length(max(abs(p)-b,0.0));\n}\n\nfloat sdSphere( vec3 p, float s)\n{\n\treturn length(p)-s;\n}\n\nfloat udRoundBox( vec3 p, vec3 b, float r )\n{\n  return length(max(abs(p + vec3(.0, .5, .0))-b,.0))-r;\n}\n\n////////////////////////\n\n\nvec3 hash(vec3 p3)\n{\n\tp3 = fract(p3 * Scale);\n    p3 += dot(p3, p3.yxz+19.19);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n\n}\n\nvec3 noise( in vec3 x )\n{\n    return texture(iChannel0, x*0.1).rgb;\n}\n\nconst mat3 m = mat3( 0.00,  0.80,  0.60,\n                    -0.80,  0.36, -0.48,\n                    -0.60, -0.48,  0.64 );\nvec3 fbm(in vec3 q)\n{\n            vec3 f  = 0.5000*noise( q ); q = m*q*2.01;\n            f += 0.2500*noise( q ); q = m*q*2.02;\n            f += 0.1250*noise( q ); q = m*q*2.03;\n            f += 0.0625*noise( q ); q = m*q*2.04; \n            f += 0.03125*noise( q ); q = m*q*2.05; \n    return vec3(f);\n}\n\n////////////////\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat voronoi(in vec3 Pos, in float mult) {\n\n    vec3 uv = Pos * mult;\n    float dst = 10.;\n    for(int i = -1; i <= 1; i++)\n        for(int j = -1; j <= 1; j++)\n        \tfor(int k = -1; k <= 1; k++){\n            vec3 offset = vec3(i, j, k);\n            float rand = hash13(floor(uv) + offset);\n    \t\tdst = min(dst, length(fract(uv) - offset - rand));\n        }\n    \n    return smoothstep(0.2, 0.8, 1.0-dst);\n}\n//468.47\nfloat getDensity(in vec3 p) {\n\n    float f = pow( fbm(p*vec3(0.1 + p.y*0.004)+ vec3(iTime*0.1, 0.0, iTime*0.1)).x , 2.5 );\n    f = clamp(f, 0.01, 0.2);\n    f = smoothstep(0.1, 0.99, f)*1.5;\n    float v = voronoi(p + vec3(iTime, iTime, iTime) * vec3(0.5, 0.5, 0.5),0.1);\n    //return 0.05;\n    return clamp(v*f, 0.0, 1.0) * 0.8;\n    \n}\n\nfloat mapVolume(in vec3 p) {\n    vec3 q = vec3(0.0, -25.0, -20.0);\n    float sphere = sdSphere(p+q, (17.0));\n    q = vec3(0.0, -25.0, -20.0);\n    float sphere2 = sdSphere(p+q, (20.0));\n    \n    q = vec3(0.0, -35.0, -20.0);\n    float box5 = udBox(p+q, vec3(50.0, 10.0, 50.0));\n    \n    float box2 = udRoundBox(p+q, vec3(50.0, 2.0, 50.0), 0.2);\n    \n    return max(max(sphere2, -sphere), box5);\n}\n\n\nfloat lightMarch(in vec3 p, in float stepSize) {\n    //Lets march towards the light\n    vec3 lv = -LightPosition - p;\n    vec3 ld = -normalize(lv)*5.0;\n    ld = normalize(vec3(0.0, 1.0, 0))*2.0;\n    float laccum = 0.0;\n    float h = -1.0;\n    float t = 0.0;\n    vec3 pos = p+ld*stepSize;\n    for(int i = 0; i < 50; i++) {\n    \n        stepSize += 0.001;\n        t += stepSize;\n        pos = p+ld*t;\n        h = mapVolume(pos);\n        if(h > 0.0) {\n            break;\n        }\n        laccum += getDensity(pos);\n    }\n    return laccum;\n}\n\nfloat intersectVolume(in vec3 ro, in vec3 rd, in float stepSize, out float tr, out vec3 e) {\n    const int MAX_STEPS_OUTSIDE = 100;\n    const int MAX_STEPS_INSIDE = 150;\n    //Get to the outer part of the volume\n    const float maxd = 150.0;\n\tfloat h          = 1.0;\n    float t          = 0.0;\n    for( int i=0; i<MAX_STEPS_OUTSIDE; i++ )\n    {\n        if( h<0.01 || t>maxd ) break;\n\t    h = mapVolume( ro+rd*t);\n        t += h;\n    }\n\n    if( t>maxd ) { \n        t=-1.0;\n        tr = 1.0;\n        return t;\n    }\n    \n    float newT = t;\n    float oldT = t;\n    t = 0.0;\n    //float D = 0.0;\n    \n    int steps = 0;\n    //Now we have the distance to our volume, let's go inside\n    //if(h<0.0)\n    //    ro = ro;\n    //else\n        ro = ro+rd*newT;\n        \n    h = 0.0;\n        \n    vec3 LightEnergy = vec3(0.0);\n    float LightTransmittance = 0.0;\n    float Transmittance = 1.0;\n    float Distance = 0.0;\n    float Density = 0.0;\n    float Absorption = 3.25;\n    float Phase = 0.5;\n     \n    while(true) {\n        if(steps >= MAX_STEPS_INSIDE) return oldT;\n        stepSize += 0.001;\n        t += stepSize + (texture(iChannel2, ro.xy).x*0.05);\n        vec3 pos = ro+rd*t;\n\t    h = mapVolume(pos);\n        \n        if(h > 0.0) break;\n        \n        Density += getDensity(pos);\n        \n        if(Density > 0.0) {\n            stepSize = stepSize;\n            LightTransmittance = lightMarch(pos, stepSize);\n            LightEnergy -= Density * stepSize * Transmittance * LightTransmittance * Phase;\n            Transmittance *= exp(-Density * stepSize * Absorption);\n            \n            if(Transmittance < 0.01) {\n                break;\n            }\n        }\n        steps++;\n        \n        /**/\n        float shadowdist = 0.0;\n\n        vec3 lpos = normalize(vec3(0.0, 1.0, 0))*10.0;\n        lpos += clamp(vec3(0.0,0.05, 0.0), 0.0, 1.0);\n        float lsample = getDensity(lpos);\n        shadowdist += lsample;\n        lpos += vec3(0.0,0.1, 0.0);\n        lsample = getDensity(lpos);\n        shadowdist += lsample;\n        lpos += vec3(0.0,0.2, 0.0);\n        lsample = getDensity(lpos);\n        shadowdist += lsample;\n\n        vec3 SkyColor = vec3( 0.45, 0.68, 0.88 )*0.9;\n        //vec3 SkyColor = normalize(vec3(236, 194, 255))*1.0;\n        \n        //shadowdist /= 3.0;\n\n        //shadowterm = exp(-shadowdist * AmbientDensity);\n        //absorbedlight = exp(-shadowdist * AmbientDensity) * curdensity;\n        LightEnergy += exp(-shadowdist *1.0) * Density * SkyColor * Transmittance;\n\n\n        /**/\n    }\n    \n    float l = -lightMarch(ro+rd*t, stepSize);\n    vec3 pos = ro+rd*t;\n    Density = getDensity(pos);\n    \n    //LightEnergy *= mix(LightEnergy, vec3( 0.45, 0.68, 0.88 )*3.0, 1.0-LightEnergy);//Density * vec3( 0.45, 0.68, 0.88 ) * 0.1;\n    \n    \n    \n    e = LightEnergy;\n    tr = clamp(Transmittance, 0.0, 1.0);\n    //D\n    return oldT;\n    \n}\n\n\n#define load(P) texelFetch(iChannel1, ivec2(P), 0)\n\nvoid Camera(in vec2 fragCoord, out vec3 ro, out vec3 rd) \n{\n    ro = load(POSITION).xyz;\n    vec2 m = load(VMOUSE).xy/iResolution.x;\n    \n    float a = 1.0/max(iResolution.x, iResolution.y);\n    rd = normalize(vec3((fragCoord - iResolution.xy*0.5)*a, 0.5));\n    \n    rd = CameraRotation(m) * rd;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    \n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    \n    vec2 q = uv * 2.0 - 1.0;\n\tq.x *= iResolution.x/iResolution.y;\n\n\tvec3 ro = vec3(0.0, 0.0, -20.0 );\n    vec3 rd = normalize( vec3(q,1.0) );\n    \n    Camera(fragCoord, ro, rd);\n\tvec3 col = vec3(0.0);\n       \n    //LightPosition.y = sin(iTime*0.3) * -30.0;\n    \n    vec3 backcol = mix(vec3( 0.92, 0.95, 0.99 ), vec3( 0.45, 0.68, 0.88 ), clamp(vec3(rd.y) + 0.2, 0.0, 1.));\n    \n    float tr = 0.0;\n    vec3 e = vec3(0.0);\n    float t2 = -1.0;\n    //if(rd.y > 0.0)\n    t2 = intersectVolume(ro,rd, 0.2, tr, e);\n    vec3 lightCol = vec3(0.9, 0.6, 0.45);\n    //vec3 lightCol = normalize(vec3(255, 205, 156));\n    col = backcol;\n    //if( t2>0.0   )\n    {\n        e = clamp(e, 0.0, 1.0);\n        vec3 cloudCol = (vec3(e) * (lightCol*2.0));//vec3( 0.98, 0.95, 0.87 )) ;\n        col = backcol * (tr/* + abs(min(0.0,t2))*/) + cloudCol;//vec3(exp(-l));//clamp(vec3(l/10.0), 0.0, 1.0);\n        //col = vec3(v);\n    }\n    \n    fragColor = vec4(col, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "mat3 CameraRotation( vec2 m )\n{\n    m.y = -m.y;\n    \n    vec2 s = sin(m);\n    vec2 c = cos(m);\n    mat3 rotX = mat3(1.0, 0.0, 0.0, 0.0, c.y, s.y, 0.0, -s.y, c.y);\n    mat3 rotY = mat3(c.x, 0.0, -s.x, 0.0, 1.0, 0.0, s.x, 0.0, c.x);\n    \n    return rotY * rotX;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Created by genis sole - 2016\n// License Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.\n\n#define store(P, V) if (all(equal(ivec2(fragCoord), P))) fragColor = V\n#define load(P) texelFetch(iChannel1, ivec2(P), 0)\n#define key(K)  step(0.5, texelFetch(iChannel0, ivec2(K, 0), 0).x)\n\nconst ivec2 MEMORY_BOUNDARY = ivec2(4, 3);\n\nconst ivec2 POSITION = ivec2(1, 0);\n\nconst ivec2 VMOUSE = ivec2(1, 1);\nconst ivec2 PMOUSE = ivec2(2, 1);\n\nconst ivec2 TARGET = ivec2(0, 2);\n\nconst ivec2 RESOLUTION = ivec2(3, 1);\n\n// Keyboard constants definition\nconst int KEY_BSP   = 8;\nconst int KEY_SP    = 32;\nconst int KEY_LEFT  = 37;\nconst int KEY_UP    = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN  = 40;\nconst int KEY_A     = 65;\nconst int KEY_B     = 66;\nconst int KEY_C     = 67;\nconst int KEY_D     = 68;\nconst int KEY_E     = 69;\nconst int KEY_F     = 70;\nconst int KEY_G     = 71;\nconst int KEY_H     = 72;\nconst int KEY_I     = 73;\nconst int KEY_J     = 74;\nconst int KEY_K     = 75;\nconst int KEY_L     = 76;\nconst int KEY_M     = 77;\nconst int KEY_N     = 78;\nconst int KEY_O     = 79;\nconst int KEY_P     = 80;\nconst int KEY_Q     = 81;\nconst int KEY_R     = 82;\nconst int KEY_S     = 83;\nconst int KEY_T     = 84;\nconst int KEY_U     = 85;\nconst int KEY_V     = 86;\nconst int KEY_W     = 87;\nconst int KEY_X     = 88;\nconst int KEY_Y     = 89;\nconst int KEY_Z     = 90;\nconst int KEY_COMMA = 188;\nconst int KEY_PER   = 190;\n\n#define KEY_BINDINGS(FORWARD, BACKWARD, RIGHT, LEFT) const int KEY_BIND_FORWARD = FORWARD; const int KEY_BIND_BACKWARD = BACKWARD; const int KEY_BIND_RIGHT = RIGHT; const int KEY_BIND_LEFT = LEFT;\n\n#define ARROWS  KEY_BINDINGS(KEY_UP, KEY_DOWN, KEY_RIGHT, KEY_LEFT)\n#define WASD  KEY_BINDINGS(KEY_W, KEY_S, KEY_D, KEY_A)\n#define ESDF  KEY_BINDINGS(KEY_E, KEY_D, KEY_F, KEY_S)\n\n#define INPUT_METHOD  WASD\nvec2 KeyboardInput() {\n    INPUT_METHOD\n    \n\tvec2 i = vec2(key(KEY_BIND_RIGHT)   - key(KEY_BIND_LEFT), \n                  key(KEY_BIND_FORWARD) - key(KEY_BIND_BACKWARD));\n    \n    float n = abs(abs(i.x) - abs(i.y));\n    return i * (n + (1.0 - n)*inversesqrt(2.0));\n}\n\nvec3 CameraDirInput(vec2 vm) {\n    vec2 m = vm/iResolution.x;\n    \n    return CameraRotation(m) * vec3(KeyboardInput(), 0.0).xzy;\n}\n\n\nvoid Collision(vec3 prev, inout vec3 p) {\n    if (p.y < 1.0) p = vec3(prev.xz, min(1.0, prev.y)).xzy;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    if (any(greaterThan(ivec2(fragCoord), MEMORY_BOUNDARY))) return;\n    \n    fragColor = load(fragCoord);\n    \n    vec2 resolution = load(RESOLUTION).xy;\n    store(RESOLUTION, vec4(iResolution.xy, 0.0, 0.0));\n    \n    if (iTime == 0.0 || iFrame == 0 || any(notEqual(iResolution.xy, resolution))) {\n        store(POSITION, vec4(0.0, 25.0, 30.0, 0.0));\n        store(TARGET, vec4(0.0, 25.0, 30.0, 0.0));\n        store(VMOUSE, vec4(0.0));\n        store(PMOUSE, vec4(0.0));\n        \n        return;\n    }\n\n    vec3 target      = load(TARGET).xyz;   \n    vec3 position    = load(POSITION).xyz;\n    vec2 pm          = load(PMOUSE).xy;\n    vec3 vm          = load(VMOUSE).xyz;\n    \n    vec3 ptarget = target;\n    target += CameraDirInput(vm.xy) * iTimeDelta * 5.0;\n    \n    Collision(ptarget, target);\n    \n    position += (target - position) * iTimeDelta * 5.0;\n    \n    store(TARGET, vec4(target, 0.0));\n    store(POSITION, vec4(position, 0.0));\n    \n\tif (iMouse.z > 0.0) {\n    \tstore(VMOUSE, vec4(pm + (abs(iMouse.zw) - iMouse.xy), 1.0, 0.0));\n\t}\n    else if (vm.z != 0.0) {\n    \tstore(PMOUSE, vec4(vm.xy, 0.0, 0.0));\n    }\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

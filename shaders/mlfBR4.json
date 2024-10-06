@@ -1,0 +1,160 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1692737129",
+            "description": "Finally learned Voronoi Tracking, read the explanations in Buffer A.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mlfBR4",
+            "likes": 1,
+            "name": "Boids + Packed Voronoi Tracking",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "simulation",
+                "particles",
+                "boids"
+            ],
+            "usePreview": 0,
+            "username": "beans_please",
+            "viewed": 129
+        },
+        "renderpass": [
+            {
+                "code": "// Read the explanations in Buffer A.\n\n#define BUFF_A iChannel0\n#define BUFF_B iChannel1\n\nvoid mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // Debug\n    if (false)\n    {\n        uvec4 stored_ids = floatBitsToUint(texelFetch(BUFF_A, ivec2(frag_coord), 0));\n        for (uint i = 0u; i < 4u; i++)\n        {\n            frag_col[i] = float(load_u16(stored_ids, i)) / float(max_particle_id(uvec2(iResolution.xy)));\n        }\n        return;\n    }\n    \n    // UV\n    px2uv_init(iResolution.xy);\n    vec2 uv = screen_to_uv(frag_coord);\n    \n    // Colliders\n    vec3 col = mix(\n        vec3(.2, .6, 1.),\n        vec3(.2, .8, .1),\n        remap01(sd_colliders(uv, iTime, iMouse), px2uv, 0.)\n    );\n    \n    // Particles distance (using the Voronoi buffer)\n    uvec4 stored_ids = floatBitsToUint(texelFetch(BUFF_A, ivec2(frag_coord), 0));\n    float dist_sqr = 1e9;\n    for (uint i = 0u; i < n_ids_in_voronoi; i++)\n    {\n        // ID\n        uint curr_id = load_u16(stored_ids, i);\n        \n        // Check if ID is invalid\n        if (curr_id > max_particle_id(uvec2(iResolution.xy)))\n            continue;\n        \n        // Matching pixel coordinates in the data buffer (this)\n        ivec2 icoord = idx_to_icoord2(int(curr_id), ivec2(iResolution.xy));\n        \n        // Get the distance\n        vec2 pos = texelFetch(BUFF_B, icoord, 0).xy;\n        pos -= uv;\n        dist_sqr = min(dist_sqr, dot(pos, pos));\n    }\n    \n    // Particles\n    col = mix(\n        col,\n        vec3(.05),\n        remap01(sqrt(dist_sqr), particle_radius + px2uv * .5, particle_radius - px2uv * .5)\n    );\n    \n    // Point of attraction\n    vec2 poa = get_point_of_attraction(iTime, iMouse);\n    col = mix(\n        col,\n        vec3(.8, 0.05, 0.04),\n        remap01(distance(uv, poa), .03, .03 - px2uv)\n    );\n    \n    // Output\n    col = pow(col, vec3(1. / 2.2));\n    frag_col = vec4(col, 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Desired number of particles (actual count might be less)\nconst uint n_particles = 400u;\n\n// Number of particle IDs stored in each pixel in the Voronoi buffer\nconst uint n_ids_in_voronoi = 8u;\n\n// Particle position bounds\nconst vec2 min_pos = vec2(-.9);\nconst vec2 max_pos = vec2(.9);\n\n// Boid movement speed\nconst float move_speed = .6;\n\n// Particle radius for rendering\nconst float particle_radius = .006;\n\n// Particle attention radius\nconst float attention_radius = .2;\n\n// Epsilon\nconst float eps = .001;\n\n// Pixel to UV conversion factor\nfloat px2uv;\n\n// iResolution\nvec2 gres;\n\n// Initialize px2uv and gres\nvoid px2uv_init(vec2 res)\n{\n    px2uv = 2. / min(res.x, res.y);\n    gres = res;\n}\n\n// Screen to UV\nvec2 screen_to_uv(vec2 coord)\n{\n    return px2uv * (coord - .5 * gres);\n}\n\n// UV to screen\nvec2 uv_to_screen(vec2 uv)\n{\n    return (uv / px2uv) + (.5 * gres);\n}\n\n// Signed distance from the colliders\n// Make sure you have called px2uv_init() before\nfloat sd_colliders(vec2 p, float time, vec4 mouse)\n{\n    float d = 1e9;\n    \n    // Walls (bounds)\n    d = min(d, p.x - min_pos.x);\n    d = min(d, p.y - min_pos.y);\n    d = min(d, max_pos.x - p.x);\n    d = min(d, max_pos.y - p.y);\n    \n    // Circle\n    vec2 center;\n    if (false && mouse.z > .1)\n    {\n        center = screen_to_uv(mouse.xy);\n    }\n    else\n    {\n        center = vec2(sin(time) * .4, 0.);\n    }\n    d = min(d, length(p - center) - .15);\n    \n    return d;\n}\n\n// Get the point of attraction\nvec2 get_point_of_attraction(float time, vec4 mouse)\n{\n    if (true && mouse.z > .1)\n    {\n        return screen_to_uv(mouse.xy);\n    }\n    else\n    {\n        float a = .8 * time;\n        return .7 * vec2(cos(a), sin(a));\n    }\n}\n\nuint umin(uint a, uint b)\n{\n    return (a < b) ? a : b;\n}\n\nuint max_particle_id(uvec2 res)\n{\n    return umin(umin(n_particles - 1u, res.x * res.y - 1u), 65535u);\n}\n\n\n\n/*_________________ Math Utils ________________*/\n\n#define PI 3.1415926535897932384626433832\n#define TAU 6.283185307179586476925286766\n#define PI_OVER_2 1.57079632679489661923132169163\n\n#define FUNC_LERP(T) \\\nT lerp(T a, T b, float t) \\\n{ \\\n    return a + t*(b-a); \\\n}\n\n#define FUNC_WRAP(T) \\\nT wrap(T inp, float start, float end) \\\n{ \\\n    return start + mod(inp - start, end - start); \\\n}\n\n#define FUNC_REMAP(T) \\\nT remap(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    return out_start + ((out_end - out_start) / (inp_end - inp_start)) * (inp - inp_start); \\\n}\n\n#define FUNC_REMAP_CLAMP(T) \\\nT remap_clamp(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    T t = clamp((inp - inp_start) / (inp_end - inp_start), 0.0, 1.0); \\\n    return out_start + t * (out_end - out_start); \\\n}\n\n#define FUNC_REMAP01(T) \\\nT remap01(T inp, float inp_start, float inp_end) \\\n{ \\\n    return clamp((inp - inp_start) / (inp_end - inp_start), 0.0, 1.0); \\\n}\n\nFUNC_LERP(float)\nFUNC_LERP(vec2)\nFUNC_LERP(vec3)\nFUNC_LERP(vec4)\n\nFUNC_WRAP(float)\nFUNC_WRAP(vec2)\nFUNC_WRAP(vec3)\nFUNC_WRAP(vec4)\n\nFUNC_REMAP(float)\nFUNC_REMAP(vec2)\nFUNC_REMAP(vec3)\nFUNC_REMAP(vec4)\n\nFUNC_REMAP_CLAMP(float)\nFUNC_REMAP_CLAMP(vec2)\nFUNC_REMAP_CLAMP(vec3)\nFUNC_REMAP_CLAMP(vec4)\n\nFUNC_REMAP01(float)\nFUNC_REMAP01(vec2)\nFUNC_REMAP01(vec3)\nFUNC_REMAP01(vec4)\n\n/*____________________ End ____________________*/\n\n\n\n/*_______ Pseudo-Random Number Generator ______*/\n// Source: https://www.shadertoy.com/view/WdSSRt\n\n/* Usage Example:\n    void mainImage(out vec4 frag_col, in vec2 frag_coord)\n    {\n        // Initialize PRNG\n        prng_init(vec3(frag_coord / iResolution.y, iTime));\n    \n        // Using the function\n        float a = random();\n        vec3 b = vec3(random(), random(), random());\n        \n        ...\n    }\n*/\n\nuint prng_state[2];\n\nuint prng_rot(uint x, int k)\n{\n    return (x << k) | (x >> (32 - k));\n}\n\n// Random uint from 0 to 2^32-1\nuint randomui()\n{\n    uint s0 = prng_state[0];\n    uint s1 = prng_state[1];\n    uint result = prng_rot(s0 * 0x9e3779bbu, 5) * 5u;\n    s1 ^= s0;\n    prng_state[0] = prng_rot(s0, 26) ^ s1 ^ (s1 << 9);\n    prng_state[1] = prng_rot(s1, 13);\n    return result;\n}\n\n// Random int from 0 to 2^31-1\nint randomi()\n{\n    uint s0 = prng_state[0];\n    uint s1 = prng_state[1];\n    uint result = prng_rot(s0 * 0x9e3779bbu, 5) * 5u;\n    s1 ^= s0;\n    prng_state[0] = prng_rot(s0, 26) ^ s1 ^ (s1 << 9);\n    prng_state[1] = prng_rot(s1, 13);\n    return int(result % 0x7FFFFFFFu);\n}\n\n// Random float from 0 to 1\nfloat random()\n{\n    uint s0 = prng_state[0];\n    uint s1 = prng_state[1];\n    uint result = prng_rot(s0 * 0x9e3779bbu, 5) * 5u;\n    s1 ^= s0;\n    prng_state[0] = prng_rot(s0, 26) ^ s1 ^ (s1 << 9);\n    prng_state[1] = prng_rot(s1, 13);\n    return float(result) / float(0xffffffffu);\n}\n\n// Generate two normally distributed random numbers using the\n// Box-Muller Transform.\n// https://www.baeldung.com/cs/uniform-to-normal-distribution\nvec2 random_gauss()\n{\n    float u1 = random();\n    float u2 = random();\n    float temp = sqrt(-2. * log(u1));\n    return vec2(temp * cos(TAU * u2), temp * sin(TAU * u2));\n}\n\n// Initialize\nvoid prng_init(vec3 seed)\n{\n    seed.xy *= (seed.z + 10.258);\n    seed += 3.49276101561702;\n    prng_state[0] = floatBitsToUint(seed.x);\n    prng_state[1] = floatBitsToUint(seed.y);\n    randomui();\n}\n\n/*____________________ End ____________________*/\n\n\n\n// 1D index --> 2D integer coordinates\nivec2 idx_to_icoord2(int idx, ivec2 res)\n{\n    return ivec2(idx % res.x, idx / res.x);\n}\n\n// 1D index --> 3D integer coordinates\nivec3 idx_to_icoord3(int idx, ivec3 res)\n{\n    return ivec3(\n        idx % res.x,\n        (idx % (res.x * res.y)) / res.x,\n        idx / (res.x * res.y)\n    );\n}\n\n// 2D integer coordinates --> 1D index\nint icoord2_to_idx(ivec2 icoord, ivec2 res)\n{\n    return icoord.x + icoord.y * res.x;\n}\n\n// 3D integer coordinates --> 1D index\nint icoord3_to_idx(ivec3 icoord, ivec3 res)\n{\n    return\n        icoord.x\n        + icoord.y * res.x\n        + icoord.z * res.x * res.y;\n}\n\n// 2D integer coordinates --> 3D integer coordinates\nivec3 icoord2_to_3(ivec2 icoord2, ivec2 res2d, ivec3 res3d)\n{\n    return idx_to_icoord3(icoord2_to_idx(icoord2, res2d), res3d);\n}\n\n// 3D integer coordinates --> 2D integer coordinates\nivec2 icoord3_to_2(ivec3 icoord3, ivec3 res3d, ivec2 res2d)\n{\n    return idx_to_icoord2(icoord3_to_idx(icoord3, res3d), res2d);\n}\n\n// Check if 2D integer coordinates 'icoord' fit in a 2D screen of size 'res'\nbool icoord_in_bounds(ivec2 icoord, ivec2 res)\n{\n    return\n        (icoord.x >= 0) && (icoord.x < res.x)\n        && (icoord.y >= 0) && (icoord.y < res.y);\n}\n\n// Check if 3D integer coordinates 'icoord' fit in a 3D screen of size 'res'\nbool icoord_in_bounds(ivec3 icoord, ivec3 res)\n{\n    return\n        (icoord.x >= 0) && (icoord.x < res.x)\n        && (icoord.y >= 0) && (icoord.y < res.y)\n        && (icoord.z >= 0) && (icoord.z < res.z);\n}\n\n// Load a 16-bit unsigned integer from a uvec4. Max index is 7.\nuint load_u16(in uvec4 container, uint idx)\n{\n    if ((idx % 2u) == 0u)\n    {\n        return container[idx / 2u] & 65535u;\n    }\n    else\n    {\n        return (container[idx / 2u] & (65535u << 16)) >> 16;\n    }\n}\n\n// Store a 16-bit unsigned integer in a uvec4. Max index is 7.\nvoid store_u16(inout uvec4 container, uint idx, uint value)\n{\n    if (value > 65535u) value = 65535u;\n    container[idx / 2u] |= value << (16u * (idx % 2u));\n}\n\nvec2 random_unit_vec2()\n{\n    vec2 v = vec2(1);\n    float lensqr;\n    for (int i = 0; i < 20; i++)\n    {\n        v = vec2(2. * random() - 1., 2. * random() - 1.);\n        lensqr = dot(v, v);\n        if (lensqr <= 1. && lensqr != 0.) break;\n    }\n    return v / sqrt(lensqr);\n}\n\nvec3 random_unit_vec3()\n{\n    vec3 v = vec3(1);\n    float lensqr;\n    for (int i = 0; i < 20; i++)\n    {\n        v = vec3(2. * random() - 1., 2. * random() - 1., 2. * random() - 1.);\n        lensqr = dot(v, v);\n        if (lensqr <= 1. && lensqr != 0.) break;\n    }\n    return v / sqrt(lensqr);\n}\n\nvec2 random_in_circle()\n{\n    vec2 v = vec2(1);\n    for (int i = 0; i < 20; i++)\n    {\n        v = vec2(2. * random() - 1., 2. * random() - 1.);\n        if (dot(v, v) <= 1.) return v;\n    }\n    return v;\n}\n\nvec3 random_in_sphere()\n{\n    vec3 v = vec3(1);\n    for (int i = 0; i < 20; i++)\n    {\n        v = vec3(2. * random() - 1., 2. * random() - 1., 2. * random() - 1.);\n        if (dot(v, v) <= 1.) return v;\n    }\n    return v;\n}\n\nmat2 rotate2D(float angle)\n{\n    return mat2(cos(angle), sin(angle), cos(angle + PI_OVER_2), sin(angle + PI_OVER_2));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Voronoi buffer\n\n// Each pixel stores 8 IDs that are supposed to be the IDs of the eight closest\n// particles to the current pixel's matching UV coordinates. We store 8 IDs by\n// embedding them in the output as 16-bit integers. This is done by the help\n// of functions load_u16() and store_u16() implemented in Common, and built-in\n// functions uintBitsToFloat() and floatBitsToUint().\n\n// Each frame, we calculate the distances of the particles associated with the\n// IDs stored in a few randomly selected neighboring pixels (using a gaussian\n// distribution around the current pixel) from the current pixel's UV\n// coordinates, and we also do some checks against a few random particles in\n// the data buffer. After we have gathered all of the distances and their\n// corresponding particle IDs (the dist and id arrays), we sort them and\n// output the first 8 unique IDs to frag_col, storing them as 16-bit integers.\n\n// We have a mechanism for converting integer pixel coordinates to 1D indices\n// and vice versa. This lets us treat the data buffer (B) as a 1D array\n// instead of a 2D texture. This is how we calculate the integer pixel\n// coordinates from the particle ID. This also means we need to reset every\n// time the resolution changes. We do this by storing the resolution data in\n// the last pixel in the buffer. The last pixel in the Voronoi buffer also\n// contains the iteration number (number of frames since the last reset).\n\n// The data buffer (B) stores and updates the particle data. Each pixel stores\n// the position and the velocity of one particle in xy and zw. Every frame, we\n// use the Voronoi buffer (this) to get information about the 8 closest\n// particles.\n\n// You can find related constants in the Common tab.\n\n#define BUFF_A iChannel0\n#define BUFF_B iChannel1\n\nvoid mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // Info about the last pixel where we store useful data\n    ivec2 res_coord = ivec2(iResolution.xy) - 1;\n    vec4 res_data = texelFetch(BUFF_A, res_coord, 0);\n\n    // Should we reset?\n    bool should_reset =\n        iFrame < 1 ||\n        iTime < .02 ||\n        res_data.xy != iResolution.xy;\n    \n    // Store the current resolution in the last pixel, also store the number of\n    // frames passed since the last reset/initialization (Voronoi iteration).\n    if (ivec2(frag_coord) == res_coord)\n    {\n        frag_col = vec4(iResolution.xy, should_reset ? 0. : res_data.z + 1., 0);\n        return;\n    }\n    \n    // UV\n    px2uv_init(iResolution.xy);\n    vec2 uv = screen_to_uv(frag_coord);\n    \n    // Are we outside the bounds?\n    if (any(lessThan(uv, min_pos - .05)) || any(greaterThan(uv, max_pos + .05)))\n    {\n        frag_col = vec4(0);\n        return;\n    }\n\n    // Initialize PRNG\n    prng_init(vec3(frag_coord / iResolution.y, iTime));\n    \n    // Initialize with randomized IDs\n    if (should_reset)\n    {\n        uvec4 ids = uvec4(0);\n        for (uint i = 0u; i < n_ids_in_voronoi; i++)\n        {\n            store_u16(ids, i, randomui() % (max_particle_id(uvec2(iResolution.xy)) + 1u));\n        }\n        frag_col = uintBitsToFloat(ids);\n        return;\n    }\n    \n    // Gather the distances of the particles associated with the IDs stored in\n    // some neighboring pixels, and a few randomly selected particles.\n    const uint neighbors = 3u;\n    const uint random_checks = 2u;\n    \n    // A pixel in the Voronoi buffer (this) stores 8 IDs but a random check\n    // only checks a single particle.\n    const uint total_checks = n_ids_in_voronoi * neighbors + random_checks;\n    \n    // Array for storing the distances (squared for performance) and their\n    // associated IDs.\n    float dist_sqr[total_checks];\n    uint id[total_checks];\n    uint head = 0u;\n    \n    // Neighboring pixels\n    for (uint i = 0u; i < neighbors; i++)\n    {\n        // Coordinates of the pixel to check in the Voronoi buffer (this)\n        // Using gaussian distribution to focus around the center\n        vec2 offs = 3. * random_gauss();\n        ivec2 icoord = ivec2(floor(frag_coord + offs));\n        \n        // Check the IDs\n        uvec4 stored_ids = floatBitsToUint(texelFetch(BUFF_A, icoord, 0));\n        for (uint j = 0u; j < n_ids_in_voronoi; j++)\n        {\n            // ID\n            uint curr_id = load_u16(stored_ids, j);\n            id[head] = curr_id;\n            \n            // Get pixel coordinates in the data buffer (B)\n            ivec2 icoord2 = idx_to_icoord2(int(curr_id), ivec2(iResolution.xy));\n            \n            // Get the position from the data buffer (B)\n            vec2 curr_pos = texelFetch(BUFF_B, icoord2, 0).xy;\n            \n            // Distance squared\n            curr_pos -= uv;\n            dist_sqr[head] = dot(curr_pos, curr_pos);\n            \n            head++;\n        }\n    }\n    \n    // Also check against a few random particles in the data buffer (B)\n    for (uint i = 0u; i < random_checks; i++)\n    {\n        // ID\n        uint curr_id = randomui() % (max_particle_id(uvec2(iResolution.xy)) + 1u);\n        id[head] = curr_id;\n        \n        // Get pixel coordinates in the data buffer (B)\n        ivec2 icoord = idx_to_icoord2(int(curr_id), ivec2(iResolution.xy));\n        \n        // Get the position from the data buffer (B)\n        vec2 curr_pos = texelFetch(BUFF_B, icoord, 0).xy;\n        \n        // Distance squared\n        curr_pos -= uv;\n        dist_sqr[head] = dot(curr_pos, curr_pos);\n        \n        head++;\n    }\n    \n    // Sort id and dist based on dist in increasing order (Insertion Sort)\n    // https://betterprogramming.pub/5-basic-sorting-algorithms-you-must-know-9ef5b1f3949c\n    {\n        int i, j;\n        float keyf;\n        uint keyi;\n        for (i = 1; i < int(total_checks); i++)\n        {\n            keyf = dist_sqr[i];\n            keyi = id[i];\n            j = i - 1;\n            \n            /* Move elements of arr[0..i-1], that are greater than key, to one position ahead \n            of their current position */\n            while (j >= 0 && dist_sqr[j] > keyf)\n            {\n                dist_sqr[j + 1] = dist_sqr[j];\n                id[j + 1] = id[j];\n                j--;\n            }\n            dist_sqr[j + 1] = keyf;\n            id[j + 1] = keyi;\n        }\n    }\n    \n    // Pick the first 8 unique IDs and store as 16-bit ints\n    uvec4 closest_ids = uvec4(0);\n    head = 0u;\n    for (uint i = 0u; i < total_checks; i++)\n    {\n        // Check if this ID is unique\n        bool unique = true;\n        for (uint j = 0u; j < i; j++)\n        {\n            if (id[i] == id[j])\n            {\n                unique = false;\n                break;\n            }\n        }\n        \n        if (unique)\n        {\n            // Store new unique ID in closest_ids\n            uint curr_id = id[i];\n            store_u16(closest_ids, head++, curr_id);\n            if (head >= n_ids_in_voronoi)\n                break;\n        }\n    }\n    \n    // Output closest_ids\n    frag_col = uintBitsToFloat(closest_ids);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Data buffer\n// Read the explanations in Buffer A.\n\n#define BUFF_A iChannel0\n#define BUFF_B iChannel1\n\nvoid mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // Store the current resolution in the last pixel\n    ivec2 res_coord = ivec2(iResolution.xy) - 1;\n    if (ivec2(frag_coord) == res_coord)\n    {\n        frag_col = vec4(iResolution.xy, 0, 0);\n        return;\n    }\n    \n    // Are we outside the region of interest?\n    uint idx = uint(icoord2_to_idx(ivec2(frag_coord), ivec2(iResolution.xy)));\n    if (idx > max_particle_id(uvec2(iResolution.xy)))\n    {\n        return;\n    }\n    \n    // Initialize PRNG\n    prng_init(vec3(5. + frag_coord / iResolution.y, iTime + 5.));\n    \n    // Should we reset?\n    bool should_reset =\n        iFrame < 1 ||\n        iTime < .02 ||\n        texelFetch(BUFF_B, res_coord, 0).xy != iResolution.xy;\n    \n    // Initialize with random position and velocity\n    if (should_reset)\n    {\n        vec2 pos = vec2(remap(random(), 0., 1., min_pos.x, max_pos.x), remap(random(), 0., 1., min_pos.y, max_pos.y));\n        float angle = random() * TAU;\n        vec2 vel = move_speed * vec2(cos(angle), sin(angle));\n        frag_col = vec4(pos, vel);\n        return;\n    }\n    \n    // UV\n    px2uv_init(iResolution.xy);\n    \n    // Get last frame's value\n    vec4 data = texelFetch(BUFF_B, ivec2(frag_coord), 0);\n    vec2 pos = data.xy;\n    vec2 vel = data.zw;\n    \n    // Wait until the Voronoi buffer is relatively stable.\n    float voronoi_iter = texelFetch(BUFF_A, res_coord, 0).z;\n    if (voronoi_iter < 25.)\n    {\n        frag_col = vec4(pos, vel);\n        return;\n    }\n    \n    // Where does pos fall on the screen?\n    ivec2 icoord_pos = ivec2(floor(uv_to_screen(pos)));\n    \n    // Information about the 8 closest particles (using the Voronoi buffer)\n    uvec4 stored_ids = floatBitsToUint(texelFetch(BUFF_A, icoord_pos, 0));\n    vec2 nearby_pos[8];\n    vec2 nearby_vel[8];\n    float nearby_dist[8];\n    for (uint i = 0u; i < n_ids_in_voronoi; i++)\n    {\n        // ID\n        uint curr_id = load_u16(stored_ids, i);\n        \n        // Check if ID is invalid\n        if (curr_id > max_particle_id(uvec2(iResolution.xy)))\n        {\n            nearby_pos[i] = vec2(-100000.);\n            nearby_vel[i] = vec2(0);\n            nearby_dist[i] = 100000.;\n        }\n        else\n        {\n            // Matching pixel coordinates in the data buffer (this)\n            ivec2 icoord = idx_to_icoord2(int(curr_id), ivec2(iResolution.xy));\n            \n            // Get information\n            vec4 data2 = texelFetch(BUFF_B, icoord, 0);\n            nearby_pos[i] = data2.xy;\n            nearby_vel[i] = data2.zw;\n            nearby_dist[i] = distance(pos, nearby_pos[i]);\n        }\n    }\n    \n    // Delta time\n    float dt = min(iTimeDelta, 0.02);\n    \n    // Steer away from nearby boids\n    for (uint i = 0u; i < n_ids_in_voronoi; i++)\n    {\n        // Is the other boid in my view cone?\n        if (dot(normalize(vel), normalize(nearby_vel[i])) > cos(1.1))\n        {\n            // Vector between us\n            vec2 this_to_other = nearby_pos[i] - pos;\n            \n            // How much do I steer away?\n            float fac = 1. - clamp(nearby_dist[i] / attention_radius, 0., 1.);\n            \n            // Steer\n            float deg_per_sec = 20. * fac;\n            vel *= rotate2D(radians(deg_per_sec * dt));\n            \n            // Move away\n            vel -= 5. * fac * dt * this_to_other;\n        }\n    }\n    \n    // Try to go in the same direction as the neighbors\n    if (true)\n    {\n        // Weighted average of the neighbor velocities\n        vec2 avg_vel = vec2(0);\n        for (uint i = 0u; i < n_ids_in_voronoi; i++)\n        {\n            float weight = 1. - clamp(nearby_dist[i] / attention_radius, 0., 1.);\n            avg_vel += weight * nearby_vel[i];\n        }\n        \n        // Check if the lengths (squared) are zero\n        float lensqr_avg_vel = dot(avg_vel, avg_vel);\n        float lensqr_vel = dot(vel, vel);\n        if (lensqr_avg_vel > 0. && lensqr_vel > 0.)\n        {\n            // Tend toward the average direction\n            vel = mix(vel, avg_vel, min(.3 * dt, 1.));\n        }\n    }\n    \n    // Try to follow the point of attraction\n    if (true)\n    {\n        vec2 poa = get_point_of_attraction(iTime, iMouse);\n        vel = mix(vel, (poa - pos), min(1. * dt, 1.));\n    }\n    \n    // Constant speed\n    vel = move_speed * normalize(vel);\n\n    // Update position\n    pos += vel * dt;\n    \n    // Get away from the colliders\n    if (true)\n    {\n        // Signed distance\n        float sd = sd_colliders(pos, iTime, iMouse);\n        \n        // Normal\n        vec2 normal = normalize(vec2(\n            sd_colliders(pos + vec2(eps, 0.0), iTime, iMouse) - sd,\n            sd_colliders(pos + vec2(0.0, eps), iTime, iMouse) - sd\n        ));\n        \n        // If inside\n        if (sd < 0.)\n        {\n            // Snap to outside\n            pos += (.001 - sd) * normal;\n            \n            // Bounce\n            vel = reflect(vel, normal);\n        }\n        \n        // Steer away\n        float temp = max(0., sd);\n        float deg_per_sec = -50. * exp(-15. * temp);\n        float angle = radians(deg_per_sec * dt);\n        vel *= rotate2D(angle);\n        \n        // Move away\n        temp *= temp;\n        float force = 1. / (100. * temp + .1);\n        vel += force * dt * normal;\n    }\n    \n    // Output\n    frag_col = vec4(pos, vel);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

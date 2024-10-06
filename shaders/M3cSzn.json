@@ -1,0 +1,225 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1718490115",
+            "description": "Left: 1 sample per pixel\nMiddle: Noise reduced\nRight: Ground Truth\n\ncould be better if I used proper normals, but I had to make do with a single float from the buffer.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "M3cSzn",
+            "likes": 6,
+            "name": "denoising attempt",
+            "published": 3,
+            "tags": [
+                "raytracing"
+            ],
+            "usePreview": 0,
+            "username": "01000001",
+            "viewed": 200
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 O, vec2 U ){\n\n    vec2 r = iResolution.xy;\n    vec2 uv = U/r;\n    vec2 cuv = (2.*U-r)/r.y;\n    vec2 muv = iMouse.xy == vec2(0)?vec2(0):(2.*iMouse.xy-r)/r.y;\n    \n    O = texture(iChannel0, uv);\n    //O = textureLod(iChannel0, uv, 3.);\n    \n    vec4 data = texture(iChannel1, uv);\n    vec4 t, n;\n\n    if (cuv.x - muv.x > 2./3. * (muv.y + 1.)) O = texture(iChannel2, uv);\n\n    //*\n    if (abs(cuv.x - muv.x) < 2./3. * (muv.y + 1.)){\n        \n        for (float i = 1.; i<float(denoiseSamples);i++){\n        \n            vec2 samp = uv + \n            #if mode==0\n            vec2(0,(i-float(denoiseSamples)/2.)*denoiseRadius/float(denoiseSamples))\n            #endif\n            #if mode==1\n            denoiseRadius*(hash(uvec3(U, i)).xy*2.-1.)\n            #endif\n            #if mode==2\n            vec2(denoiseRadius*gaussianSample(uvec3(U, i)))\n            #endif\n            / r;\n            if (samp.x < 0.) samp.x = -samp.x;\n            if (samp.y < 0.) samp.y = -samp.y;\n            if (samp.x > 1.) samp.x = 2.-samp.x;\n            if (samp.y > 1.) samp.y = 2.-samp.y;\n            \n            t = texture(iChannel3, samp);\n            n = texture(iChannel1, samp);\n\n            O = mix(O, t, 1./i * exp(dot(data.xyz, n.xyz)*3.-3. - abs(data.w - n.w)) );\n            // (exp(-abs(data.w - n.w)*denoiseRadius + max(0., dot(data.xyz, n.xyz))))\n            // (exp(-1.-max(0., dot(data.xyz, n.xyz))))\n            // (exp(-abs(O.w - t.w)))\n        }\n        \n    }\n    //*/\n\n    if (cuv.x - muv.x < -2./3. * (muv.y + 1.)) O = pow(O, vec4(1.5)); \n    // Weird colour correction to make it perceptually similar\n\n    //O.xyz = abs(data.xyz);\n    //O *= sin(data.w*pi*5.)*.4+.6;\n\n    O *= 3.;\n    O = O/(1.+O);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define denoiseRadius 16.\n// Denoise radius of 16 is very good for the walls and low frequency detail\n// Denoise radius of 5 is better to preserve the shadow under the sphere for example.\n// Maybe it should be adaptive, based on the derivatives of the LODs?\n#define denoiseSamples 8\n#define mode 2\n\n\n\n#define pi 3.14159265\n#define phi 1.6180339887\n#define DEPTH 5\n#define OBJECT_COUNT 8\n\n\nstruct material\n{\n    float metallic;\n    float roughness;\n    float specular;\n    vec3 col;\n    bool light;\n};\n\nstruct plane\n{\n    vec3 pos;\n    vec3 normal;\n    material mat;\n};\n\nstruct sphere\n{\n    vec3 pos;\n    float radius;\n    material mat;\n};\n\nstruct box\n{\n    vec3 pos;\n    vec3 up; // Length of up is scale\n    material mat;\n};\n\n\nstruct rayHit\n{\n    float t1;\n    float t2;\n    vec3 pos;\n    vec3 normal;\n    vec3 incoming;\n    vec3 reflection;\n    bool hit;\n    vec3 origin;\n    material mat;\n};\n\n// Materials //\n\n    const material testBlue = material(\n        0.0,                // Metallic \n        0.0,               // Roughness\n        0.5,              // Specular\n        vec3(.3, .5, .8),// Colour\n        false           // Light\n    );\n\n\n    const material testRed = material(\n        0.0,                // Metallic \n        0.5,               // Roughness\n        0.1,              // Specular\n        vec3(.8, .2, .2),// Colour\n        false           // Light\n    );\n\n    const material testGreen = material(\n        1.,                 // Metallic \n        0.,                // Roughness\n        0.2,              // Specular\n        vec3(.1, .6, .3),// Colour\n        false           // Light\n    );\n\n    const material testWhite = material(\n        1.0,                   // Metallic \n        0.2,                  // Roughness\n        0.5,                 // Specular\n        vec3(0.8),          // Colour\n        false              // Light\n    );\n    \n    const material light = material(\n        1.0,                   // Metallic \n        0.2,                  // Roughness\n        0.5,                 // Specular\n        vec3(2),            // Colour\n        true               // Light\n    );\n\n\n// Geometry //\n\n    plane pl1 = plane(\n        vec3(0, 0, -1), // Position\n        vec3(0, 0,  1), // Normal\n        testWhite       // Material\n    );\n    \n    plane pl2 = plane(\n        vec3(-1, 0, 0), // Position\n        vec3(1, 0, 0), // Normal\n        testRed       // Material\n    );\n\n    plane pl3 = plane(\n        vec3(0,  1, 0), // Position\n        vec3(0, -1, 0), // Normal\n        testWhite       // Material\n    );\n\n    plane pl4 = plane(\n        vec3(1, 0,  0), // Position\n        vec3(-1, 0, 0), // Normal\n        testGreen       // Material\n    );\n\n    plane pl5 = plane(\n        vec3(0, 0,  1), // Position\n        vec3(0, 0, -1), // Normal\n        light       // Material\n    );\n\n    plane pl6 = plane(\n        vec3(0, -1, 0), // Position\n        vec3(0,  1, 0), // Normal\n        testBlue        // Material\n    );\n\n    sphere sp1 = sphere(\n        vec3(-.5, .5, -.6),// Position\n        .4,               // Radius\n        testBlue         // Material\n    );\n    \n    box bo1 = box(\n        vec3(.5, .2, -.7),         // Position\n        normalize(vec3(1,1,0))*.3,// Up\n        testRed                  // Material\n    );\n\n\n\nconst uint k = 1103515245U;\nvec3 hash( uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n} //hash by IQ https://www.shadertoy.com/view/XlXcW4\n\nvec2 gaussianSample(uvec3 x){\n    vec3 a = hash(x) * 2. - 1.;\n    vec3 b = hash(x + 1u) * 2. - 1.;\n    \n    return vec2(a.x + b.x + a.y, a.y + b.y + b.z);\n}\n\n//*\nvec2 circleSample(uvec3 x){\n    vec2 v,z;\n    for (int i = 0; i < 9; i++){\n        z = hash(x + uint(z*1e9)).xy*2.-1.;\n        if (dot(z,z) < 1.) break;\n    }\n    return z;\n}\n/*/\nvec2 circleSample(uvec3 x){\n    return vec2(cos(float(x.z)/pi), sin(float(x.z)/pi)) * sqrt(fract(float(x.z)/phi));\n}\n//*/\n\nmat3 matTowards( vec3 n ){\n    \n    vec3 axis = (hash(uvec3(n*1e9))-.5)*pi;\n    axis = normalize(vec3(sin(axis.x), cos(axis.x), tan(axis.y)));\n    vec3 r = normalize(\n        abs(dot(n, axis)) < 1e-4?\n            cross(n, axis):\n            cross(n, normalize(vec3(1)))\n    );\n    vec3 f = cross(r, n);\n    \n    return mat3(r, f, n); \n}\n\nvec3 cosDist( uvec3 x, vec3 norm ){ // Cosine weighted distribution\n    vec2 u = circleSample(x);\n    return vec3(u, sqrt(1.-u.x*u.x-u.y*u.y)) * matTowards(norm);\n}\n\n\nrayHit planeRay(vec3 o, vec3 dirV, plane p)\n{\n    rayHit hit;\n    hit.incoming = dirV;\n    hit.hit = false;\n    \n    float dist = -(dot(p.normal, p.pos-o));\n    \n    if (dist > 0.0)\n    {\n        dist /= dot(dirV, -p.normal);\n\n\n        hit.t1 = 1e9;\n        hit.t2 = 1e9;\n\n        if (dist > 0.0)\n        {\n            hit.t1 = dist;\n            hit.hit = true;\n            hit.pos = o + hit.t1 * dirV;\n            hit.normal = p.normal;\n            hit.reflection = reflect(dirV, p.normal);\n            hit.origin = p.pos;\n            hit.mat = p.mat;\n        }\n    }\n    \n    return hit;\n    \n}\n\n\nrayHit boxRay(vec3 o, vec3 dirV, box b)\n{\n\n    rayHit hit;\n    hit.incoming = dirV;\n    hit.t1 = 1e9;\n    hit.t2 = 1e9;\n    hit.hit = false;\n    \n    rayHit tempHits[6];\n    rayHit minHit;\n    \n    float minDist = 1e9;\n    \n    \n    vec3 dirs[6];\n    dirs[0] = normalize(b.up);\n    dirs[1] = b.up==vec3(0,0,1)?vec3(1, 0, 0):normalize(cross(b.up, vec3(0, 0, 1)));\n    dirs[2] = normalize(cross(b.up, dirs[1]));\n    dirs[3] = -dirs[0];\n    dirs[4] = -dirs[1];\n    dirs[5] = -dirs[2];\n    float scale = length(b.up);\n    \n    for (int i = 0; i<6; i++)\n    {\n        dirs[i] = dirs[i]*(scale-1e-5);\n        plane p;\n        p.pos = dirs[i]; p.normal = dirs[i];\n        tempHits[i] = planeRay(o-b.pos, dirV, p);\n                \n    }\n    \n    for (int i = 0; i<6; i++)\n    {\n        rayHit hi = tempHits[i];\n        if (hi.hit \n        &&  max(abs(dot(hi.pos, dirs[0])), \n            max(abs(dot(hi.pos, dirs[1])), \n                abs(dot(hi.pos, dirs[2])))) < (scale*scale))\n        {\n            hit = hi;\n            hit.normal = normalize(hit.normal);\n            hit.pos += b.pos;\n            hit.origin = b.pos;\n        }\n\n    }\n    \n    hit.mat = b.mat;\n    \n    return hit;\n\n}\n\n\nrayHit sphereRay(vec3 o, vec3 dirV, sphere sp)\n{    \n    rayHit hit;\n    hit.incoming = dirV;\n\n    float t = dot(sp.pos - o, dirV);\n    vec3 p = o + dirV*t;\n    \n    float y = length(sp.pos - p);\n    \n    hit.t1 = 1e9;\n    hit.t2 = 1e9;\n    \n    if (y < sp.radius && t > 0.) //hit && in front of camera\n    {\n        float x = sqrt(sp.radius*sp.radius - y*y);\n        hit.t1 = t-x;\n        hit.t2 = t+x;\n        \n        vec3 p1 = o + dirV*hit.t1;\n        vec3 n = normalize(p1 - sp.pos);\n        hit.normal = n;\n        hit.hit = true;\n        hit.pos = p1;\n        hit.mat = sp.mat;\n        hit.origin = sp.pos;\n    }\n    else if (y < sp.radius)\n    {\n        hit.hit = false;\n    }\n    return hit;\n\n}\n\nrayHit pew(vec3 o, vec3 dirV, plane p){\n    return planeRay(o, dirV, p);\n}\n\nrayHit pew(vec3 o, vec3 dirV, box b){\n    return boxRay(o, dirV, b);\n}\n\nrayHit pew(vec3 o, vec3 dirV, sphere s){\n    return sphereRay(o, dirV, s);\n}\n\n\nrayHit ray(vec3 o, vec3 dirV, float t){\n\n\n    // Animation //\n    \n    \n    \n    ///////////////\n\n\n\n\n    rayHit hit;\n    hit.incoming = dirV;\n    hit.t1 = 1e9;\n    hit.t2 = 1e9;\n    hit.hit = false;\n    \n    rayHit hits[OBJECT_COUNT];\n    \n    \n    // Rendering //\n    \n    hits[0] = pew(o, dirV, pl1);\n    hits[1] = pew(o, dirV, pl2);\n    hits[2] = pew(o, dirV, pl3);\n    hits[3] = pew(o, dirV, pl4);\n    hits[4] = pew(o, dirV, pl5);\n    hits[5] = pew(o, dirV, pl6);\n    hits[6] = pew(o, dirV, sp1);\n    hits[7] = pew(o, dirV, bo1);\n\n    ///////////////\n    \n    \n    // Pick the closest hit\n    for (int i = 0; i < OBJECT_COUNT; i++){        \n        if (hits[i].hit && hits[i].t1 < hit.t1) hit = hits[i];\n    } \n    hit.reflection = reflect(hit.incoming, hit.normal);\n    return hit;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// single sample per pixel pathtracing\n\nvoid mainImage( out vec4 O, vec2 U ){\n\n    if (iFrame < 1){\n        O = texelFetch(iChannel1, ivec2(U)%256, 0);\n        O.w = 1.;\n        return;\n    }\n\n    vec2 r = iResolution.xy;\n    vec2 uv = U/r;\n    U += hash(uvec3(iFrame, U.yx)).xy-.5;\n    vec2 cuv = (2.*U-r)/r.y;\n    vec2 muv = vec2(0,-.2);\n    \n    vec3 o = vec3(0,-2,0);\n    vec3 fwd = vec3(sin(muv.x)*cos(muv.y), cos(muv.x)*cos(muv.y), sin(muv.y));\n    vec3 rgt = normalize(cross(fwd, vec3(0,0,1)));\n    vec3 upw = cross(rgt, fwd);\n    vec2 camUV = cuv * .4;\n    vec3 ruv = vec3(sin(camUV.x)*cos(camUV.y), cos(camUV.x)*cos(camUV.y), sin(camUV.y));\n    vec3 dir = normalize(fwd*ruv.y + rgt * ruv.x + upw * ruv.z);\n    \n    vec3 col = vec3(1);\n    vec3 light = vec3(0);\n    rayHit hits[DEPTH];\n    \n    for (int i = 0; i < DEPTH; i++){\n        \n        rayHit hit = ray(o, dir, iTime);\n        hits[i] = hit;\n        \n        if (hit.mat.light){\n            light = hit.mat.col;\n            break;\n        } else {\n            col *= hit.mat.col;\n            \n            o = hit.pos;\n            dir = cosDist(uvec3(U.xy, iFrame)+uint(i), hit.normal);\n            \n        }\n        \n    }\n    \n    col *= light;\n    \n    O.xyz = col// * smoothstep(0.,2./r.y, length(cuv+vec2(.3,.7))-.2)\n    ;\n\n    O.w = hits[0].t1;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// normap and depth\n\nvoid mainImage( out vec4 O, vec2 U ){\n\n    if (iFrame < 1){\n        O = texelFetch(iChannel1, ivec2(U)%256, 0);\n        O.w = 1.;\n        return;\n    }\n\n    vec2 r = iResolution.xy;\n    vec2 uv = U/r;\n    U += hash(uvec3(iFrame, U.yx)).xy-.5;\n    vec2 cuv = (2.*U-r)/r.y;\n    vec2 muv = vec2(0,-.2);\n    \n    vec3 o = vec3(0,-2,0);\n    vec3 fwd = vec3(sin(muv.x)*cos(muv.y), cos(muv.x)*cos(muv.y), sin(muv.y));\n    vec3 rgt = normalize(cross(fwd, vec3(0,0,1)));\n    vec3 upw = cross(rgt, fwd);\n    vec2 camUV = cuv * .4;\n    vec3 ruv = vec3(sin(camUV.x)*cos(camUV.y), cos(camUV.x)*cos(camUV.y), sin(camUV.y));\n    vec3 dir = normalize(fwd*ruv.y + rgt * ruv.x + upw * ruv.z);\n    \n    rayHit hit = ray(o, dir, iTime);\n        \n    O.xyz = hit.normal;\n    O.w = hit.t1;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ground truth accumulation\n\nvoid mainImage( out vec4 O, vec2 U ){\n\n    vec2 r = iResolution.xy;\n    vec2 uv = U/r;\n    vec2 cuv = (2.*U-r)/r.y;\n    vec2 muv = (2.*iMouse.xy-r)/r.y;\n    \n    vec4 new = texture(iChannel0, uv);\n    vec4 old = texture(iChannel1, uv);\n    O = mix(old, new, 1./old.w);\n    O.w = old.w + 1.;\n    if (iFrame < 10) O = vec4(texture(iChannel0, uv).xyz, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// pass 1\n\nvoid mainImage( out vec4 O, vec2 U ){\n\n    vec2 r = iResolution.xy;\n    vec2 uv = U/r;\n    vec2 cuv = (2.*U-r)/r.y;\n    vec2 muv = (2.*iMouse.xy-r)/r.y;\n    \n    vec4 self = texture(iChannel2, uv);\n    vec4 new = texture(iChannel0, uv);\n    vec4 data = texture(iChannel1, uv);\n    O = new;\n    //return; // uncomment to disable the pass. Still works!\n       \n       \n    //if (O == vec4(0)) O = mix(O, texture(iChannel1, uv), .5);\n    \n    vec4 t,n;\n        \n    //*\n    for (float i = 1.; i<float(denoiseSamples);i++){\n\n        vec2 samp = uv + \n        #if mode==0\n        vec2((i-float(denoiseSamples)/2.)*denoiseRadius/float(denoiseSamples),0)\n        #endif\n        #if mode==1\n        denoiseRadius*(hash(uvec3(U, i)).xy*2.-1.)\n        #endif\n        #if mode==2\n        vec2(denoiseRadius*gaussianSample(uvec3(U, i)))\n        #endif\n\n        / r;\n        if (samp.x < 0.) samp.x = -samp.x;\n        if (samp.y < 0.) samp.y = -samp.y;\n        if (samp.x > 1.) samp.x = 2.-samp.x;\n        if (samp.y > 1.) samp.y = 2.-samp.y;\n\n        t = texture(iChannel0, samp);\n        n = texture(iChannel1, samp);\n\n        O.xyz = mix(O.xyz, t.xyz, 1./i * exp(dot(data.xyz, n.xyz)*3.-3. - abs(data.w - n.w)) );\n    }\n    //*/\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

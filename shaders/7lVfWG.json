@@ -1,0 +1,144 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665444317",
+            "description": "Attempt at painting over occluded data with some vaguely plausible surrounding context, but also to shovel some jumbled mess in there to agitate the AI which I mean to run over the top.\n\nkeys 0-9 toggle stuff.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "7lVfWG",
+            "likes": 5,
+            "name": "Outpainting experiment #6",
+            "published": 3,
+            "tags": [
+                "inpainting",
+                "outpainting"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 292
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_WARP_ITERATIONS 4\n#define MAX_PATCH_ITERATIONS 24\n#define toggle(n) texelFetch(iChannel3, ivec2(48+n,2),0).x\n#define WARP_HIGHLIGHT (toggle(1) * 0.5 * vec4(0.0, 0.0, 1.0, 1.0))\n#define PATCH_HIGHLIGHT (toggle(2) * 0.5 * vec4(1.0, 0.0, 1.0, 1.0))\n#define OOB_HIGHLIGHT (toggle(3) * 0.5 * vec4(1.0, 1.0, 0.0, 1.0))\n#define CUT_HIGHLIGHT (toggle(0) * 0.5 * vec4(0.0, 1.0, 0.0, 1.0))\n\nfloat ActualCutout(vec2 uv) {\n    return textureLod(iChannel0, uv, 0.0).a;\n}\n\nfloat ErodedCutout(vec2 uv)\n{\n    float alpha = textureLod(iChannel0, uv, 1.5).b;\n    // This is just to make certain we get 0 in untouchable space:\n    alpha *= ActualCutout(uv);\n    return clamp(3.0 * alpha - 2.0, 0.0, 1.0);\n}\n\nvec4 GetImage(vec2 uv) {\n    return textureLod(iChannel1, uv, 0.0) * ErodedCutout(uv);\n}\n\nfloat AlphaForGradient(vec2 uv) {\n    // Fun effect: low LOD here lets noise bleed through from the\n    // random sampling used in the blur generation.\n    return textureLod(iChannel0, uv, 3.5).g;\n}\n\nvec2 AlphaGradient(vec2 uv, float eps) {\n    vec3 o = vec3(-eps, eps, 0.0);\n    float up = AlphaForGradient(uv + o.zx);\n    float dn = AlphaForGradient(uv + o.zy);\n    float lf = AlphaForGradient(uv + o.xz);\n    float rt = AlphaForGradient(uv + o.yz);\n\n    return vec2(rt - lf, dn - up) / eps;\n}\n\nvec4 GetBackfill(vec2 uv, float fade, vec4 highlight) {\n    vec2 edges = smoothstep(0.0, 0.02, uv)\n               * smoothstep(0.0, 0.02, 1.0-uv);\n    float edge = edges.x * edges.y;\n    vec4 colour = GetImage(uv) * edge * fade;\n\n    if (colour.a >= 0.1) {\n        colour = highlight + colour * (1.0 - highlight.a);\n    }\n    if (edge < 0.99) {\n        colour = colour + OOB_HIGHLIGHT * (1.0 - colour.a);\n    }\n    return colour;\n}\n\nvec4 GetWarpBackfill(vec2 uv, float gen) {\n    const float eps = 0.02;\n    vec2 g = AlphaGradient(uv, eps);\n    float base = AlphaForGradient(uv);\n    float len = length(g);\n    float alpha = pow(0.7, gen);\n#if 1\n    len = 0.04 * (gen + 1.0);\n    //len *= base * 2.0;\n    // TODO: bleed some `base` into `alpha` somehow.\n //   alpha *= (base + 3.0) / 4.0;\n#else\n    len += gen * 0.01;\n    len *= 1.0 / 64.0;\n#endif\n    uv += normalize(g) * len;\n\n    return GetBackfill(uv, alpha, WARP_HIGHLIGHT);\n}\n\nvec4 GetPatchBackfill(vec2 uv, float gen) {\n    float t = gen * 6.283185307 + fract(iTime * gen * 0.001);\n    float r = pow(0.975, gen);\n    vec2 c = 0.5 - (0.5 - vec2(hash(gen, 1.0), hash(gen, 2.0))) * 0.7;\n    uv -= c;\n    uv = uv * mat2x2(cos(t), sin(t), -sin(t), cos(t)) * r;\n    uv += c;\n\n    float th = (dot(uv, vec2(3.5, -3.5)) + gen + fract(iTime * 0.3)) * 6.28;\n    uv += vec2(cos(th), sin(th)) * 0.02;\n\n    return GetBackfill(uv, 1.0 - pow(0.7, gen + 1.0), PATCH_HIGHLIGHT);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    // Time varying pixel color\n    vec4 col = vec4(0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4)), 1.0);\n\n    vec4 tex = GetImage(uv);\n\n    for (int i = 0; i < MAX_WARP_ITERATIONS; ++i) {\n        if (tex.a >= 0.99) break;\n        vec4 back = GetWarpBackfill(uv, float(i) * 1.618033989);\n        tex = tex + back * (1.0 - tex.a);\n    }\n    for (int i = 0; i < MAX_PATCH_ITERATIONS; ++i) {\n        if (tex.a >= 0.99) break;\n        vec4 back = GetPatchBackfill(uv, float(i) * 1.618033989);\n        tex = tex + back * (1.0 - tex.a);\n    }\n    col = tex + col * (1.0 - tex.a);\n    vec4 cut = CUT_HIGHLIGHT * (1.0 - ActualCutout(uv));\n    col = cut + col * (1.0 - cut.a);\n    // Output to screen\n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float GetAlpha(vec2 uv)\n{\n    vec3 col = texture(iChannel0, uv).rgb;\n    float alpha = smoothstep(0.2, 0.35, col.g - max(col.r, col.b));\n#if 0\n    uv = (uv - .5) * rotmat(iTime * 0.4);\n    if (0.35 < uv.y && uv.y < 2.4) alpha = 0.0;\n#endif\n    return alpha;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    fragColor = vec4(GetAlpha(uv));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 36,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/35c87bcb8d7af24c54d41122dadb619dd920646a0bd0e477e7bdc6d12876df17.webm"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define NUM_TAPS 15\n\nvec2 pdf(vec2 x) {\n#if 1\n    // pdf for s=0.1667: `sum(uniform(-.5,.5, 3)/3)`\n    return 2.39365*exp(-18. * x * x);\n#else\n    // pdf for s=0.144: `sum(uniform(-.5,.5, 4)/4)`\n    return 2.77043 * exp(-24.1126 * x * x);\n#endif\n}\n\n\nfloat nsample(vec2 uv, float r) {\n    float seed = r;\n\n    float sum = 0.0;\n    for (int i=0; i < NUM_TAPS; i++)\n    {\n        vec2 is = vec2(float(i) * 0.5050505, seed);\n        vec2 ofs = (hash2(uv + is) + hash2(uv + is + 1.0)\n                  + hash2(uv + is + 2.0)) * 0.333333 - 0.5;\n        float lod = log2(length(iChannelResolution[0].xy * 2.0 * r / pdf(ofs)));\n        ofs *= 2.0 * r;\n        sum += textureLod(iChannel0, uv + ofs, lod).a;\n    }\n\n    return sum / float(NUM_TAPS);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    fragColor = vec4(\n        0.0,//nsample(uv, 0.4),\n        nsample(uv, 0.1),\n        nsample(uv, 0.04),\n        textureLod(iChannel0, uv, 0.0).a\n    );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "mat2x2 rotmat(float a)\n{\n    float c = cos(a), s = sin(a);\n    return mat2x2(c, s, -s, c);\n}\n\nfloat hash(vec2 uv) {\n    // Seeing some weird discontinuity coming from overflow cases -- this'll fix it!\n    uv = vec2(ivec2(floatBitsToUint(uv.x), floatBitsToUint(uv.y))) / 65537.0;\n\n    const vec2 swiz = vec2(12.9898, 78.233);\n    return fract(sin(dot(uv, swiz)) * 43758.5453);\n}\n\nfloat hash(float fx, float fy) {\n    return hash(vec2(fx, fy));\n}\nfloat hash(float f) {\n    return hash(vec2(f));\n}\n\nvec2 hash2(vec2 uv) {\n    return vec2(hash(uv), hash(uv.yx + 1.618033989));\n}\n\nvec2 hash2(float fx, float fy) {\n    return hash2(vec2(fx, fy));\n}\nvec2 hash2(float f) {\n    return hash2(vec2(f));\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

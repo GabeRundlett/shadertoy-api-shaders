@@ -1,0 +1,65 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697629253",
+            "description": "Why is my cloud box rendering like this? I followed the online learning process, but the results were different from others. Can someone help me",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mddfDB",
+            "likes": 1,
+            "name": "Lincian_test",
+            "published": 3,
+            "tags": [
+                "test"
+            ],
+            "usePreview": 0,
+            "username": "Lincac",
+            "viewed": 87
+        },
+        "renderpass": [
+            {
+                "code": "vec3 box_min = vec3(-2.3,-1.3,-1.9);\nvec3 box_max = vec3(2.1,2.6,2.2);\nconst float kPI = 3.1415926;\n\nvec3 getSkyColor(vec3 dir){\n    float t = (dir.y + 1.0) * 0.5;\n    return (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);\n}\n\nfloat getHeightPercent(vec3 pos)\n{\n    return (pos.y - box_min.y) / (box_max.y - box_min.y);\n}\n\nvec2 getUV(vec3 pos)\n{\n    return (pos.xz  / box_max.xz) * 0.5 + 0.5;\n}\n\nfloat remap(float originalValue, float originalMin, float originalMax, float newMin, float newMax)\n{\n\treturn newMin + (((originalValue - originalMin) / (originalMax - originalMin)) * (newMax - newMin));\n}\n\nfloat hgPhase(float g, float cosTheta)\n{\n    float numer = 1.0f - g * g;\n    float denom = 1.0f + g * g + 2.0f * g * cosTheta;\n    return numer / (4.0f * kPI * denom * sqrt(denom));\n}\n\nfloat dualLobPhase(float g0, float g1, float w, float cosTheta)\n{\n    return mix(hgPhase(g0, cosTheta), hgPhase(g1, cosTheta), w);\n}\n\nbool hitbox(vec3 ro,vec3 rd,inout vec3 start,inout vec3 end)\n{\n    vec3 t1 = (box_min - ro) / rd;\n    vec3 t2 = (box_max - ro) / rd;\n    \n    vec3 tmin = min(t1,t2);\n    vec3 tmax = max(t1,t2);\n    \n    float entt = max(tmin.x,max(tmin.y,tmin.z));\n    float outt = min(tmax.x,min(tmax.y,tmax.z));\n    \n    if(entt > outt || outt < 0.) return false;\n    \n    start = ro + entt * rd;\n    end   = ro + outt * rd;\n    \n    return true;\n}\n\n#define STRATUS_GRADIENT vec4(0.0, 0.1, 0.2, 0.3)\n#define STRATOCUMULUS_GRADIENT vec4(0.02, 0.2, 0.48, 0.625)\n#define CUMULUS_GRADIENT vec4(0.00, 0.1625, 0.88, 0.98)\nfloat getDensityForCloud(float heightFraction, float cloudType)\n{\n\tfloat stratusFactor = 1.0 - clamp(cloudType * 2.0, 0.0, 1.0);\n\tfloat stratoCumulusFactor = 1.0 - abs(cloudType - 0.5) * 2.0;\n\tfloat cumulusFactor = clamp(cloudType - 0.5, 0.0, 1.0) * 2.0;\n\n\tvec4 baseGradient = stratusFactor * STRATUS_GRADIENT + stratoCumulusFactor * STRATOCUMULUS_GRADIENT + cumulusFactor * CUMULUS_GRADIENT;\n\treturn smoothstep(baseGradient.x, baseGradient.y, heightFraction) - smoothstep(baseGradient.z, baseGradient.w, heightFraction);\n}\n\nfloat opSmoothUnion( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n\nfloat getDensity(vec3 pos)\n{\n    float height = getHeightPercent(pos);\n    if(height < 0.0 || height > 1.0){\n\t\treturn 0.0;\n\t}\n    \n    vec2 uv = getUV(pos);\n    vec2 mv_uv = getUV(pos \n    + height * normalize(vec3(0.5, 0.5,0)) * 2.\n    + normalize(vec3(0.5, 0.5,0)) * iTime * 0.5);\n\n    vec4 density = texture(iChannel0,vec3(mv_uv / 2.,height));\n    float fbm = dot(density.gba, vec3(0.625, 0.25,0.125));\n    float base_cloud = remap(density.r, -(1.0 - fbm), 1., 0.0 , 1.0);\n    \n    float density2 = getDensityForCloud(height, 1.);\n\tbase_cloud *= (density2 / height);\n    \n    vec3 erodeCloudNoise = texture(iChannel1, vec3(mv_uv, height)).rgb;\n    float highFreqFBM = dot(erodeCloudNoise, vec3(0.625, 0.25, 0.125));\n    float highFreqNoiseModifier = mix(highFreqFBM, 1.0 - highFreqFBM, height);\n    base_cloud = base_cloud - highFreqNoiseModifier * (1.0 - base_cloud);\n    \n    return base_cloud - length(pos) ;\n    \n}\n\nfloat LightRayMarch(vec3 start,float ds)\n{\n    vec3 dir = normalize(vec3(1,0.8,-1.));\n    vec3 marchDir = ds * normalize(dir);\n    float sigma_ds = -ds;\n    \n    float T = 1.0;\n    vec3 pos = start;\n    \n    for(int i=0;i<6;i++)\n    {\n        float density = getDensity(pos);\n        if(density > .0)\n        {\n            T *= exp(density * sigma_ds);\n        }\n    }\n    \n    return T;\n}\n\nvec4 RayMarch(vec3 start,vec3 end,vec3 bg,vec2 fragcoord)\n{\n    vec3 path = end - start;\n    float len = length(path);\n    float ds  =  len / 32.;\n    vec3 marchDir = ds * normalize(path);\n    \n    float sigma_ds = -ds;\n    \n    vec3 scattering = vec3(0,0,0);\n    float VoL = dot(normalize(path),normalize(vec3(1,0.8,-1.)));\n    float T  = 1.0;\n    \n    vec3 pos = start;\n    for(int i=0;i<32;i++)\n    {\n        float density = getDensity(pos);\n        if(density > 0.)\n        {\n            float ds_Trans = exp(density * sigma_ds);\n            \n            float light_ds = LightRayMarch(pos,ds * 0.1);\n            float sunPhase = dualLobPhase(0.5, -0.5, 0.2, -VoL);\n            vec3 stepScattering = vec3(1,1.,0.9)*7. * ds_Trans * sunPhase * light_ds;\n            vec3 sigmaS = vec3(density);\n            scattering += stepScattering * T * (sigmaS * ds);\n            \n            T *= ds_Trans;\n        }\n        if(T < 1e-1) break;\n        pos += marchDir;\n    }\n    \n    vec3 finalColor = T * bg + scattering;\n    \n    return vec4(finalColor,T);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - 0.5*iResolution.xy) / iResolution.y;\n    vec3 ro = vec3(0.0,0.0,5.0);\n    vec3 rd = normalize(vec3(uv,-1.0));\n    \n    vec2 q = fragCoord.xy / iResolution.xy;\n    vec2 v = -1.0 + 2.0*q;\n    v.x *= iResolution.x/ iResolution.y;\n    \n    #if 0\n    vec2 mo = -1.0 + 2.0*iMouse.xy / iResolution.xy;\n    #else\n\tvec2 mo = vec2(iTime*.1,cos(iTime*.25)*3.);\n\t#endif\n\n    // camera by iq\n    vec3 org = 5.0*normalize(vec3(cos(2.75-3.0*mo.x), 0.7-1.0*(mo.y-1.0), sin(2.75-3.0*mo.x)));\n\tvec3 ta = vec3(0.0, 1.0, 0.0);\n    vec3 ww = normalize( ta - org);\n    vec3 uu = normalize(cross( vec3(0.0,1.0,0.0), ww ));\n    vec3 vv = normalize(cross(ww,uu));\n    vec3 dir = normalize( v.x*uu + v.y*vv + 1.5*ww );\n\tvec4 color=vec4(.0);\n    \n    vec3 start;\n    vec3 end;\n    vec3 bg  = getSkyColor(rd);\n    vec4 col = vec4(bg,0);\n    if(hitbox(ro,rd,start,end))\n    {\n\n        //float density = getDensity(start);\n        //col.rgb = vec3(density,density,density);\n\n        col = RayMarch(start,end,bg,fragCoord);\n        col.rgb = mix(col.rgb,bg,col.a);\n    }\n\n    fragColor = vec4(col.rgb,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

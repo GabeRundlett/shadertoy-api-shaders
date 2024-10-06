@@ -1,0 +1,104 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1674639124",
+            "description": "Fly through of a cloudscape, testing out some different volume rendering optimisation techniques.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "dt23Dh",
+            "likes": 5,
+            "name": "Cloudspace",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "noise",
+                "clouds",
+                "volumetric"
+            ],
+            "usePreview": 1,
+            "username": "Dragonpeak",
+            "viewed": 373
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    vec2 screen_pos = fragCoord.xy/iResolution.xy;\n\n    fragColor = vec4(pow(texture(iChannel0, screen_pos/RENDER_SCALE*.99).xyz*vec3(0.886,0.953,1.000), vec3(1./2.2)),1.);//upscale to fill screen and gamma correct\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Fly through of a cloudscape, testing out some different volume raymarching optimisation techniques.\n//Optimisations:\n//Blue noise based dithering.\n//Lower render resolution & upscaling.\n//Early out for dense areas.\n//Interpolate between density samples for smoother light.\n//Lower noise octaves in distance \n//Interframe averaging\n//Use larger steps based on approx slope of noise function, using difference with last sample\nconst float RENDER_SCALE=1.5;\nuvec2 pcg2d(uvec2 v)\n{\n    //from https://www.shadertoy.com/view/XlGcRh\n    v = v * 1664525u + 1013904223u;\n\n    v.x += v.y * 1664525u;\n    v.y += v.x * 1664525u;\n\n    v = v ^ (v>>16u);\n\n    v.x += v.y * 1664525u;\n    v.y += v.x * 1664525u;\n\n    v = v ^ (v>>16u);\n\n    return v;\n}\nuvec3 pcg3d(uvec3 v) \n{\n    //from https://www.shadertoy.com/view/XlGcRh\n    v = v * 1664525u + 1013904223u;\n\n    v.x += v.y*v.z;\n    v.y += v.z*v.x;\n    v.z += v.x*v.y;\n\n    v ^= v >> 16u;\n\n    v.x += v.y*v.z;\n    v.y += v.z*v.x;\n    v.z += v.x*v.y;\n\n    return v;\n}\nvec2 Rand2D(vec2 v)\n{\n    return vec2(pcg2d(uvec2(v)))/float(0xffffffffu);\n}\nvec3 Rand3D(vec3 v)\n{\n    return vec3(pcg3d(uvec3(v)))/float(0xffffffffu);\n}\n\nfloat Noise2D(vec2 p)\n{\n    vec2 ap = abs(p);\n    vec2 fr = fract(ap);\n    fr = fr * fr * (3. - 2. * fr);\n    \n    float a = Rand2D(ap).x;\n    float b = Rand2D(ap+vec2(1,0)).x;\n    float c = Rand2D(ap+vec2(0,1)).x;\n    float d = Rand2D(ap+vec2(1)).x;\n\n    float v = mix(mix(a,b, fr.x),mix(c,d,fr.x), fr.y);\n    \n\n    \n\n    return v;\n}\nfloat Noise3D(vec3 p)\n{\n    vec3 ap = abs(p);\n    vec3 fr = fract(ap);\n    fr = fr * fr * (3. - 2. * fr);\n    \n    float a = Rand3D(ap).x;\n    float b = Rand3D(ap+vec3(1,0,0)).x;\n    float c = Rand3D(ap+vec3(0,1,0)).x;\n    float d = Rand3D(ap+vec3(1,1,0)).x;\n    \n    float e = Rand3D(ap+vec3(0,0,1)).x;\n    float f = Rand3D(ap+vec3(1,0,1)).x;\n    float g = Rand3D(ap+vec3(0,1,1)).x;\n    float h = Rand3D(ap+vec3(1,1,1)).x;\n\n    float v = mix(mix(mix(a,b, fr.x),mix(c,d,fr.x), fr.y), mix(mix(e,f, fr.x),mix(g,h,fr.x), fr.y), fr.z);\n    \n\n    \n\n    return v;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Fork of \"Cloud Interptest\" by Dragonpeak. https://shadertoy.com/view/dtS3Rm\n// 2023-01-09 12:26:15\n\nconst vec3 SUN_DIR = normalize(vec3(.7,.1,.3));\nconst vec3 SUN_COL = vec3(1.000,0.812,0.588)*1.1;\nconst float LIGHT_DENS_MUL = .04;//multipier for the density when marching light, else the light has to low of a falloff\n\nstruct Ray\n{\n    vec3 origin;\n    vec3 dir;\n};\n\nRay ConstructViewRay(vec2 screen_pos, vec3 pos, vec3 look_dir, vec3 up, float len)\n{\n    Ray r = Ray(pos, vec3(0));\n    \n    vec3 side = cross(up, look_dir);\n    vec3 cam_up = cross(look_dir,side);\n    \n    r.dir = normalize(side*screen_pos.x+cam_up*screen_pos.y+look_dir*len);\n    \n    return r;\n}\n\nfloat GetDens(vec3 pos, int oct)//cloud density function\n{\n    float d = pow(clamp((abs(pos.y/6.)), 0., 1.), 2.);// carving middle y section to fly through\n    d+=(Noise2D(pos.xz*.5+5125.62)*2.-1.)*.4;//large scale 2d noise to control cloud height\n    d=clamp(d,0.,1.);\n    d*=clamp(length(pos.yz)*.5, 0., 1.);//carve a tunnel for the camera to fly through\n    float a = .1;\n    float f = 2.;\n    for(int i = 0; i < oct; i++)//fBm 3d noise for cloud details, use passed in octaves\n    {\n        d=max(d-(Noise3D(pos*f+vec3(25.61,12.512,63.42)+iTime*.1))*a, 0.);\n        f*=1.9;\n        a*=.6;\n    }\n    return clamp(pow(d, 0.7), 0., 1.)*90.; }\n\nvec3 MarchLightSmooth(Ray r, int oct)//march the light through the clouds\n{\n    const float STEP = .2;//minumum step count\n    const float FAR = 2.;//max light march distance\n    float dist = 0.1;//initial distance\n    float dens = 0.;\n    float lastDens = 0.;\n    float lastStep = STEP;// use the minimum step as the last step initially\n    while(dist < FAR)\n    {\n\n        vec3 pos = r.origin+r.dir*dist;\n        float currentDens = max(GetDens(pos,max(oct-1, 1)), 0.);// we use the pased in octaves -1 for the noise, the light doesn;t need as much detail as the main march\n        float st = clamp(STEP/pow(abs(currentDens-lastDens), .2), STEP, STEP*3.);//calculate step based on difference between this and last step power func to adjust curve and clamped to range of minstep to minstep*some const\n        if(lastDens < .01)st+=.2;//use larger steps in empty areas\n        \n        dist+=st;\n        currentDens = min(currentDens, lastDens)*lastStep + (abs(currentDens-lastDens)*lastStep)/2.;//calculate density from current and last dens this interp helps to smooth the effect but can cause some artifacts\n        dens += currentDens;\n        lastStep=st;\n        lastDens = currentDens;\n        \n    }\n    return vec3(exp(-(dens/STEP)*LIGHT_DENS_MUL))*SUN_COL*.8+vec3(.2,.2,.45)*.05;//calculate lighting from marched density\n}\n\nvec4 MarchCloudsSmooth(Ray r)//march the clouds, most is same as above, only differences will be commented\n{\n    float STEP = .03;\n    float FAR = 30.;\n    \n    float dist = .5;\n    float trans = 1.;\n    vec3 light = vec3(0.);\n    vec3 lastLight = vec3(0);\n    float lastCd = 0.;\n    float lastStep = STEP;\n    while(dist < FAR)\n    {\n        vec3 pos = r.origin+r.dir*dist;\n        int oct = int((1.-dist/FAR)*8.);//use a lower octave at greater distances\n        float cd = GetDens(pos,oct);\n        float st = clamp(STEP/pow(abs(cd-lastCd), .2) , STEP, STEP*3.);\n        if(lastCd < .01)st+=.01;\n        dist+=st;\n        float cd1 = min(cd, lastCd)*lastStep + (abs(cd-lastCd)*lastStep)/2.;\n   \n        if(cd1>.01)\n        {\n            vec3 cLight = MarchLightSmooth(Ray(pos, SUN_DIR), oct)*cd1*trans;//march the light only of we are in a cloud with some density\n            \n            light += min(cLight, lastLight)*lastStep + (abs(cLight-lastLight)*lastStep)/2.;//interp like with density\n            trans *= exp(-cd1);// calc transmission\n            lastLight = cLight;\n        }\n        lastCd = cd;\n        lastStep=st;\n        if(trans < .05)break;//break if we are almost at min transmission, new steps would have little effect on final image\n        \n        \n    }\n    return vec4(light/STEP, trans);\n}\n\nvec3 DrawSky(vec3 dir)//simple sky gradient\n{\n    float sun = smoothstep(0.5, 1., dot(dir, SUN_DIR))*.5;\n\n    return mix(vec3(.6, .6, .8), vec3(.4, .4, .9), dir.y) + vec3(1,.8,.7)*sun;\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragCoord*=RENDER_SCALE;//render at a lower resolution\n    vec3 col = vec3(0);\n    if(fragCoord.x < iResolution.x && fragCoord.y < iResolution.y)\n    {\n\n        vec2 screen_pos = (fragCoord.xy/iResolution.xy*2.-1.);\n\n        vec3 eye_pos = vec3(iTime, -.4, 0.);\n\n        Ray view_ray = ConstructViewRay(screen_pos, eye_pos, normalize(vec3(1,0,-.1)), vec3(0,1,0), 1.2);\n        view_ray.origin+=view_ray.dir*(texture(iChannel0, screen_pos/RENDER_SCALE+iTime*10.3127).x*2.-1.)*1.;\n\n        vec4 dens = MarchCloudsSmooth(view_ray);\n\n        col = mix(dens.xyz, DrawSky(view_ray.dir), dens.w);\n    }\n\n    //col = texture(iChannel0, fragCoord/iResolution.xy).zzz;\n    //col = vec3(GetDens(vec3(screen_pos*10., 1.).yzx));\n    fragColor = vec4(col,1.)*.5+texelFetch(iChannel1, ivec2(fragCoord/RENDER_SCALE), 0)*.5;//blend with prev frame to smooth noise\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

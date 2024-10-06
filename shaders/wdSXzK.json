@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1554334259",
+            "description": "All parts are connected, nothing appears, nothing disappears (except where it glitches).\n\nUpdate: now with a bright center!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wdSXzK",
+            "likes": 51,
+            "name": "Hypnoferromagnetism",
+            "published": 3,
+            "tags": [
+                "logspherical"
+            ],
+            "usePreview": 0,
+            "username": "dracusa",
+            "viewed": 1246
+        },
+        "renderpass": [
+            {
+                "code": "/*\nA raymarching shader. I thought it would be interesting to tile iq's ellipsoid\napproximation, since it can be smoothly turned into an infinite cylinder,\nallowing the tiles to connect and disconnect with each other along different\naxes over time. I then applied the log-spherical map, so this reveals how the 3\naxes are transformed by this map:\n\n- Lines along the rho coordinate converge towards the origin\n- Lines along the theta coordinate become like circles of longitude\n- Lines along the phi coordinate become like circles of latitude\n\nThe ellipsoids also appear nicely twised because rotation is applied in a\ngradient (but this can't be pushed very far because it also twists the distance\nfield).\n\nThis is part of a series of explorations on the log-spherical mapping:\nhttps://www.osar.fr/notes/logspherical/\n*/\n\n// definitely try changing this value:\n#define DENSITY 12.0\n\n#define AA 2\n#define M_PI 3.1415926535897932384626433832795\n\nfloat worldtime;\nfloat centerhue;\n\n// ssN: smooth staircase of iteration N, step height = 2 pi\nfloat ss1(float x) { return x - sin(x); }\nfloat ss2(float x) { return ss1(ss1(x)); }\n\n// alternating smooth staircases\nfloat as(float x) { return smoothstep(0.1,0.4,fract(x))+floor(x); }\nfloat asa(float x) { return as(x*(0.25/M_PI)); }\nfloat asb(float x) { return as(x*(0.25/M_PI)+M_PI*0.5); }\n// shelves, returns 1 when the staircases are in the middle of steps\nfloat shelves(float x) { return 1.-pow(abs(sin(x*0.5)), 4.)*0.4; }\n\n// map (0-1) to (0-big) with inverse curve\nfloat zeroInf(float x) {\n\treturn -0.99/(x-1.)-0.98;\n}\n\n// Axis rotation taken from tdhooper. R(p.xz, a) rotates \"x towards z\".\nvoid pR(inout vec2 p, float a) {\n\tp = cos(a)*p + sin(a)*vec2(p.y, -p.x);\n}\n\n// iq's ellipsod https://www.shadertoy.com/view/tdS3DG\nfloat sdEllipsoid(in vec3 p, in vec3 r)\n{\n\tfloat k0 = length(p/r);\n\tfloat k1 = length(p/(r*r));\n\treturn k0*(k0-1.0)/k1;\n}\n\nfloat sdf(in vec3 p)\n{\n\tconst float lpscale = DENSITY/M_PI;\n\t\n\t// Apply the forward log-spherical map\n\tfloat r = length(p);\n\tp = vec3(log(r), acos(p.z / length(p)), atan(p.y, p.x));\n\n\t// Get a scaling factor to compensate for pinching at the poles\n\t// (there's probably a better way of doing this)\n\tfloat xshrink = 1.0/(abs(p.y-M_PI)) + 1.0/(abs(p.y)) - 1.0/M_PI;\n\n\t// Scale to fit in the ]-pi,pi] interval\n\tp *= lpscale;\n\n\t// prepare values for rotation and stretching of tile contents\n\tfloat rotclock = worldtime*5.-p.x;\n\tfloat stretch = shelves(worldtime*5.-p.x*0.5)*0.5+0.5;\n\tfloat thik = 0.005/(r+0.03);\n\n\t// Apply rho-translation, which yields zooming\n\tp.x -= worldtime;\n\t\n\t// Turn tiled coordinates into single-tile coordinates\n\tp = fract(p*0.5) * 2.0 - 1.0;\n\tp.x *= xshrink;\n\n\t// rotate and stretch the primitive\n\tpR(p.xz, asa(rotclock)*M_PI*0.5);\n\tpR(p.yz, asb(rotclock)*M_PI*0.5);\n\tfloat ret = sdEllipsoid(p, vec3(thik, thik, thik*zeroInf(stretch)));\n\n\t// Compensate for all the scaling that's been applied so far\n\t// (and shorten the steps a bit)\n\tfloat mul = 0.9*r/lpscale/xshrink;\n\treturn ret * mul;\n}\n\n// Minkowski pillow\nvec3 pillow(in vec3 col, in vec2 uv)\n{\n\tuv -= 0.5;\n\tfloat mpow = 5.;\n\tfloat d = pow(pow(abs(uv.x),mpow)+pow(abs(uv.y),mpow),1./mpow);\n\td = smoothstep(0., 1., d*2.-0.64);\n\treturn mix(col, vec3(0.), d);\n}\n\n// From https://iquilezles.org/articles/functions\nfloat gain(float x, float k) \n{\n\tfloat a = 0.5*pow(2.0*((x<0.5)?x:1.0-x), k);\n\treturn (x<0.5)?a:1.0-a;\n}\n\nvec3 gain(vec3 v, float k)\n{\n\treturn vec3(\n\t\tgain(v.x, k),\n\t\tgain(v.y, k),\n\t\tgain(v.z, k)\n\t);\n}\n\n// Smooth HSV by iq and Fabrice Neyret: https://www.shadertoy.com/view/MsS3Wc\nvec3 hsv2rgb_smooth(in vec3 c)\n{\n\treturn c.z * (1.-c.y*smoothstep(2.,1., abs(mod(c.x*6.+vec3(0,4,2), 6.) -3.)));\n}\n\n// Shading is flat. The color is an interpolation in HSV space between a\n// time-varying hue at the center and a backgroundish color at the outer limits\nvec3 shade(in vec3 pos)\n{\n\tfloat cf = clamp(length(pos*1.6), 0., 1.);\n\tvec3 hsv1 = vec3(centerhue, 0., 1.);\n\tvec3 hsv2 = vec3(0.6, 1., 0.2);\n    vec3 ret = mix(hsv1, hsv2, cf);\n    // and a bit of extra brightness at the center\n    ret.y = ret.y*0.2/(ret.y*ret.y+0.025);\n\treturn hsv2rgb_smooth(ret);\n}\n\n// Based on https://iquilezles.org/articles/raymarchingdf\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n\t// alternate between moving the camera+color and moving the world\n\tworldtime = ss1(iTime+6.)*0.5;\n\tfloat camtime = ss2(iTime+M_PI+6.);\n\tcenterhue = abs(fract(camtime*0.03)-0.5)*2.2+0.1;\n\n\t // camera movement\t\n\tfloat an = 0.3*camtime;\n\tfloat cy = 0.6+sin(an*2.+1.6)*0.5;\n\tvec3 ro = vec3((1.3-cy*0.5)*sin(an), cy, (1.3-cy*0.5)*cos(an));\n\tvec3 ta = vec3( 0.0, 0.0, 0.0 );\n\t// camera matrix\n\tvec3 ww = normalize(ta - ro);\n\tvec3 uu = normalize(cross(ww,vec3(0.0,1.0,0.0)));\n\tvec3 vv = normalize(cross(uu,ww));\n\n\tvec3 bg = vec3(0.15, 0.15, 0.18);\n\tvec3 tot = bg;\n\t\n\t#if AA>1\n\tfor(int m=0; m<AA; m++)\n\tfor(int n=0; n<AA; n++)\n\t{\n\t\t// pixel coordinates\n\t\tvec2 o = vec2(float(m),float(n)) / float(AA) - 0.5;\n\t\tvec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n\t\t#else    \n\t\tvec2 p = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;\n\t\t#endif\n\n\t\t// create view ray\n\t\tvec3 rd = normalize(p.x*uu + p.y*vv + 3.5*ww); // fov\n\n\t\t// raymarch\n\t\tconst float tmax = 2.7;\n\t\tfloat t = 0.5;\n\t\tvec3 pos;\n\t\tint i2;\n\t\tfor( int i=0; i<80; i++ )\n\t\t{\n\t\t\tpos = ro + t*rd;\n\t\t\tfloat h = sdf(pos);\n\t\t\tif( h<0.0001 || t>tmax ) break;\n\t\t\tt += h;\n\t\t\ti2 = i;\n\t\t}\n\t\n\t\t// shading/lighting\t\n\t\tvec3 col = vec3(0.0);\n\t\tif( t<tmax )\n\t\t\tcol = shade(pos);\n\t\t// fog\n\t\tcol = mix(col, bg, smoothstep(0.8, 2.5, t));\n\t\t// glow\n\t\tfloat g = float(i2) * (0.1/80.);\n\t\tcol += vec3(g);\n\n\t\ttot += col;\n\t#if AA>1\n\t}\n\ttot /= float(AA*AA);\n\t#endif\n\n\ttot = gain(clamp(tot, 0., 1.), 1.5);\n\ttot = pillow(tot, uv);\n\tfragColor = vec4(tot, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

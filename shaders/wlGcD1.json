@@ -1,0 +1,269 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1610919396",
+            "description": "A framework for a path tracer for the book reading of the book advanced global illumination in the graphics programming discord. If the storage of subnormal floats doesn't work well, set webgl.disable-angle to true. ",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "wlGcD1",
+            "likes": 6,
+            "name": "AGI Ch4 Ref",
+            "published": 3,
+            "tags": [
+                "pathtracing"
+            ],
+            "usePreview": 0,
+            "username": "vchizhov",
+            "viewed": 872
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"AGI Pathtracer base\" by vchizhov. https://shadertoy.com/view/3ldyRs\n// 2021-01-17 21:24:16\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    /* fetch the progressive image for the current frame */\n    vec4 buffD = texelFetch(iChannel3, ivec2(fragCoord), 0);\n\n    /* gamma compression */\n    vec3 col = sqrt(buffD.xyz);\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\n    README:\n    \n    Use WASDQE for movement, LMB for rotation (drag), space for render mode change.\n    \n    \n    You care about Buffer C mainly, as well as Common.\n\n    Buffer A: captures mouse and keyboard input and output.\n        - it stores:\n            - translation in xyz at pixel (0,0).\n            \n            - frame count since last update in w at pixel (0,0).\n            \n            - rotation angles in xy at pixel (1,0).\n            \n            - R key down in x at pixel (0,1).\n            - scene index in y at pixel (0,1).\n            - space key down in z at pixel (0,1).\n            - render mode in w at pixel (0,1).\n            \n            - previous frame mouse position in xy at pixel (1,1).\n            - prvious frame mouse down in z at pixel (1,1).\n            \n    Buffer B: ciurrently empty\n    \n    Buffer C: sets up the scene, the camera, and renders the image.\n        - stores the current frame render for every pixel in xyz.\n        - stores the state of the prng for every pixel in w.\n        \n    Buffer D: merges the current rendered frame and previously accumulated.\n        (progressive rendering)\n\n*/\n\n/*\n    TODO:\n    0) boxes\n    1) metal, dielectric, Phong\n\n    TODO:\n    0) Clean up.\n    1) Add different cameras (e.g. with aperture).\n    2) Materials (the ones from the book?).\n    3) Other importance sampling methods.\n    4) Direct light sampling + MIS.\n    5) BDPT.\n\n*/\n\n// compatibility with C++\n// #define INOUT(T) T&\n#define INOUT(T) inout T \n// #define OUT(T) T&\n#define OUT(T) out T\n// #define IN(T) const T&\n#define IN(T) T\n\n#ifndef HW_PERFORMANCE\n//uniform sampler2D iChannel1;\n#endif\n\n#define INF uintBitsToFloat(0x7F800000u)\n#define PI 3.141592653589793\n#define EPS 0.0001\n#define RENDER_MODE_COUNT 6u\n#define SCENES_COUNT 2u;\n\n#define BDELTA 5\n#define BMIN 0\n#define BMAX BMIN+BDELTA\n#define PHI_4 1.22074408460576\n// L ~ T^{BMIN}Le + ... + T^{BMAX}Le\n\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n//                                                                          //\n//                                                                          //\n//                      PSEUDORANDOM NUMBER GENERATOR                       //\n//                                                                          //\n//                                                                          //\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n\n\n//    Wang hash, see:\n//    http://www.burtleburtle.net/bob/hash/integer.html\n//    http://www.reedbeta.com/blog/quick-and-easy-gpu-random-numbers-in-d3d11/\n\nuint wang_hash(uint seed)\n\n//  Used to initialize the state of the PRNG based on pixel coordinates.\n\n\n{\n    seed = (seed ^ 61u) ^ (seed >> 16u);\n    seed *= 9u;\n    seed = seed ^ (seed >> 4u);\n    seed *= 0x27d4eb2du;\n    seed = seed ^ (seed >> 15u);\n    return 1u+seed;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\n \n//  xorshift, see:\n//  https://en.wikipedia.org/wiki/Xorshift#Example_implementation \n\n\n// The state word must be initialized to non-zero\nuint xorshift32(uint state)\n\n//  Used to advanced the xorshift state.\n\n{\n\t// Algorithm \"xor\" from p. 4 of Marsaglia, \"Xorshift RNGs\"\n\tuint x = state;\n\tx ^= x << 13u;\n\tx ^= x >> 17u;\n\tx ^= x << 5u;\n\treturn x;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nfloat rand(INOUT(uint) state)\n\n//  Advances the prng state and returns the corresponding random float.\n\n{\n    uint x = xorshift32(state);\n    state = x;\n    return float(x)*uintBitsToFloat(0x2f800004u);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec2 rand2(INOUT(uint) state)\n\n//  Advances the prng state twice state and returns 2 random floats.\n\n{\n    vec2 r = vec2(rand(state), rand(state));\n    // uint x = xorshift32(state);\n    // r.x = float(x)*uintBitsToFloat(0x2f800004u);\n    // uint y = xorshift32(x);\n    // r.y = float(y)*uintBitsToFloat(0x2f800004u);\n    // state = y;\n    \n    return r;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n//                                                                          //\n//                                                                          //\n//                             BASIC STRUCTS                                //\n//                                                                          //\n//                                                                          //\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Ray\n{\n    vec3 o; // origin\n    vec3 d; // direction\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Material\n{\n    uint type;\n    vec3 color;\n    vec3 Le;\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\n#define MATERIAL_LAMBERTIAN 0u\n#define MATERIAL_MIRROR 1u\n#define MATERIAL_DIELECTRIC 2u\n\n//////////////////////////////////////////////////////////////////////////////\n\nMaterial create_Lambertian(IN(vec3) c)\n{\n    return Material(MATERIAL_LAMBERTIAN, c/PI, vec3(0.0));\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nMaterial create_mirror(IN(vec3) c)\n{\n    return Material(MATERIAL_MIRROR, c, vec3(0.0));\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Isect_data\n{\n    float t;      // ray parameter\n    vec3  n;      // normal\n    vec2  uv;     // uv coordinates\n    int   mat;    // material index\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Camera\n{\n    vec3 o;        // origin\n    vec3 e1,e2,e3; // right, up, forward\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nCamera look_at(IN(vec3) o, IN(vec3) t, IN(vec3) u)\n{\n    Camera c;\n    c.o = o;\n    c.e3 = normalize(t-o);\n    c.e1 = normalize(cross(u,c.e3));\n    c.e2 = cross(c.e3, c.e1);\n    \n    return c;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec2 get_uv (IN(vec2) coord, IN(vec2) res)\n{\n    // remap to [0,1]^2\n    vec2 uv = coord / res.xy;\n    // remap to [-1,1]^2\n    uv = 2.0*uv - vec2(1.0);\n    // remap x to [-aspect_ratio, aspect_ratio]\n    float aspect_ratio = res.x/res.y;\n    uv.x *= aspect_ratio;\n    \n    return uv;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nRay generate_ray (IN(Camera) cam, IN(vec2) uv)\n{\n    return Ray(cam.o, cam.e3 + uv.x*cam.e1 + uv.y*cam.e2);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Sphere\n{\n    vec3  o;  // center of the sphere\n    float r;  // radius of the sphere\n    int   mat;// material index\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Parallelogram\n{\n    vec3 v1, v2, v3;\n    int mat; // material index\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nstruct Scene\n{\n    Material materials[11];\n    int material_count;\n\n\tSphere spheres[3];\n    int sphere_count;\n    \n\tParallelogram parallelograms[6];\n    int parallelogram_count;\n};\n\n//////////////////////////////////////////////////////////////////////////////\n\nScene create_scene()\n{\n    Scene scene;\n    scene.sphere_count = 0;\n    scene.parallelogram_count = 0;\n    \n    return scene;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nint add(INOUT(Scene) scene, IN(Sphere) sphere)\n{\n\tscene.spheres[scene.sphere_count] = sphere;\n    ++scene.sphere_count;\n    return scene.sphere_count - 1;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nint add(INOUT(Scene) scene, IN(Parallelogram) parallelogram)\n{\n\tscene.parallelograms[scene.parallelogram_count] = parallelogram;\n    ++scene.parallelogram_count;\n    return scene.parallelogram_count - 1;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nint add(INOUT(Scene) scene, IN(Material) mat)\n{\n\tscene.materials[scene.material_count] = mat;\n    ++scene.material_count;\n    return scene.material_count-1;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n//                                                                          //\n//                                                                          //\n//                             INTERSECTION                                 //\n//                                                                          //\n//                                                                          //\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n\nfloat intersect\n\n    (IN(Ray)          r,\n     float            tmin,\n     float            tmax,\n     OUT(Isect_data)  data,\n     IN(Sphere)       s)\n     \n{\n    //  ||r.o+t*r.d-s.o||^2 = (s.r)^2\n    //  t^2*||r.d||^2 -2*t*<r.d,s.o-r.o> + ||s.o-r.o||^2 - (s.r)^2 = 0\n    //  t^2*A - 2*t*B + C = 0\n    //  A = ||r.d||^2, B = <r.d,s.o-r.o>, C = ||s.o-r.o||^2 - (s.r)^2\n    //  D = B^2-A*C\n    //  if D<0 -> no intersection\n    //  D = sqrt(D)\n    //  t0 = (B-D)/A\n    //  t1 = (B+D)/A\n    //  \n    //  t_isect = inf{t : t in {t0,t1}, tmin<=t<=tmax}\n    //  (note: inf{} = infty <- the infinimum of an empty set is infty)\n    //  if t_isect = infty -> no intersection\n    //  otherwise t_isect is the intersection\n    \n    // compute quadratic equation coefficients\n    float A = dot(r.d,r.d);\n    vec3 roso = s.o-r.o;\n    float B = dot(r.d, roso);\n    float C = dot(roso, roso) - s.r*s.r;\n    \n    // compute discriminant\n    float D = sqrt(B*B-A*C); // if D<0 -> NaN\n    \n    // compute the roots (those are NaN if sqrt(D) was NaN)\n    float t0 = (B-D)/A;\n    float t1 = (B+D)/A;\n    \n    // check whether t0 and t1 are in [tmin,tmax]\n    t0 = ((tmin <= t0) && (t0 <=tmax)) ? t0 : INF; // D=NaN -> INF\n    t1 = ((tmin <= t1) && (t1 <=tmax)) ? t1 : INF;\n    float t = min(t0,t1);\n    \n    // fill out intersection data\n    data.t = t;\n    data.n = (r.o+t*r.d-s.o)/s.r;\n    data.uv = vec2(0);\n    data.mat = s.mat;\n\n    return t;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\n\nfloat intersect\n\n    (in  Ray           r,\n     in  float         tmin,\n     in  float         tmax,\n     out Isect_data    data,\n     in  Parallelogram p)\n     \n{\n    //  e1 = p.v2-p.v1, e2 = p.v3-p.v1\n    //  p(u,v) = p.v1 + u*e1 + v*e2\n    //  r(t) = r.o + t*r.d\n    //  \n    //  1) Find plane intersection:\n    //  n = cross(e1,e2)\n    //  dot(n,r.o+t*r.d-p.v1) = 0\n    //  t' = dot(n,p.v1-r.o)/dot(n,r.d)\n    //  \n    //  2) Find uv coordinates:\n    //  q = r(t') = r.o + t'*r.d\n    //  \n    //  r(t') = p(u,v) ->\n    //  vq = q-p.v1\n    //  \n    //  vq = u*e1 + v*e2\n    //  \n    //  a) dot with e1 ->\n    //  dot(e1,vq) = u*dot(e1,e1) + v*dot(e1,e2)\n    //  \n    //  b) dot with e2 ->\n    //  dot(e2,vq) = u*dot(e1,e2) + v*dot(e2,e2)\n    //  \n    //  e1vq = dot(e1,vq)\n    //  e2vq = dot(e2,vq)\n    //  e1e1 = dot(e1,e1)\n    //  e1e2 = dot(e1,e2)\n    //  e2e2 = dot(e2,e2)\n    //  \n    //  det = e1e1*e2e2-e1e2*e1e2\n    //  u = (e1vq*e2e2 - e2vq*e1e2)/det\n    //  v = (e2vq*e1e1 - e1vq*e1e2)/det\n    //  \n    //  0<=u<=1, 0<=v<=1 -> q inside parallelogram\n    \n    // compute edges\n    vec3 e1 = p.v2-p.v1;\n    vec3 e2 = p.v3-p.v1;\n    \n    // compute normal\n    vec3 n = cross(e1,e2);\n    \n    // 1) Find plane intersection:\n    float t = dot(n,p.v1-r.o)/dot(n,r.d);\n    \n    // filter out no-intersections\n    t = (tmin<=t && t<=tmax) ? t : INF;\n    \n    // 2) Find uv coordinates:\n    \n    // intersection location\n    vec3 q = r.o + t * r.d;\n    \n    // convenience\n    vec3 vq = q-p.v1;\n    \n    // system matrix coefficients\n    float e1e1 = dot(e1,e1);\n    float e1e2 = dot(e1,e2);\n    float e2e2 = dot(e2,e2);\n    \n    // right-hand side coefficients\n    float e1vq = dot(e1,vq);\n    float e2vq = dot(e2,vq);\n    \n    // system solution\n    float det = e1e1*e2e2-e1e2*e1e2;\n    float u = (e1vq*e2e2 - e2vq*e1e2)/det;\n    float v = (e2vq*e1e1 - e1vq*e1e2)/det;\n    \n    // filter out no-intersections\n    t = (0.0<=u && u<=1.0 && 0.0<=v && v<=1.0) ? t : INF;\n    \n    // fill out intersection data\n    data.t = t;\n    data.n = normalize(n);\n    data.uv = vec2(u,v);\n    data.mat = p.mat;\n    \n    return t;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nfloat intersect\n\n    (in  Ray          r,\n     in  float        tmin,\n     in  float        tmax,\n     out Isect_data   d,\n     in  Scene        scene)\n     \n{\n    Isect_data d_tmp;\n    \n    // find the closest sphere intersection\n    Isect_data d_sph;\n    float closest_t_sph = tmax;\n    for (int i=0; i<scene.sphere_count; ++i)\n    {\n        float t = intersect(r, tmin, closest_t_sph, d_tmp, scene.spheres[i]);\n        if (t<INF)\n        {\n            closest_t_sph = t;\n            d_sph = d_tmp;\n        }\n    }\n     \n    // find the closest parallelogram intersection\n    Isect_data d_prl;\n    float closest_t_prl = tmax;\n    for (int i=0; i<scene.parallelogram_count; ++i)\n    {\n        float t = intersect(r, tmin, closest_t_prl, d_tmp, scene.parallelograms[i]);\n        if (t<INF)\n        {\n            closest_t_prl = t;\n            d_prl = d_tmp;\n        }\n    }   \n    \n    // choose between parallelogram isect and sphere isect\n    float closest_t;\n    if (closest_t_sph<closest_t_prl)\n    {\n        d = d_sph;\n        closest_t = closest_t_sph;\n    }\n    else\n    {\n        d = d_prl;\n        closest_t = closest_t_prl;\n    }\n    \n    // if there was an intersection return it, otherewise -> INF\n    if (closest_t < tmax)\n    {\n        return closest_t;\n    }\n    else\n    {\n        d.t = INF;\n        return INF;\n    }\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n//                                                                          //\n//                                                                          //\n//                           SAMPLES MAPPING                                //\n//                                                                          //\n//                                                                          //\n//////////////////////////////////////////////////////////////////////////////\n\n/****************************************************************************/\n\nvec3 map_to_unit_sphere (IN(vec2) uv)\n\n\n//  Maps from [0,1]^2 to the unit sphere.\n\n\n{\n    float cos_theta = 2.0*uv.x-1.0;\n    float phi = 2.0*PI*uv.y;\n    float sin_theta = sqrt(1.0-cos_theta*cos_theta);\n    float sin_phi = sin(phi);\n    float cos_phi = cos(phi);\n    \n    return vec3(sin_theta*cos_phi, cos_theta, sin_theta*sin_phi);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 map_to_unit_hemisphere_cosine_weighted (IN(vec2) uv, IN(vec3) n)\n\n/*\n    Maps from [0,1]^2 to the unit hemisphere around n with a cosine density.\n    Expects n to be a unit vector.\n*/\n\n{\n    vec3 p = map_to_unit_sphere (uv);\n    return n+p;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n//                                                                          //\n//                                                                          //\n//                              ESTIMATORS                                  //\n//                                                                          //\n//                                                                          //\n//////////////////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_binary (IN(Ray) r, IN(Scene) s)\n{\n    Isect_data data;\n    float t = intersect(r, 0.0, INF, data, s);\n    \n    bool isect = bool(t<INF); // is there an intersection?\n    \n    return vec3(isect); // return white upon intersection\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_color (IN(Ray) r, IN(Scene) s)\n{\n    Isect_data data;\n    float t = intersect(r, 0.0, INF, data, s);\n    \n    bool isect = bool(t<INF); // is there an intersection?\n    \n    // return the color*PI if there's an intersection\n    return PI*s.materials[data.mat].color*float(isect);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_depth (IN(Ray) r, IN(Scene) s)\n{\n    Isect_data data;\n    float t = intersect(r, 0.0, INF, data, s);\n    \n    // intersection distance from the origin of the ray\n    float dist = t/length(r.d);\n    \n    // map from [0,inf] to [1, 0]\n    float inv_dist = 1.0/(1.0+dist);\n    \n    return vec3(inv_dist);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_normals (IN(Ray) r, IN(Scene) s)\n{\n    Isect_data data;\n    float t = intersect(r, 0.0, INF, data, s);\n    \n    // return black if no intersection\n    if(!(t<INF)) return vec3(0);\n    \n    \n    // ---- return the normal if there is an intersection ----\n    \n    // correct normal is in the oppoiste hemisphere of the incident ray\n    vec3 n = -data.n * sign(dot(data.n, r.d));\n\n    // map from S^2 to [0,1]^3\n    return 0.5*n+vec3(0.5);\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_ambient_occlusion (IN(Ray) r, IN(Scene) scene, INOUT(uint) state, IN(vec3) Le)\n\n//  Models the sphere at infinity as the only emitter. Computes \n//  only direct illumination.\n\n{\n    Isect_data data;\n    float t = intersect(r, 0.0, INF, data, scene);\n    \n    // infinite light source\n    //vec3 Le = vec3(1.0);\n    \n    bool isect = bool(t<INF);\n    \n    // if no intersection -> hit infinite light source\n    if (!isect) return Le;\n    \n    \n    // ---- intersection -> compute direction illumination ----\n    \n    // correct normal is in the oppoiste hemisphere of the incident ray\n    vec3 n = -data.n * sign(dot(data.n, r.d));\n    \n    // pick a random point in [0,1]^2\n    vec2 r2 = rand2(state);\n    \n    // map from [0,1]^2 to the upper hemisphere with cos density\n    vec3 dir = map_to_unit_hemisphere_cosine_weighted (r2, n);\n\n    // intersection location of the primary ray with the scene\n    vec3 p = r.o + r.d*t;\n\n    // scattered ray\n    Ray ao_ray = Ray(p+EPS*n, dir);\n\n    // check for intersection with any object (scene points do not emit)\n    Isect_data data_tmp;\n    float t_ao = intersect(ao_ray, 0.0, INF, data_tmp, scene);\n\n    // check whether the infinite light source is hit\n    bool visibility = !bool(t_ao<INF);\n\n    // direct illumination + 1 bounce direct illumination\n    vec3 col = scene.materials[data.mat].Le \n             + Le*PI*scene.materials[data.mat].color*float(visibility);\n\n    return col;\n}\n\n//////////////////////////////////////////////////////////////////////////////\n\nvec3 estimator_path_tracing_Lambertian (IN(Ray) r_in, IN(Scene) scene, INOUT(uint) state, int bounces, in vec3 Le, IN(samplerCube) tex)\n{\n    // intersection data\n    Isect_data data;\n    \n    // the first ray is the primary ray\n    Ray r = r_in;\n    \n    // accumulated color\n    vec3 col = vec3(0.0);\n    \n    // We = 1.0\n    vec3 throughput = vec3(1.0);\n    \n    // light source\n    //vec3 Le = vec3(1.0);\n    \n    // bounce around the scene\n    for (int b=0; b<bounces; ++b)\n    {\n        // find intersection\n        float t = intersect(r, 0.0, INF, data, scene);\n        \n        bool isect = bool(t<INF);\n        \n        // assume lights sources at infinity\n        if (!isect) \n        {\n            // add direct light contribution\n            if (BMIN<=b && b<=BMAX)\n                col += throughput * Le * texture(tex, r.d).xyz;\n            break; \n        }\n\n        // add direct light contribution\n        if (BMIN<=b && b<=BMAX)\n            col += throughput * scene.materials[data.mat].Le;\n        \n        // construct estimator for higher dimensional integral\n        throughput *= PI * scene.materials[data.mat].color;\n        \n        // correct facing normal\n        vec3 n = -data.n * sign(dot(data.n, r.d));\n        \n        // pick a random point in [0,1]^2\n        vec2 r2 = rand2(state);\n    \n        // map from [0,1]^2 to the upper hemisphere with cos density\n        vec3 dir = map_to_unit_hemisphere_cosine_weighted (r2, n);\n        \n        // intersection of the primary ray with the scene\n        vec3 p = r.o + r.d*t;\n        \n        // scattered ray\n        r = Ray(p+EPS*n,dir);\n    }\n    \n    // return the accumulated intensity\n    return col;\n}\n\n//////////////////////////////////////////////////////////////////////////////",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/****************************************************************************/\n\n/****************************************************************************/\n/*                                                                          */\n/*                                                                          */\n/*                           IO and RENDER STATE                            */\n/*                                                                          */\n/*                                                                          */\n/****************************************************************************/\n\n/****************************************************************************/\n\nfloat keyClick(int ascii) {\n\treturn float(texture(iChannel1,vec2((.5+float(ascii))/256.,0.25)).x > 0.0);\n}\n\n/****************************************************************************/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n\n\n    /* ---- initialize/retrieve state ---- */\n    \n    vec3 translation;  /* camera translation */\n    vec2 rot;          /* camera rotation angles */\n    uint frame_count;  /* frame count */\n    vec2 old_mouse_pos;/* the position of the mouse in the previous frame */\n    bool old_mouse_down;/* whether the mouse was down the previous frame */\n    bool old_key_R_down;/* true if R was down in the previous frame */\n    uint scene_idx;     /* scene index */\n    bool old_key_space_down;\n    uint render_mode;  /* render mode index */\n\n    \n    vec4 buffA_00 = texelFetch(iChannel0, ivec2(0,0), 0);\n    vec4 buffA_10 = texelFetch(iChannel0, ivec2(1,0), 0);\n    vec4 buffA_01 = texelFetch(iChannel0, ivec2(0,1), 0);\n    vec4 buffA_11 = texelFetch(iChannel0, ivec2(1,1), 0);\n    \n    if (iFrame==0)\n    {\n        /* intialize the data in the first frame */\n        translation = vec3(0,0,-5.0);\n        rot = vec2(0.0);\n        \n        frame_count = 0u;\n        \n        old_key_R_down = false;\n        scene_idx = 0u;\n        \n        old_key_space_down = false;\n        render_mode = RENDER_MODE_COUNT-1u;\n        \n        old_mouse_pos = iMouse.xy;\n        old_mouse_down = false;\n\n    }\n    else\n    {\n        /* retrieve data from last frame */\n        translation = buffA_00.xyz;\n        rot = buffA_10.xy;\n         \n        frame_count = floatBitsToUint(buffA_00.w);\n        \n        old_key_R_down = bool(buffA_01.x>0.0);\n        scene_idx = floatBitsToUint(buffA_01.y);\n        \n        old_key_space_down = bool(buffA_01.z>0.0);\n        render_mode = floatBitsToUint(buffA_01.w);\n        \n        old_mouse_pos = buffA_11.xy;\n        old_mouse_down = bool(buffA_11.z>0.0);\n    }\n\n\n\n\n    /* ---- handle movement and rotation ---- */\n    \n    /* aspect ratio */\n    float aspectRatio = iResolution.x/iResolution.y;\n    \n    /* camera translation: WASDQE */\n    const int key_A = 65; /* right */\n    const int key_D = 68; /* left */\n    const int key_Q = 69; /* down */\n    const int key_E = 81; /* up */\n    const int key_W = 83; /* forward */\n    const int key_S = 87; /* down */\n    vec3 diff = vec3(keyClick(key_D) - keyClick(key_A), keyClick(key_E) - keyClick(key_Q), keyClick(key_S) - keyClick(key_W));\n    vec3 translation_speed = vec3(10.0)*iTimeDelta;\n    translation += translation_speed * diff;\n    bool key_down = any(greaterThan(abs(diff),vec3(0.5)));\n    \n    /* rotation for this frame: LMB drag */\n    bool mouse_down = bool(iMouse.z>0.0);\n    vec2 rot_speed = vec2(0.2) * iTimeDelta * vec2(1.0, 1.0/aspectRatio);\n    if (!old_mouse_down) old_mouse_pos = iMouse.xy;\n    rot = rot\n        + ((mouse_down) ? rot_speed*(iMouse.xy-old_mouse_pos) : vec2(0.0));\n        \n    /* change rendering mode: space */\n    const int key_space = 32;\n    bool key_space_down = bool(keyClick(key_space)>0.0);\n    bool key_space_released = (!key_space_down && old_key_space_down);\n    if (key_space_released)\n       render_mode = (render_mode + 1u) % RENDER_MODE_COUNT;\n    \n    /* change scene: R */\n    const int key_R = 82;\n    bool key_R_down = bool(keyClick(key_R)>0.0);\n    bool key_R_released = (!key_R_down && old_key_R_down);\n    if (key_R_released)\n       scene_idx = (scene_idx + 1u) % SCENES_COUNT;\n    \n    /* needs update */\n    bool frame_counter_needs_reset = mouse_down || key_down || key_space_released || key_R_released;\n    \n    /* reset frame counter if camera location changed */\n    if (frame_counter_needs_reset)\n    {\n        frame_count = 0u;\n    }\n\n    /* count frame */\n    frame_count = frame_count + 1u;\n\n\n\n    \n    /* ---- store state ---- */\n    \n    if (all(equal(ivec2(fragCoord), ivec2(0)))) /* pixel (0,0) */\n    {\n        /* store translation and frame count */\n        fragColor = vec4(translation,uintBitsToFloat(frame_count));\n    }\n    else if (all(equal(ivec2(fragCoord), ivec2(1,0)))) /* pixel (1,0) */\n    {\n        /* mouse-drag rotation state */\n        fragColor = vec4(rot, 0.0, 0.0);\n    }\n    else if (all(equal(ivec2(fragCoord), ivec2(0,1)))) /* pixel (0,1) */\n    {\n        /* R & scene_idx, space & render_mode */\n        fragColor = vec4(float(key_R_down), uintBitsToFloat(scene_idx), \n                         float(key_space_down), uintBitsToFloat(render_mode));\n    }\n    else if (all(equal(ivec2(fragCoord), ivec2(1,1)))) /* pixel (1,1) */\n    {\n        /* mouse state */\n        fragColor = vec4(iMouse.xy, float(mouse_down), 0.0);\n    }\n    else\n    {\n        fragColor = vec4(0.0, 0.0, 0.0, 0.0);\n    }\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/****************************************************************************/\n\n/****************************************************************************/\n/*                                                                          */\n/*                                                                          */\n/*                          SCENE CONSTRUCTION                              */\n/*                                                                          */\n/*                                                                          */\n/****************************************************************************/\n\n/****************************************************************************/\n\nvoid construct_scene(inout Scene scene, inout vec3 Le, uint scene_idx)\n{\n    if (scene_idx==0u) /* First scene: Some spheres */\n    {\n        Le = vec3(1.0);\n        \n        int mat_idx;\n        mat_idx = add(scene, create_Lambertian(vec3(1.0, 0.3, 0.1)));\n        add(scene, \n            Sphere(vec3(0,0,0), 1.0, mat_idx)\n        );\n        \n        mat_idx = add(scene, create_Lambertian(vec3(0.8)));\n        add(scene, \n            Sphere(vec3(0,-101, 0), 100.0, mat_idx)\n        );\n\n        mat_idx = add(scene, create_Lambertian(vec3(0.3, 1.0, 0.0)));\n        add(scene, \n            Sphere(vec3(1,3,-1), 1.7, mat_idx)\n        );\n    }\n    else /* Second scene: Cornell Box */\n    {\n        Le = vec3(0.05);\n        int mat_idx;\n        /* Cornell box */\n        float scale = 8.0;\n        vec3 cb_offset = vec3(0);\n        vec3 dim = scale*vec3(1.3, 1.7, 1.0);\n        vec3 v1,e1,e2;\n        vec3 col;\n\n        /* back wall */\n        v1 = 0.5*vec3(-dim.x, -dim.y, dim.z);\n        e1 = vec3(dim.x, 0, 0);\n        e2 = vec3(0, dim.y, 0);\n        col = vec3(0.5, 0.5, 0.2);\n\n        mat_idx = add(scene, create_Lambertian(col));\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n\n        /* left wall */\n        v1 = -0.5*dim;\n        e1 = vec3(0,0,dim.z);\n        e2 = vec3(0,dim.y,0);\n        col = vec3(1.0, 0.0, 0.0);\n        mat_idx = add(scene, create_Lambertian(col));\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n\n        /* right wall */\n        v1 = 0.5*vec3(dim.x, -dim.y, -dim.z);\n        e1 = vec3(0,0,dim.z);\n        e2 = vec3(0,dim.y,0);\n        col = vec3(0.1, 0.1, 1.0);\n        mat_idx = add(scene, create_Lambertian(col));\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n\n        /* top wall */\n        v1 = 0.5*vec3(-dim.x, dim.y, -dim.z);\n        e1 = vec3(0,0,dim.z);\n        e2 = vec3(dim.x,0,0);\n        col = vec3(0.0, 1.0, 0.0);\n        mat_idx = add(scene, create_Lambertian(col));\n        //float flicker_speed = 0.0;\n        //scene.materials[mat_idx].Le = vec3((1.0+sin(flicker_speed*iTime))*vec2(1.0),0.0);\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n\n        /* bottom wall */\n        v1 = -0.5*dim;\n        e1 = vec3(0,0,dim.z);\n        e2 = vec3(dim.x,0,0);\n        col = vec3(1.0, 1.0, 1.0);\n        mat_idx = add(scene, create_Lambertian(col));\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n        \n        /* lamp */\n        float lamp_scale = 0.5;\n        v1 = 0.5*vec3(-lamp_scale*dim.x, dim.y*0.98, -lamp_scale*dim.z);\n        e1 = lamp_scale*vec3(0,0,dim.z);\n        e2 = lamp_scale*vec3(dim.x,0,0);\n        col = vec3(0.0, 0.0, 0.0);\n        mat_idx = add(scene, create_Lambertian(col));\n        scene.materials[mat_idx].Le = vec3(5.0);\n        /*add(scene, \n            Sphere(\n                vec3(0), 3.0, \n                mat_idx\n            )\n        );*/\n        add(scene, \n            Parallelogram(\n                cb_offset+v1, cb_offset+v1+e1, cb_offset+v1+e2, \n                mat_idx\n            )\n        );\n        \n    }\n}\n\n/****************************************************************************/\n\n/****************************************************************************/\n/*                                                                          */\n/*                                                                          */\n/*                          PRNG STATE RETRIEVAL                            */\n/*                                                                          */\n/*                                                                          */\n/****************************************************************************/\n\n/****************************************************************************/\n\nuint retrieve_state(vec2 fragCoord)\n{\n    /* \n        If it's the first frame we use wang_hash on the screen \n        coordinates to get some random uints to initialize xorshift \n        with. At the end of each frame we store the state of the prng.\n        If it's not the first frame, we load the state stored in the \n        previous frame.\n    */\n\n    uint state;\n    if (iFrame==0)\n    {\n        uvec2 ucoord = uvec2(fragCoord);\n        uint pixel_index = ucoord.x + ucoord.y * uint(iResolution.x);\n        uint seed = wang_hash(pixel_index);\n        state = seed;\n    }\n    else\n    {\n        vec4 buffA = texelFetch(iChannel2, ivec2(fragCoord), 0);\n        state = floatBitsToUint(buffA.w);     \n    }\n    return state;\n}\n\n/****************************************************************************/\n\n/****************************************************************************/\n/*                                                                          */\n/*                                                                          */\n/*                          IMAGE GENERATION                                */\n/*                                                                          */\n/*                                                                          */\n/****************************************************************************/\n\n/****************************************************************************/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n\n\n    /* ---- Retrieve state from previous frames and other buffers ---- */\n    \n    uint state = retrieve_state(fragCoord);\n\n    vec4 buffA_01 = texelFetch(iChannel0, ivec2(0,1), 0);\n    /* extract scene index from bufferA */\n    uint scene_idx = floatBitsToUint(buffA_01.y);\n    /* extract render_mode from bufferA */\n    uint render_mode = floatBitsToUint(buffA_01.w);   \n    \n    /* extract translation from bufferA */\n    vec4 buffA_00 = texelFetch(iChannel0, ivec2(0,0), 0);\n    vec3 translation = buffA_00.xyz;\n    uint frame_count = floatBitsToUint(buffA_00.w);\n    \n    /* extract rotation from bufferA */\n    vec4 buffA_10 = texelFetch(iChannel0, ivec2(1,0), 0);\n    vec2 rot = buffA_10.xy;\n    \n    \n    \n    /* ---- Construct Scene ---- */\n    \n    Scene scene = create_scene();\n    vec3 Le;\n    construct_scene (scene, Le, scene_idx);\n\n\n\n    /* ---- Construct Camera ---- */\n    \n    /* compute aspect ratio  */\n    float aspect_ratio = iResolution.x/iResolution.y;    \n    /* camera position from spherical coordinates */\n    float cosTheta = cos(rot.y);\n    vec3 cpos = translation.z*vec3(cosTheta*sin(rot.x),\n                          sin(rot.y),\n                        cosTheta*cos(rot.x));\n                        \n    Camera cam = look_at(cpos, vec3(0,1.0,0), vec3(0,1,0));\n    cam.o += cam.e1*translation.x + cam.e2*translation.y;\n\n\n\n    /* ---- Render ---- */\n    \n    /* samples per pixel */\n    const int spp = 1;\n    \n    /* accumulate measured irradiance per pixel over spp samples */\n    vec3 col = vec3(0.0);\n    for (int s=0; s<spp; ++s)\n    {\n        /* randomly offset primary rays for anti-aliasing */\n        vec2 aa_offset = rand2(state);\n        vec2 uv = get_uv(fragCoord+aa_offset, iResolution.xy);\n        Ray ray = generate_ray (cam, uv);\n    \n        #define RENDER_MODE 5u\n        /* accumulate radiance */\n        switch (render_mode)\n        {\n        case 0u:\n            col += estimator_binary(ray, scene);\n            break;\n        case 1u:\n            col += estimator_color(ray, scene);\n            break;\n        case 2u:\n            col += estimator_depth(ray, scene);\n            break;\n        case 3u:\n            col += estimator_normals(ray, scene);\n            break;\n        case 4u:\n            col += estimator_ambient_occlusion(ray, scene, state, vec3(1.0));\n            break;\n        default:\n            col += estimator_path_tracing_Lambertian(ray, scene, state, 5, Le, iChannel3);\n            break;\n        }\n    }\n    \n    /* box reconstruction filter */\n    col /= float(spp);\n    \n    /* store color and prng state */\n    fragColor = vec4(col, uintBitsToFloat(state));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    /* fetch the render from the current frame */\n    vec3 render = texelFetch(iChannel2, ivec2(fragCoord), 0).xyz;\n    vec4 buffD = texelFetch(iChannel3, ivec2(fragCoord), 0);\n    /* fetch the accumulated render from previous frames */\n    vec3 acc_frame_col = buffD.xyz;\n    \n    /* fetch the frame count since the last reset */\n    vec4 buffA_00 = texelFetch(iChannel0, ivec2(0,0), 0);\n    uint frame_count = floatBitsToUint(buffA_00.w);\n    \n    /* progressive rendering / weighted average */\n    vec3 col = float(frame_count-1u)/float(frame_count) * acc_frame_col \n             + 1.0/float(frame_count) * render;\n\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

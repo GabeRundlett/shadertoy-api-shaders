@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1479314237",
+            "description": "No 4D calculations involved. (lame, I know)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4ltSW8",
+            "likes": 36,
+            "name": "Klein Bottle (3D)",
+            "published": 3,
+            "tags": [
+                "mobius",
+                "klein",
+                "bottle"
+            ],
+            "usePreview": 0,
+            "username": "lara",
+            "viewed": 1285
+        },
+        "renderpass": [
+            {
+                "code": "#define S 256   // Steps\n#define P 0.001 // Precision\n#define R 2.    // Marching substeps\n#define D 15.   // Max distance\n#define M 0.    // # of extra samples\n\n#define T  iTime\n#define PI 3.1415926\n\nstruct Ray { vec3 o, d; };\nstruct Camera { vec3 p, t; };\nstruct Hit { vec3 p; float t, d; };\n\nRay _ray;\nCamera _cam;\n\nfloat _d, _dsky;\nbool _ignoreBottle = false;\n\nmat2 rot(float a)\n{\n    float c=cos(a),s=sin(a);\n    return mat2(c,-s,s,c);\n}\n\nvec2 hash22(vec2 p)\n{\n    return vec2(\n        fract(sin(dot(p, vec2(50159.91193,49681.51239))) * 73943.1699),\n        fract(sin(dot(p, vec2(90821.40973,2287.622010))) * 557.965570)\n    );\n}\n\nfloat scene(vec3 p)\n{\n    _dsky = abs(length(p)-D+8.)-P;\n    \n    if (_ignoreBottle) { return _d = _dsky; }\n    \n    // thickness\n    float t = 0.02;\n    float d = 1e10;\n    \n    p.y += .5;\n    p.xy *= rot(PI/2.);\n\n    vec3  q = p + vec3(1.-cos((1.-p.y)/3.*PI),0,0);\n    float y = pow(sin((1.-p.y)/3.*PI/2.),2.);\n     \n    float tube_hollow = max(max(abs(length(q.xz)-0.5+0.25*y)-t,q.y-1.0),-q.y-2.0);\n    float tube_solid  = max(max(length(q.xz)-0.5+0.25*y,q.y-1.0),-q.y-2.0);\n    \n    // opening (half XZ torus)\n    q = p - vec3(0,1,0);\n    d = min(d,max(abs(length(vec2(length(q.xz)-1.0,q.y))-0.5)-t,-q.y));\n    \n    // body (stretched XZ torus)\n    q = p;\n    d = min(d,max(max(max(abs(length(q.xz)-1.5+1.25*y),q.y-1.0),-q.y-2.0)-t,-tube_solid));\n    \n    // tube (stretched XZ cylinder)\n    d = min(d,tube_hollow);\n    \n    // handle (half XY torus)\n    q = p + vec3(1,2,0);\n    d = min(d,max(abs(length(vec2(length(q.xy)-1.0,q.z))-0.25)-t,q.y));\n    \n    // sky\n    d = min(d,_dsky);\n    \n    return _d = d;\n}\n\nvec3 getNormal(vec3 p)\n{\n\tvec2 e = vec2(P,0);\n    \n\treturn normalize(vec3(\n\t\tscene(p+e.xyy)-scene(p-e.xyy),\n\t\tscene(p+e.yxy)-scene(p-e.yxy),\n\t\tscene(p+e.yyx)-scene(p-e.yyx)\n\t));\n}\n\nHit march(Ray r)\n{\n    float t = 0.0, d;\n\n    for(int i = 0; i < S; i++)\n    {\n        d = scene(r.o+r.d*t);\n        t += d/R;\n        \n        if (d < P || t > D) { break; }\n    }\n    \n    return Hit(r.o+r.d*t, t, d);\n}\n\nRay lookAt(Camera cam, vec2 uv)\n{\n    vec3 d = normalize(cam.t-cam.p);\n    vec3 r = normalize(cross(d, vec3(0,1,0)));\n    vec3 u = cross(r, d);\n\n    return Ray(cam.p,normalize(r*uv.x + u*uv.y + d));\n}\n\nvec3 getColor(Hit h)\n{\n    if (_d > P     ) { return vec3(0); }\n    if (_d == _dsky) { return texture(iChannel0,getNormal(h.p)).rgb; }\n\n    vec4 col   = vec4(0);\n    vec3 light = _cam.p;\n\n    Hit _h = h;\n\n    for(int i = 0; i < 10; i++)\n    {\n        if (i == 2) { h = _h; }\n\n        vec3 n = getNormal(h.p);\n\n        float diff = max(dot(normalize(light-h.p),n),0.0);\n        float spec = pow(max(dot(reflect(normalize(h.p-light),n),normalize(_cam.p-h.p)),0.0),100.);\n\n        vec4 c = vec4(vec3(.8,.9,1)*diff+spec,.15);\n        \n        if (i < 2 && _d == _dsky) { c = texture(iChannel0,n); }\n\n        // fresnel\n        float r = 1.12;\n        float f = r + (1. - r)*(1. - dot(normalize(h.p-_cam.p),n))*5.;\n        c.rgb = mix(c.rgb,vec3(0),f);\n\n        col.rgb = col.rgb*(1.-c.a) + c.rgb*c.a;\n        col.w = clamp(col.w+c.a,0.,1.);\n\n        if (i > 1)\n        { _ray.d = normalize(refract(h.p-_cam.p,n,1.5)); }\n        else\n        { _ray.d = normalize(reflect(h.p-_cam.p,n)); }\n\n        _ray.o = h.p + _ray.d*.1;\n\n        h = march(_ray);\n        \n        if (h.d > P) { break; }\n    }\n\n    _ray.d = normalize(_h.p-_cam.p);\n    _ray.o = _h.p;\n    \n\t_ignoreBottle = true;\n    h = march(_ray);\n    _ignoreBottle = false;\n\n    return mix(texture(iChannel0,getNormal(h.p)).rgb,col.rgb,col.a);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (2.0*fragCoord.xy-iResolution.xy)/iResolution.yy;\n    vec2 uvm = (2.0*iMouse.xy-iResolution.xy)/iResolution.yy;\n    \n    if (iMouse.y < 10. && iMouse.x < 10.) { uvm = vec2(-T*.2,0); }\n    \n    _cam = Camera(vec3(0,0,4), vec3(0,0,0));\n    _cam.p.yz *= rot(-uvm.y*PI);\n    _cam.p.xz *= rot(uvm.x*PI);\n    \n    _ray = lookAt(_cam,uv);\n    \n    vec3 col = getColor(march(_ray));\n\n    for (float i = 0.0; i < M; i++)\n    {            \n        _ray = lookAt(_cam,uv+hash22(uv*i)/iResolution.xy*2.);\n        col += getColor(march(_ray));\n    }\n\n    float f = 1.-length((2.0*fragCoord.xy-iResolution.xy)/iResolution.xy)*0.5;\n    fragColor = vec4(col/(M+1.)*f,1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 23,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

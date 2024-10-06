@@ -1,0 +1,58 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1424307327",
+            "description": "Stochastic sampling a point cloud. A points cloud is generated per pixel, and the points are projected into screen space. A z/depth buffer mechanism resolves visibility, and then shading happens in a deferred manner.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XllGRl",
+            "likes": 98,
+            "name": "Stochastic Splatting",
+            "published": 3,
+            "tags": [
+                "3d",
+                "pointcloud",
+                "projection",
+                "rasterization",
+                "points",
+                "splat",
+                "stochastic",
+                "splatting"
+            ],
+            "usePreview": 1,
+            "username": "iq",
+            "viewed": 7790
+        },
+        "renderpass": [
+            {
+                "code": "// Created by inigo quilez - iq/2015\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// Stochastic rasterization of splats.\n//\n// Random points are generated at the surface of some parametric objects,\n// and the points are projected into screen space. The object probability\n// distribution is proportional to the area of the object's surface.\n//\n// Then a depth buffer resolves visibility, and then shading happens in a\n// deferred manner.\n//\n// I think I first saw this technique in Texel's entry to js01k a few\n// years ago.\n//\n// My twist is to make the pointcloud/splats different and random for every\n// pixel.\n\nvec3 sphere( in vec2 t )\n{\n    float y = -1.0 + 2.0*t.y;\n    vec2 q = vec2( t.x*6.2831, acos(y) );\n    return vec3( cos(q.x)*sin(q.y), y, sin(q.x)*sin(q.y) );\n}\n\nvec3 cylinder( in vec2 t )\n{\n    float q = t.x*6.2831;\n    return vec3( 0.5*cos(q), -1.0 + 4.0*t.y, 0.5*sin(q) );\n}\n\nvec3 quad( in vec2 t )\n{\n    return 3.0*vec3( -1.0+2.0*t.x, 0.0, -1.0+2.0*t.y );\n}\n\n//------------------------------------------------------------------\n// rand()\n//------------------------------------------------------------------\nint   seed = 1;\nint   rand(void) { seed = seed*0x343fd+0x269ec3; return (seed>>16)&32767; }\nfloat frand(void) { return float(rand())/32767.0; }\nvoid  srand( ivec2 p, int frame )\n{\n    int n = frame;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589; // hash by Hugo Elias\n    n += p.y;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    n += p.x;\n    n = (n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    seed = n;\n}\n\nmat4 setCamera( in vec3 ro, in vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat4( cu.x, cu.y, cu.z, 0.0,\n                 cv.x, cv.y, cv.z, 0.0,\n                 cw.x, cw.y, cw.z, 0.0,\n                 ro.x, ro.y, ro.z, 1.0 );\n}\n\nfloat dot2( in vec2 v ) { return dot(v,v); }\n\n//==============================================================================\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // pixel    \n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n    \n    // camera\n    float an = iTime;\n    vec3  ro = 4.0*normalize(vec3(cos(an), 0.0, sin(an)));\n\tvec3  ta = vec3(0.0, 0.0, 0.0);\n    \n    // camera-to-world and world-to-camera transform\n    mat4 c2w = setCamera( ro, ta, 0.0 );\n    mat4 w2c = inverse(c2w);\n    \n    vec3 col = vec3( 0.0 );\n\n\n    // Init randoms\n    if( sin(iTime) > 0.0 ) \n    srand( ivec2(fragCoord), iFrame );\n    else\n    srand( ivec2(0), 0 );\n    \n    \n    float fz = 1e10;         // depth buffer\n    vec2  uv = vec2(-1.0);                  \n    float fi = -1.0;\n    for( int i=0; i<1024; i++ )\n    {\n        // generate a random sample        \n        vec3 t = vec3(frand(),frand(),frand());\n        \n        // pick a random point on the surface of the scene\n        //\n        // area of the sphere   = 12.6\n        // area of the plane    = 36.0\n        // area of the cylinder = 15.7\n        vec3 w; float id;\n             if( t.z<((15.7     )/64.3) ) { id=0.0; w = vec3(2.0, 0.0,0.0)+cylinder( t.xy ); }\n        else if( t.z<((15.7+36.0)/64.3) ) { id=1.0; w = vec3(0.0,-1.0,0.0)+quad(     t.xy ); }\n        else                              { id=2.0; w =                    sphere(   t.xy ); }\n            \n        // convert to camera space\n        vec3 q = (w2c * vec4(w,1.0)).xyz;\n            \n        // if in front of clipping plane\n        if( q.z>0.01 )\n        {\n#if 0            \n            // project            \n            vec2 s = q.xy/q.z;\n\n            // splat with depth test        \n            if( (q.z*q.z*dot2(s-p))<0.02 && q.z<fz )\n#else\n            // project and splat with depth test, WITHOUT divisions!!\n            if( dot2(q.xy-p*q.z)<0.02 && q.z<fz )\n#endif\n            {\n                fz = q.z;\n                uv = t.xy;\n                fi = id;\n            }\n        }\n    }\n    \n    // if splat\n    if( fi>-0.5 )\n    {\n        // compute position, normals and occlusion\n        vec3 pos, nor; float occ;\n        \n             if( fi<0.5 ) { pos = vec3(2.0, 0.0,0.0)+cylinder( uv ); nor = normalize( cylinder( uv )*vec3(1.0,0.0,1.0) ); occ = 0.5 + 0.5*smoothstep(-1.0,1.0,pos.y ); }\n        else if( fi<1.5 ) { pos = vec3(0.0,-1.0,0.0)+quad(     uv ); nor = vec3(0.0,1.0,0.0);                             occ = smoothstep(0.0,2.0,length(pos.xz)) * smoothstep(0.0,2.0,length(pos.xz-vec2(2.0,0.0)));}\n        else              { pos =                    sphere(   uv ); nor = normalize(sphere( uv ));                       occ = 0.5 + 0.5*nor.y; }\n\n        // shade        \n        col = textureLod( iChannel0, 2.0*uv, 0.0 ).xyz * occ + 0.1*nor.yxz*occ;\n        \n        // gamma\n        col = sqrt( col );\n    }\n    \n\tfragColor = vec4( col, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 2,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cd4c518bc6ef165c39d4405b347b51ba40f8d7a065ab0e8d2e4f422cbc1e8a43.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

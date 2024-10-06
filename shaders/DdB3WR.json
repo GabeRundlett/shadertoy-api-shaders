@@ -1,0 +1,116 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667437700",
+            "description": "Allows computation of signed distance fields wherein there is not a binary boundary separating inside from outside. That is, occupancy isn't 0 or 1, it is a range from 0...1. The occupancy could represent probabilities, for example.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "DdB3WR",
+            "likes": 8,
+            "name": "Fuzzy Signed Distance",
+            "published": 3,
+            "tags": [
+                "2d",
+                "sdf",
+                "text",
+                "distance",
+                "field",
+                "vector",
+                "bruteforce",
+                "signed",
+                "valve",
+                "scaling"
+            ],
+            "usePreview": 1,
+            "username": "Hatchling",
+            "viewed": 383
+        },
+        "renderpass": [
+            {
+                "code": "vec2 compress(vec2 vec)\n{\n    float mag = sqrt(dot(vec, vec));\n\n    float newMag = mag;\n\n    // Softly compress the range \n    // from 0 to +Inf\n    // to 0 to +1 \n    // instead of clipping values\n    // when contrast is used for visualization.\n    newMag = newMag / (0.5 + newMag);\n\n    vec *= newMag / (mag + 0.00001);\n    return vec;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uvC = fragCoord.xy / iResolution.xy;\n\tvec2 uvR = (fragCoord.xy + vec2(1,0)) / iResolution.xy;\n\tvec2 uvT = (fragCoord.xy + vec2(0,1)) / iResolution.xy;\n\tvec2 uvL = (fragCoord.xy - vec2(1,0)) / iResolution.xy;\n\tvec2 uvB = (fragCoord.xy - vec2(0,1)) / iResolution.xy;\n    vec2 colC = texture(iChannel0, uvC).ra;\n    vec2 colR = texture(iChannel0, uvR).ra;\n    vec2 colT = texture(iChannel0, uvT).ra;\n    vec2 colL = texture(iChannel0, uvL).ra;\n    vec2 colB = texture(iChannel0, uvB).ra;\n    \n    colC.r /= colC.g;\n    colR.r /= colR.g;\n    colT.r /= colT.g;\n    colL.r /= colR.g;\n    colB.r /= colT.g;\n    \n    \n    vec2 gradient = vec2(colL.r - colR.r, colB.r - colT.r);\n    vec2 curvature = vec2\n    (\n        colL.r + colR.r - 2.0 * colC.r, \n        colB.r + colT.r - 2.0 * colC.r \n    ) * 0.5;\n    \n    \n    // Enhance gradient+curvature contrast.\n    vec2 both = compress(gradient * 20.0 - curvature * 200.0);\n    \n    \n    // Unmodified gradients:\n    // vec2 gradient = vec2(colC.r - colR.r, colC.r - colT.r);\n    \n    fragColor = vec4(both * 0.5 + 0.5, colC.r, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\nfloat luminance(vec3 color)\n{\n    color = color * color;\n    return sqrt(dot(vec3(0.299, 0.587, 0.114), color));\n    \n    //(0.2126*R + 0.7152*G + 0.0722*B)\n    //return dot(vec3(0.2126, 0.7152, 0.0722), color);\n}\n\nbool isIn(vec2 uv, float threshold)\n{\n    // Occupancy based on alpha?\n\tfloat occupancy = texture(iChannel0, uv).a;\n    \n    // Occupancy based on luminance?\n    //float occupancy = luminance(texture(iChannel0, uv).rgb); \n    \n    // Add contrast?\n    /*occupancy = occupancy * 2.0 - 1.0;\n    occupancy = tanh(occupancy * 3.0);\n    occupancy = occupancy * 0.5 + 0.5;*/\n    \n\treturn occupancy > threshold;\n}\n\nfloat squaredDistanceBetween(vec2 uv1, vec2 uv2)\n{\n    vec2 difference = uv1 - uv2;\n    return dot(difference, difference);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = (fragCoord.xy) / iResolution.xy;\n    \n    // Compute the noise.\n    vec3 noise;\n    {\n        \n        // Cycle the noise.\n        // We do the cycling FIRST to prevent\n        // loss of precision that might\n        // round away the noise values.\n        //   - Use the golden ratio as it should land\n        //     on all fractional values eventually.\n        noise = vec3(iFrame, iFrame+1, iFrame+2);\n        noise *= 1.618033;\n        noise -= floor(noise);\n    \n        // Noise is added to vary the threshold\n        // per pixel to speed up apparent convergence,\n        // but the converged result shouldn't change.\n        // (Disable to prevent gradient noise).\n        //vec2 noiseUV = fragCoord.xy / iChannelResolution[1].xy;\n        //noise += texture(iChannel1, noiseUV).r;\n        //noise -= floor(noise);\n        \n        noise.xy -= 0.5f;\n    }\n    \n    // Compare with and without fuzziness.\n    if(uv.x > 0.5)\n        noise.z = 0.5;\n       \n    vec2 samplingCenter = fragCoord + noise.xy;\n    vec2 samplingCenterUV = samplingCenter / iResolution.xy;\n    \n    const float range = 64.0;\n    const int iRange = int(range);\n    const float halfRange = range / 2.0;\n    const float maxSqrDist = halfRange*halfRange;\n    vec2 startPosition = samplingCenter - halfRange;\n    \n    bool fragIsIn = isIn(samplingCenterUV, noise.z);\n    float squaredDistanceToEdge = maxSqrDist;\n    \n    for(int dx=0; dx < iRange; dx++)\n    {\n        for(int dy=0; dy < iRange; dy++)\n        {\n            vec2 scanPosition = startPosition + vec2(dx, dy);\n            float scanDistance = squaredDistanceBetween(samplingCenter, scanPosition);\n                \n            if(scanDistance > maxSqrDist)\n                continue;\n                \n            bool scanIsIn = isIn(scanPosition / iResolution.xy, noise.z);\n            if (scanIsIn != fragIsIn)\n            {\n                if (scanDistance < squaredDistanceToEdge)\n                    squaredDistanceToEdge = scanDistance;\n            }\n        }\n    }\n    \n    float distanceToEdge = sqrt(squaredDistanceToEdge);\n\n    if (fragIsIn)\n    {\n        // We add 1.0 here since the edge is on the inside\n        // of the boundary.\n        // Otherwise you'll get a weird seam at the sign change\n        // boundary.\n        distanceToEdge = 1.0-distanceToEdge;\n    }\n        \n    distanceToEdge /= range;\n        \n    distanceToEdge = 0.5 - distanceToEdge;\n    \n    // For continuity\n    //distanceToEdge = smoothstep(0., 1., distanceToEdge);\n    //distanceToEdge = smoothstep(0., 1., distanceToEdge);\n    \n    //if (normalised > 0.5)\n    //   fragColor = vec4(1.0);\n    //else\n    \tfragColor = vec4(distanceToEdge, distanceToEdge, distanceToEdge, 1.0);\n\n    fragColor += texture(iChannel2, uv);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

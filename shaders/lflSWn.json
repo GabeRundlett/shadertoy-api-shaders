@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1705157423",
+            "description": "Catmull-Rom in fewer taps using HW samplers.\nBottom-left: nearest.\nBottom-right: linear.\nTop-left: 16-tap Catmull-Rom.\nTop-right: 8-tap Catmull-Rom.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lflSWn",
+            "likes": 3,
+            "name": "1-pass 8-tap Catmull-Rom",
+            "published": 3,
+            "tags": [
+                "texture",
+                "filter",
+                "interpolation",
+                "catmull",
+                "rom"
+            ],
+            "usePreview": 1,
+            "username": "FordPerfect",
+            "viewed": 193
+        },
+        "renderpass": [
+            {
+                "code": "// Public Domain under http://unlicense.org, see link for details.\n\n// Sampling can be achieved in fewer taps by\n// taking advantage of HW bilinear sampler to\n// effectively get a weighted combination of\n// 4 texels (subject to certain constraints on\n// weights) per tap. This techinque is fairly\n// straightforward for separable non-negative\n// filters, see e.g.\n//     https://www.shadertoy.com/view/4cB3Dd\n//     https://www.shadertoy.com/view/McBGWd\n// It is possible to use this approach for filters\n// with negative weights (although with less savings).\n// This page\n//     https://vec3.ca/bicubic-filtering-in-fewer-taps\n// provides a way to compute Catmull-Rom filter in\n// 9 taps (instead of naive 16). It is possible,\n// however, to implement it in 8 (with some leeway,\n// too), as explained below.\n// Consider 4x4 blok of texels, touched by\n// Catmull-Rom filter for sample within FGJK:\n//     ABCD\n//     EFGH      N    ^ +y\n//     IJKL     W+E   |\n//     MNOP      S    +-> +x\n// Note that weights for ADFGJKMP are non-negative,\n// and weights for BCEHILNO are non-positive.\n// We than compute:\n//     1. Corners: ABEF, CDGH, IJMN, KLOP. We\n//        only care about correct weights for\n//        diagonal elements AF, DG, MJ, PK,\n//        and allow the weights for other texels\n//        to be whatever they end up being.\n//        NOTE: there is still some leeway (as\n//        mentioned above) as to how we place the\n//        samples. E.g. we can place them strictly on\n//        diagonals, but that would complicate\n//        computations so the code below uses a different\n//        approach.\n//     2. Edges: BC, EI, HL, NO (for these, we only care\n//        about 2 texels, not 4). We combine the natural\n//        weights for these texels with corrections for\n//        their undesired weights incurred during corner\n//        computation (both terms are negative).\n// Note, that this works for *any* filter with the appropriate\n// signs for ADFGJKMP and BCEHILNO. In particular, the\n// filter does not need to be separable.\n//\n// Comparison with the standard 2-pass approach for\n// separable filters is outside of the scope for this shader.\n//\n// NOTE: as can be seen, the result doesn't quite match\n// the reference version. This is assumed to be due to\n// precision of the bilinear samplers.\n\n// \"Manual\" nearest. It is possible instead to bind\n// the same texture to a different channel set to nearest,\n// but whatever.\n// NOTE: this appears to be MUCH faster than\n// using texelFetch plus integer arithmetics\n// (especially if you want wrap for possibly\n// negative uv and nPOT textures to work right).\nvec4 texture_nearest(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    return texture(t,(floor(uv*wh)+0.5)/wh);\n}\n\n// Catmull-Rom weights.\nvec4 weights(float t)\n{\n    return mat4(\n\t\t 0.0, 1.0, 0.0, 0.0,\n\t\t-0.5, 0.0, 0.5, 0.0,\n\t\t 1.0,-2.5, 2.0,-0.5,\n\t\t-0.5, 1.5,-1.5, 0.5)*vec4(1.0,t,t*t,t*t*t);\n}\n\n// Naive implementation of Catmull-Rom sampling.\nvec4 catmull_rom_16(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    uv*=wh;\n    uv-=0.5;\n    ivec2 iuv=ivec2(floor(uv));\n    uv-=vec2(iuv);\n    vec4 Wx=weights(uv.x),Wy=weights(uv.y);\n    vec2 c=(vec2(iuv)+0.5)/wh,d=1.0/wh;\n    // NOTE: all texture() calls below\n    // fall on pixel centers, and\n    // so are, effectively, nearest.\n    return\n        Wx.x*Wy.x*texture(t,c+d*vec2(-1,-1))+\n        Wx.x*Wy.y*texture(t,c+d*vec2(-1, 0))+\n        Wx.x*Wy.z*texture(t,c+d*vec2(-1,+1))+\n        Wx.x*Wy.w*texture(t,c+d*vec2(-1,+2))+\n        Wx.y*Wy.x*texture(t,c+d*vec2( 0,-1))+\n        Wx.y*Wy.y*texture(t,c+d*vec2( 0, 0))+\n        Wx.y*Wy.z*texture(t,c+d*vec2( 0,+1))+\n        Wx.y*Wy.w*texture(t,c+d*vec2( 0,+2))+\n        Wx.z*Wy.x*texture(t,c+d*vec2(+1,-1))+\n        Wx.z*Wy.y*texture(t,c+d*vec2(+1, 0))+\n        Wx.z*Wy.z*texture(t,c+d*vec2(+1,+1))+\n        Wx.z*Wy.w*texture(t,c+d*vec2(+1,+2))+\n        Wx.w*Wy.x*texture(t,c+d*vec2(+2,-1))+\n        Wx.w*Wy.y*texture(t,c+d*vec2(+2, 0))+\n        Wx.w*Wy.z*texture(t,c+d*vec2(+2,+1))+\n        Wx.w*Wy.w*texture(t,c+d*vec2(+2,+2));\n}\n\n// Convert pair of weights into lerp form.\n// Returns interpolation factor in x, and weight in y,\n// so that w0*A+w1*B=y*mix(A,B,x).\nvec2 f(float w0,float w1)\n{\n    const float eps=1e-7; // Prevent 0/0 (assuming non-negative w0,w1).\n    return vec2(w1/(w0+w1+eps),w0+w1);\n}\n\nvec4 catmull_rom_8(sampler2D t,vec2 uv)\n{\n    vec2 wh=vec2(textureSize(t,0));\n    uv*=wh;\n    uv-=0.5;\n    ivec2 iuv=ivec2(floor(uv));\n    uv-=vec2(iuv);\n    vec4 Wx=weights(uv.x),Wy=weights(uv.y);\n    vec2 c=(vec2(iuv)+0.5)/wh,d=1.0/wh;\n    // Corner factors.\n    vec2 w=f(Wx.y,-Wx.x);\n    vec2 e=f(Wx.z,-Wx.w);\n    vec2 s=f(Wy.y,-Wy.x);\n    vec2 n=f(Wy.z,-Wy.w);\n    float SW=s.y*w.y,SE=s.y*e.y,NW=n.y*w.y,NE=n.y*e.y;\n    // Edge factors.\n    vec2 W=f(-Wx.x*Wy.y+SW*w.x*(1.0-s.x),-Wx.x*Wy.z+NW*w.x*(1.0-n.x));\n    vec2 E=f(-Wx.w*Wy.y+SE*e.x*(1.0-s.x),-Wx.w*Wy.z+NE*e.x*(1.0-n.x));\n    vec2 S=f(-Wx.y*Wy.x+SW*s.x*(1.0-w.x),-Wx.z*Wy.x+SE*s.x*(1.0-e.x));\n    vec2 N=f(-Wx.y*Wy.w+NW*n.x*(1.0-w.x),-Wx.z*Wy.w+NE*n.x*(1.0-e.x));\n    return\n        SW  *texture(t,c+d*(vec2( 0, 0)+vec2(-w.x,-s.x)))+\n        SE  *texture(t,c+d*(vec2(+1, 0)+vec2(+e.x,-s.x)))+\n        NW  *texture(t,c+d*(vec2( 0,+1)+vec2(-w.x,+n.x)))+\n        NE  *texture(t,c+d*(vec2(+1,+1)+vec2(+e.x,+n.x)))+\n        -W.y*texture(t,c+d*(vec2(-1, 0)+ W.x*vec2( 0,+1)))+\n        -E.y*texture(t,c+d*(vec2(+2, 0)+ E.x*vec2( 0,+1)))+\n        -S.y*texture(t,c+d*(vec2( 0,-1)+ S.x*vec2(+1, 0)))+\n        -N.y*texture(t,c+d*(vec2( 0,+2)+ N.x*vec2(+1, 0)));\n}\n\nvoid mainImage(out vec4 fragColor,in vec2 fragCoord)\n{\n    vec2 xy=(2.0*fragCoord-iResolution.xy)/iResolution.y;\n    vec2 uv=xy/64.0+iTime/128.0;\n    vec3 col=vec3(0);\n    col=(xy.y<0.0?\n        (xy.x<0.0?texture_nearest(iChannel0,uv):texture(iChannel0,uv)):\n        (xy.x<0.0?catmull_rom_16(iChannel0,uv):catmull_rom_8(iChannel0,uv))).xyz;\n    if(false)\n    {\n        // Debug: display difference.\n        col-=catmull_rom_16(iChannel0,uv).xyz;\n        col=0.5+32.0*col;\n    }\n    fragColor=vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1640093135",
+            "description": "shitty city",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WtscWr",
+            "likes": 8,
+            "name": "Voxel City PathTraced",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "voxels",
+                "pathtracing",
+                "city"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 311
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.141593\n#define MAX_VOXELS 100\n#define SECONDARY_STEPS 10\n#define SAMPLES_PER_FRAME 30\n#define BOUNCES 3\n#define FDIST 0.5\n#define ATMOSPHERE_TRANSMISSION 0.99\n#define SCATTER_FACTOR 0.5\n#define EPS 0.01\n\n#define PERIOD 11.\n#define BUILDINGRAD 4.\n\nstruct Hit {\n    float t;\n    int mat;\n    vec3 n;\n    vec3 id;\n};\n    \nfloat noise2d(in vec2 uv) {\n    return fract(814.*sin(uv.x*15829.+uv.y*874.));\n}\n\nuint seed;\nuint pcg_hash()\n{\n    seed = seed * 747796405u + 2891336453u;\n    uint word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;\n    return (word >> 22u) ^ word;\n}\n\nfloat GetRandom()\n{\n    return float(pcg_hash()) / 4294967296.0;\n}\n\nvec2 GetRandom2(){return vec2(GetRandom(), GetRandom());}\n\nvec3 randnorm() {\n    vec2 utheta = GetRandom2() * 2. - 1.;\n    utheta.y *= PI;\n    float rho = sqrt(1.-utheta.x * utheta.x);\n    return vec3(cos(utheta.y)*rho, sin(utheta.y)*rho, utheta.x);\n}\n\n\nvec2 condmin(in vec2 d1, in vec2 d2) {\n    return vec2(min(d1.x, d2.x), mix(d1.y, d2.y, step(d2.x, d1.x)));\n}\n\n//occupancy function + material\nfloat occupancy(in vec3 id, out int mat) {\n    vec2 block = floor(id.xy/PERIOD+0.5);\n    vec3 modid = vec3(mod(id.xy+0.5*PERIOD, PERIOD)-0.5*PERIOD, id.z);\n    float randval1 = noise2d(block);\n    float randval2 = noise2d(vec2(block.y, randval1));\n    \n    vec2 mindist = vec2(max(modid.z-1., PERIOD*0.5 - length(modid.xy)), 3.); //base\n    vec2 buildings = vec2(max(length(modid.xy)-BUILDINGRAD, -30.+modid.z-100.*randval2), 2.);\n    buildings.x = max(buildings.x, -length(vec2(mix(modid.x, modid.y, mod(floor(modid.z/4.), 2.0)), mod(modid.z, 4.)-2.)) + 2.);\n    mindist = condmin(mindist, buildings);\n    mindist = mix(mindist, vec2(modid.z, 1.), step(0.3, randval1));\n    float occ = step(mindist.x, 0.5);\n    mat = int(occ * round(mindist.y));\n    return occ;\n}\n\nHit voxtrace(in vec3 ro, in vec3 rd, int iters) {\n    Hit h;\n    h.mat = 0;\n    h.t = 0.;\n    // box marching with fb39ca4's DDA\n    h.id = floor(ro);        \n    vec3 ri = 1.0/rd;\n    vec3 rs = sign(rd);\n    vec3 dis = (h.id-ro + 0.5 + rs*0.5) * ri;\n    vec3 mm = vec3(0.0);\n    for (int i=0; i<iters; i++) {\n        mm = step(dis.xyz, dis.yzx) * step(dis.xyz, dis.zxy);\n\t\tdis += mm * rs * ri;\n        h.id += mm * rs;\n        if (occupancy(h.id, h.mat) > 0.5) {\n            break;\n    \t}\n    }\n    \n    h.n = -mm*rs;\n\t\n\tvec3 mini = (h.id-ro + 0.5 - 0.5*vec3(rs))*ri;\n\th.t = max ( mini.x, max ( mini.y, mini.z ) );\n\t     \n    return h;\n}\n\nvec3 bgcol(in vec3 rd) {\n    return mix(vec3(0., 0., 1.), vec3(0.6, 0.8, 1.), 1.-pow(abs(rd.z), 2.));\n}\n\nvec3 pathtrace(in vec3 eye, in vec3 rd) {\n    vec3 col = vec3(0.);\n    vec3 thru = vec3(1.);\n    for (int i=0; i<BOUNCES; i++) {\n        Hit h = voxtrace(eye, rd, i == 0 ? MAX_VOXELS : SECONDARY_STEPS);\n        //thru *= pow(ATMOSPHERE_TRANSMISSION, h.t);\n        if (h.mat == 0) {\n            col += thru * bgcol(rd);\n            break;\n        }\n        eye = eye + h.t * rd;\n        vec3 nr = randnorm();\n        vec3 nref = reflect(rd, h.n);\n\t\tnr = mix(nref, normalize(h.n + nr), SCATTER_FACTOR);\n        vec3 albedo = vec3(1.);\n        vec3 emissive = vec3(0.);\n        if (h.mat == 1) {\n            albedo = vec3(0.3, 0.7, 0.9);\n        } else if (h.mat == 2) {\n            albedo = vec3(0.6, 0.9, 0.5);\n        } else if (h.mat == 3) {\n            albedo = vec3(1.);\n            //emissive = vec3(0.5, 0.4, 0.2);\n        }\n        \n        col += thru * emissive;\n        thru *= albedo;\n        \n        float maxthru = max(thru.x, max(thru.y, thru.z));\n        if (GetRandom() > maxthru) {\n            break;\n        }\n        thru *= 1.0/maxthru;\n        \n        rd = nr;\n        eye += EPS * rd;\n    }\n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    seed = uint(uint(fragCoord.x) * uint(1973) + uint(fragCoord.y) * uint(9277) + uint(iFrame) * uint(26699)) | uint(1);\n    float mouseY = iMouse.y < 1. ? 0. : (0.5-iMouse.y/iResolution.y) * PI;\n    float mouseX = iMouse.x < 1. ? iTime*0.25 : -(iMouse.x/iResolution.x) * 2. * PI;\n    vec2 uv = (fragCoord - 0.5*iResolution.xy)/iResolution.x;\n\tvec3 eye = vec3(PERIOD*0.5, iTime * 9., 6.1);\n    vec3 w = vec3(cos(mouseX) * cos(mouseY), sin(mouseX) * cos(mouseY), -sin(mouseY));\n    vec3 u = normalize(cross(w, vec3(0., 0., 1.)));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(FDIST*w + uv.x*u + uv.y*v);\n    \n    vec3 col = vec3(0.);\n    float weight = 0.0;\n    for (int i=0; i<SAMPLES_PER_FRAME; i++) {\n        float newweight = weight + 1.0;\n        vec3 newcol = pathtrace(eye, rd);\n        col = (col * weight + newcol)/newweight;\n        weight = newweight;\n    }\n    \n    //dummy visualization\n    fragColor = vec4(pow(col, vec3(0.45)), 1.0);\n    //fragColor = vec4((sin(h.t*10.)*.1+.5) * float(h.mat) * (h.n*.5 +.5), 1.);\n    //fragColor = vec4(fract(h.id/10.), 1.);\n    //fragColor = vec4(vec3(h.mat)/3., 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

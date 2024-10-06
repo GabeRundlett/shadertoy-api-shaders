@@ -1,0 +1,230 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1577094283",
+            "description": "We compare the original BFECC advection method with a cheaper version based on a modified MacCormack method. This cheaper alternative method require one less advection pass and has, at least in theory, the same accuracy as the original method.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wld3zf",
+            "likes": 8,
+            "name": "BFECC Advection Schemes",
+            "published": 3,
+            "tags": [
+                "correction",
+                "advection",
+                "comparison",
+                "bfecc"
+            ],
+            "usePreview": 0,
+            "username": "mv",
+            "viewed": 1226
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\t## Summary\n\n\tIn this shader we compare different BFECC advection schemes, seeing how they \n\tbehave for different velocity fields. We also look at the effect of common\n    limiters used to reduce ringing artifacts inherent to the BFECC method.\n\n\tYou can change the velocity field by changing the MODE definition in the \n\tCommon tab. There are three kinds of velocity fields:\n\n\t\t1: Uniform rotation: All points rotate around a fixed point in the \n\t\t   center of the screen with the same angular velocity.\n\t\t2: Spirals: Clockwise and counter-clockwise spiral patterns are laid out \n\t\t   in a staggered grid pattern.\n        3: Combination: Combines (adds) the uniform rotation and spirals \n           velocity fields. \n\t\n\tAll velocity fields are divergence free, i.e. there are no local sources or \n\tsinks. As a result advection should be conservative. \n\n\tThere are three initial conditions for the color field:\n\n\t\t1: A checkerboard pattern masked by a circle.\n\t\t2: A circle with a vertical and a horizontal line removed.\n\t\t3: A sinusoidal pattern masked by a circle.\n\n\tThe circle masking is to reduce boundary effects and to consistency between\n\tinitialization modes. \n\n\tIn an ideal world without any errors the initial shape should stay fixed,\n\tbut due to accumulation of errors, and due to the smoothing effects of \n\ttexture interpolation we expect there to be non-zero errors.\n\n\tThe left and right hand side of the image shows the \"Original BFECC\" and \n\t\"Cheaper BFECC\" algorithms, respectively. The top side uses a fourth order \n\tRunge-Kutta method for the advection step, while the bottom side uses\n\tthe first order explicit Euler method.\n\n\tIn general higher order schemes preserves shapes better, while BFECC reduces \n\tblurring and diffusion.\n\n\tOptional: We can apply a signal limiter to reduce ringing artifacts.\n\tOptional: We can display the error vs the ground truth in certain cases.\n\n\tSee the Common tab for controls.\n\n\tSome observations:\n\n\t\t- Using explicit Euler as the base for the advection passes are overall\n          less accurate than using RK4, as expected. \n\t\t- The original BFECC with RK4 holds surprisingly well even without \n          limiters. \n\t\t- The cheaper BFECC variant is overall less accurate than the original\n          BFECC formulation, is  more unstable, and have more diffusion.\n\t\t- Adding limiters severely improves the stability of all variants, \n          although the effect has little effect on the original BFECC with RK4 \n          which is already fairly solid.\n\t\t- The cheaper BFECC with Euler has significant errors even with limiters.\n\t\t- Very fast movements (turn time 1 second) grow unstable fast.\n\t\t- Very slow movements (turn time 10 seconds) have larger discontinuity \n          errors.\n\n\t----------------------------------------------------------------------------\n\n\t## Description:\n\n\tSemi-Lagrangian advection schemes are often used when solving partial \n\tdifferential equations, notably the Navier-Stokes equations and its \n\trelatives used in fluid solvers [1].\n\n\tDuring advection a field (color, density, velocity, etc.) is advected \n\t(i.e. moved) based on some underlying velocity field. The way this is done \n\tis for each point in the field to trace a virtual particle backwards in time\n\talong streamlines and replace the field value with the value at the traced \n\tparticle's position. \n\n\tWe could write this recursively as:\n\n\t\tx = L(v, x)                        (1)\n\n\twhere x is the field we're advecting, the operator L is represents the \n\tparticle trace according to some velocity field v. \n\n    Typically the operator L is using some explicit integration scheme, such as \n    explicit Euler, or some higher order schemes like a 4th order Runge-Kutta \n    scheme. Higher order schemes tend to follow the velocity field streamlines \n    more closely, but are usually more expensive to compute.\n\n\tUnfortunately most advection schemes tend to accumulate errors. We have two \n\tprimary kind of errors to consider here:\n\n\t\t1: Errors while tracing particles along streamlines.\n\t\t2: Errors while interpolating values inbetween sample points.\n\n\tThe first class of errors are due to the imprecisions of the integration \n\tschemes. Higher order schemes typically reduce these errors at a cost, and \n\tmakes our virtual particles follow streamlines more tightly.\n\n\tThe second class of errors are due to using interpolation to represent field \n\tvalues inbetween data points. If we are using textures to store our field \n\t(as in this case) we can only store its at discrete points, i.e. pixels or \n\tvoxels. To calculate values for any point inbetween our sample points we \n\tneed to interpolate the data, typically with linear or cubic interpolation. \n\tAs a result sharp interfaces tend to widen, and neighbouring field values \n\ttend to blend.\n\n\tBack and Forth Error Compensation and Correction (BFECC) [2] is a popular \n\talgorithm to reduce the second class of errors.\tThis works by performing \n\tmultiple steps in succession, then applying a correction based on the \n\tdifferences between the steps.\n\n\tMore precicely, using Equation 1, we have\n\n\t\ty = L(v, x)                        (2)\n\t\tz = L(-v, y)                       (3)\n\t\tx = L(v, x + 0.5 * (x - z))        (4)\n\n\twhere in Equation 2 we do a regular step forward, then in Equation 3 we \n\tperform a step backwards from the new state. The net effect of applying \n\tEquation 2 and 3 in succession should with a precise advection scheme take \n\tus back to our initial state x, but due to accumulation of errors we are not \n\tquite there. The final state computed using Equation 4 has overall less \n\terrors that applying Equation 1 in isolation.\n\n\tAn alternative BFECC scheme was proposed by Selle et al. [3], based on a\n    modified MacCormack method. This method has a similar accuracy to the original \n\tBFECC method described in [2], but it require only 2 advection passes instead\n    of three\n\t\n\t\ty = L(v, x)                        (5)\n\t\tz = L(-v, y)                       (6)\n\t\tx = y + 0.5 * (x - z)              (7)\n\n\tIn the following we will called the algorithm described by Equation (2) \n\tthrough Equation (4) as the \"Original BFECC\" algorithm, while the algorith\n    descibed by Equation (5) through Equation (7) we will call the \"Cheaper BFECC\"\n\talgorithm, in line with the terminology in [3].\n\t\n\tThe corrected solution tend to oscillate near discontinuities, and a typical \n\tremedy for this is to apply some sort of signal limiter, either by clamping \n    the signal based on the first forward advection step, or reverting to the \n    forward advection step whenever the signal exceeds the forward a advection \n\tstep extrema.\n\n\tFor a comparison between the \"Original BFECC\" method against advection without\n\tBFECC see [4].\n\n\t----------------------------------------------------------------------------\n\n\t## References\n\n\t\t[1] http://movement.stanford.edu/courses/cs448-01-spring/papers/stam.pdf\n\t\t[2] https://www.cc.gatech.edu/~jarek/papers/FlowFixer.pdf\n\t\t[3] http://physbam.stanford.edu/~fedkiw/papers/stanford2006-09.pdf\n\t\t[4] https://www.shadertoy.com/view/wt33z2\n\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    \n    vec3 col;\n#if DRAW_MODE == DRAW_MODE_SHOW_ALL\n    if (fragCoord.x < iResolution.x / 2.0)\n    {\n        if (fragCoord.y < iResolution.y / 2.0)\n        {\n            // Lower left: Euler + Original BFECC\n        \tcol = s.www; \n        }\n        else\n        {\n            // Upper left: RK4 + Original BFECC\n            col = s.yyy;\n        }\n    }\n    else\n    {\n        if (fragCoord.y < iResolution.y / 2.0)\n        {\n            // Lower right: Euler + Cheaper BFECC\n        \tcol = s.zzz;            \n        }\n        else\n        {\n            // Upper right: RK4 + Cheaper BFECC\n            col = s.xxx;\n        }\n    }\n#elif DRAW_MODE == DRAW_MODE_ORIGINAL_EULER_ONLY\n\tcol = s.www;\n#elif DRAW_MODE == DRAW_MODE_ORIGINAL_RK4_ONLY\n\tcol = s.yyy;\n#elif DRAW_MODE == DRAW_MODE_CHEAPER_EULER_ONLY\n\tcol = s.zzz;\n#elif DRAW_MODE == DRAW_MODE_CHEAPER_RK_ONLY\n\tcol = s.xxx;\n#endif\n    \n\n#ifdef DISPLAY_ERROR\n    // Displays the absolute error vs the ground truth.\n    // For rotational field only.\n    col = abs(init(fragCoord.xy, iResolution.xy, iFrame).xxx - col);\n#endif\n    \n    vec2 uv = (2.0 * fragCoord.xy - iResolution.xy) / iResolution.yy;\n    \n    // Display the region separators.\n    float d = abs(uv.x);               // y-axis\n    d = min(d, abs(uv.y));             // x-axis\n    \n    float w = 2.0 / iResolution.y;\n    float x = smoothstep(-w / 2.0, w / 2.0, abs(d) - w);\n\t\n    col = mix(vec3(1.0, 0.0, 0.0), col, x);\n    \n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// WARNING: Do not touch these directly.\n\n#define VELOCITY_PATTERN_ROTATE      0\n#define VELOCITY_PATTERN_SPIRALS     1\n#define VELOCITY_PATTERN_COMBINATION 2\n\n#define COLOR_PATTERN_GRID 0\n#define COLOR_PATTERN_DISK 1\n#define COLOR_PATTERN_SINE 2\n\n#define LIMITER_MODE_NONE   0\n#define LIMITER_MODE_CLAMP  1\n#define LIMITER_MODE_REVERT 2\n\n#define DRAW_MODE_ORIGINAL_EULER_ONLY 0\n#define DRAW_MODE_ORIGINALRK4_ONLY    1\n#define DRAW_MODE_CHEAPER_EULER_ONLY  2\n#define DRAW_MODE_CHEAPER_RK_ONLY     3\n#define DRAW_MODE_SHOW_ALL            4\n\n//------------------------------------------------------------------------------------------\n// Controls. Change these to change \n// \n// \n\n// Use this to display all modes simultaneously, or only one at a time. \n#define DRAW_MODE DRAW_MODE_SHOW_ALL\n\n// Optionally applies a limiter, as described in Reference 3.\n#define LIMITER_MODE LIMITER_MODE_NONE\n\n// Use this to control the velocity pattern\n#define VELOCITY_PATTERN VELOCITY_PATTERN_ROTATE\n\n// Use this to control the color pattern\n#define COLOR_PATTERN COLOR_PATTERN_DISK\n\n// Use this to control how quickly the initialization will restart.\n#define REPEAT_FRAME 1800 /* 1800 = 30 seconds */\n\n// Use this to control how quickly the pattern rotate. \n// Assumes 60 frames per second. If the shader happens to run slower it will just take longer.\n#define SECONDS_PER_TURN 3.0\n\n// Uncomment this to pause after 1 full rotation\n//#define PAUSE_FRAME 5 * int(SECONDS_PER_TURN * 60.0)\n\n\n#if VELOCITY_PATTERN == VELOCITY_PATTERN_ROTATE\n\t// Uncomment this line to display the error vs the ground truth rotational velocity field.\n\t//#define DISPLAY_ERROR\n#endif\n\n\n\n//--------------------------------------------------------------------------------------------\n\nvec2 get_velocity(vec2 coord, vec2 res, int frame) \n{\n    float speed = res.y * 3.1415926 / SECONDS_PER_TURN;\n#ifdef PAUSE_FRAME\n    if ((frame % REPEAT_FRAME) > PAUSE_FRAME)\n    {\n     \tspeed *= 0.0;   \n    }\n#endif\n    \n    vec2 uv = (2.0 * coord - res) / res.yy;\n#if VELOCITY_PATTERN == VELOCITY_PATTERN_SPIRALS\n    // This will fit 18 vortices diagonally.\n    uv = 9.0 * 3.1415926 * uv;\n    return speed * (1.0 / 18.0) * vec2(sin(uv.y), sin(uv.x));\n#elif VELOCITY_PATTERN == VELOCITY_PATTERN_ROTATE        \n    return speed * vec2(-uv.y, uv.x);\n#elif VELOCITY_PATTERN == VELOCITY_PATTERN_COMBINATION\n    vec2 uv1 = 9.0 * 3.1415926 * uv;\n    return speed * (1.0 / 18.0) * vec2(sin(uv1.y), sin(uv1.x)) + speed * vec2(-uv.y, uv.x);\n#else\n \treturn vec2(0.0);   \n#endif\n}\n\nvec4 init(vec2 coord, vec2 res, int frame) \n{ \n    vec2 uv = (2.0 * coord.xy - res.xy) / res.yy;\n\n#ifdef DISPLAY_ERROR\n    frame = frame % REPEAT_FRAME;\n    #ifdef PAUSE_FRAME\n        frame = min(frame, PAUSE_FRAME);\n    #endif\n    // Rotate to match the rotational velocity field\n    float angle = 2.0 * 3.1415926 * (float(frame) / 60.0) / SECONDS_PER_TURN;\n    uv *= mat2(cos(angle), sin(angle), -sin(angle), cos(angle));\n#endif\n    \n#if COLOR_PATTERN == COLOR_PATTERN_GRID\n    // Initialize with a checkerboard pattern\n    // This will fit 18 blocks vertically\n    int X = int(9.0 * (uv.x - (1.0 - sign(uv.x))*floor(uv.x))) % 2;\n    int Y = int(9.0 * (uv.y - (1.0 - sign(uv.y))*floor(uv.y))) % 2;\n    \n    float s = float(X ^ Y);\n#elif COLOR_PATTERN == COLOR_PATTERN_DISK\n    float d = length(uv) - 0.95;\n    d = max(d, -(abs(uv.y) - 0.1));\n    d = max(d, -(abs(uv.x) - 0.1));\n\tfloat s = 1.0 - smoothstep(-1.0 / res.y, 1.0 / res.y, d);\n#elif COLOR_PATTERN == COLOR_PATTERN_SINE\n    uv *= 9.0 * 3.1415926;\n    float s = 0.5 + 0.5 * sin(uv.x)*sin(uv.y);\n#else\n    float s = vec4(1.0);\n#endif\n    s *= 1.0 - smoothstep(-1.0 / res.y, 1.0 / res.y, length((2.0 * coord.xy - res.xy) / res.yy) - 8.0 / 9.0);\n    return vec4(1.0 - s);  \n}\n\nvec4 advect(in sampler2D channel, in vec2 coord, in vec2 res, in float direction, in int frame)\n{\n    // Regular Euler and RK4 steps\n    float dt = direction * 1.0 / 60.0;\n    vec2 v1 = get_velocity(coord, res, frame);\n    vec2 v2 = get_velocity(coord - 0.5 * v1 * dt, res, frame);\n    vec2 v3 = get_velocity(coord - 0.5 * v2 * dt, res, frame);\n    vec2 v4 = get_velocity(coord - v3 * dt, res, frame);\n    vec2 v = (1.0 * v1 + 2.0 * v2 + 2.0 * v3 + 1.0 * v4) / 6.0;\n\n    vec4 sample_RK4   = texture(channel, (coord - v * dt) / res);\n    vec4 sample_Euler = texture(channel, (coord - v1 * dt) / res);\n\n    // NOTE: The first two components contain the RK4 values, \n    //       while the last two components contain the Euler values.\n    //       The first and third components contain \"Cheaper BFECC\"\n    //       The second and fourth components contain \"Original BFECC\"\n    return vec4(sample_RK4.x, sample_RK4.y, sample_Euler.z, sample_Euler.w);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Step 1 of BFECC, forward advection\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    if (iFrame % REPEAT_FRAME == 0)\n    {\n        // Initialize image on the first frame\n        fragColor = init(fragCoord.xy, iResolution.xy, iFrame);\n    }\n    else \n    {\n        fragColor = advect(iChannel0, fragCoord.xy, iResolution.xy, 1.0, iFrame);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Step 2 of BFECC, backward advection\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    if (iFrame % REPEAT_FRAME == 0)\n    {\n        // Passthrough on the first frame\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    }\n    else\n    {\n        fragColor = advect(iChannel0, fragCoord.xy, iResolution.xy, -1.0, iFrame);\n    } \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Step 3 of BFECC, correction\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    if (iFrame % REPEAT_FRAME == 0)\n    {\n        // Passthrough on the first frame\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    }\n    else\n    {\n        vec4 sample_original = texelFetch(iChannel2, ivec2(fragCoord.xy), 0);\n        vec4 sample_forward  = texelFetch(iChannel1, ivec2(fragCoord.xy), 0);\n        vec4 sample_reverse  = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n        \n        fragColor = vec4(\n            sample_forward.x + (sample_original.x - sample_reverse.x)/2.0, \n            sample_original.y + 0.5 * (sample_original.y - sample_reverse.y), \n            sample_forward.z + (sample_original.z - sample_reverse.z)/2.0, \n            sample_original.w + 0.5 * (sample_original.w - sample_reverse.w)\n        );\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Step 4 of Original BFECC, forward advection\n// Passthrough for Cheaper BFECC\n\n// Optionally applies a limiter, as described in Reference 3.\n\n#define MINMAX(channel, coord, min_value, max_value) \\\n{ \\\n    vec4 s = texelFetch(channel, coord, 0); \\\n    min_value = min(min_value, s); \\\n    max_value = max(max_value, s); \\\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    if (iFrame % REPEAT_FRAME == 0) \n    {\n        // Passthrough on the first frame\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    }\n    else\n    {\n        vec4 sample_new = advect(iChannel0, fragCoord.xy, iResolution.xy, 1.0, iFrame);\n        vec4 sample_passthrough = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n        \n#if LIMITER_MODE != LIMITER_MODE_NONE\n        vec4 sample_forward = texelFetch(iChannel1, ivec2(fragCoord.xy), 0);\n        vec4 min_value = sample_forward;\n        vec4 max_value = sample_forward;\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(-1,  0), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(+1,  0), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2( 0, -1), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2( 0, +1), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(-1, +1), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(-1, +1), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(-1, -1), min_value, max_value);\n        MINMAX(iChannel1, ivec2(fragCoord.xy) + ivec2(+1, +1), min_value, max_value);\n    #if LIMITER_MODE == LIMITER_MODE_CLAMP\n        // Clamps the color field based on the immediate neighborhood values in the forward \n        // advection step in buffer A.\n        sample_new = clamp(sample_new, min_value, max_value);\n\t#elif LIMITER_MODE == LIMITER_MODE_REVERT\n        // Reverts the color field to the forward advection values if they exceeds the values \n        // in the immediate neighborhood values in the forward advection step in buffer A.\n        if (sample_passthrough.x < min_value.x || sample_passthrough.x > max_value.x)\n        {\n        \tsample_passthrough.x = sample_forward.x;\n        }\n        if (sample_new.y < min_value.y || sample_new.y > max_value.y)\n        {\n        \tsample_new.y = sample_forward.y;\n        }\n        if (sample_passthrough.z < min_value.z || sample_passthrough.z > max_value.z)\n        {\n        \tsample_passthrough.z = sample_forward.z;\n        }\n        if (sample_new.w < min_value.w || sample_new.w > max_value.w)\n        {\n        \tsample_new.w = sample_forward.w;\n        }\n    #endif\n#endif\n        \n        fragColor = vec4(sample_passthrough.x, sample_new.y, sample_passthrough.z, sample_new.w);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buf D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

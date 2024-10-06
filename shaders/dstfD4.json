@@ -1,0 +1,82 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697191291",
+            "description": "walk-on-sphere implementation of curve inflation",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "dstfD4",
+            "likes": 5,
+            "name": "Walk on Spooky Distance Field",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "spooky",
+                "wos",
+                "walkonsphere"
+            ],
+            "usePreview": 0,
+            "username": "minHieu",
+            "viewed": 260
+        },
+        "renderpass": [
+            {
+                "code": "/*\nvec2 intensity(float d) {\n    float i = min(sin(d*330.+ 20.2*iTime), 0.4);\n    // return vec2(min(sin(d*330.+ 20.2*iTime), 0.4));\n    return vec2(0);\n}\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 data = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    fragColor = vec4(data.xyz / data.w, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI  3.14159\n#define PI2 6.28319\n#define EPS 0.0001\nconst int MAX_WALKS = 20;\nconst int MAX_SAMPLES = 10;\n// misc function \nfloat get_t() {\n  return 20.*fract(float(iFrame)*0.005);\n}\n\n// Scene geometry\nfloat circ_sdf(vec2 q, vec2 c, float r) {\n    return length(q-c)-r;\n}\nfloat rect_sdf(vec2 q, vec2 c, vec2 halfsize) {\n    vec2 d = abs(q-c)-halfsize;\n    float idist = length(max(d,0.));\n    float odist = min(max(d.x,d.y),0.);\n    return idist+odist;\n}\nfloat union_sdf(float d1, float d2) {\n    return min(d1,d2);\n}\nfloat sub_sdf(float d1, float d2) {\n    return max(d1,-d2);\n}\n// scene sdf. \n// negative indicates outside (red).\n// positive indicates inside (blue).\nfloat main_sdf(vec2 uv) { \n    float d1 = circ_sdf(uv, vec2(.5,.6), .25);\n    float d2 = rect_sdf(uv, vec2(.5,.5), vec2(0.1, 0.3));\n    float eye1 = circ_sdf(uv, vec2(.58,.58), .05);\n    float eye2 = circ_sdf(uv, vec2(.42,.58), .05);\n    float head = sub_sdf(sub_sdf(union_sdf(d1,d2),eye1),eye2);\n    // float head = union_sdf(d1,d2);\n    float mouth = union_sdf(\n        union_sdf(circ_sdf(uv, vec2(.5,.45), .05),\n                  circ_sdf(uv, vec2(.5,.35), .05)),\n        rect_sdf(uv, vec2(.5,.4), vec2(.05, 0.05))\n    );\n    return -sub_sdf(head, mouth);\n}\n\n\n// from Alex Jacobson's Curve Inflation \n// https://www.shadertoy.com/view/7tyyzW\nint  seed = 1;\nvoid srand(int s) {\n    seed = s;\n}\nint randi(void) {\n    seed = seed * 0x343fd + 0x269ec3;\n    return (seed >> 16) & 32767;\n}\nfloat rand(void) {\n    return float(randi())/32767.0;\n}\nint hash( int n ) {\n\tn = (n << 13) ^ n;\n    return n * (n * n * 15731 + 789221) + 1376312589;\n}\nvec2 rand_circ(void) {\n    float theta = PI2*rand();\n    return vec2(cos(theta),sin(theta));\n}\n\n// green function of ball at x B(x) of radius R\n// following https://dl.acm.org/doi/abs/10.1145/3386569.3392374\n// Supplementary B1. This evaluate G at a random sample.\nfloat G(float R) {\n    float r = R*sqrt(rand()+0.001);\n    return log(R/r)/PI2;\n}\nvec2 grad_G(float R) {\n    float r = R*sqrt(rand());\n    float theta = rand() * PI2;\n    vec2 dir = vec2(cos(theta),sin(theta));\n    return dir / PI2 * (1./(r*r) - 1./(R*R));\n}\n\n// Curve inflation is the solution to the \n// poisson equation: \n// ∆u = -4 on Ω  (f = -4) \n//  u = 0  on ∂Ω (g = 0)\n// return  u and grad_u.\nvec3 wos(vec2 x) {\n    float R = main_sdf(x);      // distance to border\n    float u = 0.;               // PDE estimator \n    vec2 grad_u = vec2(0.);\n    \n    float R1 = R;\n    vec2 v1;\n    \n    if (R <= 0.) return vec3(0.);       // outside scene\n    \n    for (int k = 0; k < MAX_WALKS; k++) {\n        if (R < EPS) break;\n        u += PI*R*R*G(R);\n        // u += R*R;\n        vec2 v = rand_circ();\n        \n        x += R * v;\n        R = main_sdf(x);\n        \n        if (k == 0) v1 = v;\n    }\n    \n    grad_u = 2./R1*u*v1;\n    return vec3(u, grad_u);\n}\n\n// return color value at point with inflated height z\n// https://www.shadertoy.com/view/7tyyzW\nvec4 shading(vec2 uv, float u, vec2 grad_u) {    \n    vec3 Kd = vec3(0.76, 0.31, 0.31); // diffuse\n    vec3 Ks = vec3(1.,1.,1.);         // specular \n    vec3 Kf = 0.4*Ks;\n    vec3 Ka = 0.1*Kd;               \n    \n    if(u <= 0.0) return vec4(Ka, 1.0);\n\n    float z = sqrt(u);\n    vec3 n = normalize(vec3(-grad_u*0.5/z,1));\n    \n    const int nlights = 2;\n    vec3 lights[nlights];\n    lights[0] = normalize(vec3(1.5,2.,1.));\n    lights[1] = normalize(vec3(-1.5,2.,1.));\n    vec3 Kl[nlights];\n    Kl[0] = vec3(1.,0.6,0.6);\n    Kl[1] = vec3(.6,0.6,1.0);\n    vec3 color = vec3(0.,0.,0.);\n    vec3 p = vec3(uv,z);\n    vec3 c = vec3(0.,0.,5.);\n    vec3 v = normalize(c-p);\n    for(int i = 0;i<2;i++) {\n        vec3 l = lights[i];\n        float d = max(dot(n,l),0.);\n        vec3 h = normalize(l+v);\n        float s = pow(max(dot(n,h),0.),100.);\n        color += Kl[i]*(Kd*d+Ks*s);\n    }\n    float NE = dot(n,v);\n    float f = pow(max(sqrt(1. - NE*NE),0.0), 50.);\n    color += Kf*f+Ka;\n    \n    return vec4(color,1.0);\n    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // normalize coordinate\n    vec2 uv = fragCoord/iResolution.xy;\n    if (iResolution.x > iResolution.y) {\n        uv.x *= iResolution.x / iResolution.y;\n        uv.x += .5 * (1. - iResolution.x / iResolution.y);\n    } else {        \n        uv.y *= iResolution.y / iResolution.x;\n        uv.y += .5 * (1. - iResolution.y / iResolution.x);\n    }\n    \n    // set random seed \n    ivec2 q = ivec2(fragCoord);\n    srand(hash(q.x + hash(q.y + hash(iFrame))));\n    \n    // poisson solve \n    vec3 u_gradu = vec3(0.);\n    for (int i = 0; i < MAX_SAMPLES; i++) {\n        u_gradu += wos(uv);\n    }\n    u_gradu /=  float(MAX_SAMPLES);\n    \n    // rendering \n    vec4 fColor = shading(uv, u_gradu.x, u_gradu.yz);\n    \n    if(get_t() < 0.3) {\n        fragColor = fColor;\n    } else {\n        vec4 data = texelFetch(iChannel0, ivec2(fragCoord), 0);\n        fragColor = data + fColor;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

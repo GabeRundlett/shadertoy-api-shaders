@@ -1,0 +1,215 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1551901820",
+            "description": "Getting close to the optimal way to draw particles. This time based on a strided sort with a simple yet fundamental adjustment that all but eliminates artifacts from near worst case situations. Space to reset, mouse to attract particles.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "WsfXzs",
+            "likes": 83,
+            "name": "Spatial Decorrelation",
+            "published": 3,
+            "tags": [
+                "particles",
+                "sort",
+                "greyscale"
+            ],
+            "usePreview": 0,
+            "username": "rory618",
+            "viewed": 1986
+        },
+        "renderpass": [
+            {
+                "code": "//Deterministic particle sorting algorithm\n//using 7 stage 3x3 strided sorting stages split over 2 frames, in total just 36 or 27 calls to texelFetch per frame\n//Non recurrent, each frame is computed independent of the last, particles can jump around quickly with no adverse effects\n//Running at half speed, takes two frames to draw the image. I'm starting to like this approach, d 30 fps on shadertoy\n//feels a lot more than twice as powerful.\n//All that is done is getting particles to the closest pixel.\n//Particles affecting more than a single pixel are out of scope here for now.\n\n//Still no gaurentee that a pixel doesnt come up empty when there is a particle there, but chances of that happening\n//are reduced compared to previous approaches\n\n//See https://www.shadertoy.com/view/XsjyRm for another use of strided sort\n\n//Sampling over a deterministic constant grid is cheaper than the random normal sampling done in stochastic routing, and\n//also gaurentees no collisions and complete coverage if designed using a proper Hierarchical tree.\n//The downside is that if you are only saving a finite number of particles per buffer cell (updated to save list of two)\n//then some particles will get booted by other nearby ones and end up not getting drawn. giving sohttps://www.shadertoy.com/newme pretty visible artifacts.\n//Stochastic routing has the same problem, but because there is no structure with hard edges, the artifacts end up looking\n//like some very nice shading. The effect is most objious here:\n//Web of lines: https://www.shadertoy.com/view/ldcBz4\n//There is no shading done here, all the shadows are just these artifacts. Looks nice but not a good thing in general\n\n//So what is the simple solution? Spatial decorrelation\n//The problem only comes up when particles are clumped i.e. they are not sparse in the space that the serach is happening in.\n//But the screen space and the search space dont actually need to be the same space at all! For example the search space could be\n//a long one dimensional line. First map each pixel on the screen to the line, and map each particle xy to the index on the line it\n//should reach. The do one dimensional particle sorting to get the particles along the line. Finally for each screen xy pixel,\n//map that xy to the point on the line and splat the particle located there. Since shadertoy buffers are 2d, I still use a 2d search\n//space for convinience. (would a 1d search be faster? what about 3d?) The mapping is completely pseudorandom and one to one, so the\n//particles get completely scrambled all across. A particle might barely move at all but end up jumping from one side of buffer D all\n//the way to the other. Now with the particles scrambled, sparsity is restored in almost all of cases. Now the worst case is no longer\n//A bunch of particles nearby, but a bunch of particles precisely arranged so that the random mapping brings them close together,\n//which is exceptionally unlikely, and will have little visual effect since they would have to be evenly spread out across the screen\n//in order to map to nearby points.\n\n\n//Research:\n//Use hilbert curve instead?\n//Good result from google search of \"Spatial Decorrelation\"\n//https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=722032\n//Why isn't it perfect? Good to know this to get farther, is it a suboptimal mapping?\n//Or is it a must to start saving more than one particle per texel\n//Ultimate goal is R.x*R.y pixels with zero chance of an empty pixel\n//where a particle should be, which is definately acheivable, at worst use more intermediate frames per rendered frame\n//that is still far easier than drawing every particle which seems to\n//have a pretty awful worst case, every particle in the exact same location\n//and the render pass for that texel must take care of all of them. I\n//don't plan on tackling that because I don't see an application where I\n//would want to draw that many particles in one spot anyways.\n\n\n//Rendering in buf A\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    #define T(a,b) texelFetch(iChannel0, ivec2(I)+ivec2(a,b),0).wwww\n    //Soften with a little blur over space\n    O=T(0,0)/2.+(T(1,0)+T(0,1)+T(-1,0)+T(0,-1))/12.+(T(1,1)+T(1,-1)+T(-1,-1)+T(-1,1))/24.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Simple newtonian particles\n//Use O.w for render pass\n\n//Uncomment to see the decorrelated image that is getting rendered\n//#define show_decorrelated\n\n//Drawing a particle\n//Need another pass or bigger output pass to draw bigger particles\n//For now just light up the pixel it lands in\n\n\nvoid splat(inout float O, vec2 I, vec2 ip, vec2 p){\n    \n    //O = min(O,vec4(length(p-I))/3.);\n    //float d2 = dot2(I-p);\n    //O += exp(-d2*.01);\n#ifdef show_decorrelated\n    if(floor(I)==floor(p)) O += (.055);\n#else\n    if(floor(ip)==floor(p)) O += (.055);\n#endif\n}\n\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    vec2 uv = I/R.xy;\n    vec2 r = rand2(IHash3(iFrame,I.x,I.y));\n    O = texture(iChannel0,uv);\n    float Owp = O.w;\n    O.w=0.;\n    vec2 p = O.xy;\n    vec2 v = umpackVec2(O.z);\n    if(iFrame<3 || texelFetch(iChannel3,ivec2(32,1),0).x>.5){\n        p = I;\n        v=vec2(0);\n    }\n    v /= 1.003;\n    \n    //Add some brownian motion to seperate the particles when they all get stuck together\n    p += randn(r)/1e4;\n    p += v/2.;\n    \n    //also add an interesting force\n    vec2 k = vec2(cos(10.*float(iFrame)/60.),sin(10.*float(iFrame)/60.))*R.y/7.+R.xy/2.;\n    vec2 d = (k-p);\n    v += sin(-float(iFrame)/60.*6.5+.6*pow(dot2(d),.6)/9.)*3.*d/(pow(length(d),1.7));\n    v *= 1.-exp(-.1*length(d));\n    \n    if(iMouse.z > 1.){\n        vec2 d = (iMouse.xy-p);\n        v += 4.*d/(pow(length(d),1.7));\n        v *= 1.-exp(-.1*length(d));\n    }\n    //bounce off the walls\n    if(p.x<0.)  {v.x =  abs(v.x); p.x=-p.x;}\n    if(p.y<0.)  {v.y =  abs(v.y); p.y=-p.y;}\n    if(p.x>R.x) {v.x = -abs(v.x); p.x=R.x*2.-p.x;}\n    if(p.y>R.y) {v.y = -abs(v.y); p.y=R.y*2.-p.y;}\n    \n    O.xy = p;\n    O.z = packVec2(v);\n    \n#ifdef show_decorrelated\n    vec2 ip = I;\n#else\n    vec2 ip = forward_mapping(I,iR.x,iR.y,iFrame/2-1);\n#endif\n    for(int i = 0; i < 9; i++){\n        vec4 t = texelFetch(iChannel1,ivec2(ip-1.)+ivec2(i/3,i%3),0);\n        \n        splat(O.w,I,ip,t.xy);\n        splat(O.w,I,ip,t.zw);\n    }\n    O.w=pow(O.w,.7);\n    int stage = iFrame%2;\n    if(stage==1) O.w=Owp;\n    else O.w = mix(O.w,Owp,0.3);\n    //Smooth over time\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define R iResolution\n#define iR ivec3(R)\n#define uR uvec3(R)\n#define IHash3(x,y,z) IHash(int(x)^IHash(int(y)^IHash(int(z))))\n#define dot2(o) dot((o),(o))\n#define tx(ch,p,R) texelFetch(ch, Zmod(p,iR.xy),0)\n\n//Roboust/universal integer modulus function\n#define Zmod(x,y) (((x)+(y)+(y)+(y))-(((x)+(y)+(y)+(y))/(y))*(y))\n//#define Zmod(x,y) ((x+y*10)%y)\n\nfloat packVec2(vec2 x){\n    return uintBitsToFloat(packSnorm2x16(x/10.));\n}\nvec2 umpackVec2(float x){\n    return unpackSnorm2x16(floatBitsToUint(x))*10.;\n}\n\nbool inbounds(vec2 x, vec2 y){\n    return (x.x>0.&&x.y>0.&&x.x<y.x&&x.y<y.y);\n}\n\n//RNG\nint IHash(int a){\n\ta = (a ^ 61) ^ (a >> 16);\n\ta = a + (a << 3);\n\ta = a ^ (a >> 4);\n\ta = a * 0x27d4eb2d;\n\ta = a ^ (a >> 15);\n\treturn a;\n}\n\nfloat Hash(int a){\n\treturn float(IHash(a)) / float(0x7FFFFFFF);\n}\nvec4 rand4(int seed){\n    return vec4(Hash(seed^0x34F85A93),\n                Hash(seed^0x85FB93D5),\n                Hash(seed^0x6253DF84),\n                Hash(seed^0x25FC3625));\n}\nvec3 rand3(int seed){\n    return vec3(Hash(seed^0x348CD593),\n                Hash(seed^0x8593FD5),\n                Hash(seed^0x62A5D384));\n}\nvec2 rand2(int seed){\n    return vec2(Hash(seed^0x348C5F93),\n                Hash(seed^0x8593D5BB));\n}\n\n\nvec2 randn(vec2 randuniform){\n    vec2 r = randuniform;\n    r.x = sqrt(-2.*log(1e-9+abs(r.x)));\n    r.y *= 6.28318;\n    r = r.x*vec2(cos(r.y),sin(r.y));\n    return r;\n}\n\n//Random injective mapping from each pixel to a random new pixel\n//By alternatively adding some randomness from y into x and then \n//x into y, a reversible hash function is made. To take the inverse,\n//simply undo the last \"add randomness to y\" step by subtracting the\n//same random value. You can calculate the random value that was used\n//to modify y because it depends only on x.\n//Reversible == one to one == injective\n//input iFrame/2 to re randoize the mapping every frame\nvec2 forward_mapping(vec2 Z,int p, int q, int Fover2){\n    //int seed = 0;        // Optionaly keep seed constant for that static randomness look\n\tint seed = Fover2;\n    if(!inbounds(Z,vec2(p,q))){return vec2(0);} //Dont map points from outside the boundry\n    int x=int(Z.x);\n    int y=int(Z.y);\n    \n    //Change iterations here to zero to use the identity function as a mapping\n    //Some particles seem to have a better chance of getting drawn...\n    //But it shows off the artifacts in all their glory, looks pretty cool after a reset\n    for(int i = 0; i < 3; i++){\n        x = Zmod(x + IHash(y^seed)%p,p);\n        y = Zmod(y + IHash(x^seed)%q,q);\n    }\n    \n\t//This is the inverse mapping, only difference is - instead of + and the order of x and y\n    //uncommenting should have the same effect as reducing iterations above to zero\n    //This is a pretty good test of the one to one property of the mapping\n    //Originally it seemed to not be working quite right on some platforms so\n    //this can confirm if that is happening. The effect of a non injective mapping is collisions\n    //And thus many particles getting lost near the final pass.\n    /*\n    for(int i = 0; i < 5; i++){\n        y = Zmod(y - IHash(x)%q,q);\n        x = Zmod(x - IHash(y)%p,p);\n    }\n\t*/\n    \n    return vec2(x,y)+fract(Z);\n    \n}\nvec2 reverse_mapping(vec2 Z,int p, int q, int Fover2){\n    //int seed = 0;        // Optionaly keep seed constant for that static randomness look\n\tint seed = Fover2;\n    if(!inbounds(Z,vec2(p,q))){return vec2(0);} //Dont map points from outside the boundry\n    int x=int(Z.x);\n    int y=int(Z.y);\n    \n    \n    \n    for(int i = 0; i < 3; i++){\n        y = Zmod(y - IHash(x)%q,q);\n        x = Zmod(x - IHash(y)%p,p);\n    }\n    \n    return vec2(x,y)+fract(Z);\n    \n}\n\nfloat score(vec2 p, vec2 I, vec3 R){\n    if(!inbounds(p,R.xy)) return 1e6; //Bad score for points outside boundry\n    //This should get revamped, there is no reasoning to use\n    //euclidean distance, this metric probably should reflect the tree strtucture\n    //Maybe even output a simple 1 or 0 if the index of this texel leads to the leaf\n    //node that this particle p is going towards\n    \n    //Difference in the noise when using this other metric suggests that \n    //this is indeed screwing performance (likelyhood of missing particles)\n    vec2 D = p-I;\n    D = mod(D+R.xy/2.,R.xy)-R.xy/2.;\n    return max(abs(D.x),abs(D.y));\n    //use l infinity in toroidal space\n    \n    //return dot2(I-p);\n}\n\nvoid updateRank(vec4 t, inout vec4 O, inout float s, vec2 I, vec3 R){\n    float sp = score(t.xy,I,R);\n    if(sp<s){\n        s=sp;\n        O=t;\n    }\n}\n\n//Update ranking, save a list of two particle xy indices. O.xy is better particle, O.zw is a different not as good one\nvoid updateRank2x(vec2 t, inout vec4 O, inout float s0, inout float s1, vec2 I, vec3 R){\n    float sp = score(t,I,R);\n    if(sp<s0){\n        //Shift down the line\n        s1=s0;\n        O.zw=O.xy;\n        s0=sp;\n        O.xy=t;\n    } else if(sp<s1){\n        //Bump off the bottom one\n        s1=sp;\n        O.zw=t;\n        \n    }\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//Strided sort summarry:\n//Each pass looks at 9 xy locations stored in the previous pass and selects the closest one\n//The locations sampled are arranged in a 3x3 with the center located at I, and the spacing\n//a power of 3\n//Total 7 passes over two frames sized large to small\n//A->B->C->D->B->C->D->Image\n//Spacing 3^6 ..., 3^1, 3^0\n//I think this gives an optimal data path from each pixel to each other pixel under the constraint of 7 passes\n\n//In each buffer, the pixel to get drawn at index is saved in xy and the exact particle location is saved in zw.\n//For more complex particles zw should instead be a pointer to the particle\n//zw is unused for sorting, sort only based on xy\n\n\n//large to small\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    //Split frames into two stages\n    int stage = iFrame%2;\n    \n    int size = stage==0?729:27; //729=3^6\n    float s0;\n    float s1;\n    //init with top left corner and center\n    if(stage==0){\n        vec2 t0 = tx(iChannel0, ivec2(I)-size,R).xy;\n        vec2 t1 = tx(iChannel0, ivec2(I),R).xy;\n                                                                         \n        s0 = score(t0,I,R);\n        s1 = score(t1,I,R);\n        \n        O.xy=t0==vec2(0)?vec2(0):forward_mapping(t0, iR.x, iR.y,iFrame/2);\n        O.zw=t1==vec2(0)?vec2(0):forward_mapping(t1, iR.x, iR.y,iFrame/2);\n        \n        //Select the better one, make sure scores are in order with s0<s1\n        if(s0>s1){\n            vec2 _ = O.xy;\n            O.xy = O.zw;\n            O.zw = _;\n            _.x = s0;\n            s0 = s1;\n            s1 = _.x;\n        }\n    } else {\n        O = tx(iChannel1, ivec2(I)-size,R );\n        s0 = score(O.xy,I,R);\n        s1 = score(O.zw,I,R);\n    }\n    for(int i = 1; i < 9; i++){\n        if(stage==0){\n        \tvec2 t = tx(iChannel0,ivec2(I)-size+size*ivec2(i/3,i%3),R).xy;\n            t = forward_mapping(t, iR.x, iR.y,iFrame/2);\n            updateRank2x(t,O,s0,s1,I,R);\n            \n        } else {\n        \tvec4 t;\n            t = tx(iChannel1,ivec2(I)-size+size*ivec2(i/3,i%3),R); \n            updateRank2x(t.xy,O,s0,s1,I,R);\n            updateRank2x(t.zw,O,s0,s1,I,R);\n        }\n        \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//3x3 strided sort\n//large to small\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    int stage = iFrame%2;\n    \n    int size = stage==0?243:9;\n    //init with top left corner\n    O = tx(iChannel0, ivec2(I)-size, R);\n    float s0 = score(O.xy,I,R);\n    float s1 = score(O.zw,I,R);\n    for(int i = 1; i < 9; i++){\n        vec4 t = tx(iChannel0,ivec2(I)-size+size*ivec2(i/3,i%3),R);\n        updateRank2x(t.xy,O,s0,s1,I,R);\n        updateRank2x(t.zw,O,s0,s1,I,R);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//3x3 strided sort\n//large to small\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    int stage = iFrame%2;\n    \n    int size = stage==0?81:3;\n    //init with top left corner\n    O = tx(iChannel0, ivec2(I)-size, R);\n    float s0 = score(O.xy,I,R);\n    float s1 = score(O.zw,I,R);\n    for(int i = 1; i < 9; i++){\n        vec4 t = tx(iChannel0,ivec2(I)-size+size*ivec2(i/3,i%3),R);\n        updateRank2x(t.xy,O,s0,s1,I,R);\n        updateRank2x(t.zw,O,s0,s1,I,R);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

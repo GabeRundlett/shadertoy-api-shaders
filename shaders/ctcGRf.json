@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1684261443",
+            "description": "I read Dracusa's article on Log Spherical Mapping and immediately thought of fractals to go with it, such as a kaleidoscopic Menger cube.\nIt's not very fast, but somehow seamless and mesmerizing.\n\nChange the view and \"trajectory\" by dragging the mouse.\n",
+            "flags": 64,
+            "hasliked": 0,
+            "id": "ctcGRf",
+            "likes": 36,
+            "name": "Log Spherical KIFS \"Zoomer\"",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "fractal",
+                "zoom",
+                "menger",
+                "log"
+            ],
+            "usePreview": 0,
+            "username": "derSchamane",
+            "viewed": 650
+        },
+        "renderpass": [
+            {
+                "code": "//              = Log Spherical KIFS \"Zoomer\" =         \n//              by Maximilian Knape   ·∑>| 2023            \n// -----------------------------------------------------------\n// This work is licensed under a Creative Commons Attribution-\n//        NonCommercial-ShareAlike 3.0 Unported License\n\n#define GAMMA 2.2\n\n#define MAX_STEPS 90\n#define MAX_DIST 100.\n#define MIN_DIST 10.\n\n#define GLOW_INT 1.\n#define PP_ACES 1.0\n#define PP_CONT 0.5\n#define PP_VIGN 1.3\n#define AO_OCC .5\n#define AO_SCA .3\n\n#define PI 3.14159265\n#define TAU 6.28318531\n#define S(x,y,t) smoothstep(x,y,t)\n#define sin3(x) sin(x)*sin(x)*sin(x)\n#define Rot2D(p, a) p=cos(a)*p+sin(a)*vec2(p.y,-p.x)\n\nvec3 Rot(in vec3 p, in vec3 r) //las\n{\n    Rot2D(p.xz, r.y);\n    Rot2D(p.yx, r.z);\n    Rot2D(p.zy, r.x);\n    return p;\n}\n\nfloat sdKMC( in vec3 p,    //KIFS Menger Style\n             in int iters,\n             in vec3 fTra,\n             in vec3 fRot,\n             in vec4 para )\n{\n    int i;\n    float col = 0.;\n    float x1, y1;\n    float r = p.x*p.x + p.y*p.y + p.z*p.z;\n    \n    for(i = 0; i < iters && r < 1e6; i++)\n    {\n        if (i > 0)\n        {\n            p -= fTra;\n            p = Rot(p, fRot);\n        }\n\n        p = abs(p);\n\n        if (p.x-p.y < 0.) { x1=p.y; p.y=p.x; p.x=x1;}\n        if (p.x-p.z < 0.) { x1=p.z; p.z=p.x; p.x=x1;}\n        if (p.y-p.z < 0.) { y1=p.z; p.z=p.y; p.y=y1;}\n\n        p.z -= .5 * para.x * (para.y - 1.) / para.y;\n        p.z = -abs(p.z);\n        p.z += .5 * para.x * (para.y - 1.) / para.y;\n\n        p.x = para.y * p.x - para.z * (para.y - 1.);\n        p.y = para.y * p.y - para.w * (para.y - 1.);\n        p.z = para.y * p.z;\n\n        r = p.x*p.x + p.y*p.y + p.z*p.z;\n    }\n\n    return length(p) * pow(para.y, float(-i));\n}\n\nvec2 SDF(vec3 p, float depth) \n{    \n    float d = MAX_DIST, col = 0.;\n        \n    p = abs(Rot(p, vec3(10.5 - depth)));\n\n    float sphere = length(p - vec3(1.8 + sin(iTime/3. + depth)*.6, 0, 0)) - .1; \n    col = mix(col, 1.7, step(sphere, d));\n    d = min(sphere, d);\n    \n    float torus = length( vec2(length(p.yz) - 1.2, p.x)) - .01;\n    col = mix(col, 1.3, step(torus, d));\n    d = min(torus, d);\n        \n    float menger = sdKMC(p*2.9, 8, vec3(sin(iTime/53.))*.4, vec3(sin3(iTime/64.)*PI), vec4(2., 3.5, 4.5, 5.5)) / 2.9;\n    col = mix(col, floor(mod(length(p)*1.5, 4.))+.5, step(menger, d)); \n    d = min(menger, d);\n    \n    return vec2(d, col);\n}\n\n\nfloat dens = .9;\nvec2 Map(in vec3 p) //Thanks dracusa, nice aticle <3 \n{\n    vec3 pos = p;\n    \n    //forward log-spherical map\n    float r = length(p);\n    p = vec3(log(r), acos(p.z / r), atan(p.y, p.x));\n\n    float t = iTime/10. + iMouse.x/iResolution.x*3.;\n    p.x -= t;\n    float scale = floor(p.x*dens) + t*dens;\n    p.x = mod(p.x, 1. / dens);\n\n    //inverse log-spherical map\n    float erho = exp(p.x);\n    float sintheta = sin(p.y);\n    p = vec3(\n        erho * sintheta * cos(p.z),\n        erho * sintheta * sin(p.z),\n        erho * cos(p.y)\n    );\n\n    vec2 sdf = SDF(p, scale);\n    sdf.x *= exp(scale/dens);\n\n    return sdf;\n}\n\nvec3 Normal(in vec3 p, in float depth)\n{\n    float h = depth / iResolution.y;\n    vec2 k = vec2(1, -1);\n\n    return normalize(   k.xyy * Map(p + k.xyy * h).x + \n                        k.yyx * Map(p + k.yyx * h).x + \n                        k.yxy * Map(p + k.yxy * h).x + \n                        k.xxx * Map(p + k.xxx * h).x );\n}\n\nvec3 RayMarch(vec3 ro, vec3 rd) \n{\n    float col = 0.;\n\tfloat dO = mix(MIN_DIST, MAX_DIST/2., S(.9, 1., sin(iTime/24.)*.5+.5));\n    int steps = 0;\n    \n    for(int i = 0; i < MAX_STEPS; i++) \n    {\n        steps = i;\n        \n    \tvec3 p = ro + rd*dO;\n        vec2 dS = Map(p);\n        col = dS.y;\n        dO += min(dS.x, length(p)/12.);\n        \n        if (dO > MAX_DIST || dS.x < dO / iResolution.y) break;\n    }\n    \n    return vec3(steps == 0 ? MIN_DIST : dO, steps, col);\n}\n\nfloat CalcAO(const in vec3 p, const in vec3 n) //IQ\n{\n    float occ = AO_OCC;\n    float sca = AO_SCA;\n\n    for( int i = 0; i < 5 ; i++ )\n    {\n        float h = .001 + .150 * float(i) / 4.;\n        float d = Map(p + h * n).x;\n        occ += (h - d) * sca;\n        sca *= .95;\n    }\n    return S(0., 1. , 1. - 1.5 * occ);    \n}\n\n\nconst vec3 ambCol = vec3(.03,.05,.1) * 5.5;\nconst vec3 sunCol = vec3(1., .7, .4) * 1.2;\nconst vec3 skyCol = vec3(.3, .5, 1.) * .04;\nconst float specExp = 4.;\n\nvec3 Shade(vec3 col, float mat, vec3 p, vec3 n, vec3 rd, vec3 lp) \n{\n\n    vec3    lidi = normalize(lp - p);\n    float   amoc = CalcAO(p, n),\n            diff = max(dot(n, lidi), 0.),\n            spec = pow(diff, max(1., specExp * mat)),\n            refl = pow(max(0., dot(lidi, reflect(rd, n))), max(1., specExp * 3. * mat));\n\n    return  col * (amoc * ambCol +                                          //ambient\n                   (1. - mat) * diff * sunCol +                             //diffuse\n                   mat * (spec + refl) * sunCol);                           //specular\n                   \n}\n\nvec3 hsv2rgb_smooth(in vec3 c) //IQ\n{\n    vec3 rgb = clamp( abs(mod(c.x*6.+vec3(0.,4.,2.),6.)-3.)-1., 0., 1.);\n\trgb = rgb*rgb*(3.-2.*rgb);\n    \n\treturn c.z * mix( vec3(1.), rgb, c.y);\n}\n\nvec3 Palette(int index)\n{\n    switch (index)\n    {\n        case 0: return vec3(1., 1., 1.);\n        case 1: return vec3(1., .8, .6);\n        case 2: return vec3(.6, .8, 1.);\n        case 3: return hsv2rgb_smooth(vec3(fract(iTime/21.), .65, .8));\n    }\n    return vec3(0.);\n}\n\nvec3 Ray(in vec2 uv, in vec3 p, in vec3 l)\n{\n\n    vec3   f = normalize(l - p),\n           r = normalize(cross(vec3(0,1,0), f)),\n           u = cross(f,r),\n           c = p + f,\n           i = c + uv.x*r + uv.y*u;\n           \n    return normalize(i - p);\n}\n\nvec4 PP(vec3 col, vec2 uv)\n{\n    col = mix(col, (col * (2.51 * col + .03)) / (col * (2.43 * col + .59) + .14), PP_ACES);\n    col = mix(col, S(vec3(0), vec3(1), col), PP_CONT);    \n    col *= S(PP_VIGN,-PP_VIGN/5., dot(uv,uv)); \n    col = pow(col, vec3(1) / GAMMA);\n    \n    return vec4(col, 1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-.5 * iResolution.xy) / iResolution.y;\n\tvec2 m = iMouse.xy / iResolution.xy;\n    if (length(m) <= .1) m = vec2(.5);\n\n    vec3 ro = vec3(0, 0, -MAX_DIST/2.);\n    ro.yz = Rot2D(ro.yz, -m.y * PI + PI*.5);\n    ro.xz = Rot2D(ro.xz, -m.x * PI*2. - PI);\n    vec3 rd = Ray(uv, ro, vec3(0));\n    \n    vec3 bg = skyCol;\n    vec3 col = bg;\n    vec3 p = vec3(0);\n    vec3 rmd = RayMarch(ro, rd);\n\n    if (rmd.x <= MIN_DIST) col = Palette(int(floor(rmd.z)))/8.;\n    else if (rmd.x < MAX_DIST) \n    {\n        p = ro + rd * rmd.x;\n        vec3 n = Normal(p, rmd.x);\n        \n        float shine = fract(rmd.z);\n        col = Palette(int(floor(abs(rmd.z))));\n        col = Shade(col, shine, p, n, rd, vec3(0));   \n    }\n    \n    float disFac = S(0.0, 1.0, pow(rmd.x / MAX_DIST, 2.));\n    \n    col = mix(col, bg, disFac);\n    col += pow(rmd.y / float(MAX_STEPS), 2.5) * normalize(ambCol) * \n            (GLOW_INT + (rmd.x < MAX_DIST ? 3.*S(.995, 1., sin(iTime/2. - length(p)/20.)) : 0.)); //glow wave\n    \n    fragColor = PP(col, uv);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "musicstream",
+                        "id": 33315,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/derschamane/aerosoul"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

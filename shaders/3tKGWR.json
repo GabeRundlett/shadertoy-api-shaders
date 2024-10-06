@@ -1,0 +1,47 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1578672840",
+            "description": "Look of phasor/Gabor noise along a random divergence-free flow from Perlin noise.\nUsing convolution with hash grid instead of sparse convolution with random splats.\n( NB: time evolution is not physically correct: better change slowly )\nMouse.y tunes freq",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3tKGWR",
+            "likes": 30,
+            "name": "Gabor/Phasor flow",
+            "published": 3,
+            "tags": [
+                "noise",
+                "perlin",
+                "fluid",
+                "flow",
+                "field",
+                "complex",
+                "screenspace",
+                "curlnoise",
+                "stream",
+                "fingerprint",
+                "gabornoise",
+                "phasornoise"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 1214
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"flow by Perlin noise\"     https://shadertoy.com/view/Xl3Gzj\n//   and \"Moebius Spiral Gabor field\" https://shadertoy.com/view/wtt3RH\n// ( see also https://www.shadertoy.com/view/ldtSzn\n//            https://shadertoy.com/view/wtt3z8 \n//            https://shadertoy.com/view/wtcGRH )\n// see also: distance field variant https://www.shadertoy.com/view/WtK3DR\n\n// --- Gabor params & utils\n\nfloat F = 1.2;                     // frequency\n#define W 12.                      // filtering neighborhood\n#define N int(W*2.+0.)             // sampling = NxN   ( N=2W+1 but smaller may work )\n#define PI 3.14159\n#define TG 0.*iTime                // try 1\n#define CS(a)       vec2( cos(a+TG), sin(a+TG) )\n#define hash2(p)    fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453)\n#define cmul(A,B) ( mat2( A, -(A).y, (A).x ) * (B) )  // by deMoivre formula\n\n// --- flow params\n\n#define TF .2*iTime                // flow speed\nfloat S = 3.;                      // scaling of flow\n \n\n// --- Perlin noise by inigo quilez - iq/2013   https://www.shadertoy.com/view/XdXGW8\n//     (extended to 3D)\nvec3 hash( vec3 p )\n{\n\tp *= mat3( 127.1,311.7,-53.7,\n\t\t\t   269.5,183.3, 77.1,\n\t\t\t  -301.7, 27.3,215.3 );\n\n\treturn 2.*fract(sin(p)*43758.5453123) -1.;\n}\n\nfloat noise( vec3 p )\n{\n    vec3 i = floor( p ),\n         f = fract( p ),\n\t     u = f*f*(3.-2.*f);\n \n    return 2.*mix(\n              mix( mix( dot( hash( i + vec3(0,0,0) ), f - vec3(0,0,0) ), \n                        dot( hash( i + vec3(1,0,0) ), f - vec3(1,0,0) ), u.x),\n                   mix( dot( hash( i + vec3(0,1,0) ), f - vec3(0,1,0) ), \n                        dot( hash( i + vec3(1,1,0) ), f - vec3(1,1,0) ), u.x), u.y),\n              mix( mix( dot( hash( i + vec3(0,0,1) ), f - vec3(0,0,1) ), \n                        dot( hash( i + vec3(1,0,1) ), f - vec3(1,0,1) ), u.x),\n                   mix( dot( hash( i + vec3(0,1,1) ), f - vec3(0,1,1) ), \n                        dot( hash( i + vec3(1,1,1) ), f - vec3(1,1,1) ), u.x), u.y), u.z);\n}\n\nfloat Mnoise(vec3 U ) {\n    return noise(U);                      // base turbulence\n  //return -1. + 2.* (1.-abs(noise(U)));  // flame like\n  //return -1. + 2.* (abs(noise(U)));     // cloud like\n}\n\nfloat turb( vec2 U, float t )\n{ \tfloat f = 0., q=1., s=0.;\n\t\n    float m = 2.; \n // mat2 m = mat2( 1.6,  1.2, -1.2,  1.6 );\n    for (int i=0; i<2; i++) {\n      U -= t*vec2(.6,.2);\n      f += q*Mnoise( vec3(U,t) ); \n      s += q; \n      q /= 2.; U *= m; t *= 1.71;  // because of diff, we may rather use q/=4.;\n    }\n    return f/s; \n}\n// -----------------------------------------------\n\n// draw line segment\n#define L(a,b) O+= .3/R.y/length( clamp( dot(U-(a),v=b-(a))/dot(v,v), 0.,1.) *v - U+a )\n\n// === Gabor noise =============\n\nvec2 Gabor(vec2 U, vec2 V) {\n    vec2 P, v, s = vec2(0);\n    float T=0., K;    \n    for( int k = 0; k < N*N; k++) {            // Gabor noise: convolve with noise with K*oscill\n        P = vec2( k%N, k/N ) -  W;             // sample neighborhood ( W = float(N-1)/2. )\n      //v = CS( 2.*PI* hash2( U+P ));          // random complex signal\n      //v = cmul( v, CS(-F*dot(P,V)));         // mul by oscillator in main direction\n        v = CS( 2.*PI* hash2( U+P )            // random complex signal\n                - F* dot(P,V) );               // mul by oscillator in main direction\n        K = .5+.5*cos(PI*min(1.,length(P)/W)); // smoothing kernel\n        s += v * K;\n        T += K;\n    }\n    return s / T; \n}\n\n// ========================================================\n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    vec2 R = iResolution.xy,\n         U = u/R.y;\n    O -= O;\n                                        // --- generates flow\n\tfloat eps = 1e-3;\n    //U -= t*vec2(.3,.1);                      // translation (or do it per band)\n    \n    float n = turb(S*U,TF);                     // pure noise = stream\n \n                                               // flow = rot(stream) \n\tvec2  V = vec2( turb(S*U+vec2(0,-eps),TF) - turb(S*U+vec2(0,eps),TF),\n                    turb(S*U+vec2(eps,0),TF)  - turb(S*U+vec2(-eps,0),TF)\n                  )/ eps;\n    //V += vec2(3,0);                          // linearly combine other base flows\n    V /= R.y;\n    \n#if 0                                   // --- draw flow ( debug )\n  //O += pow(.5+.5*sin(100.*n),1./2.2); return;\n\tO = clamp(vec4(n,0,-n,0),0.,1.);           // draw stream value (note that curl = lapl(stream) so they are very similar)\n    S = R.y/10.;\n    vec2 p = floor(U*S+.5)/S, v;               // draw velocity vectors\n    L ( p-V*2., p+V*2.);  //O.rb = u-u;  \n    //return;\n#endif\n    O += .2*vec4(n,0,-n,0);                    // show stream ( for debug )\n \n    vec2 M = iMouse.xy;                 // --- draw Gabor/Phasor noise\n    if (length(M)>10.) F = .2+M.y/R.y*1.8; \n    V = normalize(V);  // direction only\n  //V *= R.y;          // variant: varying length\n#if 1\n    if (fract(iTime/3.8)>.5) V = vec2(-V.y,V.x); // normal field\n    vec2 s = Gabor(u -.5*R, V );\n    float T = \n         //   4.*length(s);                    // show contrast oscillations\n              .5+.5*normalize(s).x;            // phasor profile\n // T = pow( T, 1./2.2);                       // to sRGB\n    O += T;\n#else                                          // local grid\n    O.r = .5+.5*normalize(Gabor(u -.5*R, V )).x;\n    V = vec2(-V.y,V.x); \n    O.g = .5+.5*normalize(Gabor(u -.5*R, V )).x;\n#endif\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

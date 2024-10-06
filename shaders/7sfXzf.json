@@ -1,0 +1,201 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1618955201",
+            "description": "Tunnel with capsules textured with fluid, fluid text is tiled. Neon lights drawn in un-repeated space (thanks NR4 for the help!). Audiovisual piece: https://youtu.be/d39Aq7E1d-8",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "7sfXzf",
+            "likes": 9,
+            "name": "Quiet Chaos",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "repetition",
+                "neon"
+            ],
+            "usePreview": 0,
+            "username": "miczac",
+            "viewed": 1483
+        },
+        "renderpass": [
+            {
+                "code": "//uncomment to see the fluid tiles texture\n//#define VISUALIZE_FLUID_TILES\n\n#define TAU 6.283189\n#define PI 3.14159265358\n\n#define GRID vec2(10,5)\nconst ivec2 iGRID = ivec2(GRID);\n#define CAP_LENGTH 2.\n#define TUNNEL_RADIUS 1.5\n#define CAP_RADIUS 0.05\n#define COMET_RADIUS 0.015\n\n#define FLUID_FADE_OUT 0.999\n#define LINE_LENGTH 0.04\n#define TRAPEZOID vec2(0.4, 0.6)\n#define FLUID_STRETCH vec2(8,.8)\n#define FLUID_TEX_ROTA sin(iTime*20.1)\n\n#define TRANSPARENCY_PASSES 50.\n\n#define CAMERA_MULT vec4(1,15,5,TAU)\n\nconst float fNUMBER_OF_OBJECTS = GRID.x*GRID.y;\nconst int NUMBER_OF_OBJECTS = int(fNUMBER_OF_OBJECTS);\n\nfloat Envelopes[NUMBER_OF_OBJECTS];\nvec3  Positions[NUMBER_OF_OBJECTS];\nvec4  Notes[NUMBER_OF_OBJECTS];      \nvec4  Lines[NUMBER_OF_OBJECTS]; \nvec3  Comets[NUMBER_OF_OBJECTS];\n\nvec3 encodeSRGB(vec3 linearRGB)\n{\n    vec3 a = 12.92 * linearRGB;\n    vec3 b = 1.055 * pow(linearRGB, vec3(1.0 / 2.4)) - 0.055;\n    vec3 c = step(vec3(0.0031308), linearRGB);\n    return mix(a, b, c);\n}\n\nfloat envelope(float time, float freq)\n{\n   return 1.-fract(freq*time);   \n}\n\nfloat hash(float n){\n    return fract(sin(n)*753.5453123);\n}\n\nvec3 hash31( float n )\n{\n    return fract(sin(vec3(n,n+1.0,n+2.0))*vec3(43758.5453123,22578.1459123,19642.3490423));\n}\n\nfloat trapezoid(float x, vec2 begin_end)\n{\n//given a 0-1 ramp draw a trapezoid \n    //since the incoming envelope is a ramp from 1 to 0, invert it (it makes more sense)\n    x = 1.-x;\n    float trapez = min(smoothstep(0., begin_end.x, x),smoothstep( 1.,begin_end.y, x)); \n    return trapez;\n\n}\n\nfloat ln (vec2 p, vec2 a, vec2 b) \n{ // returns distance to line segment \n    return length(p-a-(b-a)*clamp(dot(p-a,b-a)/dot(b-a,b-a),0.,1.));\n}\n\nvec2 path_grid(float id)\n{\n    float sector_width  = 1./ GRID.x;\n    float sector_height = 1./ GRID.y;\n    vec2 grid_pos = vec2(mod(id,GRID.x), floor(id/GRID.x)); \n    float  pos_x = grid_pos.x*sector_width+sector_width*0.5;\n    float pos_y = grid_pos.y*sector_height+sector_height*0.5;\n   \n   return vec2(pos_x, pos_y);   \n}\n\nfloat sdCapsule( vec3 p, vec3 a, vec3 b, float r)\n{\n  vec3 pa = p - a, ba = b - a;\n  float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n  return length( pa - ba*h ) - r;//*h-(r*0.3);\n}\n\nmat2 rotate(float angle)\n{\n    return mat2(cos(angle),-sin(angle),sin(angle),cos(angle));\n}\nvec2 capsule_uv(vec3 p, float cap_length, float rota)\n{\n// texture a capsule placed at xz = 00  with variable y_pos and length\n    p.xz *= rotate(rota);\n    float u = fract((atan(p.z,p.x)/ 2.) / PI + 0.5);\n    float v = p.y/ cap_length;\n    return vec2(u,v);\n}\n\nmat3 camera( in vec3 ro, in vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\nfloat slide(float cur, float tar, float slu, float sld)\n{\n    //slide up or slide down\n    float del = (tar>cur) ?  slu : sld;\n \tcur += (tar - cur) * del;\n    return    cur;\n}\n\n\nmat2 rotate(vec2 angles)\n{\n    return mat2(cos(angles.x),-sin(angles.x),sin(angles.y),cos(angles.y));\n}\n\nmat2 radial_repeat(vec2 p, float time, inout float id)\n{\n    float angle = TAU/GRID.x;\n    float radial_pos = atan(p.x,p.y)+angle*0.5;//-pi<>pi\n    float radial_sector = floor(radial_pos/angle);\n    //since atan has a disconituity at the edge (-PI<>PI) rotate\n    //slighlty tohave each sector contain the object, even at the edges\n    p.xy *= rotate(angle*0.25);\n    //id = floor(((atan(p.y,p.x)+TAU*0.5)/TAU)*GRID.x)/GRID.x;\n    id = floor(((atan(p.y,p.x)+TAU*0.5)/TAU)*GRID.x);\n    return rotate(angle*radial_sector);\n}\n\nfloat depth_repeat(float z, float time, inout float id)\n{\n    id = mod(floor(abs(z)), GRID.y);\n    z =  mod(z,1.) - 0.5;\n    //bounded z\n    //z =  z < -floor(abs(z)/GRID.y) && z < 0. ? mod(z,1.) - 0.5 : z + 0.5; \n    return z;\n\n}\n\nvec3 light_color(int id)\n{\n    return hash31(float(id)*0.003);\n}\n\nvec2 hash_displace(float id, float z)\n{\n    return vec2(sin(float(id)*210.656)*0.2,cos(float(id)*3020.121454)*0.3);\n\n}\n\n//https://www.shadertoy.com/view/MscSDB\nvec2 tunnel_path(in float z){ float s = sin(z/24.)*cos(z/16.); return vec2(s*9., 0); }\n\nvoid Update(sampler2D MIDI, float time)\n{\n    float angle = TAU/GRID.x;   \n    for(int id_rad   = 0; id_rad   < iGRID.x; id_rad++)\n    for(int id_depth = 0; id_depth < iGRID.y; id_depth++)\n    {\n        int id_line = id_rad+id_depth*iGRID.x;\n        float env = texelFetch(MIDI,ivec2(id_line,0),0).x;\n        Envelopes[id_line] = env;\n        float env_motion = 2.-pow(env,1.5)*1.8;\n        vec3 pos = vec3(0,env_motion,0)+vec3(0,TUNNEL_RADIUS,0);\n        pos.xz += hash_displace(float(id_line),time);\n        Positions[id_line] = pos;\n        //position in unrotated space\n        float uenv_motion = 2.-pow(env,1.5)*1.8;\n        vec3 upos = vec3(0,uenv_motion,0)+vec3(0,TUNNEL_RADIUS,0);\n        upos.xz += hash_displace(float(id_line),time);\n        float z = time-mod(time+float(id_depth), GRID.y)-0.5;\n        upos.xy *= rotate(float(id_rad+3)*angle);\n        upos.z += z;\n        upos.xy += tunnel_path(z);\n        Comets[id_line] = upos;\n    }\n}\n\nvec2 sphDistances( vec3 ro, vec3 rd, vec4 sph )\n{\n    vec3 oc = ro - sph.xyz;\n    float b = dot( oc, rd );\n    float c = dot( oc, oc ) - sph.w*sph.w;\n    float h = b*b - c;\n    float d = sqrt( max(0.0,sph.w*sph.w-h)) - sph.w;\n    return vec2( d, -b-sqrt(max(h,0.0)) );\n}\n\n\nbool vec_is_less(vec2 inp, vec2 compare)\n{\n    bool x = inp.x < compare.x;\n    bool y = inp.y < compare.y;\n    return x && y;\n}\n\nbool vec_is_greater(vec2 inp, vec2 compare)\n{\n    bool x = inp.x > compare.x;\n    bool y = inp.y > compare.y;\n    return x && y;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    ivec2 iCoo = ivec2(fragCoord);\n    if(iCoo.y == 0 && iCoo.x < NUMBER_OF_OBJECTS)\n    {\n        vec3  vfd = hash31(float(iCoo.x));\n        float vel = vfd.x, freq = vfd.y*0.2, dur = 1./(vfd.z*55.);\n        float new_ramp     = envelope(iTime, freq);\n        vec4  prev_data    = iFrame < 1 ? vec4(0,0.5, 0.6, 1.) : texelFetch(iChannel0,iCoo,0);\n        float prev_env     = prev_data.x, \n              accum_env    = prev_data.y+prev_env*0.05,\n              prev_ramp    = prev_data.y;\n        bool trigger = new_ramp > prev_ramp;\n        float env = prev_env;\n        if(trigger)\n        {\n            env = 1.;            \n        } \n        else {env = slide(env, 0., 1.,dur);}\n        fragColor = vec4(env, new_ramp, 0.,0.);\n     }\n     else if (iCoo.y == 1 && iCoo.x < NUMBER_OF_OBJECTS)\n     {\n     //create 2 sets of texel coordinates, one slightly ahead of the other \n     //to draw line on fluid texture\n         vec2 point_ahead = path_grid(float(iCoo.x));\n         vec2 point_behind = point_ahead-vec2(0,LINE_LENGTH*1.);\n         fragColor = vec4(point_behind, point_ahead);\n     }  \n    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//from https://www.shadertoy.com/view/XtGcDK\nvec4 T ( vec2 U ) \n{\n//added mod on x dimension to wrap around sphere\n    U.x = mod(U.x, iResolution.x-1.);\n    if(U.x < 0.) U.x == iResolution.x-1.;\n    vec2 R = iResolution.xy;\n    return texture(iChannel0,U/R);\n} // samples fluid\n\nvec2 R;\n\nvoid mainImage( out vec4 Q, in vec2 U )\n{   \n    \n    R = iResolution.xy;\n\n \tvec2 O = U,A = U+vec2(1,0),B = U+vec2(0,1),C = U+vec2(-1,0),D = U+vec2(0,-1);\n \tvec4 u = T(U), a = T(A), b = T(B), c = T(C), d = T(D);\n \tvec4 p;\n \tvec2 g = vec2(0);\n \t#define I 2\n \tfor (int i = 0; i < I; i++) {\n        U -=u.xy; A -=a.xy; B -=b.xy; C -=c.xy; D -=d.xy; \n        p += vec4(length(U-A),length(U-B),length(U-C),length(U-D))-1.;\n        g += vec2(a.z-c.z,b.z-d.z);\n        u = T(U);a = T(A); b = T(B); c = T(C); d = T(D);\n \t}   \n \tQ = u; \n \tvec4 N = 0.25*(a+b+c+d);\n \tQ = mix(Q,N, vec4(0,0,1,0)); \n \tQ.xy -= g/10./float(I); \n \tQ.z += (p.x+p.y+p.z+p.w)/10.; \n \tQ.z *= FLUID_FADE_OUT;\n    float sector_width = R.x / GRID.x;\n    float sector_height = R.y / GRID.y;\n    for(int x = 0; x < iGRID.x; x++)\n    for(int y = 0; y < iGRID.y; y++)\n    {\n        vec2 sector = vec2(float(x) * sector_width, float(y) * sector_height);\n        vec2 next_sector = sector + vec2(sector_width,sector_height);\n        bool is_inside_sector = vec_is_greater(U, sector) && vec_is_less(U, next_sector);\n        if(is_inside_sector)\n        {\n             int id = x + y*iGRID.x;\n            float env = texelFetch(iChannel1,ivec2(id,0),0).x;\n            if( env < 0.0001)\n            {\n                Q = mix(Q,vec4(0), 0.5);\n            }\n            else\n            {\n                //pixel coordinates of line to be drawn\n                vec4 line = texelFetch(iChannel1,ivec2(id,1),0)*R.xyxy;\n                float trapez = 1.-trapezoid(env,TRAPEZOID);\n                float q = ln(U,line.xy,line.zw);\n                vec2 m = line.xy-line.zw;\n                float l = length(m);\n                if (env  > .5 && l>0.) \n                {\n                    // accelerate fluid and add ink\n                    Q.xyw = mix(Q.xyw,vec3(-normalize(m)*min(l,10.)/5.,1.),max(0.,4.*trapez-q)/15.); \n                }\n            }\n\n        }\n        \n     }\n \t// init zeros\n \tif (iFrame < 1) Q = vec4(0);\n    //wipe is on iChannel1 (buff A)\n    //float wipe = 1.-texelFetch(iChannel1, ivec2(4, 0),0).x;\n    //float thickness = 0.2;\n    //Q = mix(Q, Q*wipeClean(wipe,U.y/R.y, thickness, true), WIPE_THICKNESS);\n    //Q.xy += grid_pos.xy*0.01;\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec4 T ( vec2 U ) \n{\n//added mod on x dimension to wrap around sphere\n    U.x = mod(U.x, iResolution.x-1.);\n    if(U.x < 0.) U.x == iResolution.x-1.;\n    vec2 R = iResolution.xy;\n    return texture(iChannel0,U/R);\n} // samples fluid\n\nvec2 R;\n\n\nvoid mainImage( out vec4 Q, in vec2 U )\n{   R = iResolution.xy;\n \tvec2 O = U,A = U+vec2(1,0),B = U+vec2(0,1),C = U+vec2(-1,0),D = U+vec2(0,-1);\n \tvec4 u = T(U), a = T(A), b = T(B), c = T(C), d = T(D);\n \tvec4 p;\n \tvec2 g = vec2(0);\n \t#define I 2\n \tfor (int i = 0; i < I; i++) {\n        U -=u.xy; A -=a.xy; B -=b.xy; C -=c.xy; D -=d.xy; \n        p += vec4(length(U-A),length(U-B),length(U-C),length(U-D))-1.;\n        g += vec2(a.z-c.z,b.z-d.z);\n        u = T(U);a = T(A); b = T(B); c = T(C); d = T(D);\n \t}   \n \tQ = u; \n \tvec4 N = 0.25*(a+b+c+d);\n \tQ = mix(Q,N, vec4(0,0,1,0)); \n \tQ.xy -= g/10./float(I); \n \tQ.z += (p.x+p.y+p.z+p.w)/10.;\n  \tQ.z *= FLUID_FADE_OUT;\n \t// init zeros\n \tif (iFrame < 1) Q = vec4(0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec4 T ( vec2 U ) \n{\n//added mod on x dimension to wrap around sphere\n    U.x = mod(U.x, iResolution.x-1.);\n    if(U.x < 0.) U.x == iResolution.x-1.;\n    vec2 R = iResolution.xy;\n    return texture(iChannel0,U/R);\n} // samples fluid\nvec2 R;\n\n\nvoid mainImage( out vec4 Q, in vec2 U )\n{   R = iResolution.xy;\n \tvec2 O = U,A = U+vec2(1,0),B = U+vec2(0,1),C = U+vec2(-1,0),D = U+vec2(0,-1);\n \tvec4 u = T(U), a = T(A), b = T(B), c = T(C), d = T(D);\n \tvec4 p;\n \tvec2 g = vec2(0);\n \t#define I 2\n \tfor (int i = 0; i < I; i++) {\n        U -=u.xy; A -=a.xy; B -=b.xy; C -=c.xy; D -=d.xy; \n        p += vec4(length(U-A),length(U-B),length(U-C),length(U-D))-1.;\n        g += vec2(a.z-c.z,b.z-d.z);\n        u = T(U);a = T(A); b = T(B); c = T(C); d = T(D);\n \t}   \n \tQ = u; \n \tvec4 N = 0.25*(a+b+c+d);\n \tQ = mix(Q,N, vec4(0,0,1,0)); \n \tQ.xy -= g/10./float(I); \n \tQ.z += (p.x+p.y+p.z+p.w)/10.;\n  \tQ.z *= FLUID_FADE_OUT;\n \t// init zeros\n \tif (iFrame < 1) Q = vec4(0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec4 get_fluid_texture(float id, vec2 cap_uv, sampler2D fluid, float time)\n{\n     //offset texture section by object id\n    vec2 sector_dim  = vec2(1./ GRID.x,1./ GRID.y);\n    //added half sector offset to uv.y since the drop is drawn in the middle\n    vec2 grid_pos = vec2(mod(id,GRID.x), floor(id/GRID.x)+sector_dim.y*0.5)*sector_dim; \n    float stretch = 1./FLUID_STRETCH.x;\n    //stretch middle of the texture section \n    cap_uv.x = (cap_uv.x*stretch+(1.-stretch)*0.5);\n    cap_uv *= sector_dim;\n    cap_uv.y /= FLUID_STRETCH.y;\n    cap_uv += grid_pos;\n    vec4 fluid_section = texture(fluid,cap_uv);\n    return fluid_section;\n}\n\nvec4 map(vec3 p, float time)\n{\n    vec3 q = p; \n    q.xy -= tunnel_path(q.z);\n    float id_rad = -1.;\n    mat2 rot_mat = radial_repeat(q.xy, time, id_rad); \n    q.xy *= rot_mat;\n    float  id_depth = 0.;\n    q.z = depth_repeat(q.z, time, id_depth);\n    int id_line = int(id_depth * GRID.x + id_rad);\n    vec3 front = Positions[id_line];\n    float envelope = Envelopes[id_line];\n    vec3 back = front +vec3(0,CAP_LENGTH,0);\n    vec2 cap_uv = capsule_uv(q-front, CAP_LENGTH*2., FLUID_TEX_ROTA*(envelope+0.1));\n    vec4 fluid = get_fluid_texture(float(id_line), cap_uv, iChannel1, time);\n    float bump = CAP_RADIUS*fluid.y*1.1;\n    float radius = CAP_RADIUS + bump ;\n    float cap = sdCapsule(q,front,back, radius);\n    return vec4(cap*0.7, id_line,cap_uv);    \n}\n\nvec2 comet_distance(vec3 ro, vec3 rd, int id_line, float time)\n{\n    //distance from comet's head in unrotated space, first used for lighting, \n    //second as a bool condition for drawing: if > than dist do not draw\n    float angle = TAU/GRID.x;\n    vec3 pos = Positions[id_line];\n    float env = texelFetch(iChannel0,ivec2(id_line,0),0).x;\n    int id_depth = id_line/iGRID.x, id_rad = int(mod(float(id_line),GRID.x));\n    float z = time-mod(time+float(id_depth), GRID.y)-0.5;\n    pos.xy *= rotate(float(id_rad+3)*angle);\n    pos.z += z;\n    pos.xy += tunnel_path(z);\n    float comet_radius = COMET_RADIUS;\n    vec2 com_distance = vec2(sphDistances(ro,rd,vec4(pos,0.8)).x,sphDistances(ro,rd,vec4(pos,CAP_LENGTH*0.5)).x );\n    //this is a hack I struggle with: to avoid drawing extra comets in the background\n    com_distance.y = 1.-com_distance.y;\n   \n    return com_distance;\n}\n\nvec3 comet_lights(vec3 ro, vec3 rd)\n{\n    //neon lights are drawn in unrotated space thank you Alex Anderson for the help with this step!\n    vec3 res = vec3(0);\n    for(int id = 0; id <  NUMBER_OF_OBJECTS; id++)\n    {\n        float comet_radius = COMET_RADIUS;\n        vec3 pos = Comets[id];\n        float env = Envelopes[id];\n        //calc light\n        float light_distance = sphDistances(ro,rd,vec4(pos,comet_radius)).x;\n        float falloff = .52*sqrt(env);\n        float light_intensity = falloff/pow(abs(light_distance),.42);\n        light_intensity =pow(light_intensity,5.4545)*(1.-env);        \n        res += light_color(id)*light_intensity;\n    }\n     return res;\n}\n\nvec3 normal(vec3 p, float time)\n{\n    vec2 e = vec2(1.0,-1.0)*0.5773*0.0005;\n    return normalize( e.xyy*map( p + e.xyy, time).x  + \n\t\t\t\t\t  e.yyx*map( p + e.yyx, time).x  + \n\t\t\t\t\t  e.yxy*map( p + e.yxy, time).x  + \n\t\t\t\t\t  e.xxx*map( p + e.xxx, time).x );\n}\n\nvec4 intersect(vec3 ro, vec3 rd, float time)\n{\n    float dist = 0.;\n    float id = -1.;\n    vec2 cap_uv = vec2(0);\n    for(int i =0; i < 80; i++)\n    {\n        vec3 p = ro + rd*dist;\n        vec4 hit = map(p, time);\n        id = hit.y;\n        dist +=  hit.x;\n        cap_uv = hit.zw;\n        if( dist > 20. || abs(dist) < 0.01) break;\n    }\n    return vec4(dist,id,cap_uv);\n}\n\nvec3 render(vec3 ro, vec3 rd, float time)\n{\n    //adapted from transparencey shader by Shane: https://www.shadertoy.com/view/Xd3SDs\n    vec3 lig_pos = normalize(vec3(2.,1.,0));\n    float ray_dist = length(rd), accum_dist;\n    //light variables\n    float light_dist, surf_light;\n    float thresh_dist = 0.05125; \n    vec3 background = vec3(0.02, 0.014, 0.03);\n    vec3 col = vec3(0.);\n    for(float i=0.; i< TRANSPARENCY_PASSES; i++)\t\n    {\n        // Break conditions. Anything that can help you bail early usually increases frame rate.\n        if( dot(col, vec3(.299, .587, .114)) > 1. || ray_dist> 26.) break;\n        vec3 p = ro + rd*ray_dist;\n        vec4 obj = map(p, time);\n        float hit = obj.x, id = obj.y;\n        vec2 cap_uv = obj.zw;\n        float envelope = Envelopes[int(id)];\n        accum_dist = (thresh_dist-abs(hit)*31./32.)/thresh_dist;\n        if(accum_dist > 0.)\n        {\n            vec3 p = ro+rd*hit;\n            vec3 norm = normal(p,time)*sign(hit);\n            vec3 single_col = max(0.,dot(norm, lig_pos)*0.5+0.5)*light_color(int(id))*2.;\n            //fluid texture\n            vec4 fluid = get_fluid_texture(id, cap_uv+vec2(0.,0.1),iChannel1, time);\n            //distances from head of comet, one for \n            vec2 comet_dist = comet_distance(ro,rd,int(id),time);\n            if(comet_dist.y > 0.5 && fluid.w > 0.)\n            {\n                col +=max(vec3(0),single_col*sin(fluid.w*1.5*fluid.x*10.* fluid.y*5.2*fluid.z*vec3(1,2,3)));\n            }\n            //col = max(col,col*(.3852/pow(comet_dist.x,0.1268)*envelope));\n        }\n        ray_dist += max(abs(hit)*.95, thresh_dist*.15);\n    }\n    col += comet_lights(ro,rd)*1.5;\n    col = encodeSRGB(col);\n    return col;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n#ifdef VISUALIZE_FLUID_TILES\n    fragColor = texelFetch(iChannel1, ivec2(fragCoord.xy),0);\n#else   \n    float time      = -iTime*3., \n          cam_y     = (iMouse.y/iResolution.y)*20., \n          cam_z     = 1.,\n          cam_rota  = 0.;//(iMouse.x/iResolution.x)*TAU;\n    Update(iChannel0,time);\n    vec3 ro = vec3(0,0,0);\n    vec2 uv = (2.*(fragCoord) - iResolution.xy) /iResolution.y;\n    vec3 lookat    = vec3(0,0,time) ;\n    float cam_dist_norm = cam_y/CAMERA_MULT.y;\n    ro = vec3(0,0,cam_z);\n    ro += lookat;\n    lookat.xy += tunnel_path(lookat.z);\n    ro.xy += tunnel_path(ro.z);\n    ro.y += cam_y;\n    ro.xy *= rotate(cam_rota);\n    mat3 cam = camera(ro, lookat, 0.);\n    float lens_aperture = 0.5+1.2*cam_y/CAMERA_MULT.y;\n    vec3 rd = cam*normalize(vec3(uv,lens_aperture));\n    vec3 col = vec3(0);\n    col = render(ro,rd, time);\n    col = pow(clamp(col,0.,1.),vec3(.45));\n    fragColor = vec4(col,1.0);\n#endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

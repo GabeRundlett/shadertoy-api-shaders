@@ -1,0 +1,162 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1614842785",
+            "description": "Testing out using the cube map buffer to pipeline jump flooding steps.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wl3fWX",
+            "likes": 63,
+            "name": "Van Damme - Distance",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "cubemap",
+                "distance",
+                "realtime",
+                "flood",
+                "jfa"
+            ],
+            "usePreview": 0,
+            "username": "Flyguy",
+            "viewed": 1676
+        },
+        "renderpass": [
+            {
+                "code": "#define INPUT 0\n#define STENCIL 1\n#define OUTLINE 2\n#define DISTANCE 3\n#define NORMAL 4\n#define NEON 5\n\n#define VIEW_MODE DISTANCE\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float ps = 1.0/iResolution.y;\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    vec3 col = vec3(0);\n    \n    #if(VIEW_MODE == INPUT)\n        col = texture(iChannel1, uv, 0.0).aaa;\n        \n    #elif(VIEW_MODE == STENCIL)\n        col = textureCubeFace(iChannel0, 0.0, uv).xxx;\n        \n    #elif(VIEW_MODE == OUTLINE)\n        col = vec3(abs(textureCubeFace(iChannel0, 0.0, uv).x)/1e5);\n        \n    #elif(VIEW_MODE == DISTANCE)\n        float dist = textureCubeFace(iChannel0, 5.0, uv).z;\n        col = mix(vec3(0.3,0.5,1),vec3(1,0.7,0.3),step(0.,dist)); //Color based on sign (-/+)\n        col *= 0.9+0.1*(-cos(dist*300.0)); //Isolines\n        col *= smoothstep(ps,3.0*ps,abs(dist)); //Outline\n        col *= 1.0/(1.0+abs(dist)*15.); //Fade out\n        \n    #elif(VIEW_MODE == NORMAL)\n        col.xy = 0.5+0.5*textureCubeFace(iChannel0, 5.0, uv).xy;\n        \n     #elif(VIEW_MODE == NEON)\n        float dist = textureCubeFace(iChannel0, 5.0, uv).z;\n        col += vec3(0.1,0.1,1.0)/(abs(dist)*100.0);\n        col += vec3(0.1,0.5,0.1)/(abs(dist-0.1)*100.0);\n        col += vec3(0.5,0.1,0.1)/(abs(dist-0.2)*100.0);\n        \n    #endif\n    \n    fragColor = vec4(col, 1); \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Utilizes the cubemap buffer as 6 1024x1024 buffers, 2 passes per face.\n//Jump floods a 1-pixel wide outline of the stencil.\n//Initializes non-outline pixels as vec2(+/-maxDist) to store the sign.\n//The JFA function leaves the sign unchanged through each step.\n//The sign is then re-applied to the calculated distance at the end.\n\nconst float cubeRes = 1024.0; // X/Y Resolution of each cubemap face. \nconst float maxSteps = 10.;// Max# of JFA steps\nconst float maxDist = 1e5;// Max distance \n\n//Coordinate pairs for the JFA function.\n#define XY 0\n#define ZW 1\n\n//Outputs the stencil (x) and 1 pixel wide outline (y)\nvec2 outline(vec2 uv, vec2 pixelSize)\n{\n    float center = step(0.0, texture(iChannel0, uv, 0.0).a);\n    \n    vec4 neighbors = vec4(\n        texture(iChannel0, uv + pixelSize*vec2( 0, 1), 0.0).a,\n        texture(iChannel0, uv + pixelSize*vec2( 0,-1), 0.0).a,\n        texture(iChannel0, uv + pixelSize*vec2(-1, 0), 0.0).a,\n        texture(iChannel0, uv + pixelSize*vec2( 1, 0), 0.0).a\n    );\n    neighbors = step(0.0, neighbors); \n    \n    return vec2(center, min(1.0, center*dot(1.0-neighbors, vec4(1))));\n}\n\n//Jump flooding algorithim on a cubemap face.\n//buf -------> cubemap buffer to sample\n//uv --------> current uv coords\n//aspect ----> aspect ratio correction\n//jfaStep ---> current step\n//cubeFace --> cubemap face to sample\n//coordPair -> coordinate pair to sample (XY or ZW)\nvec2 JFA(samplerCube buf, vec2 uv, vec2 aspect, float jfaStep, float cubeFace, int coordPair)\n{\n    float nearestDist = maxDist;\n    float stepSize = exp2(maxSteps - jfaStep)/cubeRes;\n\n    vec4 nearestCoord = textureCubeFace(buf, cubeFace, uv);\n    nearestCoord.xy = (coordPair == ZW) ? nearestCoord.zw : nearestCoord.xy;\n    \n    float sdfSign = sign(nearestCoord.x);\n    \n    for(int i = -1; i <= 1; i++)\n    {\n        for(int j = -1; j <= 1; j++)\n        {\n            vec2 curUV = uv + vec2(i,j) * stepSize;\n            \n            vec4 curCoord = abs(textureCubeFace(buf, cubeFace, curUV));\n            \n            curCoord.xy = (coordPair == ZW) ? curCoord.zw : curCoord.xy;\n            \n            float curDist = length(curCoord.xy - vec2(uv*aspect));\n            \n            if(curCoord.xy != vec2(0) && curDist < nearestDist)\n            {\n                nearestCoord.xy = curCoord.xy;\n                nearestDist = curDist;\n            }\n        }\n    }\n    \n    return abs(nearestCoord.xy)*sdfSign;\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 ro, in vec3 rd )\n{\n    vec3 face = rayToFace(rd);\n    vec2 uv = face.xy;\n    vec2 aspect = vec2(textureSize(iChannel0,0));\n    aspect = aspect / aspect.y;\n    \n    vec4 cout = vec4(0);\n    \n    cout.xy = JFA(iChannel1, uv, aspect, face.z*2.0, face.z-1.0, ZW);\n    \n    if(face.z == 0.0) //Initialize XY with stencil/outline on face 0.\n    {\n        vec2 edge = outline(uv, vec2(1.0/cubeRes));\n        cout.xy = vec2(uv*aspect)*edge.y; //outline\n        cout.xy = (edge.y == 0.0) ? vec2(maxDist*(2.0*edge.x-1.0)) : cout.xy; //sign\n    }\n    \n    cout.zw = JFA(iChannel1, uv, aspect, face.z*2.0+1.0, face.z, XY);\n    \n    //Calculate the signed distance and normals.\n    if(face.z == 5.0) \n    {\n        vec2 coord = cout.xy;\n        cout.xy = normalize(uv*aspect - abs(coord));\n        cout.z = distance(uv*aspect, abs(coord)) * sign(coord.x);\n        cout.w = 0.0;\n    }\n    \n\n    // Output to cubemap\n    fragColor = vec4(cout);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "//Converts a ray direction to uv coords (xy, normalized) & a face id (z, 0-5).\n//for the cubemap face it's pointing to.\nvec3 rayToFace(vec3 rd)\n{\n    vec3 asign = sign(rd);\n    rd = abs(rd);\n    float amax = max(max(rd.x,rd.y),rd.z);\n    \n    vec3 face = (rd.x == amax) ? vec3(asign.yz*rd.yz, floor(1.+.5*asign.x)) :\n                (rd.y == amax) ? vec3(asign.xz*rd.xz, floor(3.+.5*asign.y)) :\n                (rd.z == amax) ? vec3(asign.xy*rd.xy, floor(5.+.5*asign.z)) : \n                                 vec3(0,0,-1);\n    face.xy = .5+.5*(face.xy/amax);\n    return face;\n}\n\n//opposite of rayToFace\n//Converts normalized uv coords & a face id to a ray direction\n//for cubemap sampling\nvec3 faceToRay(vec3 face)\n{\n    face.xy = 2.*fract(face.xy)-1.;\n    vec3 rd = (face.z == 0.) ? vec3(-1,face.x,face.y) :\n              (face.z == 1.) ? vec3( 1,face.x,face.y) :\n              (face.z == 2.) ? vec3(face.x,-1,face.y) :\n              (face.z == 3.) ? vec3(face.x, 1,face.y) :\n              (face.z == 4.) ? vec3(face.x,face.y,-1) :\n              (face.z == 5.) ? vec3(face.x,face.y, 1) :\n                               vec3(0);\n    return normalize(rd);\n}\n\n//Sample a cubemap face (0-5) with normalized uv coords.\nvec4 textureCubeFace(samplerCube cube, float face, vec2 uv)\n{\n    vec3 rd = faceToRay(vec3(uv,floor(face)));\n    return texture(cube, rd, 0.0).rgba;  \n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//Input image, stencil is generated from the alpha channel.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec3 col = texture(iChannel0,uv,0.0).rgb;\n    \n    float d = clamp(3.0*(col.g-max(col.r,col.b)),0.0,1.0);\n\n    fragColor = vec4(col.rgb, d-0.8);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 36,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/35c87bcb8d7af24c54d41122dadb619dd920646a0bd0e477e7bdc6d12876df17.webm"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

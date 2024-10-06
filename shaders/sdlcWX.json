@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1642997880",
+            "description": "A modification of my raymarcher with simple volumetrics. No proper volumetric lighting yet, however. Check the newer version: [url=https://www.shadertoy.com/view/7lyBWc]https://www.shadertoy.com/view/7lyBWc[/url]",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "sdlcWX",
+            "likes": 3,
+            "name": "Raymarcher - Volumetrics",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "volumetric"
+            ],
+            "usePreview": 0,
+            "username": "SpinningCube",
+            "viewed": 310
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nRaymarcher - Volumetrics\n\nUses a constant step size, and samples from a 3D layered noise texture.\n\n\nFilmic Transform curve by milesWaugh\n\n*/\n\nconst int maxSteps = 256;\nconst float epsilon = 0.01;\nconst float pi = 3.1415926536;\nconst float focalLength = 0.7;\nconst float renderDist = 8000.;\n\nvec3 camera;\nfloat SDE;\nvec3 ray;\nfloat rayDensity;\n\nvec3 surfCol;\nvec3 surfNormal;\nfloat surfSpecular;\nfloat surfRoughness;\nbool updateMat;\n\nfloat diffuse = 0.;\nfloat specular;\n//vec3 ambient = 1.5*vec3(0.2, 0.5, 1.);\nvec3 ambient = vec3(0.2);\n\nvec3 rayDirection( float focal, vec2 xy ) {\n    return (normalize(vec3(xy, focal)));\n}\n\n//struct ray {\n\n// SDFs\n\nfloat Sphere( vec3 ray, vec3 pos, float radius ) {\n    return distance(ray, pos ) - radius;\n}\n\nfloat SphereVolume( vec3 ray, vec3 pos, float radius, float density ) {\n    return density * max(0., (radius - distance(ray, pos))/radius);\n}\n\nfloat Ground( vec3 ray, float y ) {\n    return ray.y - y;\n}\n\nvoid addSDF( float SDF, vec3 col, float specular, float roughness ) {\n    if ( SDF < SDE ) {\n        SDE = SDF;\n        if (updateMat) {\n        \tsurfCol = col;\n        \tsurfSpecular = specular;\n        \tsurfRoughness = roughness * roughness;\n        }\n    }\n}\n\nfloat Noise3D(vec3 pos) {\n    int layers = 6;\n    float noise = 0.;\n    for (int i = 1; i <= layers; i++) {\n        float scale = pow(2., float(i));\n        noise += 1./scale * texture(iChannel0, 0.008*pos*scale).r;\n    }\n    \n    return noise/(1. - pow(2.,-float(layers)));\n}\n\nvec2 scene( vec3 ray, float renderDist ) {\n\n    float density = 0.;\n    \n    SDE = renderDist;\n    \n    vec3 sinVector = vec3(1., 0.81, 1.23);\n    \n    vec3 colx = vec3(0.25*sin((ray/5.)*sinVector)+0.5);\n    \n    //addSDF( Ground( ray, -2.5), colx, 1.5, 0.03 );\n    addSDF( Sphere( ray, vec3(0.), 2.), 0.4 * vec3(0.2,1.,0.2), 1.5, 0.1 );\n    \n    density += SphereVolume( ray, vec3(0.), 12., 7. * pow(Noise3D(ray + iTime + 1./60. * vec3(0.5, 1, 0.5)), 8.));\n    \n    return vec2(SDE, density);\n}\n\nvec3 calcNormal( vec3 p )\n{\n    const float h = 10. * epsilon; // replace by an appropriate value\n    const vec2 k = vec2(1,-1);\n    return normalize( k.xyy * scene( p + k.xyy*h, renderDist ).x + \n                      k.yyx * scene( p + k.yyx*h, renderDist ).x + \n                      k.yxy * scene( p + k.yxy*h, renderDist ).x + \n                      k.xxx * scene( p + k.xxx*h, renderDist ).x);\n    \n}\n\nvec4 shootRay( vec3 rayDir, vec3 start, float renderDist, bool updateMaterial ) {\n    rayDensity = 0.;\n    float firstStepSize = 0.1;\n    float secondStepSize = 0.001;\n    updateMat = updateMaterial;\n    ray = start;\n    float rayLength = 0.;\n    for ( int i = 0; i <= maxSteps; i++ ) {\n        \n        rayDensity += scene( ray, renderDist ).y*firstStepSize;\n        \n        //rayLength += SDE;\n        rayLength += firstStepSize;\n        ray = rayDir * rayLength + start;\n        \n        if ( rayLength > renderDist ) {\n            return vec4(0., ray);\n        }\n        if ( SDE < epsilon ) {\n            for ( int i = 0; i <= maxSteps; i++ ) {\n        \n                scene( ray, renderDist );\n                rayLength -= secondStepSize;\n                ray = rayDir * rayLength + start;\n                if (SDE >= 0.) {\n                    break;\n                }\n            }\n            if ( SDE < epsilon ) {\n                return vec4(1., ray);\n            }\n            else {\n                return vec4(0., ray);\n            }\n        }\n    }\n    return vec4(0., ray);\n}\n\nfloat GGX (float halfDot, float roughness) {\n    float r2 = roughness*roughness;\n    float a = halfDot * halfDot * (r2 - 1.) + 1.;\n    return r2 / (a * a);\n}\n\nvoid directionalLight(vec3 ray, vec3 rayDir, vec3 lightDir, vec3 surfNormal, float intensity, float lightDist) {\n    if ( shootRay(lightDir, ray + (surfNormal * epsilon), lightDist, false).x == 0. ) {\n        float lambertian = dot(surfNormal, lightDir);\n        diffuse += max(intensity * lambertian, 0.);\n\t\t\n        vec3 halfway = normalize(lightDir - rayDir);\n        float halfDot = dot(surfNormal, halfway);\n    \tspecular += max(lambertian * intensity * GGX(halfDot, surfRoughness), 0.);\n\n    }\n}\n\nvoid pointLight( vec3 ray, vec3 rayDir, vec3 position, float intensity, vec3 surfNormal ) {\n    vec3 lightDir = normalize(position - ray);\n    directionalLight( ray, rayDir, lightDir, surfNormal, intensity, distance(position, ray) );\n}\n\nvoid sceneLights(vec3 ray, vec3 rayDir, vec3 surfNormal) {\n    directionalLight( ray, rayDir, normalize(vec3(-1,1,-2)), surfNormal, 3., 0. );\n}\n\nvec3 filmicTransform(vec3 color) {\n    //return color;\n    return vec3(1. - (1./(5. * pow(color.x, 2.) + 1.)),\n                1. - (1./(5. * pow(color.y, 2.) + 1.)),\n                1. - (1./(5. * pow(color.z, 2.) + 1.)));\n}\n\nfloat fresnel(float IOR, float roughness, vec3 surfNormal, vec3 incoming) {\n    float F0 = (1. - IOR)/(1. + IOR);\n    F0 *= F0;\n    return F0 + (1. - roughness)*((1. - F0) * pow(1. - dot(surfNormal, incoming),5.));\n}\n\nvec3 lighting(vec3 ray, vec3 rayDir, vec3 surfNormal) {\n    diffuse = 0.;\n    specular = 0.;\n    \n    sceneLights(ray, rayDir, surfNormal);\n    \n    float fog = clamp(length(ray - camera)/(renderDist), 0., 1.);\n    //fog = fog*fog;\n    //fog = fog*fog;\n    //vec3 finalCol = (diffuse * surfCol) + (ambient * surfCol) + specular;\n    float f = fresnel(1.5, surfRoughness, surfNormal, -rayDir);\n    vec3 finalCol = mix(surfCol * (diffuse + ambient), vec3(specular) + ambient, f);\n    finalCol = mix(finalCol, ambient, fog);\n    \n    return finalCol;\n}\n\nmat2 rotate(float a) {\n    float sinA = sin(a);\n    float cosA = cos(a);\n    return mat2(cosA, -sinA, sinA, cosA);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float sinTime = 0.5*sin(1.*iTime)+0.5;\n    //camera = vec3(10.*sinTime, 2.*sinTime, 10.*sinTime);\n    //camera = vec3(0.);\n    camera = vec3(0, 0, -20);\n    \n    // Normalized pixel coordinates (from 0 to 1)\n    \n    //\n    vec2 mouse = iMouse.xy/iResolution.xy - vec2(0.5);\n    \n    if(iMouse.xy == vec2(0.)){\n        mouse = vec2(0.);\n    }    \n    \n    camera.yz *= rotate(pi * -mouse.y);\n    camera.xz *= rotate(2. * pi * -mouse.x);\n    \n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (fragCoord - iResolution.xy/2.)/iResolution.x;\n    vec2 UV = fragCoord/iResolution.xy;\n    vec3 rayDir = rayDirection( focalLength, uv );\n    \n    rayDir.yz *= rotate(pi * -mouse.y);\n    rayDir.xz *= rotate(2. * pi * -mouse.x);\n    \n    vec4 rayData = shootRay( rayDir, camera, renderDist, true );\n    \n    float cameraRayDensity = rayDensity;\n    \n    vec3 col;\n    \n    if (rayData.x == 1.) {\n        vec3 surfNormal = calcNormal( rayData.yzw );\n    \tcol = lighting( rayData.yzw, rayDir, surfNormal );\n    }\n    else {\n        col = ambient;\n    }\n    \n    col = filmicTransform( col * exp(-cameraRayDensity) );\n\n    // Output to screen\n    fragColor = vec4(pow(col, vec3(1./2.2)),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

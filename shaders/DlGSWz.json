@@ -1,0 +1,78 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1686028127",
+            "description": "Using a 2D BVH as well as quadratic bezier curves to accelerate arbitrary parametric curve rendering via SDFs.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "DlGSWz",
+            "likes": 10,
+            "name": "Parametric Curve BVH SDF",
+            "published": 3,
+            "tags": [
+                "2d",
+                "sdf",
+                "bezier",
+                "curve",
+                "quadratic",
+                "bvh",
+                "parametric"
+            ],
+            "usePreview": 0,
+            "username": "fad",
+            "viewed": 445
+        },
+        "renderpass": [
+            {
+                "code": "// This shader implements two strategies for faster SDF rendering of\n// arbitrary parametric curves:\n// \n// 1. Construct a BVH (or I guess BAH for Bounding Area Heirarchy) for\n//    the parametric curve and use that to find the closest point rather\n//    than a linear search. Here I do a depth-first search to find the\n//    closest point, but a breadth-first search would be more\n//    appropriate but that is much harder to do in a fragment shader.\n//    Perhaps an iterative deepening depth-first search?\n// 2. Instead of interpolating two points on the parametric curve with a\n//    linear segment, interpolate them with a quadratic bezier segment,\n//    matching the tangent directions at the end points. This ends up\n//    being faster than linear segments for the same level of detail,\n//    but if the end tangents are misbehaved then the interpolation\n//    won't be faithful to the actual parametric curve. \n// \n// Enable/disable the BVH and switch from linear to quadratic\n// interpolation with the #defines in the Common tab.\n\nfloat sdSegment(vec2 p, vec2 a, vec2 b) {\n    vec2 ap = p - a;\n    vec2 ab = b - a;\n    return distance(ap, ab * clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0));\n}\n\nfloat sdAABB(vec2 p, vec2 a, vec2 b) {\n    vec2 d = abs(p - (a + b) / 2.0) + (a - b) / 2.0;\n    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);\n}\n\nfloat sdParametricSegment(vec2 p, float t1, float t2) {\n#if INTERPOLATION == LINEAR\n    return sdSegment(p, f(t1), f(t2));\n#elif INTERPOLATION == BEZIER\n    vec2 p1 = f(t1);\n    vec2 p2 = f(t2);\n    return sdBezier(\n        p, p1, controlPoint(p1, p2, fDerivative(t1), fDerivative(t2)), p2\n    );\n#endif\n}\n\n#if METHOD == LINEAR_SEARCH\nfloat sdParametric(vec2 p) {\n    float minSD = MAX_FLOAT;\n    \n    for (int i = 0; i < numSamples; ++i) {\n        float t1 = mix(tMin, tMax, float(i) / float(numSamples));\n        float t2 = mix(tMin, tMax, float(i + 1) / float(numSamples));\n        minSD = min(minSD, sdParametricSegment(p, t1, t2));\n    }\n    \n    return minSD;\n}\n#elif METHOD == BVH_SEARCH\nint numTexelFetches = 0;\n\nfloat sdParametric(vec2 p) {\n    float tRange = tMax - tMin;\n    int depth = 0;\n    int pos = 0;\n    int w = textureSize(iChannel0, 0).x;\n    float minSD = MAX_FLOAT;\n    \n    while (true) {\n        int size = 1 << depth;\n        int i = size - 1 + pos;\n        vec4 aabb = texelFetch(iChannel0, ivec2(i % w, i / w), 0);\n        float sd = sdAABB(p, aabb.xy, aabb.zw);\n        \n        if (minSD <= sd || size * 2 > numSamples) {\n            if (size * 2 > numSamples) {\n                float t1 = mix(tMin, tMax, float(pos) / float(size));\n                float t2 = mix(tMin, tMax, float(pos + 1) / float(size));\n                minSD = min(minSD, sdParametricSegment(p, t1, t2));\n            }\n        \n            while (pos % 2 == 1) {\n                --depth;\n                pos /= 2;\n            }\n            \n            ++pos;\n            \n            if (depth == 0 && pos == 1) {\n                break;\n            }\n            \n            continue;\n        }\n        \n        ++depth;\n        pos *= 2;\n    }\n    \n    return minSD;\n}\n#endif\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    fragColor = vec4(1.0);\n    float height = 7.0;\n    float scale = iResolution.y / height;\n    vec2 p = (fragCoord - iResolution.xy / 2.0) / scale;\n    float sd = sdParametric(p) * scale - 2.0 / 2.0;\n    float spacing = 10.0;\n    float thickness = 1.0;\n    float opacity = clamp(\n        0.5 + 0.5 * thickness - \n        abs(mod(sd - (spacing - thickness) * 0.5, spacing) - spacing * 0.5), \n        0.0, 1.0\n    ) * 0.8 * exp(-sd / iResolution.y * 8.0);\n    fragColor.rgb = mix(fragColor.rgb, vec3(0.0), opacity);\n    fragColor.rgb = mix(fragColor.rgb, vec3(0.0), clamp(0.5 - sd, 0.0, 1.0));\n    fragColor.rgb = pow(fragColor.rgb, vec3(1.0 / 2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define LINEAR_SEARCH 1\n#define BVH_SEARCH 2\n#define METHOD BVH_SEARCH\n\n#define LINEAR 3\n#define BEZIER 4\n#define INTERPOLATION BEZIER\n\nconst float PI = 3.14159265;\nconst float MAX_FLOAT = uintBitsToFloat(0x7f7fffffu);\n\nvec2 f(float t) {\n    return \n        vec2(sin(t), cos(t)) * \n        (exp(cos(t)) - 2.0 * cos(4.0 * t) - pow(sin(t / 12.0), 5.0)) +\n        vec2(0.0, -0.7);\n}\n\nvec2 fDerivative(float t) {\n    const float h = 0.0001;\n    return (f(t + h * 0.5) - f(t - h * 0.5)) / h;\n}\n\nconst float tMin = 0.0;\nconst float tMax = 24.0 * PI;\nconst int numSamples = 512; // must be a power of 2 for BVH_SEARCH\n\nvec2 controlPoint(vec2 a, vec2 c, vec2 da, vec2 dc) {\n    // Calculate the control point for a quadratic bezier curve with end\n    // points a, c with tangent directions da, dc\n    return a + da * (inverse(mat2(da, dc)) * (c - a)).x;\n}\n\n// solveQuadratic(), solveCubic(), solve() and sdBezier() modified from\n// Quadratic Bezier SDF With L2 - Envy24\n// https://www.shadertoy.com/view/7sGyWd\n\nint solveQuadratic(float a, float b, float c, out vec2 roots) {\n    // Return the number of real roots to the equation\n    // a*x^2 + b*x + c = 0 where a != 0 and populate roots.\n    float discriminant = b * b - 4.0 * a * c;\n\n    if (discriminant < 0.0) {\n        return 0;\n    }\n\n    if (discriminant == 0.0) {\n        roots[0] = -b / (2.0 * a);\n        return 1;\n    }\n\n    float SQRT = sqrt(discriminant);\n    roots[0] = (-b + SQRT) / (2.0 * a);\n    roots[1] = (-b - SQRT) / (2.0 * a);\n    return 2;\n}\n\nint solveCubic(float a, float b, float c, float d, out vec3 roots) {\n    // Return the number of real roots to the equation\n    // a*x^3 + b*x^2 + c*x + d = 0 where a != 0 and populate roots.\n    const float TAU = 6.2831853071795862;\n    float A = b / a;\n    float B = c / a;\n    float C = d / a;\n    float Q = (A * A - 3.0 * B) / 9.0;\n    float R = (2.0 * A * A * A - 9.0 * A * B + 27.0 * C) / 54.0;\n    float S = Q * Q * Q - R * R;\n    float sQ = sqrt(abs(Q));\n    roots = vec3(-A / 3.0);\n\n    if (S > 0.0) {\n        roots += -2.0 * sQ * cos(acos(R / (sQ * abs(Q))) / 3.0 + vec3(TAU, 0.0, -TAU) / 3.0);\n        return 3;\n    }\n    \n    if (Q == 0.0) {\n        roots[0] += -pow(C - A * A * A / 27.0, 1.0 / 3.0);\n        return 1;\n    }\n    \n    if (S < 0.0) {\n        float u = abs(R / (sQ * Q));\n        float v = Q > 0.0 ? cosh(acosh(u) / 3.0) : sinh(asinh(u) / 3.0);\n        roots[0] += -2.0 * sign(R) * sQ * v;\n        return 1;\n    }\n    \n    roots.xy += vec2(-2.0, 1.0) * sign(R) * sQ;\n    return 2;\n}\n\nint solve(float a, float b, float c, float d, out vec3 roots) {\n    // Return the number of real roots to the equation\n    // a*x^3 + b*x^2 + c*x + d = 0 and populate roots.\n    if (a == 0.0) {\n        if (b == 0.0) {\n            if (c == 0.0) {\n                return 0;\n            }\n            \n            roots[0] = -d/c;\n            return 1;\n        }\n        \n        vec2 r;\n        int num = solveQuadratic(b, c, d, r);\n        roots.xy = r;\n        return num;\n    }\n    \n    return solveCubic(a, b, c, d, roots);\n}\n\nfloat sdBezier(vec2 p, vec2 a, vec2 b, vec2 c) {\n    vec2 A = a - 2.0 * b + c;\n    vec2 B = 2.0 * (b - a);\n    vec2 C = a - p;\n    vec3 T;\n    int num = solve(\n        2.0 * dot(A, A),\n        3.0 * dot(A, B),\n        2.0 * dot(A, C) + dot(B, B),\n        dot(B, C),\n        T\n    );\n    T = clamp(T, 0.0, 1.0);\n    float best = 1e30;\n    \n    for (int i = 0; i < num; ++i) {\n        float t = T[i];\n        float u = 1.0 - t;\n        vec2 d = u * u * a + 2.0 * t * u * b + t * t * c - p;\n        best = min(best, dot(d, d));\n    }\n    \n    return sqrt(best);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// BVH Construction\n\n#if METHOD == BVH_SEARCH\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n    int i = int(fragCoord.x) + int(fragCoord.y) * int(iResolution.x);\n    \n    if (i > numSamples * 2 - 1) {\n        return;\n    }\n    \n    int d = int(log2(float(i + 1)));\n    int n = 1 << d;\n    int j = i + 1 - n;\n    int s = numSamples / n;\n    \n#if INTERPOLATION == LINEAR\n    #define Q(x)\n#elif INTERPOLATION == BEZIER\n    #define Q(x) x\n#endif\n    \n    float t = mix(tMin, tMax, float(j) / float(n));\n    vec2 p1 = f(t);\n    Q(vec2 d1 = fDerivative(t));\n    vec2 a = p1;\n    vec2 b = p1;\n    \n    for (int k = 1; k <= s; ++k) {\n        float t = mix(tMin, tMax, float(j * s + k) / float(numSamples));\n        vec2 p2 = f(t);\n        Q(vec2 d2 = fDerivative(t));\n        Q(vec2 c = controlPoint(p1, p2, d1, d2));\n        a = min(p2, a);\n        b = max(p2, b);\n        Q(a = min(c, a));\n        Q(b = max(c, b));\n        p1 = p2;\n        Q(d1 = d2);\n    }\n    \n    fragColor = vec4(a, b);\n}\n#else\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {}\n#endif",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

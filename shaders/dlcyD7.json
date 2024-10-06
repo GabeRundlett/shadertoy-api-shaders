@@ -1,0 +1,88 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1699288013",
+            "description": "This comes off the back of some research I did:\n[url]https://alister-chowdhury.github.io/posts/20231030-preserving-small-values/[/url]\nI have a fast encode/decode for bit packed uints using denormals.\nSadly, I don't know how widespread support is on GPUs.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "dlcyD7",
+            "likes": 13,
+            "name": "Does Your GPU Support Denormals?",
+            "published": 3,
+            "tags": [
+                "utility",
+                "font",
+                "ieee"
+            ],
+            "usePreview": 1,
+            "username": "krax",
+            "viewed": 1711
+        },
+        "renderpass": [
+            {
+                "code": "#define MSG(A, B, C, D, E, F, G, H)                                                                                    \\\n    {                                                                                                                  \\\n        uint[] msg = uint[8](A, B, C, D, E, F, G, H);                                                                  \\\n        if(coord.x >= 0 && coord.x < 32)                                                                               \\\n        {                                                                                                              \\\n            c = msg[coord.x / 4] >> (coord.x & 7) * 8;                                                                 \\\n        }                                                                                                              \\\n    }\n\n\n#define RUN_TEST(flag, A, B, C, D, E, F, G, H)                                                                         \\\n    {                                                                                                                  \\\n        uint[] msg = uint[8](A, B, C, D, E, F, G, H);                                                                  \\\n        msg[7] = flag ? 2745414048u : 3166286262u;                                                                     \\\n        if(coord.x >= 0 && coord.x < 32)                                                                               \\\n        {                                                                                                              \\\n            c = msg[coord.x / 4] >> (coord.x & 7) * 8;                                                                 \\\n            if (coord.x >= 28)                                                                                         \\\n            {                                                                                                          \\\n                col.xyz = flag ? vec3(0., 1., 0.) : vec3(1., 0., 0.);                                                  \\\n            }                                                                                                          \\\n        }                                                                                                              \\\n    }\n\n\nfloat unpackNorm(uint src, uint shift, uint numbits)\n{\n    // These should be evaluated statically at compile-time\n    uint maxValue = (1u << numbits) - 1u;\n    uint floatShift = 24u - numbits;\n    uint mask = maxValue << floatShift;\n    float norm = 1.0 / asfloat(mask);\n\n    // This branch should be folded and be a constant\n    // single shift.\n    if(floatShift < shift)\n    {\n        src >>= (shift - floatShift);\n    }\n    else\n    {\n        src <<= (floatShift - shift);\n    }\n\n    src &= mask;\n    return asfloat(src) * norm;\n}\n\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = fragCoord/iResolution.yy;\n    vec2 S = uv * vec2(32., 16.);\n    \n    ivec2 coord = ivec2(S) + ivec2(-2,1);\n    uv = fract(S) * vec2(.03125, .0625) + vec2(.015625, 0.);\n    \n    vec4 col = vec4(1.);\n    uint c = 208u; // 0x\n    uint f = 3166286262u;\n    uint p = 2745414048u;\n    \n    vec4 ref = texelFetch(iChannel0, ivec2(0, 0), 0);\n    \n    switch(coord.y)\n    {\n        // Does your GPU support denormals?\n        // Well, does it?\n        case 15:\n        {\n            MSG(2207621044u,2241833424u,2696401026u,2242105509u,2191491200u,2511655044u,2642583454u,3481509009u);\n            break;\n        }\n        // Sanity\n        // Check if the compiler itself properly handles denormals, it should round\n        // half of 2047 to eiter 1023 or 1024.\n        case 13:\n        {\n            uint rounded = asuint(0.5 * asfloat(2047u));\n            bool ok = (rounded == 1023u) || (rounded == 1024u);\n            RUN_TEST(ok, 2577306019u,3738208644u,3739147998u,3739147998u,3739147998u,3739147998u,3504266974u,3503345872u);\n            break;\n        }\n        // Storage\n        // Did denormals survive being stored in a texture?\n        // (Assuming shader toy uses full float32)\n        case 12:\n        {\n            bool ok = asuint(ref.x) != 0u;\n            RUN_TEST(ok, 2191492259u,3499464593u,3739147998u,3739147998u,3739147998u,3739147998u,3504266974u,3503345872u);\n            break;\n        }\n        // Fast encoding\n        // Were we able to do a fast float to uint conversion via denormals?\n        // We use ref.y which would be 1.0, to ensure the compiler doesn't optimize it away and to ensure\n        // the calculation is done on the GPU.\n        case 11:\n        {\n            bool ok = asuint(ref.y * asfloat(2047u)) == 2047u;\n            RUN_TEST(ok, 2223215030u,2476651984u,2660865183u,3739144343u,3739147998u,3739147998u,3504266974u,3503345872u);\n            break;\n        }\n        // Fast decoding (upper)\n        // Can we atlesat use fast encoding for the upper bits?\n        case 10:\n        {\n            uint _255 = uint(ref.z);\n            bool ok = abs(unpackNorm(_255, 0u, 8u) - 1.) <= 0.05; // very generous bias\n            RUN_TEST(ok, 2223215030u,2476061904u,2660865183u,2245578903u,2190835840u,3739144409u,3504266974u,3503345872u);\n            break;\n        }\n        // Fast decoding (lower)\n        // Did anything less than 0.5 survive?\n        case 9:\n        {\n            uint _255 = uint(ref.z);\n            bool ok = abs(unpackNorm(_255, 0u, 9u) - 0.5) <= 0.05; // very generous bias\n            RUN_TEST(ok, 2223215030u,2476061904u,2660865183u,2631454871u,2190837663u,3739144409u,3504266974u,3503345872u);\n            break;\n        }\n        case 3:\n        {\n            MSG(2627784912u,2508427669u,2627044560u,2510147740u,2241825232u,2508378242u,2224850307u,3503346051u);\n            break;\n        }\n    }\n\n    c &= 0xffu;\n    fragColor = col * texture(iChannel1, vec2(c&15u,c>>4) * .0625 + uv).x;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    fragColor = vec4(asfloat(0x7fffffu), 1., 255.5, 0.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// I have no idea if this even does anything on shadertoy\nprecision highp float;\nprecision highp int;\n\n#define asuint  floatBitsToUint\n#define asfloat uintBitsToFloat\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,59 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1602002085",
+            "description": "mouse control or auto-rotate.\nRed: multiplicative cascaded noise.   Blue: additive cascaded noise.\nfront/back: filaments vs plates\n\nAbout multiplicative noise: [url]/view/Xs23D3[/url]  , [url]/view/XssBWj[/url] , [url]/view/Ms2GDc[/url]",
+            "flags": 1,
+            "hasliked": 0,
+            "id": "3ddcDl",
+            "likes": 31,
+            "name": "anisotropic multiplicative noise",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "3d",
+                "raymarching",
+                "displacement",
+                "antialiasing",
+                "volumetric",
+                "vr",
+                "hairs",
+                "preintegration"
+            ],
+            "usePreview": 1,
+            "username": "FabriceNeyret2",
+            "viewed": 1243
+        },
+        "renderpass": [
+            {
+                "code": "\n// Preintegrated transfer function from https://shadertoy.com/view/tsdcRj\n// - Introduce transfer function ( i.e. LUT(dens) ) to shape the look (much like doctors do for scan data)\n// - Rely on preintegrated density on segment.\n//     inspired by preintegrated segment rendering ( see http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.10.3079&rep=rep1&type=pdf )\n//     NB: they store a small texture(_dens,dens), but here I do it analytically.\n\n#define hash(p)  fract(sin(dot(p, vec3(12.9898, 78.233, 311.7))) * 43758.5453) // https://www.shadertoy.com/view/llySRh\n#define hash3(p) fract(sin((p)*mat3(127.1,311.7, 74.7,  269.5,183.3,246.1,  113.5,271.9,124.6))*43758.5453123)\n\n//#define T(d)   texture(iChannel0, (i+d+.5)/32. ).x     // noise texture\n  #define T(d)   hash(i+d)                               // value noise\n//#define T(d) ( .5+ .7*dot( d-F ,  2.*hash3(i+d)-1. ) ) // gradient noise (Perlin noise)\n\nfloat noise(vec3 x) {  // By default, simple 3D value noise with cubic interpolation\n    vec3 i = floor(x), // Switch to gradient noise above if you wish, but little differences\n         F = fract(x), e = vec3(1,0,0),\n         f = smoothstep(0.,1.,F );\n    vec4 T = mix ( vec4(T(e.zzz),T(e.zxz), T(e.zzx), T(e.zxx) ),\n                   vec4(T(e.xzz),T(e.xxz), T(e.xzx), T(e.xxx) ),\n                   f.x );\n    vec2 v = mix( T.xz, T.yw, f.y);\n    return mix(v.x,v.y,f.z);\n        }\n\nfloat add_noise(vec3 x) {\n    float n = noise(x)/2.;  x *= 2.1; // return n*2.;\n         n += noise(x)/4.;  x *= 1.9;\n         n += noise(x)/8.;  x *= 2.3;\n         n += noise(x)/16.; x *= 1.9;\n         n += noise(x)/32.;\n    return n; \n}\n\nfloat mul_noise(vec3 x) {\n    float n = 2.*noise(x);  x *= 2.1; // return n/2.;\n         n *= 2.*noise(x);  x *= 1.9;\n         n *= 2.*noise(x);  x *= 2.3;\n         n *= 2.*noise(x);  x *= 1.9;\n         n *= 2.*noise(x);\n    return n/2.; \n}\n\nfloat z;\nfloat map(vec3 p )  // bounding sphere (0,0,0), 2.\n{\n    vec3 q = p*2.+ .6*iTime;\n    q /= p.z < 0. ? vec3(1,1,4) :  vec3(4,4,1);\n//  float f =  1.2*add_noise(q) -.2 ;// source noise\n//  float f =  add_noise(q);\n//  float f =  mul_noise(q);\n    float f =  p.x < 0. ? add_noise(q) : mul_noise(q);\n    f *= smoothstep(1.,.8,length(p)/2.);   // source sphere\n\n    f*= smoothstep(.1,.2,abs(p.x));               // empty slice (derivable ) \n    z = length(p)/2.;                             // depth in sphere\n    return f;                        \n}\n\nvec3 sundir = normalize( vec3(0,0,-1) );\nvec2 coord;\n\n#define SQR(x)   ( (x)*(x) )\n#define CUB(x)   ( (x)*(x)*(x) )\n\n  #define sl  200.                               // transition slope transp/opaque\n  #define LUT(d) clamp( .5+sl*(d-.5), 0., 1. ) // transfer function\n\n                                               // integral of transfer function\n  #define intLUT(d0,d1) ( abs(d1-d0)<1e-5 ? 0. : ( I(d1) - I(d0) ) / (d1-d0) ) \n  #define C(d)    clamp( d, .5-.5/sl, .5+.5/sl )\n  #define I0(d) ( .5*d + sl*SQR(d-.5)/2. )\n  #define I(d)  ( I0(C(d)) + max(0.,d-(.5+.5/sl)) )\n\nfloat LUTs( float _d, float d ) { // apply either the simple or integrated transfer function\n    return intLUT(_d,d);\n/*  return coord.x > 0. \n             ?  LUT(d)        // right: just apply transfert function\n             :  intLUT(_d,d); // left: preintegrated transfert function\n*/\n}\n\nfloat intersect_sphere( vec3 O, vec3 D, vec3 C, float r )\n{\n\tfloat b = dot( O-=C, D ),\n\t      h = b*b - dot( O, O ) + r*r;\n\treturn h < 0. ? -1.             // no intersection\n\t              : -b - sqrt(h);\n}\n\nvec4 raymarch( vec3 ro, vec3 rd, vec3 bgcol, ivec2 px )\n{\n\tvec4 sum = vec4(0);\n\tfloat dt = .01,\n         den = 0., _den, lut,\n           t = intersect_sphere( ro, rd, vec3(0), 2.);\n    if ( t == -1. ) return vec4(0); // the ray misses the object \n    t += 1e-5;                      // start on bounding sphere\n    \n    for(int i=0; i<500; i++) {\n        vec3 pos = ro + t*rd;\n        if(   sum.a > .99               // end if opaque or...\n           || length(pos) > 2. ) break; // ... exit bounding sphere\n                                    // --- compute deltaInt-density\n        _den = den; den = map(pos); // raw density\n        float _z = z;               // depth in object\n        lut = LUTs( _den, den );    // shaped through transfer function\n        if( lut > .0                // optim\n          ) {                       // --- compute shading                  \n#if 0                               // finite differences\n            vec2 e = vec2(.3,0);\n            vec3 n = normalize( vec3( map(pos+e.xyy) - den,\n                                      map(pos+e.yxy) - den,\n                                      map(pos+e.yyx) - den ) );\n         // see also: centered tetrahedron difference: https://iquilezles.org/articles/normalsSDF\n            float dif = clamp( -dot(n, sundir), 0., 1.);\n#else                               // directional difference https://iquilezles.org/articles/derivative\n         // float dif = clamp((lut - LUTs(_den, map(pos+.3*sundir)))/.6, 0., 1. ); // pseudo-diffuse using 1D finite difference in light direction \n            float dif = clamp((den - map(pos+.3*sundir))/.6, 0., 1. );             // variant: use raw density field to evaluate diffuse\n#endif\n/*\n            vec3  lin = vec3(.65,.7,.75)*1.4 + vec3(1,.6,.3)*dif,          // ambiant + diffuse\n                  col = vec3(.2 + dif);\n            col = mix( col , bgcol, 1.-exp(-.003*t*t) );   // fog\n*/            \n            vec3 S = pos.x < 0. ? vec3(3,3,2) : vec3(2,3,3);\n            vec3 col = exp(-S *(1.-z));                   // dark with shadow\n         // vec3 col =   exp(- vec3(3,3,2) *(.8-_z));     // dark with depth\n                   //      *  exp(- 1.5 *(1.-z));\n            sum += (1.-sum.a) * vec4(col,1)* (lut* dt*5.); // --- blend. Original was improperly just den*.4;\n        }\n        t += dt;  // stepping\n    }\n\n    return sum; \n}\n\nmat3 setCamera( vec3 ro, vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro),\n\t     cp = vec3(sin(cr), cos(cr),0),\n\t     cu = normalize( cross(cw,cp) ),\n\t     cv = cross(cu,cw);\n    return mat3( cu, cv, cw );\n}\n\nvec4 render( vec3 ro, vec3 rd, ivec2 px )\n{\n    // background sky  \n\tfloat sun = max( dot(sundir,rd), 0. );\n\tvec3 col = // vec3(.6,.71,.75) - rd.y*.2*vec3(1,.5,1) + .15*.5\n\t           //  + .2*vec3(1,.6,.1)*pow( sun, 8. );\n            +  vec3( .8 * pow( sun, 8. ) ); // dark variant\n\n    // clouds    \n    vec4 res = raymarch( ro, rd, col, px );  // render clouds\n    col = res.rgb + col*(1.-res.a);          // blend sky\n    \n    // sun glare    \n\tcol += .2*vec3(1,.4,.2) * pow( sun,3.);\n\n    return vec4( col, 1. );\n}\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy,\n         p = ( 2.*U - R ) / R.y,\n         m = iMouse.z>0. ? 2.* ( 1.- iMouse.xy / R )\n                         : 1.+cos(.3*iTime+vec2(0,11));\n    coord = p;\n // O = vec4( map(vec3(4.*p,0)) ); return;\n    \n    // camera\n    vec3 ro = 4.*normalize(vec3(sin(3.*m.x), m.y, cos(3.*m.x))),\n\t     ta = vec3(0, 0, 0);\n    mat3 ca = setCamera( ro, ta, 0. );\n    // ray\n    vec3 rd = ca * normalize( vec3(p,1.5) );\n    \n    O = render( ro, rd, ivec2(U-.5) );\n // if (floor(U.x)==floor(R.x/2.)) O = vec4(1,0,0,1); // red separator\n}\n\n#define mainVR(O,U,C,D) O = render( C, D, ivec2(U-.5) )",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

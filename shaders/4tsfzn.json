@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1510791886",
+            "description": "I tried to use the cone tracing technique for antialiasing, where each pixel blends between the seen object and a grazed object based on the covered area approximated from the grazing distance.\nIt doesn't seem to work very well. I exaggerated the effect.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4tsfzn",
+            "likes": 1,
+            "name": "signed distance edge AA",
+            "published": 3,
+            "tags": [
+                "antialiasing",
+                "technique"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 781
+        },
+        "renderpass": [
+            {
+                "code": "#define fdist 0.3\n#define iters 100\n#define tol 0.005\n#define maxdist 8.\n#define eps 0.01\n#define bevel 0.05\n#define innerradius 0.1\n#define sidelength 0.25\n#define pix (edgeblur/iResolution.x/fdist)\n#define lightdir vec3(1., 1., 1.)\n#define shadoweps 0.1\n#define shadowiters 20\n#define shadowstep 0.03\n#define sharpness 5.\n\n#define PI 3.1415926\n\n//factor by which to enlarge the solid angle subtended by a pixel in AA\n#define edgeblur 2.5\n\nfloat bevcube(vec3 ro) {\n    vec3 rad = clamp(ro, -sidelength, sidelength);\n    return length(ro-rad) - bevel;\n}\n\nvec2 map(vec3 ro) {\n    \n    //beveled cubes\n    vec2 disp = vec2(1., 0.);\n    float d = bevcube(ro);\n    d = min(d, bevcube(ro + disp.xyy));\n    d = min(d, bevcube(ro - disp.xyy));\n    d = min(d, bevcube(ro + disp.yyx));\n    d = min(d, bevcube(ro - disp.yyx));\n    d = min(d, bevcube(ro - disp.yxy));\n    \n    float d2 = min(d, length(ro + vec3(0., 10., 0.)) - 9.6);\n    if (d2 < d) {\n        return vec2(d2, 2.0);\n    } else {\n    \treturn vec2(d, 1.0);\n    }\n}\n\nfloat shadowtrace(vec3 ro, vec3 rd) {\n    int i;\n    float t = shadoweps;\n    float dist = map(ro+t*rd).x;\n    float fac = 1.0;\n    for (i=0; i<shadowiters; i++) {\n        t += shadowstep;\n        dist = map(ro + t*rd).x;\n        fac = min(fac, dist * sharpness / t);\n    }\n    return fac > 0. ? mix(0.5, 1., fac) : mix(0.5, 0., -fac);\n}\n\nvec4 raytrace(vec3 ro, vec3 rd) {\n    vec2 t = vec2(0.);\n    vec2 m = map(ro);\n    //fac.xyz are consecutive measurements, fac.w is the last local minimum\n    vec4 fac = vec4(maxdist);\n    int i;\n    for (i=0; i<iters; i++) {\n        t.x += m.x;\n        m = map(ro + rd * t.x);\n        fac.x = m.x / t.x;\n        //update facmin to last seen local minimum (not counting voxel borders)\n        if (fac.y < fac.x && fac.y <= fac.z && fac.y < fac.w) {\n            fac.w = fac.y;\n            t.y = t.x;\n        }\n        fac.zy = fac.yx;\n        if (abs(m.x) < tol) {\n            return vec4(t, m.y, fac.w);\n        } else if (t.x > maxdist) {\n            break;\n        }\n    }\n    return vec4(t, 0., fac.w);\n}\n\nvec4 getnormal(vec3 ro) {\n    vec2 d = vec2(eps, 0.0);\n    float x1 = map(ro+d.xyy).x;\n    float x2 = map(ro-d.xyy).x;\n    float y1 = map(ro+d.yxy).x;\n    float y2 = map(ro-d.yxy).x;\n    float z1 = map(ro+d.yyx).x;\n    float z2 = map(ro-d.yyx).x;\n    return vec4(normalize(vec3(\n        x1-x2,\n        y1-y2,\n        z1-z2)),\n        x1+x2+y1+y2+z1+z2-6.*map(ro).x);\n}\n\nvec3 shade(vec3 pos, float mat, vec3 rd) {\n    vec3 col;\n    if (mat < 0.5) return mix(vec3(0.8, 0.9, 1.), vec3(0.2, 0.2, 0.3), pow(abs(rd.y), 3.5));\n    else if (mat < 1.5) col = vec3(0.6, 0.3, 0.8);\n    else col = vec3(0.4, 1., 0.4);\n    vec4 n = getnormal(pos);\n    float fac = dot(n.xyz, lightdir);\n    fac = min(fac, shadowtrace(pos + lightdir * shadoweps, lightdir));\n    fac = max(0.8, fac);\n\n    return fac * col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float h = iMouse.y < 1. ? 0.2 : (iMouse.y/iResolution.y - 0.5) * PI;\n    float ww = (iMouse.x < 1. ? 0. : (iMouse.x/iResolution.x - 0.5) * PI) + iTime/2.;\n    vec3 ro = 2.*vec3(sin(ww)*cos(h), sin(h), cos(ww)*cos(h));\n    vec3 w = -normalize(ro);\n    vec3 u = normalize(cross(w, vec3(0., 10.0, 0.)));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(w*fdist+(fragCoord.x/iResolution.x-0.5)*u+(fragCoord.y-iResolution.y/2.0)/iResolution.x*v);\n    vec4 d = raytrace(ro, rd);\n    float mat = map(ro + d.y*rd).y;\n    vec3 col1 = shade(ro + rd*d.x, d.z, rd);\n    vec3 col2 = shade(ro + rd*d.y, mat, rd);\n    //fac is an approximation of x*sqrt(1-x^2)+arcsin(x), the proportion of area of a\n    //circle that's covered by an edge at position x\n    //float fac = (sin((clamp(d.w/pix, 0., 1.)-0.5)*PI)+1.)/2.;\n    \n    //or just a linear ramp... I don't see the difference\n    float fac = clamp(d.w/pix, 0., 1.);\n    fragColor = vec4(mix(col2, col1, fac), 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

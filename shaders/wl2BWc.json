@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1600066580",
+            "description": "Thin round edges require dense sampling, + a lot of polygons in case of mesh: might be most of them.\nBut when edge footprint is less than a pixel, you can just implement a cylinder shader instead.\nhttp://evasion.imag.fr/~Fabrice.Neyret/misc/index-eng.html",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wl2BWc",
+            "likes": 7,
+            "name": "Rounded edges 3",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "shading",
+                "filtering",
+                "subpixel"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 533
+        },
+        "renderpass": [
+            {
+                "code": "// Render cube with microscopic rounded edges: integrated sub-pixel cylinder shading\n// cf http://evasion.imag.fr/~Fabrice.Neyret/misc/index-eng.html\n// ( Fork of https://shadertoy.com/view/4t2yzR\n//   Base ray-tracing from https://www.shadertoy.com/view/4lBczR\n// )\n\n#define pdot(a,b) max(0.,dot(a,b))\n\nfloat r_round= 6e-2, hpix; // round edge radius; pixel width\n\nvec3 L, H, E; float l;     // lightview geometry + hit dist + material\nvec3 Camb=vec3(0), Cdiff=vec3(1), Cspec=vec3(7); float shininess=200.;\n\nvec4 Phong(vec3 N) {                                       // --- regular Phong\n    float l = pdot(N,L),\n          h = pow( pdot(N,H), shininess);    \n    return vec4( Camb + Cdiff*l + Cspec*h, 1);\n}\nvoid fixN( inout vec3 n0, float s0, vec3 n1, float s1) {   // clamp hidden part by reprojecting n0 to screen plane\n    n0 -= s0*E;\n    float d = 1./sqrt(max(1e-8,1.-s0*s0)),\n         dn = dot(n0,n1);\n    if ( dn < 0. && 1.+dn < s0*(s0+s1) ) d = -d;           // (when ?)\n    n0 *= d;                                               // = normalize, + sign\n }\nvec4 linePhong(vec3 n0, vec3 n1) {                         // --- Phong integral over cylinder slice\n    vec4 col = vec4(0);\n    vec3 dN = n0-n1, N;\n    if (dot(dN,dN)<1e-8) return col;                       // not round edge: normal Phong\n    \n    float s0 = dot(E,n0), s1 = dot(E,n1), dn;\n    if (s0 < 0.) fixN(n0,s0, n1,s1);                       // shouldn't happen, but... \n    if (s1 < 0.) fixN(n1,s1, n0,s0);                       // (still, don't check case both<0.)\n    dN = n0-n1; N = normalize(n0+n1);\n    float a = dot(N,E)*length(dN),\n          e = r_round*a/(l*hpix);                          // fragment cross section\n  //col.a = 1.+0.*min(e,1.); \n    col.a = min(e,1.); \n\n    col.rgb = Camb;\n    float l0 = pdot(n0,L),                                 // ambiant+diffuse: just sides average\n          l1 = pdot(n1,L),\n          l  = (l0+l1)/2., k;\n    if (l==0.) return col;                                 // in shadow\n    col.rgb += Cdiff * l; \n    \n    vec3 K = normalize(cross(n0,n1));                      // specular\n    k = dot(K,H); k = sqrt(max(0.,1.-k*k));                // angle to plane (n0,n1)\n    float h0,h1,h,w;\n    if ( dot(H,N) < 0. || abs(dot(H,dN))/k > 1.-dot(n0,n1) ) { // H not between N0,N1: mean spec\n        h0 = l0 > 0. ? pdot(n0,H) : 0.;\n        h1 = l1 > 0. ? pdot(n1,H) : 0.;\n        h  = (h0+h1)/2.;\n        w  = 1.;\n    } else {                                               // the cool case\n        h = k;\n        w = dot(E,H)/h * sqrt(6.28/shininess)/a;\n    }\n    if (h>1e-4) {\n        h = pow(h,shininess)*w;\n        col.rgb += Cspec * h;\n    }\n    return col;\n}\n\nvoid mainImage(out vec4 O, vec2 U) {                       // === render cube =============\n    float t = iTime, s =  10., e=.1, v; \n    mat2  R = mat2( cos(t + vec4(0,33,11,0)) );            // rotation\n    vec3  q = iResolution, dFx,dFy,\n          p = 1.5*s/q, a, N,                               // ray start\n          D = normalize( vec3( (U+U-q.xy)/q.y, -6) );      // ray direction\n          L = vec3(0,1,0);                                 // light direction\n    hpix = 1./q.y;                                         // pixel width\n    L.xz *= R; L.yz *= R;                                  // to object frame ( turntable: factor rot out of ray loop )\n    p.xz *= R; p.yz *= R;\n    D.xz *= R; D.yz *= R;\n    O = vec4(0);\n    l = 0.;\n    for (int i=0; i<99; i++) {                             // --- ray march\n        q = p, // dFx=dFdx(q),dFy=dFdy(q);\n        a = abs(q)-1.;\n        t = max( a.x, max(a.y,a.z));                       // distance to cube\n        if (t < .0001) { s=0.; break; }                    // hit\n        p += t*D; l+=t;                                    // step closer\n    }\n    dFx=dFdx(q),dFy=dFdy(q);      // No hw pb when here, but make precision high for loop end\n  //O = vec4(length(dFx),length(dFy),0,0)*iResolution.y/20.; return; // debug\n  //O = vec4(.06*l); return;                                         // debug\n    if (s==0.) {                                           // --- if hit\n        int i =  t==a.x ? 0 : t==a.y ? 1 : 2,              // abs(hit face). side = sign(q[i]).\n            j = (i+1)%3, k = (i+2)%3;\n      //O-=O; if (q[i] > 0.) O[i]=1.; else O[j]=O[k]=.7;   // face color\n        N-=N; if (q[i] > 0.) N[i]=1.; else N[i]=-1.;       // normal\n        U.x = q[j]/q[i]; // * sign(q[i]);                  // face parameterization [-1,1]^2\n        U.y = q[k]/abs(q[i]);\n        \n        vec2 V = U; V.x*=sign(q[i]);                       // round edges: find neighbor face\n        mat2 J = mat2(dFx[j],dFx[k],dFy[j],dFy[k]) * 3.;\n      //mat2 J = (mat2(dFdx(V),dFdy(V))) *3.; // inverse() ?\n        J = transpose(J);\n        float ex = length(J[0]), ey = length(J[1]);\n        vec4 C = vec4(0);                                  //    interpol colors\n        v = e;\n        if (V.x>1.-e) C[j]=1., C[k]=C[i]=0.,v=1.-V.x; else if(V.x<e-1.) C[k]=C[i]=.7, C[j]=0., v=1.+V.x;\n        if (V.y>1.-e) C[k]=1., C[j]=C[i]=0.,v=1.-V.y; else if(V.y<e-1.) C[j]=C[i]=.7, C[k]=0., v=1.+V.y;\n        v = .5-.5*v/e;\n      //O = vec4(v);                      return; \n        O = sqrt( mix( O*O, C*C, v) ); // return;\n      //O = vec4(.5+.5*N,0);              return;\n        vec3 N2 = N-N, N0=N;                               //    interpol normals\n        v = 0.;//e;\n        if (V.x>1.-ex) N2[j]=1., v=.5-.5*(1.-V.x)/ex; else if(V.x<ex-1.) N2[j]=-1., v=.5-.5*(1.+V.x)/ex;\n        if (V.y>1.-ey) N2[k]=1., v=.5-.5*(1.-V.y)/ey; else if(V.y<ey-1.) N2[k]=-1., v=.5-.5*(1.+V.y)/ey;\n      //v = .5-.5*v/e;\n      // <><><> test\n      //O = vec4(v); return;\n      //v *= 1.57; N = N*cos(v)+N2*sin(v); O = vec4(.5+.5*N,0); return;\n        N = normalize(mix(N,N2,v));    //  O = vec4(.5+.5*N,0); return;\n              \n        E = -D;\n        H = normalize(L+E); \n      //O *= Phong(N); return;\n        if (v<=0.) N2=N;\n        O = linePhong(N0,N2); if (O.a<1.) O = mix(Phong(N0),O,O.a); \n        U  = .5+.5*U;                                      // normalized parameterization\n        O *= .5+.5*texture(iChannel0, U,0.);               // face texture  \n        \n      //if (U.x<.3 && U.y<.1) O = vec4(length(O.xyz));     // mark corner   \n      //if (U.x<=0. || U.x>=1. || U.y<=0. || U.y>=1.) O++; // debug overflow\n    }\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

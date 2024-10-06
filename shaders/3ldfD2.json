@@ -1,0 +1,163 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1613498126",
+            "description": "Local Light Alignment for Multi-Scale Shape Depiction - Eurographics 2021\n(C) Nolan Mestres, Romain Vergne, Camille Noûs, Joëlle Thollot\n\nControls in the comment section and code.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "3ldfD2",
+            "likes": 6,
+            "name": "Local Light Alignment EG2021",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "heightmap",
+                "perception",
+                "npr",
+                "expressive",
+                "eg2021",
+                "lla"
+            ],
+            "usePreview": 0,
+            "username": "Nolan",
+            "viewed": 638
+        },
+        "renderpass": [
+            {
+                "code": "// See \"Raymarching Pebbles\" by athibaul for the geometry/raymarching idea.\n// Thanks to FabriceNeyret2 for the mouse control idea.\n\n// Local Light Alignment for Multi-Scale Shape Depiction - Eurographics 2021\n// (C) Nolan Mestres, Romain Vergne, Camille Noûs, Joëlle Thollot\n// https://hal.inria.fr/hal-03140647\n\n///////////////////!\n// MOUSE CONTROLS /!\n///////////////////!\n\n// Points on the curves can be selected and dragged to tune the enhancement at each scale.\n// Circles on top of the curve are ON/OFF buttons.\n// Red curve: specular enhancement\n// Blue curve: diffuse enhancement\n// From left to right: scale 1 (fine), scale 2 (middle), scale 3 (coarse)\n\n//////////////////////!\n// KEYBOARD CONTROLS /!\n//////////////////////!\n\n// TOGGLE H : displays the HUD\n// TOGGLE D : diffuse  enhancement ON/OFF (blue curve)\n// TOGGLE S : specular enhancement ON/OFF (red  curve)\n// TOGGLE 1 : scale 1  enhancement ON/OFF (green/orange)\n// TOGGLE 2 : scale 2  enhancement ON/OFF (green/orange)\n// TOGGLE 3 : scale 3  enhancement ON/OFF (green/orange)\n\n// CTRL     + {1,2,3} + MOUSE.Y : set diffuse  enhancment of scale {1,2,3}\n// SHIFT    + {1,2,3} + MOUSE.Y : set specular enhancment of scale {1,2,3}\n// CAPSLOCK + MOUSE.Y           : global strength of the effect\n\n// MOUSE.X : original (left) vs. enhanced (right) x border location\n\n///////////////////////////////////////////////////////////////////////////////!\n// IMAGE BUFFER; OUTPUT: FINAL COLOR; /////////////////////////////////////////!\n///////////////////////////////////////////////////////////////////////////////!\n\n#define S 4    // number of levels in the scale-space\n\n// each sigma (in [0,1]) controls its own detail scale (fine to coarse)\nvec3 SD; // for diffuse component\nvec3 SS; // for specular component\n\n// toggled values\n#define HUD  (texelFetch(iChannel0, ivec2(0, 0), 0).z > 0.)  // true when HUD should be displayed\n#define SPEC (texelFetch(iChannel0, ivec2(0, 0), 0).x > 0.)  // true when specular is toggled\n#define DIFF (texelFetch(iChannel0, ivec2(0, 0), 0).y > 0.)  // true when diffuse is toggled\n\n#define S_        texelFetch(iChannel0, ivec2(1, 0), 0)    // S_[i] true when the scale is ON \n#define SEPARATOR texelFetch(iChannel0, ivec2(6, 0), 0).x  // position of the mouse (x-axis)\n\n// scale tuning\nbool  TD[S];   // is diff scale i being tuned right now? or global tuning?\nbool  TS[S-1]; // is spec scale i being tuned right now?\nfloat LVL;     // level of the mouse when ALT was release\n\n// is a scale being tune right now ?\n#define TUNE_SCL (TD[0] || TD[1] || TD[2] || TS[0] || TS[1] || TS[2])\n\n// move the mouse up/down to tune the selected scale (for current/both component)\n// if no scale is selected, controls the global strength of the enhancement\n// using values from the SD and SS arrays for diffuse and specular respectively.\n#define R  iResolution.xy\n#define Mx SEPARATOR       // mouse x coordinate\n#define T  iTime\n\n// colors of the curves and indicators for scales\n#define CURVE_DIFF vec4(0., 0., 1., 1.)\n#define CURVE_SPEC vec4(1., 0., 0., 1.)\n#define SCL_ON     vec4(.2, 1., 0., 1.)\n#define SCL_OFF    vec4(1., .4, 0., 1.)\n\n// TO-DO: hack using mipmapping to get normals at different scales. It produces\n// gliding artifacts when moving camera/light; they do not happen with a\n// \"real\" scale-space (e.g. smoothing normals using an edge-preserving smoothing)\n#define N(i)    normalize(textureLod(iChannel2, PXL, float(3*i)).xyz)\n#define DIST    texture(iChannel2, PXL).w\n\n#define PXL     (u/iResolution.xy)\n#define EPSILON\t1e-10\n#define PIO2    1.57079632679\n#define GAMMA   3.0\n\n//////////////////////////!\n// LOCAL LIGHT ALIGNMENT /!\n//////////////////////////!\n\nvec3 rotateLight(in vec3 l, in vec3 a, in float theta) {\n\tif (theta < EPSILON)\n\t\treturn l;\n\n\tvec3  axl = normalize(cross(a, l));\n\tfloat adl = dot(a, l);\n    \n\treturn a * adl + cos(theta) * cross(axl, a) + sin(theta) * axl;\n}\n\n// remap function to weight the rotation (solve discontinuities)\n// lambda = lambda_1 * lambda_2\nfloat W(in float lambda) {\n\treturn lambda / (exp(-GAMMA) * (1. - lambda) + lambda);\n}\n\n// local frame L, constructed from n_i and n_{i+1}\nmat3 L(in vec3 ni, in vec3 ni1) {\n\tvec3 z = ni1;\n    // project n_i onto the plane of normal n_{i+1}\n\tvec3 x = normalize(ni - z*(dot(z, ni)));\n\tvec3 y = cross(x, z);\n    \n\treturn mat3(x, y, z);\n}\n\nvec3 adjustLight(in vec3 ni, in vec3 ni1, in vec3 li, in vec3 v, in float si, in bool spec) {\n    if (si < EPSILON) // no need to compute the adjustment at that scale...\n        return li;\n    \n    if (spec) { // for specular materials we use the reflected view as guide\n        ni  = reflect(v, ni);\n\t\tni1 = reflect(v, ni1);\n    }\n    \n    if (1. - abs(dot(ni, ni1)) < EPSILON) // if the detail and base are\n        return li;                        // already aligned...\n\n    mat3 Li = L(ni, ni1); // local frame L_i\n\t\n    // vectors to local frame\n    li      = li * Li;\t// in GLSL: v * M <=> M^T * v\n    vec3 gi\t= ni * Li;\t// guiding vector\n\n    // if the light is not facing the detail, we align with the tangent\n    if (li.x < 0.) // equivalent to the dot product check from the paper\n        gi = vec3(-gi.z, gi.y, gi.x);\n\n\tvec2  gp    = normalize(gi.xy);\n\tvec2  lp    = normalize(li.xy);\n\tfloat tha   = acos(dot(lp, gp));    // azimuthal angle\n    float lmbd1 = 1.-min(1., tha/PIO2); // confidence value lambda_1\n    float lmbd2 = length((ni*Li).xy);   // confidence value lambda_2\n    \n\tfloat theta = si * W(lmbd1*lmbd2) * acos(dot(li, gi));\n\tvec3  a     = normalize(cross(li, gi));\t // rotation axis a\n    \n\treturn Li * rotateLight(li, a, theta); // we return the rotated light direction\n}\n\n////////////////////////////////!\n// LOCAL LIGHT ALIGNMENT - END /!\n////////////////////////////////!\n\nfloat sigmaD(in int i) {\n    return LVL * (DIFF && S_[i] > 0. ? SD[i] : 0.);\n}\n\nfloat sigmaS(in int i) { \n    return LVL * (SPEC && S_[i] > 0. ? SS[i] : 0.);\n}\n\n// https://blog.selfshadow.com/publications/s2013-shading-course/hoffman/s2013_pbs_physics_math_notes.pdf\nfloat spec(in vec3 l, in vec3 n, in vec3 v, float ap, float f0) {\n    vec3  h = normalize(l+v); // half-vector\n    float D = (ap+2.)/(6.2832)*pow(dot(n, h), ap); // distribution function\n    float G = 1./dot(l, h); // approximate Cook-Torrance geometry function\n    return D*G*f0;\n}\n\nvoid load() { // load global state of the shader (sigma values)\n    SD = texelFetch(iChannel0, ivec2(2, 0), 0).xyz; // sigma for diffuse\n    SS = texelFetch(iChannel0, ivec2(3, 0), 0).xyz; // sigma for specular\n        \n    // is diff/spec scale i being set right now?\n    vec4 TDt = texelFetch(iChannel0, ivec2(4, 0), 0);\n    vec4 TSt = texelFetch(iChannel0, ivec2(5, 0), 0);\n    TD       = bool[](TDt.x>0., TDt.y>0., TDt.z>0., TDt.w>0.); \n    TS       = bool[](TSt.x>0., TSt.y>0., TSt.z>0.);\n    LVL      = TSt.w;\n}\n\nvoid mainImage(out vec4 col, in vec2 u) { \n    load();\n    col = vec4(0.);\n\n    vec3 ro = vec3(0.); //vec3(iTime*0.02, 0.2*cos(iTime*0.1), 0.);\n    vec3 l, ld, ls, rd = rayd(u, R, T);          // incident view vector\n    l = normalize(vec3(-.5, 0., -1.));  // light direction\n    \n    vec3 t = vec3(0., 1., 0.);\n    vec3 b = normalize(cross(t, l));\n    t = normalize(cross(l, b));\n    ld = ls = normalize(l + t * .6*sin(iTime) + b * .6*cos(iTime)); // move the light in a cone\n\n    if (HUD) { // displays \"HUD\"     \n        // displays plots using Catmull-Rom splines\n        float x   = 12.*PXL.x;\n        float y   = 3.*PXL.y;\n        if (PXL.x < .33 && PXL.y < .39) {\n            for(int i = 0; i < 3; i++) {\n                float X = float(i);\n                #define disc(X,Y,dr) smoothstep(0.,1.5/R.y, dr+.015 - length((PXL - vec2(X,Y)/vec2(12,3))*R/R.y))\n                col.b += disc( .9+X,sigmaD(i),);\n                col.r += disc(1.1+X,sigmaS(i),); \n                col.g += disc(1. +X,1.1,.005) - (S_[i] > 0. ? 0. : disc(1.+X,1.1,));\n            }\n            col.b += disc(.5,1.1,.01) - (DIFF ? 0. : disc (.5,1.1,.005)); // D,S buttons\n            col.r += disc(3.5,1.1,.01) - (SPEC ? 0. : disc(3.5,1.1,.005));\n            \n            float t     = fract(x);    // spline weight per segment\n            int   i     = int(x);\n            float VD[5] = float[](0., sigmaD(0), sigmaD(1), sigmaD(2), 0.); // spline diff control points\n            float VS[5] = float[](0., sigmaS(0), sigmaS(1), sigmaS(2), 0.); // spline spec control points\n    \n            // plots of the diff/spec curves and scales indicators (green vertical bars when toggled)\n            float pld = plot(y, clamp(spline(VD[i-1], VD[i], VD[i+1], VD[i+2], t), 0., LVL), .002*R.x);\n            float pls = plot(y, clamp(spline(VS[i-1], VS[i], VS[i+1], VS[i+2], t), 0., LVL), .002*R.x);\n            float pl1 = plot(x, 1., 2.);\n            float pl2 = plot(x, 2., 2.);\n            float pl3 = plot(x, 3., 2.);\n            float plm = plot(y, LVL, 2.);\n            \n            vec4 c1 = (S_[0] > 0. ? (TD[0] ? CURVE_DIFF : (TS[0] ? CURVE_SPEC : SCL_ON)) : SCL_OFF);\n            vec4 c2 = (S_[1] > 0. ? (TD[1] ? CURVE_DIFF : (TS[1] ? CURVE_SPEC : SCL_ON)) : SCL_OFF);\n            vec4 c3 = (S_[2] > 0. ? (TD[2] ? CURVE_DIFF : (TS[2] ? CURVE_SPEC : SCL_ON)) : SCL_OFF);\n            \n            col += pls*CURVE_SPEC + pld*CURVE_DIFF; // curves\n            col += pl1*c1 + pl2*c2 + pl3*c3;        // scale bars\n            col += plm * SCL_ON;                    // global strength\n        }\n        \n        if (PXL.x >= Mx - 3e-3 && PXL.x < Mx + 3e-3) { // intensity indicator\n            if (!DIFF && !SPEC) return; // no component toggled\n            col =  mix(vec4(u.y/R.y < LVL), col, max(col.r,max(col.g,col.b)));\n            return;\n        }\n    }\n    \n    // enhancement using local light alignment\n    if (PXL.x >= Mx + 3e-3) { // enhanced part of the rendering\n        for (int i = S-2; i >= 0; --i) {\n            ld = adjustLight(N(i), N(i+1), ld, rd, sigmaD(i), false);\n            ls = adjustLight(N(i), N(i+1), ls, rd, sigmaS(i), true);    \n        }\n    }\n\n    // lighting\n    vec3 n   = N(0);\n    vec3 kd  = .7 * vec3(1.2, 1.1, .8) * max(0., dot(n, ld)) * texture(iChannel1, (ro + DIST*rd).xy).rgb;\n    vec3 ks  = vec3(.3 * spec(ls, n, -rd, 10., .9));\n    vec4 c   = vec4(kd + ks, 1.);\n        \n    if (PXL.x < .33 && PXL.y < .39 && HUD)\n        PXL.y < .33 ? col = mix(.3*c, col, max(col.r,max(col.g,col.b)))\n                      : col = mix(c, col, max(col.r,max(col.g,col.b)));\n    else\n        col = c;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// See \"Raymarching Pebbles\" by athibaul for the geometry/raymarching idea.\n// Thanks to FabriceNeyret2 for the mouse control idea.\n\n// Local Light Alignment for Multi-Scale Shape Depiction - Eurographics 2021\n// (C) Nolan Mestres, Romain Vergne, Camille Noûs, Joëlle Thollot\n// https://hal.inria.fr/hal-03140647\n\n////////////////////////////////////////////////////////////////////////////////////!\n// BUFFER A: RAYMARCHING; OUTPUT: NORMALS; /////////////////////////////////////////!\n////////////////////////////////////////////////////////////////////////////////////!\n\n#define PIXEL (u/iResolution.xy)\n#define R     iResolution.xy\n#define T     iTime\n\nfloat height(vec3 p) { // fractalization of the pattern to get different detail scales\n    return (4.*texture(iChannel0, .25*p.xy).r\n            + texture(iChannel0, p.xy).r\n            + .25*texture(iChannel0, 4.*p.xy).r)/1.5;\n}\n\nfloat map(vec3 p) { // distance function\n    return 1. - p.z - .1*height(p);\n}\n\nvec3 normal(in vec3 p) { // tetrahedral normal, courtesy of IQ.\n    vec2 e = vec2(.001, -.001);\n    return normalize(\n        e.xyy * map(p + e.xyy) + \n        e.yyx * map(p + e.yyx) + \n        e.yxy * map(p + e.yxy) + \n        e.xxx * map(p + e.xxx));\n}\n\nvoid mainImage(out vec4 n, in vec2 u) {\n    vec3 ro = vec3(0.);//vec3(iTime*0.02, 0.2*cos(iTime*0.1), 0.);\n    vec3 rd = rayd(u, R, T);\n    \n    // raymarching the heightmap\n    float d, t = 0.;\n    for(int j = 0; j < 32; j++) {\n        d = map(ro + t*rd);\n        if(d < .001) break; // hit!\n        t += .3*d;\n    }\n    \n    vec3 p = ro + t*rd;\n    n = vec4(normal(p), t);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// See \"Raymarching Pebbles\" by athibaul for the geometry/raymarching idea.\n// Thanks to FabriceNeyret2 for the mouse control idea.\n\n// Local Light Alignment for Multi-Scale Shape Depiction - Eurographics 2021\n// (C) Nolan Mestres, Romain Vergne, Camille Noûs, Joëlle Thollot\n// https://hal.inria.fr/hal-03140647\n\n//////////////////////////////////////////////////////////////!\n// GLOBAL FUNCTIONS; /////////////////////////////////////////!\n//////////////////////////////////////////////////////////////!\n\n// returns the ray direction from the camera towards u\nvec3 rayd(in vec2 u, in vec2 R, in float T) { // coordinates (u), resolution (R), time (T)\n    vec2  uv = (2.*u - R)/R.y;                // uv.x [-ar,ar], uv.y [-1,1] ar: aspect ratio\n    float th = cos(.1*T);\n    vec3  r  = normalize(vec3(uv.x, uv.y, 3.0));\n    //r.xy     = mat2(cos(th), sin(th), -sin(th), cos(th)) * r.xy;\n    return r;\n}\n\n// Catmull-Rom: four control points (v[0-3]), a weight [0,1] for each segment (t)\n// from FabriceNeyret2: https://www.shadertoy.com/view/4ljyWc\nfloat spline(float v0, float v1, float v2, float v3, float t) {\n\tfloat A0 = mix(v0, v1, t+1.     ),\n\t      A1 = mix(v1, v2, t        ),\n\t      A2 = mix(v2, v3, t-1.     ),\n          B0 = mix(A0, A1, .5*t + .5),\n\t      B1 = mix(A1, A2, .5*t     );\n\treturn     mix(B0, B1, t        );\n}\n\n// plot function f at y with a width w\nfloat plot(float y, float f, float w) {\n  return smoothstep(1.5+w, 0., abs(y-f)/fwidth(y-f));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// See \"Raymarching Pebbles\" by athibaul for the geometry/raymarching idea.\n// Thanks to FabriceNeyret2 for the mouse control idea.\n\n// Local Light Alignment for Multi-Scale Shape Depiction - Eurographics 2021\n// (C) Nolan Mestres, Romain Vergne, Camille Noûs, Joëlle Thollot\n// https://hal.inria.fr/hal-03140647\n\n//////////////////////////////////////////////////////////////////////////////!\n// BUFFER B: KEYBOARD; OUTPUT: STATE INFORMATION; ////////////////////////////!\n//////////////////////////////////////////////////////////////////////////////!\n\n// default values for sigma in [0,1]:\n#define DEFAULT_SIGMAD vec4(.4, .3, .4, 1.) // sigma for diffuse component\n#define DEFAULT_SIGMAS vec4(.6, .3, .2, 1.) // sigma for specular component\n\n// keyboard values (1,2,3 both keyboard and numpad, S, D, H, CTRL, SHIFT, CAPSLOCK)\n#define K_1N   97    // FINE:     toggle 1 (numpad), scale 1 (left) turns green on HUD\n#define K_2N   98    // MIDDLE:   toggle 2 (numpad), scale 2 (middle) turns green on HUD\n#define K_3N   99    // COARSE:   toggle 3 (numpad), scale 3 (right) turns green on HUD\n#define K_1K   49    // FINE:     toggle 1 (keyboard), alternative key\n#define K_2K   50    // MIDDLE:   toggle 2 (keyboard), alternative key\n#define K_3K   51    // COARSE:   toggle 3 (keyboard), alternative key\n#define K_S    83    // SPECULAR: toggle S, enhance specular (red curve)\n#define K_D    68    // DIFFUSE:  toggle D, enhance diffuse (blue curve)\n#define K_H    72    // UI:       toggle H, displays UI\n#define K_SHFT 16    // SHIFT+{1,2,3}: set sigma at that scale for specular\n#define K_CTRL 17    // CTRL+{1,2,3}:  set sigma at that scale for diffuse\n#define K_CAPS 20    // CAPS+MouseY:   controls the overall strength of the enhancement\n\n// keyboard events\n#define TOGGLES(k)   (texelFetch(iChannel0, ivec2(k, 2), 0).x > 0.)  // scales\n#define TOGGLEC(k)   (texelFetch(iChannel0, ivec2(k, 2), 0).x <= 0.) // component (so they are ON by default)\n#define DOWN(k)      (texelFetch(iChannel0, ivec2(k, 0), 0).x > 0.)\n#define JUSTPRESS(k) (texelFetch(iChannel0, ivec2(k, 1), 0).x > 0.)\n\n// make sure numpad and keyboard do not conflict for scales\n// and that when tuning a given scale it is not interpreted as a toggle event\n#define D1    (DOWN(K_1N) || DOWN(K_1K)) // pressed 1, either on keyboard or numpad\n#define D2    (DOWN(K_2N) || DOWN(K_2K)) // pressed 2, either on keyboard or numpad\n#define D3    (DOWN(K_3N) || DOWN(K_3K)) // pressed 3, either on keyboard or numpad\n\n#define RS    JUSTPRESS(K_S) // just pressed S\n#define RD    JUSTPRESS(K_D) // just pressed D\n#define RH    JUSTPRESS(K_H) // just pressed H\n\n#define R1    (JUSTPRESS(K_1N) || JUSTPRESS(K_1K)) // just pressed 1, either on keyboard or numpad\n#define R2    (JUSTPRESS(K_2N) || JUSTPRESS(K_2K)) // just pressed 2, either on keyboard or numpad\n#define R3    (JUSTPRESS(K_3N) || JUSTPRESS(K_3K)) // just pressed 3, either on keyboard or numpad\n\n// setting sigma for each scale and shading component\n#define SET_SIGD1 (DOWN(K_CTRL) && D1) // CTRL+1:  set sigma 1 for diffuse (fine  scale)\n#define SET_SIGD2 (DOWN(K_CTRL) && D2) // CTRL+2:  set sigma 2 for diffuse (mid   scale)\n#define SET_SIGD3 (DOWN(K_CTRL) && D3) // CTRL+3:  set sigma 3 for diffuse (large scale)\n#define SET_SIGS1 (DOWN(K_SHFT) && D1) // SHIFT+1: idem for specular sigma 1\n#define SET_SIGS2 (DOWN(K_SHFT) && D2) // SHIFT+1: idem for specular sigma 2\n#define SET_SIGS3 (DOWN(K_SHFT) && D3) // SHIFT+1: idem for specular sigma 3\n\n// toggle only is not setting scale sigma value\n#define T1 (R1 && !(SET_SIGD1 || SET_SIGS1))\n#define T2 (R2 && !(SET_SIGD2 || SET_SIGS2)) \n#define T3 (R3 && !(SET_SIGD3 || SET_SIGS3))\n\n// bool: are we on screen pixels where parameters are stored?\n#define CMP_PXL    (ivec2(u) == ivec2(0, 0)) // pixel storing state of components + HUD (ON/OFF)\n#define SCL_PXL    (ivec2(u) == ivec2(1, 0)) // pixel storing state of scales 1, 2, 3 (ON/OFF)\n#define SIGMAD_PXL (ivec2(u) == ivec2(2, 0)) // pixel storing sigma 1, 2, 3 values for diffuse\n#define SIGMAS_PXL (ivec2(u) == ivec2(3, 0)) // pixel storing sigma 1, 2, 3 values for specular\n#define TUNESD_PXL (ivec2(u) == ivec2(4, 0)) // pixel storing booleans: is diffuse scale (1,2,3) being tuned?\n#define TUNESS_PXL (ivec2(u) == ivec2(5, 0)) // pixel storing booleans: is specular scale (1,2,3) being tuned?\n#define SEPARATOR  (ivec2(u) == ivec2(6, 0)) // pixel storing the position of the separator (mouseX)\n\n// get status of scales: are they ON or OFF?\n#define S_ON texelFetch(iChannel1, ivec2(1, 0), 0)\n\n#define R     iResolution.xy\n#define PIXEL (u/R.xy)          // pixel value in [0,1]\n#define M     (iMouse.xy/R.xy)  // mouse coordinate in [0,1]\n\nvoid mainImage(out vec4 k, in vec2 u) {\n    if (u.y > 1. || u.x > 7.)\n        return;\n\n    k = texture(iChannel1, PIXEL); // load previous state\n    \n    if (iFrame < 10) { // init default values for parameter\n        if (CMP_PXL)         k = vec4(1); // component (DIFF, SPEC, HUD) toggled? default: (ON, ON, ON)\n        else if (SCL_PXL)    k = vec4(1); // scales (S1, S2, S3) toggled? default: (ON, ON, ON)\n        else if (SIGMAD_PXL) k = DEFAULT_SIGMAD;\n        else if (SIGMAS_PXL) k = DEFAULT_SIGMAS;\n        else if (TUNESD_PXL) k = vec4(0);\n        else if (TUNESS_PXL) k = vec4(0., 0., 0., 1.); // 1. : global strength\n        else if (SEPARATOR)  k = vec4(.5); // sepator at the middle of the screen\n        return;\n    }\n    \n    // clickable buttons and sliders\n    float lvl = texelFetch(iChannel1, ivec2(5, 0), 0).w;\n    for (int i = 0; i < 3; i++) {\n        #define pick(X) if ( length( lvl*(vec2(12,3)*M - vec2(X+float(i),k[i])) ) < .2 ) k[i] = min(3.*M.y,1.)\n        if (SIGMAD_PXL) pick( .8);\n        if (SIGMAS_PXL) pick(1.2);\n        #define near(X) length( lvl*(vec2(12,3)*M - vec2(X,1.2)) ) < .2\n        if (iMouse.w > 0.)                              // click + toggles 1,2,3\n          if (SCL_PXL) if (near(i+1)) { k[i] = 1.-k[i]; return; }\n    }\n    if (CMP_PXL && iMouse.w > 0.) {                             // click + toggles D,S\n        if (near( .5)) k.y = 1.-k.y;\n        if (near(3.5)) k.x = 1.-k.x; \n        return;\n    }\n    if (SEPARATOR && (M.x > .33 || M.y > .41)) { k.x = M.x; return; } // separator\n    \n    // set diffuse/spec sigma values\n    if ((SIGMAD_PXL && (SET_SIGD1 || SET_SIGD2 || SET_SIGD3)) ||\n        (SIGMAS_PXL && (SET_SIGS1 || SET_SIGS2 || SET_SIGS3))) {\n        k = vec4(D1 && S_ON[0] > 0. ? M.y : k.x,\n                 D2 && S_ON[1] > 0. ? M.y : k.y,\n                 D3 && S_ON[2] > 0. ? M.y : k.z, 1.);\n    }\n    else if (TUNESD_PXL)\n        k = vec4(SET_SIGD1, SET_SIGD2, SET_SIGD3, DOWN(K_CAPS));\n    else if (TUNESS_PXL)\n        k = vec4(SET_SIGS1, SET_SIGS2, SET_SIGS3, DOWN(K_CAPS)? clamp(M.y, .2, 1.) : k.w);\n    else if (CMP_PXL)\n        k = vec4(RS ? 1.-k.x : k.x, RD ? 1.-k.y : k.y, RH ? 1.-k.z : k.z, 1.);\n    else if (SCL_PXL) {\n        k = vec4(T1 ? 1.-k.x : k.x,\n                 T2 ? 1.-k.y : k.y,\n                 T3 ? 1.-k.z : k.z, 1.);\n    }\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

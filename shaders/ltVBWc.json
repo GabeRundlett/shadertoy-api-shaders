@@ -1,0 +1,77 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1544399049",
+            "description": "Use textureLod and shadertoy's pre-blurred cubemap textures to get a quick and dirty car-paint effect.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ltVBWc",
+            "likes": 26,
+            "name": "Cubemap Car Paint",
+            "published": 3,
+            "tags": [
+                "cubemap",
+                "paint",
+                "fresnel",
+                "car",
+                "metallic"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 2408
+        },
+        "renderpass": [
+            {
+                "code": "// Cubemap Car Paint\n// by Hazel Quantock 2018\n// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. http://creativecommons.org/licenses/by-nc-sa/4.0/\n\nvec3 Paint( vec3 pos, vec3 normal, vec3 ray )\n{\n    float fresnel = pow( 1.+dot(normal,ray), 5. );\n\n    vec4 paint[] = vec4[](\n        // Albedo RGB, Proportion of metallic \"flakes\" in the paint\n        vec4(3.1,3.3,3.5, .0), // matt white\n        vec4(.8,.06,.01, 1.), // TVR\n        vec4(.63,.49,.56, .5), // mercedes\n        vec4(1.7,1.7,1.7, .4), // silver\n        vec4(2,.02,.04, .1), // red\n        //vec4(1.5,.8,.1, .7), // gold\n        vec4(.0,.35,2, .7), // metallic blue\n        vec4(.01,.03,.05, 1) // metallic black\n    );\n\n    // cycle through the colours\n    int idx = int(clamp(floor((2.5-pos.z)*float(paint.length())/5.),0.,float(paint.length()-1)));\n    int idx3 = int(floor(iTime/2.));\n    int idx2 = idx3%(paint.length()+1);\n    idx3 /= paint.length()+1;\n    if ( idx2 != paint.length() ) idx = idx2;\n    \n  \tif ( idx3 > 0 && abs(abs(pos.x)-.17) < .12 ) idx = (idx3-1)%paint.length(); // stripes\n//idx = 5;\n    \n    vec3 albedo = paint[idx].rgb;\n    float metallicity = paint[idx].a;\n\n    vec3 refl = reflect(ray,normal);\n    return mix(\n        mix ( \n            LDRtoHDR(textureLod( iChannel0, normal, 6. ).rgb), // diffuse\n            LDRtoHDR(textureLod( iChannel0, refl, 4. ).rgb), // metallic\n            metallicity\n        ) * albedo,\n        LDRtoHDR(texture( iChannel1, refl ).rgb), // clearcoat\n        mix( .02, 1., fresnel )\n    );\n}\n\n\n\nvec3 WorldToObject( vec3 pos )\n{\n    pos.xz = pos.xz*(3./5.) + (4./5.)*pos.zx*vec2(1,-1);\n    return pos;\n}\n\n// smooth abs\nfloat sabs( float a, float r )\n{\n    return length(vec2(a,r))-r*.2; // offset it a little to fight shrinkage!\n}\n\nfloat smax( float a, float b, float r )\n{\n    // average of a and b, plus smooth-abs of half the difference between them\n    return (a+b)/2. + sabs( (a-b)/2., r );\n}\n\nfloat smin( float a, float b, float r )\n{\n    return (a+b)/2. - sabs( (a-b)/2., r );\n}\n\nfloat SDF( vec3 pos )\n{\n    // rotate car to line up more nicely with the background\n    pos = WorldToObject( pos );\n\n    pos.x = sabs(pos.x,.1);\n    \n    return\n        smax(\n            -pos.y - .5,\n            smax(\n                smax(\n                    //pos.x - 1.,\n                    length(pos.xy)-1.,\n                    smin(\n                        smax(\n                        \tlength( pos - vec3(0,-.3,-1) ) - 1.3,\n                        \tdot(pos,normalize(vec3(0,1,.05))) - .9,\n                            .1\n                        ),\n                        smin(\n                        \tdot(pos,normalize(vec3(-.2,1,.07))) - .25,\n                        \tdot(pos,normalize(vec3(0,1,.08))) - .32,\n                            .01\n                        ),\n\t                    .03\n                    ),\n                    .1\n                ),\n                max(\n                    dot(pos - vec3(0,-.5,2.5),normalize(vec3(.2,1,1))),\n                    dot(pos,normalize(vec3(0,-.2,-1))) - 2.5 ),\n                .1\n            ),\n            .05\n        );\n    \n    \n/*    return\n            (\n    \t        length(pos)-1.// sphere\n\t            + dot(normalize(pos),sin(pos.yzx/.1)*.1) // knobbles\n            ) * .707 // Keep gradient in [-1,1]. Can probably go higher than this but be on the safe side\n        ;*/\n}\n\nfloat epsilon = .0004; // todo: compute from t everywhere it's used (see \"size of pixel\"\\/\\/)\nint loopCount = 200; // because of the early out this can actually be pretty high without costing much\n\nfloat Trace( vec3 rayStart, vec3 rayDirection, float far, out int count )\n{\n    float t = 0.;\n    \n    float h = 0.;\n    float lasth = 0.;\n    float bestt = 0.;\n    float bestDist = far;\n    float sdf = 0.;\n    for ( int i=0; i < loopCount; i++ )\n    {\n        lasth = h;\n        sdf = SDF( rayDirection*t+rayStart );\n        h = sdf + epsilon*.5;\n\t\tt += h;\n        if ( sdf < bestDist ) { bestt = t; bestDist = sdf; } // not sure if all these conditionals will compile well, could flip to use step and mix\n        count = i;\n        if ( h < epsilon || t > far ) break;\n    }\n\n    if ( sdf == bestDist )\n    {\n        // improve precision\n\t\tfloat lastt = t-epsilon;\n\t\tfloat lastsdf = SDF( rayDirection*lastt+rayStart );\n\t\tfloat sdf = SDF( rayDirection*t+rayStart );\n        \n       \tt = mix( lastt, t, (0.-lastsdf)/(sdf-lastsdf) );\n    }\n    else if ( t < bestt*2. )\n    {\n        // use the closest sample we had, to avoid sampling back-sides and things\n        t = bestt;\n\t\t// this can add a fringe, but maybe better than the alternative\n    }\n    \n    return t;\n}\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n//    vec3 camPos = vec3(1.*(iMouse.xy/iResolution.xy-.5),-3);\n    vec3 camPos = vec3(0,0,-7);\n    vec2 a = vec2(.1,iTime*.3);\n    camPos.yz = camPos.yz*cos(a.x)+sin(a.x)*vec2(-1,1)*camPos.zy;\n    camPos.zx = camPos.zx*cos(a.y)+sin(a.y)*vec2(-1,1)*camPos.xz;\n    \n    vec3 camK = normalize(vec3(0)-camPos);\n    vec3 camI = normalize(cross(vec3(0,1,0),camK));\n    vec3 camJ = cross(camK,camI);\n    \n    float zoom = 2.;\n    vec3 ray = vec3((fragCoord-.5*iResolution.xy)/iResolution.y,zoom);\n    ray = ray.x*camI + ray.y*camJ + ray.z*camK;\n    ray = normalize(ray);\n    \n    int count = 0;\n    const float far = exp2(6.);\n    float t = Trace( camPos, ray, far, count );\n    \n    fragColour = vec4(vec3(.05),1);\n    \n    if ( t < far )\n    {\n    \tvec3 pos = camPos + t*ray;\n\n        // size of 1 pixel\n\t\t// tan(a) = h / zoom\n\t\t// h = .5 / (resolution.y*.5)\n        vec2 d = vec2(-1,1) * t / (zoom*iResolution.y);\n        vec3 normal = normalize(\n            \tSDF(pos+d.xxx)*d.xxx +\n            \tSDF(pos+d.xyy)*d.xyy +\n            \tSDF(pos+d.yxy)*d.yxy +\n            \tSDF(pos+d.yyx)*d.yyx\n            );\n        \n\t    // rotate car to line up more nicely with the background\n        pos = WorldToObject( pos );\n        \n\t\t//fragColour.rgb = fract( pos );\n        //fragColour.rgb = normal*.5+.5;\n        fragColour.rgb = Paint( pos, normal, ray );\n    }\n    else\n    {\n        fragColour.rgb = LDRtoHDR(texture( iChannel1, ray ).rgb);\n    }\n    \n    // exposure\n    fragColour.rgb *= 1.8;\n    \n    fragColour.rgb = HDRtoLDR( fragColour.rgb );\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 23,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float whiteSoftness = 0.15;\n\nvec3 HDRtoLDR( vec3 col )\n{\n    // soft clamp to white (oh this is so good)\n    float w2 = whiteSoftness*whiteSoftness;\n    col += w2;\n    col = (1.-col)*.5;\n    col = 1. - (sqrt(col*col+w2) + col);\n    \n    // linear to sRGB (approx)\n    col = pow( col, vec3(1./2.2) );\n\n    return col;\n}\n\nvec3 LDRtoHDR( vec3 col )\n{\n    // sRGB to linear (approx)\n    col = pow( col, vec3(2.2) );\n    \n    col = clamp(col,0.,.99);\n    \n    float w2 = whiteSoftness*whiteSoftness;\n    col = (w2 - col*col + 2.*col - 1.)/(2.*(col - 1.)); // inverted by wolfram\n    col = 1.-col*2.;\n    col -= w2;\n    \n    return col;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

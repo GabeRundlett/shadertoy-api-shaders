@@ -1,0 +1,94 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1500324283",
+            "description": "Little prototype idea for an HDR colour picker, thought I'd share it in case someone found it useful.\nValue slider is HDR (logarithmic), and colours are normalized in actual brightness.\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ldjBDh",
+            "likes": 8,
+            "name": "HDR HSV Colour Picker",
+            "published": 3,
+            "tags": [
+                "hdr",
+                "tool"
+            ],
+            "usePreview": 1,
+            "username": "TekF",
+            "viewed": 982
+        },
+        "renderpass": [
+            {
+                "code": "vec3 componentWeights = vec3(.2126,.7152,.0722); // from https://en.wikipedia.org/wiki/Relative_luminance\n\n// tone mapping functions - add with your own to get a more accurate preview\n\n// clamped linear tone mapping\nvec3 ToneMappingSRGB( vec3 col )\n{\n\treturn pow(col,vec3(1./2.2));\n}\n\n// tone mapping, from my Docking Spacecraft shader\nvec3 ToneMappingHQ( vec3 col )\n{\n    const float a = 1.; // exposure\n    const float p = 3.; // top curve - 1. = very smooth, higher = more squashed\n    const float r = 1.; // overflow - 1. = no clipping, higher => more clipping\n    \n    const float d = .05; // desaturation of bright colours\n    float brightness = dot(col,componentWeights);\n    col = mix( vec3(brightness), col, 1./(1.+d*brightness) );\n    col = r*pow(max(vec3(.0000001),1.-1./(1.+pow(a*col/r,vec3(p)))),vec3(1./p));\n    \n\treturn col;\n}\n\nvec3 GetCol( vec2 uv, float val )\n{\n    float r = pow(length(uv),.5);\n\n    float a = atan(uv.x,uv.y);\n    vec3 col = smoothstep(-.5,1.,cos(a+6.28*vec3(0,1,2)/3.));\n    \n// test component brightness\n//a = fract(a*150./6.283); col = step(fract(a-vec3(0,componentWeights.x,componentWeights.x+componentWeights.y)),componentWeights);\n    \n    col = mix( vec3(1.), col, r );\n    col /= dot(col,componentWeights); // relative brightnesses\n\n\tcol *= exp2(val*8.-6.);\n    \n    return col;\n}\n\nfloat boxDist( vec2 uv )\n{\n    uv = abs(uv);\n    return max(uv.x,uv.y);\n}\n\nvec3 Dither( ivec2 coord )\n{\n    return (vec3( (coord.x&1)+2*(coord.y&1) )/4.-.5) / 256.;\n}\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    float val = texelFetch(iChannel0,ivec2(0),0).x;\n    vec4 data = texelFetch(iChannel0,ivec2(1,0),0);\n    \n\tvec2 uv = 2. * fragCoord.xy / iResolution.y - 1.;\n    \n//\tfragColour = vec4(GetCol(vec2(0),val),1);\n\tfragColour = vec4(vec3(.2),1);\n\n    // colour circle\n    float r = length(uv);\n    if ( r < 1. )\n    {\n        fragColour.rgb = GetCol(uv,val);\n    }\n    \n    // selected colour box-out\n    vec4 uvm = 2.*iMouse/iResolution.y-1.;\n    r = boxDist(uv - vec2(1.4,-.16)); //uvm.xy);\n    if ( length(uvm.xy) < 1. && length(uvm.zw) < 1. && r < .25 )\n    {\n        fragColour.rgb = mix( fragColour.rgb, vec3(.0), smoothstep(.25,.245,r) );\n        fragColour.rgb = mix( fragColour.rgb, GetCol(uvm.xy,val), smoothstep(.24,.235,r) );\n    }\n    \n    // last selected colour\n    r = boxDist(uv-vec2(1.4,-.65));\n    if ( r < .25 )\n    {\n        fragColour.rgb = mix( fragColour.rgb, vec3(.0), smoothstep(.25,.245,r) );\n        fragColour.rgb = mix( fragColour.rgb, GetCol(data.xy,data.z), smoothstep(.24,.235,r) );\n    }\n    \n    fragColour.rgb = ToneMappingHQ( fragColour.rgb );\n    \n    // slider\n    float trough = length(vec2(abs(uv.x-2.), max(abs(uv.y)-.7,.0)));\n    if ( trough < .1 )\n    {\n        fragColour = mix( fragColour, vec4(.05), smoothstep(.1,.09,trough) );\n        fragColour = mix( fragColour, vec4(.1), smoothstep(.09,.05,trough) );\n        \n        float but = length(vec2( uv.x-2., uv.y-(val*2.-1.)*.7 ));\n        fragColour = mix( fragColour, vec4(0), smoothstep(.1,.09,but) );\n        fragColour = mix( fragColour, vec4(1), smoothstep(.08,.07,but) );\n    }\n\n    // write the HDR RGB values\n    float l = 6.; // number of digits to show\n    vec2 dim = vec2(8,14); // dimensions of a letter\n    vec2 textuv = fragCoord - vec2(314,70-7);; // index in whole characters\n    textuv.y = (textuv.y - 25.)/dim.y;\n    textuv.x = textuv.x/(l*dim.x);\n    if ( min(textuv.x,textuv.y) >= 0. && textuv.x <= 1. && textuv.y <= 3. )\n    {\n\t\tint channel = 2-int(floor(textuv.y));\n        \n        textuv.x *= l;\n        int charIdx = int(floor(textuv.x));\n        \n        // figure out what the charIdx'th digit is\n        int char = 0;\n        if ( charIdx == 1 ) char = 0x2e;\n        else\n        {\n            if ( charIdx > 1 ) charIdx--; // skip decimal place\n            vec3 values = GetCol(data.xy,data.z);\n            if ( length(uvm.xy) < 1. && length(uvm.zw) < 1. ) values = GetCol(uvm.xy,val);\n            float value = values[channel];\n            \n            value *= pow(10.,float(charIdx));\n            int digit = int(floor(value));\n            digit = digit%10;\n            \n            char = 48+digit;\n        }\n\n        char = char^0xf0; // flip the y coord\n        vec2 fontuv = ( vec2( char&15, char>>4 ) + .5 ) / 16.;\n\n        vec2 charuv = (fract(textuv)-.5)*vec2(.35,.7)/16.;\n\n        vec4 font = texture( iChannel1, fontuv + charuv );\n\n        fragColour.rgb = mix( fragColour.rgb, pow(fract(pow(fragColour.rgb,vec3(1./2.2))+.5),vec3(2.2)), font.x );\n    }\n\n    fragColour.rgb = pow(fragColour.rgb,vec3(1./2.2));\n\n\tfragColour.rgb += Dither(ivec2(fragCoord));\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// user interface state\n\nvoid mainImage( out vec4 result, in vec2 index )\n{\n    result = vec4(0);\n    if ( index.y >= 1. ) return;\n\n    vec4 uvm = 2.*iMouse/iResolution.y-1.;\n        \n    if ( index.x < 1. )\n    {\n        // HDR slider\n    \tresult = texelFetch( iChannel0, ivec2(0), 0 );\n        \n        if ( abs(uvm.z-2.) < .1 && abs(uvm.w) < .8 )\n        {\n            result.x = clamp((uvm.y/.7)*.5+.5,.0,1.);\n        }\n    }\n    else if ( index.x < 2. )\n    {\n        // Last clicked colour\n        result = texelFetch( iChannel0, ivec2(1,0), 0 );\n        \n        if ( length(uvm.xy) < 1. && iMouse.z <= .0 )\n        {\n        \tresult.xy = uvm.xy;\n            result.z = texelFetch( iChannel0, ivec2(0), 0 ).x;\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

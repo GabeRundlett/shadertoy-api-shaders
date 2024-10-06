@@ -1,0 +1,44 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1603936941",
+            "description": "Partial implementaion of CAM16 and CAM16-UCS.\nhttps://observablehq.com/@jrus/cam16\nhttps://arxiv.org/pdf/1802.06067.pdf",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wdVyWc",
+            "likes": 4,
+            "name": "CAM16",
+            "published": 3,
+            "tags": [
+                "cam16"
+            ],
+            "usePreview": 0,
+            "username": "thepheer",
+            "viewed": 348
+        },
+        "renderpass": [
+            {
+                "code": "#define rep(m, x) (mod(x, 2.0*(m)) - (m))\n#define sdf(w, d) smoothstep(1.5*(w), 0.0, d)\n#define plot(w, x, y) sdf(w, abs((x) - (y)))\n#define range(x, a, b) ((a) <= (x) && (x) < (b))\n\nvoid mainImage(out vec4 rgba, vec2 xy) {\n    vec2 px = 1.0/iResolution.xy;\n    vec2 uv = xy*px;\n    \n    float tau = radians(360.0);\n    float J = 0.50 + 0.49*sin(tau*(0.2*uv.x - 0.1*iTime));\n    float M = 0.56*J*(1.0 - J*J); // 0.84*J*(1.0 - J)\n    float h = tau*(fract(uv.x + 0.5*iTime) - 0.5);\n\n    // CAM16 → sRGB → CAM16 → sRGB\n    vec3 JMh1 = vec3(J, M, h);\n    vec3 sRGB1 = XYZ_D65_TO_sRGB*CAM16_UCS_to_XYZ_D65(JMh1);\n    vec3 JMh2 = XYZ_D65_to_CAM16_UCS(sRGB_TO_XYZ_D65*sRGB1);\n    vec3 sRGB2 = XYZ_D65_TO_sRGB*CAM16_UCS_to_XYZ_D65(JMh2);\n\n    float dashed = sdf(1.0, abs(rep(6.0, xy.x)) - 4.0);\n    float dotted = sdf(1.0, abs(rep(2.0, xy.x)));\n    vec3 split = 0.025*vec3(-1.0, 0.0, 1.0);\n    \n    vec3 plots =\n        plot(px.y, uv.y, 0.500)*dotted*0.1 +\n        plot(px.y, uv.y, 0.100)*dotted*0.1 +\n        plot(px.y, uv.y, 0.775 + 1e3*(JMh2 - JMh1) - split) +\n        plot(px.y, uv.y, 0.625 + 1e3*(sRGB2 - sRGB1) - split) +\n        plot(px.y, uv.y, 0.100 + 0.4*sRGB1)*0.5 +\n       \tplot(px.y, uv.y, 0.100 + 0.4*sRGB2)*0.5*dashed;\n\n    vec3 rgb =\n        range(uv.y, px.y + 0.95, 1.00) ? sRGB1 :\n        range(uv.y, px.y + 0.90, 0.95) ? sRGB2 :\n    \tplots;\n\n    rgba = vec4(sRGB_OETF(rgb), 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define diag3(v) mat3((v).x, 0.0, 0.0, 0.0, (v).y, 0.0, 0.0, 0.0, (v).z)\n#define xy_to_XYZ(x, y) vec3(x/y, 1.0, (1.0 - x - y)/y)\n\nconst vec3 D65 = xy_to_XYZ(0.31271, 0.32902);\nconst mat3 sRGB = mat3(xy_to_XYZ(0.64, 0.33), xy_to_XYZ(0.30, 0.60), xy_to_XYZ(0.15, 0.06));\nconst mat3 sRGB_TO_XYZ_D65 = sRGB*diag3(inverse(sRGB)*D65);\nconst mat3 XYZ_D65_TO_sRGB = inverse(sRGB_TO_XYZ_D65);\n\nvec3 sRGB_OETF(vec3 c) {\n    vec3 a = 12.92*c;\n    vec3 b = 1.055*pow(c, vec3(1.0/2.4)) - 0.055;\n    return mix(a, b, greaterThan(c, vec3(0.00313066844250063)));\n}\n\nvec3 sRGB_EOTF(vec3 c) {\n    vec3 a = c/12.92;\n    vec3 b = pow((c + 0.055)/1.055, vec3(2.4));\n    return mix(a, b, greaterThan(c, vec3(0.0404482362771082)));\n}\n\n#define adapt_aux(x) pow(F_L*abs(x), vec3(0.42))\n#define adapt(x) 400.0*sign(x)*adapt_aux(x)/(27.13 + adapt_aux(x))\n#define unadapt(x) sign(x)/F_L*pow(27.13*abs(x)/(400.0 - abs(x)), vec3(1.0/0.42))\n\nconst mat3 M16 = mat3(\n    +0.401288, -0.250268, -0.002079,\n    +0.650173, +1.204414, +0.048952,\n    -0.051461, +0.045854, +0.953127\n);\n\n// sRGB conditions, average surround\nconst vec3 XYZ_w = D65;\nconst float Y_w = XYZ_w.y;\nconst float Y_b = 0.2;\nconst float L_w = 64.0/radians(180.0);\nconst float L_A = L_w*Y_b/Y_w;\nconst float F = 1.0;\nconst float c = 0.69;\nconst float N_c = F;\n\n// step 0*\nconst vec3 RGB_w = M16*XYZ_w;\nconst float D = 1.0; // clamp(F*(1.0 - 1.0/3.6*exp((-L_A - 42.0)/92.0)), 0.0, 1.0);\nconst vec3 D_RGB = D*(Y_w/RGB_w) + 1.0 - D;\nconst float k4 = pow(1.0/(5.0*L_A + 1.0), 4.0);\nconst float F_L = k4*L_A + 0.1*pow(1.0 - k4, 2.0)*pow(5.0*L_A, 1.0/3.0);\nconst float n = Y_b/Y_w;\nconst float z = 1.48 + sqrt(n);\nconst float N_bb = 0.725/pow(n, 0.2);\nconst float N_cb = N_bb;\nconst vec3 RGB_cw = D_RGB*RGB_w;\nconst vec3 RGB_aw = adapt(RGB_cw);\nconst float A_w = dot(vec3(2.0, 1.0, 0.05), RGB_aw)*N_bb;\n\nvec3 XYZ_D65_to_CAM16(vec3 XYZ) {\n    // step 1\n    vec3 RGB = M16*XYZ;\n    // step 2\n    vec3 RGB_c = D_RGB*RGB;\n    // step 3*\n    vec3 RGB_a = adapt(RGB_c);\n    // step 4*\n    const mat3x4 m = 1.0/1980.0*mat3x4(\n        3960.0, 1980.0, 220.0, 1980.0,\n        1980.0, -2160.0, 220.0, 1980.0,\n        99.0, 180.0, -440.0, 2079.0\n    );\n    vec4 aux = m*RGB_a; // p_2, a, b, u\n    float h = atan(aux.z, aux.y);\n    // step 5\n    float e_t = 0.25*(cos(h + 2.0) + 3.8);\n    // step 6*\n    float A = aux.x*N_bb;\n    // step 7\n    float J = pow(A/A_w, c*z);\n    // step 8\n    // step 9*\n    float t = 5e4/13.0*N_c*N_cb*e_t*length(aux.yz)/(aux.w + 0.305);\n    float alpha = pow(t, 0.9)*pow(1.64 - pow(0.29, n), 0.73);\n    float C = 0.01*alpha*sqrt(J);\n    float M = C*pow(F_L, 0.25);\n    return vec3(J, M, h);\n}\n\nvec3 CAM16_to_XYZ_D65(vec3 JMh) {\n    // step 1\n    // step 1-1\n    // step 1-2*\n    float C = JMh.y/pow(F_L, 0.25);\n    float alpha = JMh.x == 0.0 ? JMh.x : 100.0*C/sqrt(JMh.x);\n    float t = pow(alpha/pow(1.64 - pow(0.29, n), 0.73), 1.0/0.9);\n    // step 1-3\n    // step 2*\n    float e_t = 0.25*(cos(JMh.z + 2.0) + 3.8);\n    float A = A_w*pow(JMh.x, 1.0/(c*z));\n    float p_1 = 5e4/13.0*N_c*N_cb*e_t;\n    float p_2 = A/N_bb;\n    // step 3*\n    vec2 cs = vec2(cos(JMh.z), sin(JMh.z));\n    float r = 23.0*(p_2 + 0.305)*t/(23.0*p_1 + t*dot(vec2(11.0, 108.0), cs));\n    vec2 ab = r*cs;\n    // step 4\n    const mat3 m = 1.0/1403.0*mat3(\n        460.0, 460.0, 460.0,\n        451.0, -891.0, -220.0,\n        288.0, -261.0, -6300.0\n    );\n    vec3 RGB_a = m*vec3(p_2, ab);\n    // step 5*\n    vec3 RGB_c = unadapt(RGB_a);\n    // step 6\n    vec3 RGB = RGB_c/D_RGB;\n    // step 7\n    return inverse(M16)*RGB;\n}\n\nvec3 XYZ_D65_to_CAM16_UCS(vec3 XYZ) {\n    vec3 JMh = XYZ_D65_to_CAM16(XYZ);\n    float J = 1.7*JMh.x/(1.0 + 0.7*JMh.x);\n    float M = log(1.0 + 2.28*JMh.y)/2.28;\n    return vec3(J, M, JMh.z);\n}\n\nvec3 CAM16_UCS_to_XYZ_D65(vec3 JMh) {\n    float J = JMh.x/(1.0 - 0.7*(JMh.x - 1.0));\n    float M = (exp(2.28*JMh.y) - 1.0)/2.28;\n    return CAM16_to_XYZ_D65(vec3(J, M, JMh.z));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

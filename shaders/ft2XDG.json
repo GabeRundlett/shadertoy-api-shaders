@@ -1,0 +1,107 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1628523805",
+            "description": "Proof of concept, It's possible to make a physics simulation in a cube map. Works better than expected. :)\nUse the mouse to turn around.",
+            "flags": 1,
+            "hasliked": 0,
+            "id": "ft2XDG",
+            "likes": 0,
+            "name": "LookingGlass: Liquid Planet",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "water",
+                "planet",
+                "cubemap",
+                "drop",
+                "feedback",
+                "physics"
+            ],
+            "usePreview": 0,
+            "username": "xjorma",
+            "viewed": 127
+        },
+        "renderpass": [
+            {
+                "code": "// Created by David Gallardo - xjorma/2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0\n\n\n#define AA\n\nconst vec3 lightPosition = vec3(0.,10.,2.);\n\nconst vec3 backgroundColor = vec3(0.4);\nconst vec3 waterColor = vec3(0,0,0.4);\nconst vec3 solidColor = vec3(1, 1, 0);\n\nconst float cref = 0.8;\n\nfloat saturate(float c)\n{\n    return clamp(c,0.,1.);\n}\n\n// https://iquilezles.org/articles/distfunctions\nfloat sdSphere( vec3 p, float s )\n{\n  return length(p)-s;\n}\n\n\nfloat mapWater(in vec3 p)\n{\n    float d = sdSphere(p, 1.0 + texture(iChannel0, p).x * 0.05);\n    return d;\n}\n\n\n#define NORMALFUNC(NAME, MAPFUNC, EPS)\t\t\t\t\t\t\t\t\\\nvec3 NAME(in vec3 p)\t\t\t\t\t\t\t\t    \t\t\t\\\n{                                                                   \\\n    const vec2 k = vec2(EPS,-EPS);\t\t\t\t                    \\\n    return normalize( k.xyy * MAPFUNC(p + k.xyy) + \t\t\t    \t\\\n                      k.yyx * MAPFUNC(p + k.yyx) + \t\t\t\t    \\\n                      k.yxy * MAPFUNC(p + k.yxy) + \t\t\t\t    \\\n                      k.xxx * MAPFUNC(p + k.xxx) );\t\t\t\t    \\\n}\n\n#define RAYMARCHFUNC(NAME, MAPFUNC, ITER, EPS)\t\t\t\t\t\t\\\nfloat NAME(in vec3 ro, in vec3 rd, in float dist)                   \\\n{                                                                   \\\n    float t = 0.0;                                                  \\\n    for( int i = 0; i < ITER; i++ )                                 \\\n    {                                                               \\\n        vec3\tp = ro + t*rd;                                      \\\n        float\th = MAPFUNC(p);                                     \\\n        if( abs(h) < 0.00001 || t > dist )                          \\\n            break;                                                  \\\n        t += h;                                                     \\\n    }                                                               \\\n    return t;                                                       \\\n}\n\nNORMALFUNC(calcNormalWater,mapWater, 0.02)\nRAYMARCHFUNC(raymarchWater,mapWater, 100, 0.00001)\n\nNORMALFUNC(calcNormalSolid,mapSolid, 0.0001)\nRAYMARCHFUNC(raymarchSolid,mapSolid, 100, 0.001)\t\n\nvec3 Render(vec3 ro,vec3 rd,vec3 cd,float dist)\n{\n    float tSolid = raymarchSolid(ro, rd, dist);\n    float tWater = raymarchWater(ro, rd, tSolid);\n    \n    vec3 col = backgroundColor;\n\n    if( min(tWater, tSolid) < dist )\n    {\n        if(tSolid < tWater)\n        {\n            // Solid first\n            vec3 p = ro + tSolid * rd;\n            vec3 n = calcNormalSolid(p);\n            vec3 v = normalize(ro-p);\n            vec3 l = normalize(lightPosition-p);\n            vec3 h = normalize(l+v);\n            col = solidColor * saturate(max(0.0, dot(n,l) * 0.7) + 0.3);\n        }\n        else\n        {\n            // Water first\n            vec3 p = ro + tWater * rd;\n            vec3 n = calcNormalWater(p);\n            vec3 refr = refract(rd, n, cref);\n            const float secondDist = 2.5;\n            float tWaterOut = raymarchWater(p + 1.5 * refr, -refr, secondDist);\n            float tSolidRefract = raymarchSolid(p, refr, secondDist);\n            float d = max(0.0, secondDist - tWaterOut);\n            if(tSolidRefract < secondDist)\n            {\n                vec3 p = p + tSolidRefract * refr;\n                vec3 n = calcNormalSolid(p);\n                vec3 v = normalize(ro-p);\n                vec3 l = normalize(lightPosition-p);\n                vec3 h = normalize(l+v);\n                col = solidColor * saturate(max(0.0, dot(n,l) * 0.7) + 0.3);\n                d = tSolidRefract;\n            }\n            \n            vec3 l = normalize(lightPosition-p);                  \n            col = applyFog( col, waterColor, d * 3.0);\n            float spec = length(texture(iChannel1, reflect(ro, n) * vec3(1,-1,1)).rgb);\n            col += 0.15 * spec * smoothstep(0.0, 0.1, dist);\n        }\n    }\n    return col;\n}\n\nvoid mainVR( out vec4 fragColor, in vec2 fragCoord, in vec3 ro, in vec3 rd )\n{\n    fragColor = vec4(Render(ro/3. + vec3(0.0,.0,4.0),rd ,rd,14.) ,1);\n}\n\nmat3 setCamera( in vec3 ro, in vec3 ta )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 up = vec3(0, 1, 0);\n\tvec3 cu = normalize( cross(cw,up) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord, in vec3 _ro, in vec3 _rd)\n{\n    initSolidTransfrom(iTime);\n\tvec3 tot = vec3(0.0);\n        \n#ifdef AA\n\tvec2 rook[4];\n    rook[0] = vec2( 1./8., 3./8.);\n    rook[1] = vec2( 3./8.,-1./8.);\n    rook[2] = vec2(-1./8.,-3./8.);\n    rook[3] = vec2(-3./8., 1./8.);\n    for( int n=0; n<4; ++n )\n    {\n        // pixel coordinates\n        vec2 o = rook[n];\n        vec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n#else //AA\n        vec2 p = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;\n#endif //AA\n \n        // camera\n        \n        float theta\t= radians(360.)*(iMouse.x/iResolution.x-0.5);\n        float phi\t= radians(90.)*(iMouse.y/iResolution.y-0.5)-1.;\n        vec3 ro = 2.*vec3( sin(phi)*cos(theta),cos(phi),sin(phi)*sin(theta));\n        //vec3 ro = vec3(0.0,.2,4.0);\n        vec3 ta = vec3( 0 );\n        // camera-to-world transformation\n        mat3 ca = setCamera( ro, ta );\n        //vec3 cd = ca[2];    \n        \n        vec3 rd =  ca*normalize(vec3(p,1.5));        \n        \n        vec3 col = Render(_ro ,_rd ,ca[2], 4.0);\n\n\t    tot += col;\n#ifdef AA\n    }\n    tot /= 4.;\n#endif\n\n    tot = vignette(tot, fragCoord / iResolution.xy, 0.6);\n\n\tfragColor = vec4( sqrt(tot), 1.0 );\n}\n\n#define QAA\t2                                     \n\nconst float\tsideAngle = radians(35.0);\nconst float\thorizontalAngle = radians(14.0);\nconst float\tcameraSize      = 3.0;\nconst float\taspectRatio     = 0.75;\nconst float quiltColumns\t= 8.0;\nconst float quiltRows\t\t= 6.0;\nconst float nearClip        = 2.5;\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec4\taccColor = vec4(0.);\n    for( int m = 0; m < QAA; m++ )\n    for( int n = 0; n < QAA; n++ )\n    {\n        // pixel coordinates\n        vec2 o = (vec2(float(m), float(n)) / float(QAA) - 0.5) / iResolution.xy                                                                                 ;\n\t\t\n\t\tvec2\tcoord = (fragCoord / iResolution.xy  + o) * vec2(quiltColumns,quiltRows);\n\t\tvec2\tfract = fract(coord);\n\t\tvec2\tfloor = floor(coord);\n\t\tfloat\timageId = floor.x + floor.y * quiltColumns;\n\t\tfloat\tvalueId = imageId / (quiltColumns * quiltRows - 1.);\n\t\tfloat\tdist = (cameraSize / 2.) / tan(horizontalAngle / 2.);\n\t\tfloat\tminCam = -(cameraSize / 2.) - tan(sideAngle / 2.) * dist;\n\t\t\n\t\tvec3\tcamPos = mix(vec3(minCam,0,dist),vec3(-minCam,0,dist),valueId);\n\t\tvec3\tscreenPos = vec3((fract.x-0.5)*cameraSize,(fract.y-0.5)*cameraSize/aspectRatio,0);\n\t\t\n\t\tvec3\tdirRay = normalize(screenPos - camPos);\n\t\tvec4\tcolor;\n\t\tmainImage(color, fract*(iResolution.xy), screenPos - nearClip * dirRay, dirRay);\n\t\taccColor += clamp(color, 0.0, 1.0);\n\t}\n\tfragColor = accColor / float(QAA*QAA);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec3 minComponent(in vec3 v)\n{\n    v = abs(v);\n    if(v.x < v.y)\n    {\n        if(v.x < v.z)\n        {\n            return vec3(1, 0, 0);\n        }\n    }\n    else\n    {\n        if(v.y < v.z)\n        {\n            return vec3(0, 1, 0);\n        }\n    }\n    return vec3(0, 0, 1);\n}\n\n\nmat3 rotationMatrix(in vec3 axis, in float angle)\n{\n    axis = normalize(axis);\n    float s = sin(angle);\n    float c = cos(angle);\n    float oc = 1.0 - c;\n    \n    return mat3(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,\n                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,\n                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c);\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    if(iFrame == 0)\n    {\n        fragColor = vec4(0, 0, 0, 1);\n        return;\n    }\n    \n    initSolidTransfrom(iTime);\n    \n    vec3 up = minComponent(rayDir);\n    vec3 right = cross(rayDir, up);\n    up = normalize(cross(right, rayDir));\n    up *= 1.0 / (iResolution.x * 0.5);\n   \n\n    mat3 rot = rotationMatrix(rayDir, radians( 360.0 / float(nbSample)));\n\n    vec2 center = texture(iChannel0, rayDir).xy;\n    \n    float sum = 0.0;   \n    for(int i = 0; i < nbSample; i++)\n    {\n        sum += texture(iChannel0, rayDir + up).x;\n        up = rot * up;\n    }\n    \n    float new = (sum * (2.0 / float(nbSample)) - center.y) * dampening; \n    \n    // Random point\n    if((iFrame % 6) == 0)\n    {\n        float d = dot(rayDir, randomPointOnSphere(float(iFrame)));\n        new -= d * smoothstep(0.998, 1.0, d) * 0.10; \n    }\n    // solid\n    float ds = mapSolid(rayDir);\n    new -= smoothstep(0.0, -0.05, ds) * 0.02;   \n\n    fragColor = vec4(vec2(new, center.x), 0 , 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "\n\n// Physics simulation parameters\nconst int nbSample = 6;\nconst float dampening = 0.985;\n\n\n\n// Hash by Dave Hoskins from https://www.shadertoy.com/view/4djSRW\nvec2 hash21(float p)\n{\n\tvec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n\tp3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\n// Box SDF by IQ https://iquilezles.org/articles/distfunctions/distfunctions.htm\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\n// Fog by IQ https://iquilezles.org/articles/fog\nvec3 applyFog( in vec3  rgb, vec3 fogColor, in float distance)\n{\n    float fogAmount = exp( -distance );\n    return mix( fogColor, rgb, fogAmount );\n}\n\nvec3 vignette(vec3 color, vec2 q, float v)\n{\n    color *= 0.3 + 0.8 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), v);\n    return color;\n}\n \nmat4 solidTransform;\n\nvoid initSolidTransfrom(float t)\n{\n    vec3 ang = vec3(sin(t * 1.2) * radians(20.), -0.2 * t, sin(t * 1.3) * radians(20.));\n    vec3 trans = vec3(sin(t * 0.23), sin(t * 0.25), sin(t * 0.24)) * vec3(0.1, 0.5, 0.2);\n    \n    mat4 mt = mat4(\n\t\t\t1.0,\t\t0.0,\t\t0.0,         0.0,\n\t\t\t0.0,\t\t1.0,\t\t0.0,         0.0,\n\t\t\t0.0,\t\t0.0,\t\t1.0,         0.0,\n\t\t\ttrans.x,\ttrans.y,\ttrans.z,     1.0 );\n        \n    mat4 mx = mat4(\n\t\t\t1.0,\t\t0.0,\t\t0.0,         0.0,\n\t\t\t0.0,\t\tcos(ang.x),\t-sin(ang.x), 0.0,\n\t\t\t0.0,\t\tsin(ang.x),\tcos(ang.x) , 0.0,\n\t\t\t0.0,\t\t0.0,\t\t0.0,         1.0 );\n    mat4 my = mat4(\n\t\t\tcos(ang.y), 0.0,\t\tsin(ang.y),  0.0,\n\t\t\t0.0,\t\t1.0,\t\t0.0,         0.0,\n\t\t\t-sin(ang.y),0.0,\t\tcos(ang.y), 0.0, \n\t\t\t0.0,\t\t0.0,\t\t0.0,         1.0 );\n    mat4 mz = mat4(\n\t\t\tcos(ang.z), -sin(ang.z),0.0,         0.0,\n\t\t\tsin(ang.z),\tcos(ang.z),\t0.0,         0.0,\n\t\t\t0.0,\t\t0.0,\t\t1.0,         0.0,\n\t\t\t0.0,\t\t0.0,\t\t0.0,         1.0 );\n        \n    solidTransform = mt * mx * my * mz;\n}\n\nfloat mapSolid(vec3 p)\n{\n    float width = 0.2;\n    float length = 1.2;\n    p = vec3(solidTransform * vec4(p, 1));\n    return min(min(sdBox( p, vec3(length, width, width)), sdBox( p, vec3(0.2, length, width))) , sdBox( p, vec3(width, width, length)));\n}\n\nvec3 randomPointOnSphere(float key)\n{\n    vec2 rand = hash21(key);\n    float theta = radians(360.0) * rand.x;\n    float phi = acos(2.0 * rand.y - 1.0);\n    return vec3 (cos(theta)*sin(phi), sin(theta)*sin(phi), cos(phi));    \n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

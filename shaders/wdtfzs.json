@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1620309885",
+            "description": "This is my attempt at writing a single pass gaussian blur, that takes advantage of the loop unrolling the compiler will do when it has enough data to do it at compile time. (This only works as long as the blur strength is known at compile time)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wdtfzs",
+            "likes": 0,
+            "name": "comp. time opt. gaussian blur",
+            "published": 3,
+            "tags": [
+                "blur",
+                "compiler"
+            ],
+            "usePreview": 0,
+            "username": "frhun",
+            "viewed": 307
+        },
+        "renderpass": [
+            {
+                "code": "\nconst float EULER = 2.71828;\nconst float PI = 3.14159;\nconst float TAU = 6.28319;\n\n//#define FASTGAMMA //fast is relative; on RDNA for example it saves 12 cycles per operation\n\n//My naive blur implementation, it is just what i came up with without thinking too much\n//or looking how people that actually know what they're doing do it\n// - displayed to the right of the mouse pointer -\nvec4 naiveBlur(sampler2D input_samp, vec2 center, vec2 sampleDist, float samplesPerDir, bool gammaCorrect){\n\tvec4 col_samples;\n    int noOfSamples = 0;\n    for(float rp_i_y = 0.; rp_i_y < samplesPerDir; rp_i_y++){\n        for(float rp_i_x = 0.; rp_i_x < samplesPerDir; rp_i_x++){\n            vec2 unscaled_rel_pos = vec2( (rp_i_x - (samplesPerDir/2.)),\n                                         (rp_i_y - (samplesPerDir/2.)));\n            if(length(unscaled_rel_pos) <= (samplesPerDir/2.)){\n                noOfSamples++;\n                vec4 col_sample = texture(input_samp, center - sampleDist*\n                                          unscaled_rel_pos\n                                       );\n                if(!gammaCorrect)\n                    col_samples += col_sample;\n                else\n                    #ifdef FASTGAMMA\n                    col_samples += vec4(col_sample.rgb*col_sample.rgb, col_sample.a);\n                    #else\n                    col_samples += vec4(pow(col_sample.rgb, vec3(2.2)), col_sample.a);\n                    #endif\n            }\n            \n        }\n    }\n    col_samples /= float(noOfSamples);\n    if(!gammaCorrect)\n        return col_samples;\n    else\n        #ifdef FASTGAMMA\n        return vec4(pow(col_samples.rgb, vec3(1./2.2)), col_samples.a);\n    \t#else\n    \treturn vec4(sqrt(col_samples.rgb), col_samples.a);\n    \t#endif\n}\n\nfloat gaussianWeight(float sigma, vec2 relPos){\n    /* //correct version, with no (noticeable) impact on the result\n \treturn (\n        (1./(TAU * sigma * sigma)) *\n        pow(EULER,\n            -((relPos.x * relPos.x + relPos.y * relPos.y)/(2. * sigma * sigma))\n           )\n           );\n\t*/\n    return ( pow(\n        EULER,\n            -((relPos.x * relPos.x + relPos.y * relPos.y)/(2. * sigma * sigma)))\n           );\n}\n\nvec4 gaussianBlur(sampler2D input_samp, vec2 center, vec2 sampleDist, float samplesPerDir, bool gammaCorrect){\n\tvec4 col_samples = vec4(0.);\n    float sigma = samplesPerDir * 0.2;\n    \n    float cutoffWeight = gaussianWeight(\n        sigma,\n        vec2(\n            ((samplesPerDir-1.)/2.),\n            fract(mod(samplesPerDir - 1., 2.)/2. )\n        ) \n    );\n    float totalWeights = 0.;\n    \n    for(float rp_i_y = 0.; rp_i_y < samplesPerDir; rp_i_y++){\n        for(float rp_i_x = 0.; rp_i_x < samplesPerDir; rp_i_x++){\n    \t\tvec2 relPos = vec2( (rp_i_x - ((samplesPerDir-1.)/2.)),\n                                (rp_i_y - ((samplesPerDir-1.)/2.)));\n            float weight = gaussianWeight(sigma, relPos);\n            //only count the sample when the result will significantly affect the\n            //end result; unnessecairy passes should be optimized away at compile time\n            if(weight > cutoffWeight){\n                totalWeights += weight;\n                vec4 col_sample = texture(input_samp, center - relPos * sampleDist);\n                if(!gammaCorrect)\n                    col_samples += weight * col_sample;\n                else\n                    #ifdef FASTGAMMA\n                    col_samples += weight * vec4(col_sample.rgb*col_sample.rgb, col_sample.a);\n                    #else\n                    col_samples += weight * vec4(pow(col_sample.rgb, vec3(2.2)), col_sample.a);\n                    #endif\n            }\n        }\n    }\n    \n    col_samples /= totalWeights;\n    if(!gammaCorrect)\n        return col_samples;\n    else\n        #ifdef FASTGAMMA\n        return vec4(pow(col_samples.rgb, vec3(1./2.2)), col_samples.a);\n    \t#else\n    \treturn vec4(sqrt(col_samples.rgb), col_samples.a);\n    \t#endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\tbool in_mouse_range = length(fragCoord-iMouse.xy) < 70.;\n    if(length(fragCoord-iMouse.xy) < 20.){\n        fragColor =  texture(iChannel0, uv);\n        return;\n    }\n    if(in_mouse_range && fragCoord.x > iMouse.x){\n        fragColor = naiveBlur(iChannel0, uv.xy, 1./iResolution.xy, 30., in_mouse_range);\n        return;\n    }\n    \n    fragColor = gaussianBlur(iChannel0, uv.xy, 1./iResolution.xy, 30., !in_mouse_range);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-(iResolution.xy*0.5))*2./max(iResolution.x, iResolution.y);\n    float effx = uv.x - (sin(iTime));\n    bool beblk = effx < 0.1 && effx > 0.;\n    vec3 col1 = texture(iChannel0, fragCoord.xy/iResolution.xy).xyz;\n    vec3 col2 = vec3(0.1, 0.9, 0.1);\n    vec3 col3 = vec3(0.9, 0.1, 0.1);\n    vec3 col4 = vec3(0.1, 0.1, 0.9);\n    vec3 col = col1;\n    if(beblk)\n        col = col2;\n    if(length(uv) < 0.3 && !(beblk && cos(iTime)>0.))\n        col = col3;\n    float pointdist = length(uv-vec2(0.3, 0.1));\n    float linedist = sin(iTime*1.2)*0.5+0.5;\n    if(pointdist > linedist && pointdist < linedist + 0.1)\n        col = col4;\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

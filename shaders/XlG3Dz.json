@@ -1,0 +1,152 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1474769170",
+            "description": "Visualising the color content of an image using a 16x16x16 3d histogram.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XlG3Dz",
+            "likes": 5,
+            "name": "3D Color Histogram",
+            "published": 3,
+            "tags": [
+                "3d",
+                "color",
+                "volumetric",
+                "histogram"
+            ],
+            "usePreview": 0,
+            "username": "Flyguy",
+            "viewed": 1019
+        },
+        "renderpass": [
+            {
+                "code": "//3D Color Histogram\n//Transparency is a logarithmic scale from 10^0 to 10^5.\n//The input image/shader can be changed in Buf A.\n\n//Visual settings\n#define LINEAR_SAMPLE 1\n#define SHOW_PREVIEW\n#define PREVIEW_SCALE 4.0\n\n#define DENSITY 0.5\n#define THRES_LOW 0.0\n#define THRES_HIGH 1.0\n\n//Volume parameters (Changes must be made in BufB & BufC as well)\n#define IMGRES 256\n\n#define BITS_RGB vec3(4,4,4)\n#define MAX_RGB exp2(BITS_RGB)\n\n#define N_BUFFERS 64\n#define N_PIXELS (IMGRES * IMGRES)\n#define N_COLORS (MAX_RGB.r*MAX_RGB.b*MAX_RGB.b)\n#define BUFFER_KERNEL (N_PIXELS / N_BUFFERS)\n\n//Ray marching parameters\n#define MIN_MARCH_DIST 0.001\n#define MAX_MARCH_STEPS 64\n#define MAX_VOLUME_STEPS 290\n#define VOLUME_STEP_SIZE 0.015\n\n#define logb(a,b) (log(a) / log(b))\n\nfloat pi = atan(1.0)*4.0;\n\n//Returns a rotation matrix for the given angles around the X,Y,Z axes.\nmat3 Rotate(vec3 angles)\n{\n    vec3 c = cos(angles);\n    vec3 s = sin(angles);\n    \n    mat3 rotX = mat3( 1.0, 0.0, 0.0, 0.0,c.x,s.x, 0.0,-s.x, c.x);\n    mat3 rotY = mat3( c.y, 0.0,-s.y, 0.0,1.0,0.0, s.y, 0.0, c.y);\n    mat3 rotZ = mat3( c.z, s.z, 0.0,-s.z,c.z,0.0, 0.0, 0.0, 1.0);\n\n    return rotX * rotY * rotZ;\n}\n\nvec4 texture3D(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    uvw = clamp(floor(uvw * vres), vec3(0), vres-1.0);    \n    //XYZ -> Pixel index\n    float idx = (uvw.z * (vres.x*vres.y)) + (uvw.y * vres.x) + uvw.x;    \n    //Pixel index -> Buffer uv coords\n    vec2 uv = vec2(mod(idx, iResolution.x), floor(idx / iResolution.x));    \n    return textureLod(tex, (uv + 0.5) / iResolution.xy, 0.0);\n}\n\nvec4 texture3DLinear(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    vec3 blend = fract(uvw*vres);\n    vec4 off = vec4(1.0/vres, 0.0);\n    \n    //2x2x2 sample blending\n    vec4 b000 = texture3D(tex, uvw + off.www, vres);\n    vec4 b100 = texture3D(tex, uvw + off.xww, vres);\n    \n    vec4 b010 = texture3D(tex, uvw + off.wyw, vres);\n    vec4 b110 = texture3D(tex, uvw + off.xyw, vres);\n    \n    vec4 b001 = texture3D(tex, uvw + off.wwz, vres);\n    vec4 b101 = texture3D(tex, uvw + off.xwz, vres);\n    \n    vec4 b011 = texture3D(tex, uvw + off.wyz, vres);\n    vec4 b111 = texture3D(tex, uvw + off.xyz, vres);\n    \n    return mix(mix(mix(b000,b100,blend.x), mix(b010,b110,blend.x), blend.y), \n               mix(mix(b001,b101,blend.x), mix(b011,b111,blend.x), blend.y),\n               blend.z);\n}\n\nfloat ChromaVolume(vec3 uvw)\n{\n    #if(LINEAR_SAMPLE == 1)\n    \tfloat value = texture3DLinear(iChannel0, uvw, MAX_RGB).r;\n    #else\n    \tfloat value = texture3D(iChannel0, uvw, MAX_RGB).r;\n    #endif\n\n    value = logb(1.0 + value, 10.0)/5.0;\n    value = clamp(value, 0.0, 1.0);\n    \n    return value;\n}\n\nfloat Threshold(float x, float low, float high)\n{\n    return step(low, x) - step(high, x);\n}\n\nvec4 MarchVolume(vec3 orig, vec3 dir)\n{\n    //Ray march to find the cube surface.\n    float t = 0.0;\n    vec3 pos = orig;\n    for(int i = 0;i < MAX_MARCH_STEPS;i++)\n    {\n        pos = orig + dir * t;\n        float dist = 1e6;\n        \n        dist = min(dist, 4.0-length(pos));\n        dist = min(dist, distance(pos, clamp(pos, vec3(-1), vec3(1))));\n        \n        t += dist;\n        \n        if(dist < MIN_MARCH_DIST){break;}\n    }\n    \n    //Step though the volume and add up the opacity.\n    vec4 acc = vec4(0);\n    vec4 voxel = vec4(0);\n    \n    for(int i = 0;i < MAX_VOLUME_STEPS;i++)\n    {\n    \tt += VOLUME_STEP_SIZE;       \n    \tpos = orig + dir * t;\n        \n        //Stop if the sample leaves the volume.\n        if(max(max(abs(pos.x),abs(pos.y)),abs(pos.z))-1.0 > 0.0) {break;}\n        \n        vec3 posUVW = 1.0 - (pos * 0.5 + 0.5);\n        \n        #if(LINEAR_SAMPLE == 1)\n            vec3 col = posUVW.zyx;\n        #else\n            vec3 col = floor(posUVW.zyx * MAX_RGB) / MAX_RGB;\n        #endif\n        \n        voxel = vec4(col, ChromaVolume(posUVW));\n        \n        //Volume thresholding\n        voxel.a = voxel.a * Threshold(voxel.a, THRES_LOW, THRES_HIGH) * DENSITY;\n        \n        voxel.rgb *= voxel.a;\n        acc = (1.0 - acc.a)*voxel + acc;\n        \n        if(acc.a > 0.95){break;}\n    }\n    return vec4(acc);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 res = iResolution.xy / iResolution.y;\n\tvec2 uv = fragCoord.xy / iResolution.y;\n    \n    vec3 dir = normalize(vec3(uv - res/2.0,1.0));\n    vec3 orig = vec3(0,0,-3.5);\n  \t\n    vec3 camAngles = vec3(0);\n    \n    if(iMouse.xy == vec2(0))\n    {\n        camAngles.y = iTime;\n        camAngles.x = pi * (7.0 / 8.0);\n    }\n    else\n    {\n        camAngles = vec3(iMouse.y,iMouse.x, 0);\n        camAngles.xy = ((camAngles.xy / iResolution.xy) - 0.5) * (4.0*pi);\n    }\n    \n    mat3 camRotate = Rotate(camAngles);\n    \n    dir *= camRotate;\n    orig *= camRotate;\n\n    vec3 color = vec3(0);\n    \n    vec2 bguv = uv - res/2.0;\n    float back = sin(bguv.x*pi*8.0) * sin(bguv.y*pi*8.0);\n    back = step(0.0,back);\n    back = back * 0.05 + 0.2;\n    color = vec3(back);\n    \n    vec4 volCol = MarchVolume(orig,dir);\n    \n    color = mix(color, volCol.rgb, volCol.w);\n    \n\tfragColor = vec4(color, 1.0);\n    \n    #ifdef SHOW_PREVIEW\n        if(all(lessThan(uv, res/PREVIEW_SCALE)))\n        {\n            fragColor = texture(iChannel1, uv/res*PREVIEW_SCALE);\n        }\n    #endif\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Input Shader\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n\tfragColor = texture(iChannel0,uv);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 11,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/c3a071ecf273428bc72fc72b2dd972671de8da420a2d4f917b75d20e1c24b34c.ogv"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Fills multiple 4096-bin histograms in parallel from small portions of the image.\n\n//Volume parameters\n#define IMGRES 256\n\n#define BITS_RGB vec3(4,4,4)\n#define MAX_RGB exp2(BITS_RGB)\n\n#define N_BUFFERS 64\n#define N_PIXELS (IMGRES * IMGRES)\n#define N_COLORS (MAX_RGB.r*MAX_RGB.b*MAX_RGB.b)\n#define BUFFER_KERNEL (N_PIXELS / N_BUFFERS)\n\n//UV coords to pixel index given buffer width.\nfloat UVtoIdx(vec2 uv, float stride)\n{\n    uv = floor(uv);\n    stride = floor(stride);\n    return stride * uv.y + uv.x;\n}\n\n//Pixel index to UV coords given buffer width.\nvec2 IdxtoUV(float idx, float stride)\n{\n    idx = floor(idx);\n    stride = floor(stride);\n    return vec2(mod(idx, stride), floor(idx / stride));\n}\n\n//12-bit index to RGB color.\nvec3 IdxtoColor(float idx)\n{\n    vec3 shift = exp2(vec3(BITS_RGB.g+BITS_RGB.b, BITS_RGB.b, 0));\n    vec3 c = vec3(floor(idx));\n    c = floor(c / shift);\n    c = mod(c, MAX_RGB);\n    return c;\n}\n\n//Sample the pixel at index 'id' and quantize to 12-bit RGB.\nvec3 Sample(float idx)\n{\n    idx = floor(idx);\n    vec2 uv = IdxtoUV(idx, float(IMGRES));\n    vec3 c = textureLod(iChannel0, uv / float(IMGRES),0.0).rgb;\n    return floor(c * (MAX_RGB-1.0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float idx = UVtoIdx(fragCoord, iResolution.x);\n    \n    float bufferID = floor(idx / float(N_COLORS)); //The current buffer being filled.\n    float bufferIdx = mod(idx, float(N_COLORS)); //Index in the current buffer.\n    \n    //Do nothing if the buffer id is >= N_BUFFERS.\n    if(bufferID >= float(N_BUFFERS)){ fragColor = vec4(0); return; }\n    \n    float offs = bufferID * float(BUFFER_KERNEL); //Sampling offset for the current buffer\n    vec3 binColor = IdxtoColor(bufferIdx); //The color to compare against \n    float acc = 0.0; //Bin accumulator.\n    \n    //Sample the image in the buffer's range and fill color bins.\n    for(int i = 0;i < BUFFER_KERNEL;i++)\n    {\n        if(Sample(float(i) + offs) == binColor)\n        {\n            acc++;\n        }\n    }\n    \n    fragColor = vec4(acc, 0, 0, 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Adds the histograms together into a single 4096-bin histogram.\n\n//Volume parameters\n#define IMGRES 256\n\n#define BITS_RGB vec3(4,4,4)\n#define MAX_RGB exp2(BITS_RGB)\n\n#define N_BUFFERS 64\n#define N_PIXELS (IMGRES * IMGRES)\n#define N_COLORS (MAX_RGB.r*MAX_RGB.b*MAX_RGB.b)\n#define BUFFER_KERNEL (N_PIXELS / N_BUFFERS)\n\nfloat UVtoIdx(vec2 uv, float stride)\n{\n    uv = floor(uv);\n    stride = floor(stride);\n    return stride * uv.y + uv.x;\n}\n\nvec2 IdxtoUV(float id, float stride)\n{\n    id = floor(id);\n    stride = floor(stride);\n    return vec2(mod(id, stride), floor(id / stride));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float idx = UVtoIdx(fragCoord, iResolution.x);\n    if(idx >= N_COLORS){ fragColor = vec4(0); return; }\n    \n    float acc = 0.0;\n    \n    for(int i = 0;i < N_BUFFERS;i++)\n    {\n        vec2 uvb = IdxtoUV(idx + N_COLORS * float(i), iResolution.x);\n        acc += textureLod(iChannel0, uvb/iResolution.xy, 0.0).r;\n    }\n    \n    fragColor = vec4(acc, 0, 0, 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buf C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

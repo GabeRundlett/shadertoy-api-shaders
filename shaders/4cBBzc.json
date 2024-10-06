@@ -1,0 +1,137 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1725243042",
+            "description": "V1. Click = gravity well. Discrete particle simulation using a low res, sparse texture (ie. a literal framebuffer as a spatial data-structure). Hoping to get nearly a million particles if I can solve the crowd-crushing problem via impulse storing",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4cBBzc",
+            "likes": 12,
+            "name": "Dan's Discrete Particle Sim",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "sphere",
+                "circle",
+                "particles",
+                "physics",
+                "particle",
+                "rigidbody",
+                "body",
+                "rigid"
+            ],
+            "usePreview": 0,
+            "username": "danielsturk",
+            "viewed": 120
+        },
+        "renderpass": [
+            {
+                "code": "/*\n    The gravity is inverted on the left & right side of the screen for a neat visual\n\n    Can easily be used to simulate up to millions of particles efficiently, if you had room to render them all on screen.\n    The real limitation is physics stability when dozens/100s of particles are vertically stacked, which I call 'crowd crushing'\n    Impulse storing is the solution to this, but will need to be reinvented since we don't track collision pairs. Impulse storing: https://archive.org/details/GDC2014Catto\n    \n    For more/smaller particles: go to Common > decrease 'gridScale' and restart\n    For more tightly packed particles: go to Common > decrease 'particleSpawnSpacing' and restart\n    \n    Discrete particle simulation idea I had. I'm probably not the first to think of it, but:\n     - A low res framebuffer acts as a spatial data structure for the particles\n         - UN-COMMENT THE CODE AT THE BOTTOM OF THIS FILE TO SEE WHAT I'M TALKING ABOUT\n         - The framebuffer is a grid where each cell may contain 0 or 1 particles\n         - The grid cells must be smaller than the particles or else two particles will share a cell,\n             and then one of the particles will be annihilated (but this can be detected, so if used for fluid simulation, you could merge the masses/pressures)\n         - If the grid cells are unnecessarily small then the search algorithms will be too costly because they'll cover too many cells\n         \n         - In this shader, each grid cell is represented via 2 texels in order to store the position, velocity, hue, saturation, radius, and impulse\n    \n    Two passes:\n      - BUFFER A and BUFFER B are in the same format: each pair of texels stores 1 grid cell, ie. 0 or 1 particles\n      \n      BUFFER A:\n       - Physics simulation\n         - Gravity, collision detection & response, update velocity and position\n         - Within this step, the particle remains \"bound\" to the current grid cell\n             although its local position may exceed the bounds of this cell (min: [-.5,-.5], max [+.5, +.5])\n         - 6x6 search for collisions. response is applied inline, TODO: move collision response to separate pass that has distance sorting\n      BUFFER B:\n       - Backwards mapping\n         - 3x3 search for any nearby particle that are moving into this grid cell from the neighbouring grid cell\n         - If a neighbouring particle's center is within the bounds of the current cell, it is transfered to it\n      MAIN IMAGE:\n       - Simple render\n         - Round to the nearest grid cell\n         - 5x5 search for closest particle\n         - Compare distance from fragCoord to particle center to radius and render\n    \n    TODO:\n     - Better 'impulse storing', if that's even possible given that I'm not actually tracking collision pairs\n     - Non-circles. Either boxes or polygons would be cool, or a mix\n     - Sort collisions by distance and respond to the collisions in order\n         - Simplify BufferA to only output an unordered list of collision pairs\n         - Add another pass/buffer that sorts these by distance via a 'sorting network'\n             - Then apply proper physics responses that are ordered by distance\n             - This also simplifies the expensive inline collision response in the BufferA loop, which can be slow due to lockstep. We could copy only the nearest ~4 collisions, sort, and respond to them in order of distance\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragCoord += gridScale * camOffset; // shift the camera slightly into a more stable area\n    \n    vec2 cell = floor(fragCoord / gridScale); // determine which grid cell we're in\n    vec2 fragOffset = ((cell + vec2(.5)) * gridScale - fragCoord); // frag coord relative to the grid cell's center\n    vec2 cellOffset = fragOffset / gridScale; // same as above but scaled to grid units\n    \n    // 5x5 search to find nearest particle so we can render it\n    vec4 particleData[dataSize];\n    bool found = false;\n    vec2 offset;\n    for(int i = -2; i <= +2; i++) {\n        for(int j = -2; j <= +2; j++) {\n            vec2 candidateOffset = vec2(i, j);\n            vec4 candidateParticle[dataSize] = vec4[dataSize](\n                texture(iChannel1, ((cell + candidateOffset) * gridDataSize + vec2(0.5, 0.5)) / iResolution.xy),\n                texture(iChannel1, ((cell + candidateOffset) * gridDataSize + vec2(0.5, 1.5)) / iResolution.xy)\n            );\n            if(isValid(candidateParticle)) {\n                if(found) {\n                    vec2 diff = cellOffset + (particleData[0].rg + offset);\n                    vec2 candidateDiff = cellOffset + (candidateParticle[0].rg + candidateOffset);\n                    if(dot(candidateDiff, candidateDiff) < dot(diff, diff)) { // is the candidate closer than the closeset found particle?\n                        particleData = candidateParticle;\n                        offset = candidateOffset;\n                    }\n                } else {\n                    particleData = candidateParticle;\n                    offset = candidateOffset;\n                    found = true;\n                }\n            }\n        }\n    }\n\n    // DISPLAY MOVING BACKGROUND\n    // this math is copied from the physics code in BufferA\n    vec2 minWall = vec2(camOffset);\n    vec2 maxWall = floor(iResolution.xy / gridScale) + camOffset;\n    float invertedWallfallStrength = abs((cell.x - minWall.x) / (maxWall.x - minWall.x) * 2. - 1.);\n    invertedWallfallStrength *= invertedWallfallStrength;\n    vec2 vel = vec2(0, invertedWallfallStrength * .007 - .004);\n    // render background\n    float background = texture(iChannel2, fragCoord.xy / iResolution.xy  + -iTime * vel * 150.).r;\n    fragColor = vec4(vec3(background * background * .1), 0);\n\n    // render particle\n    if(found) {\n        vec2 pos = particleData[0].xy; // particle position relative to the grid cell it's in\n        vec2 diff = fragOffset / gridScale + (offset + pos); // fragCoord minus particle's center\n        float sqrDist = dot(diff, diff); // distance*distance to center of particle\n\n        float radius = particleData[1].w;\n        if(sqrDist < radius * radius) {\n            // fragCoord is within particle\n            float normalizedSqrDist = sqrDist / (radius * radius);\n            // determine color\n            float hue = particleData[1].z;\n            const float saturation = 1.;\n            float lightness = particleData[1].y;\n            fragColor.rgb = hslToRgb(hue, saturation, lightness);\n            fragColor.rgb *= 1. - normalizedSqrDist; // darker towards the outsides make it look 3d-ish\n            fragColor.a = 1.;\n        }\n    }\n    \n    // DEBUG:\n    // debug impulse\n    /*\n    if(fragColor.a > .5) {\n        float v = particleData[1].x * 5.;\n        v /= (1. + v);\n        fragColor.rgb = mix(fragColor.rgb * .5, vec3(1), v);\n    }\n    */\n    // debug grid (overlay the grid in front of the particles, non-null/non-empty grid cells with appear as a dark box)\n    // this is useful for ensuring the particle's cells are sufficiently spaced. if the cells overlap then the particles will be annihilated\n    /*\n    bool hasParticle = texture(iChannel1, (cell * gridDataSize + vec2(0.5, 1.5)) / iResolution.xy).a > .5;\n    if(hasParticle && fragColor.a > .5) fragColor.rgb *= .2;\n    */\n    \n    //\n    \n    fragColor.rgb = sqrt(fragColor.rgb); // srgb\n    fragColor.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 cell = floor(fragCoord / gridDataSize); // determine which grid cell we're in\n    vec2 dataIndex = floor(fragCoord) - cell * gridDataSize; // determine which piece of data we're writing (i=0, or i=1, at offsets [0,0] and [0,1])\n    vec4 particleData[dataSize];\n    \n    vec2 minWall = vec2(camOffset); // bounds of the screen\n    vec2 maxWall = floor(iResolution.xy / gridScale) + camOffset;\n    \n    if(any(greaterThan(cell, maxWall))) discard; // performance improvement: don't simulate beyond the visible bounds\n    \n    float seed = rand(rand(rand(iTime * 60.) * 1000. + cell.x) * 1000. + cell.y) * 1000.;\n    \n    if(iFrame == 0) {\n        // initial spawning on frame 0\n        bool spawnParticle = all(lessThan(fract((cell + .5) / particleSpawnSpacing), vec2(1. / particleSpawnSpacing)));\n        if(cell.x < 5. || cell.x > iResolution.x / gridScale - 3.) spawnParticle = false;\n        if(cell.y < 5. || cell.y > iResolution.y / gridScale - 3.) spawnParticle = false;\n        if(spawnParticle) {\n            particleData[0] = vec4(\n                 0., // x offset\n                 0., // y offset\n                 (rand(seed++) - .5) * .01, // x vel\n                 (rand(seed++) - .5) * .01  // y vel\n            );\n            particleData[1] = vec4(\n                0, // unused currently\n                .25 + .75 * cell.y / (iResolution.y / gridScale),    // color (lightness)\n                -.025 + 1.05 * cell.x / (iResolution.x / gridScale), // color (hue)\n                (1.2 + rand(seed++) * .4) // radius\n            );\n        } else {\n            fragColor = vec4(0); // storing 0 radius = NULL particle / empty cell\n            return;\n        }\n    } else {\n        // read existing data\n        particleData[0] = texture(iChannel1, (cell * gridDataSize + vec2(0.5, 0.5)) / iResolution.xy);\n        particleData[1] = texture(iChannel1, (cell * gridDataSize + vec2(0.5, 1.5)) / iResolution.xy);\n    }\n    \n    float radius = particleData[1].w;\n    if(radius < .01) return; // zero-radius = NULL particle / empty cell\n    float mass = radius * radius;\n\n    vec2 oldPos = particleData[0].xy;\n    vec2 pos = oldPos;\n    vec2 vel = particleData[0].zw;\n    float maxImpulse = 0.; // used for impulse storing and debug visualization\n    \n    vec2 totalImpulse = vec2(0);\n    \n    vec2 ijOff = floor(pos); // +.1 -> 0, -.1 -> -1.\n    // a 6x6 search centered towards the side of the grid cell nearest the particle\n    for(int i = -2; i <= +3; i += 1) {\n        for(int j = -2; j <= +3; j += 1) {\n            vec2 offset = ijOff + vec2(i, j);\n            if(offset.x == 0. && offset.y == 0.) continue;\n            \n            vec4 otherParticleData[dataSize] = vec4[dataSize](\n                texture(iChannel1, ((cell + offset) * gridDataSize + vec2(0.5, 0.5)) / iResolution.xy),\n                texture(iChannel1, ((cell + offset) * gridDataSize + vec2(0.5, 1.5)) / iResolution.xy)\n            );\n            if(!isValid(otherParticleData)) continue;\n    \n            vec2 otherParticlePos = otherParticleData[0].xy;\n            vec2 otherParticleVel = otherParticleData[0].zw;\n            vec2 relPos = oldPos - (offset + otherParticlePos); // our position relative to the other particle\n            vec2 relVel = vel - otherParticleVel; // same as ^\n            float otherRadius = otherParticleData[1].w;\n            float otherMass = otherRadius * otherRadius; // area is proportional to radius\n\n            float time;\n            bool hit = false;\n            if(\n                // continous collision detection\n                circleCircleTimeOfFirstImpact(\n                    relPos,\n                    relVel,\n                    (radius + otherRadius), time\n                ) && time < 1. && time > 0. // ignore collisions that aren't happening within this frame (in the past or future). delta time is always 1 becuase this code's delta isn't frame-independent\n                ) {\n                // the circles are going to collide within the next timestep\n                hit = true;\n                relPos += relVel * time; // to calculate the correct normal, move the circles forward until they touch\n            } else {\n                // relPos += relVel;\n                float lengthRelPos = length(relPos);\n                float dist = lengthRelPos - (radius + otherRadius); // distance between the surface of the two circles\n                if(dist < 0.) {\n                    // the circles are overlapping right now\n                    hit = true;\n                    pos += relPos * (-dist / lengthRelPos) * otherMass / (mass + otherMass); // 'pseudo-velocity', move the circles to not be overlapping, based on their relative masses\n                }\n            }\n            if(hit) {\n                vec2 normal = normalize(relPos);\n                float otherPrevImpulse = otherParticleData[1].x;\n                float impulse = max(-dot(relVel, normal), 0.) * (otherMass) / (mass + otherMass) * (1. + ballBounciness); // no friction calculation, just impact impulse\n                maxImpulse = max(maxImpulse, impulse); // track the max impulse that occurs within this frame, you can see this in the debug view\n                impulse = max(impulse, otherPrevImpulse); // Attempt at impulse storing, helps prevent crowd crushing when too many particles are pressed together, resulting in particle annihilation. TODO: can this be improved? We don't track collision pairs so we'd need to invent our own technique for impulse storing, if it's possible\n\n                totalImpulse += normal * impulse; // we don't apply directly to the vel because we want to be unbiased since our search isn't in order of distance, like it should be\n            }\n        }\n    }\n    vel += totalImpulse;\n    \n    vec2 worldPos = pos + cell + vec2(.5);\n    \n    // right side of the screen has upwards gravity for a more interesting visual\n    float invertedWallfallStrength = abs((worldPos.x - minWall.x) / (maxWall.x - minWall.x) * 2. - 1.);\n    invertedWallfallStrength *= invertedWallfallStrength;\n    vel.y += invertedWallfallStrength * .007;\n    vel.y -= .004;\n    \n    // limit max speed\n    float speed = length(vel);\n    const float maxSpeed = .9;\n    if(speed > maxSpeed) vel = vel * (maxSpeed / speed);\n    \n    worldPos += vel;\n    \n    // apply outer walls of screen (notice the screen's bounds are an irregular octagon, ie. it has 8 sides = 8 clipping planes)\n    vec2 wallImpulse = vec2(0);\n    wallImpulse += clipParticleToPlane(worldPos, minWall, vec2(+1,0), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, maxWall, vec2(-1,0), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, minWall, vec2(0,+1), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, maxWall, vec2(0,-1), radius, vel, wallBounciness);\n    float cornerSize = iResolution.y / gridScale * .1;\n    wallImpulse += clipParticleToPlane(worldPos, vec2(minWall.x, minWall.y) + vec2(+cornerSize,+cornerSize), vec2(+SQRT1_2,+SQRT1_2), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, vec2(maxWall.x, minWall.y) + vec2(-cornerSize,+cornerSize), vec2(-SQRT1_2,+SQRT1_2), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, vec2(minWall.x, maxWall.y) + vec2(+cornerSize,-cornerSize), vec2(+SQRT1_2,-SQRT1_2), radius, vel, wallBounciness);\n    wallImpulse += clipParticleToPlane(worldPos, vec2(maxWall.x, maxWall.y) + vec2(-cornerSize,-cornerSize), vec2(-SQRT1_2,-SQRT1_2), radius, vel, wallBounciness);\n    \n    vel += wallImpulse;\n    maxImpulse = max(maxImpulse, length(wallImpulse));\n\n    pos = worldPos - cell - vec2(.5);\n    \n    if(iMouse.z > .5) {\n        vel = mix(vel, normalize(iMouse.xy - (worldPos + camOffset) * gridScale), .005);\n    }\n\n    // store data\n    particleData[0] = vec4(pos, vel);\n    particleData[1].x = maxImpulse;\n    fragColor = particleData[dataIndexVec2ToInt(dataIndex)];\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float PI = 3.14159265359;\nconst float SQRT1_2 = 0.7071067811865476;\n\n//\n\n// 0-1 but high values aren't stable when you have this many particles\nconst float ballBounciness = .0;\nconst float wallBounciness = .1;\n\n// most of the math is assumed to be in this space aka. scaled by this\nconst float gridScale = 3.; // each grid cell stores a max of 1 particle so this must be smaller than the particles\nconst float particleSpawnSpacing = 5.; // smaller value = more particles\n\nconst float camOffset = 2.; // offset the camera a bit so it's not right next to the corner of the texture, where the shader will glitch out\n\nconst vec2 gridDataSize = vec2(1, 2); // how many texels are needed to store a particle's data\nconst int dataSize = int(gridDataSize.x) * int(gridDataSize.y); // 2\nint dataIndexVec2ToInt(vec2 dataIndex) {\n    return int(dataIndex.y + .5);\n}\n\n// check if particle is null\nbool isValid(vec4 texels[dataSize]) {\n    return texels[1].a > .5;\n}\n\nfloat rand(float x) {\n    float y = x;\n    y = fract(y * 2.5215126221 + .6123541255);\n    y = fract(y * (x + .9621412541) * 4.6214215621);\n    return y;\n}\n\n// https://stackoverflow.com/questions/2353211/hsl-to-rgb-color-conversion\nfloat hue2rgb(float p, float q, float t){\n    if(t < 0.) t += 1.;\n    if(t > 1.) t -= 1.;\n    if(t < 1./6.) return p + (q - p) * 6. * t;\n    if(t < 1./2.) return q;\n    if(t < 2./3.) return p + (q - p) * (2./3. - t) * 6.;\n    return p;\n}  \nvec3 hslToRgb(float h, float s, float l){\n    vec3 c;\n\n    if(s == 0.){\n        c.r = c.g = c.b = l;\n    } else {\n\n        float q = l < 0.5 ? l * (1. + s) : l + s - l * s;\n        float p = 2. * l - q;\n        c.r = hue2rgb(p, q, h + 1./3.);\n        c.g = hue2rgb(p, q, h);\n        c.b = hue2rgb(p, q, h - 1./3.);\n    }\n    return c;\n}\n\n// CCW: CONTINUOUS COLLISION DETECTION\n\n// distance may be negative\nbool raycastCircle(vec2 originMinusCenter, vec2 dir, float rad, out float dist) {\n    float a = dot(dir, dir);\n    float b = 2. * dot(originMinusCenter, dir);\n    if (b > 0.) return false; // moving away from circle\n    float c = dot(originMinusCenter, originMinusCenter) - rad * rad;\n    float disc = b * b - 4. * a * c; // discriminant\n    if (disc < 0.) return false; // no solution (complex number solution)\n    dist = (-b - sqrt(disc)) / (2. * a); // distance from ray origin to perimeter of circle\n    return true;\n}\n\n// like raycasting, but instead, move one circle towards another until they collide (if ever)\nbool circlecastCircle(vec2 pos1MinusPos2, vec2 dir, float sumRad, out float dist) {\n    return raycastCircle(pos1MinusPos2, dir, sumRad, dist);\n}\n\n// \"time of first impact\". how much time passes until the circles bump into eachother\nbool circleCircleTimeOfFirstImpact(vec2 pos1MinusPos2, vec2 vel1MinusVel2, float sumRad, out float time) {\n    float speed = length(vel1MinusVel2);\n    if(speed == 0.) return false; // not moving relative to the other object, infinite time before impact\n    vec2 dir = vel1MinusVel2 / speed;\n    float dist;\n    if (circlecastCircle(pos1MinusPos2, dir, sumRad, dist)) {\n        time = dist / speed;\n        return true;\n    } else return false;\n}\n\n// adjusts position and returns impulse if collision occurs\nvec2 clipParticleToPlane(inout vec2 pos, vec2 wallPos, vec2 wallNormal, float rad, vec2 vel, float bounciness) {\n    vec2 relPos = pos - wallPos;\n    float dist = dot(relPos, wallNormal) - rad;\n    if(dist < 0.) {\n        pos -= dist * wallNormal;\n        return wallNormal * max(-dot(wallNormal, vel), 0.) * (1. + bounciness);\n    }\n    return vec2(0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/*\n    BACKWARDS MAPPING PASS\n    Our particles are moving around, and we're storing them in the nearest grid cell (which corresponds to a couple of texels).\n    When their absolute position exceeds the unit square they're in, they need to be moved to the neighbouring cell that they're now in\n    We only need to do a 3x3 pass thanks to the particles having a max velocity\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texture(iChannel0, fragCoord / iResolution.xy);\n    \n    vec2 cell = floor(fragCoord / gridDataSize); // determine which cell are we backwards mapping to\n    vec2 dataIndex = floor(fragCoord) - cell * gridDataSize;// determine which piece of data we're writing (i=0, or i=1, at offsets [0,0] and [0,1])\n    \n    vec4 particleData[dataSize];\n    bool found = false;\n    vec2 offset;\n    for(int i = -1; i <= +1; i++) {\n        for(int j = -1; j <= +1; j++) {\n            offset = vec2(i, j);\n            particleData[1] = texture(iChannel0, ((cell + offset) * gridDataSize + vec2(0.5, 1.5)) / iResolution.xy);\n            float radius = particleData[1].a;\n            if(radius < .01) continue; // zero-radius is how we represent NULL, this cell contains no particle.\n            particleData[0] = texture(iChannel0, ((cell + offset) * gridDataSize + vec2(0.5, 0.5)) / iResolution.xy);\n            \n            vec2 pos = particleData[0].rg; // particle position relative to its cell's center\n            vec2 displacement = sign(pos) * floor(abs(pos) + .5); // non-zero -> the particle is closer to another cell, so it will move there\n            vec2 dstOffset = offset + displacement; // which cell is this particle moving to (relative to this cell)\n            if(abs(dstOffset.x) > .5 || abs(dstOffset.y) > .5) continue; // equals zero, ie. it's moving into this cell\n            \n            pos -= displacement;\n            particleData[0].xy = pos;\n            \n            found = true;\n            break;\n        }\n        if(found) break;\n    }\n    \n    if(!found) {\n        fragColor = vec4(0); // store NULL particle / empty cell, by storing 0 radius\n        return;\n    }\n    \n    fragColor = particleData[dataIndexVec2ToInt(dataIndex)];\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

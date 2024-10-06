@@ -1,0 +1,78 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1679686023",
+            "description": "Improved version of my old black hole shader I did some years ago",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mdcSW8",
+            "likes": 3,
+            "name": "Raytraced blackhole 2.0",
+            "published": 3,
+            "tags": [
+                "ray",
+                "trace",
+                "hole",
+                "gravity",
+                "black",
+                "relativity"
+            ],
+            "usePreview": 0,
+            "username": "robobo1221",
+            "viewed": 337
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_STEPS 256\n#define MAX_DIST 5.\n#define MASS 0.1\n\n#define DELTA 0.001\n\n#define AA 0\n\nconst float PI = acos(-1.0);\n\nconst vec3 blackHolePos = vec3(0.0, 0.0, 2.0);\nconst vec3 scatterCoeff = vec3(20.0);\n\nfloat sdfSphere(vec3 p, float r) {\n    return length(p) - r;\n}\n\nfloat sdf(vec3 p) {\n    float sphereSdf = sdfSphere(p - blackHolePos + vec3(0.06, 0.00, 0.06), 0.06);\n    \n    return sphereSdf;\n}\n\nvec3 getNormal(vec3 p) {\n    vec2 delta = vec2(0.001, 0.0);\n    \n    float c = sdf(p);\n    float dx = c - sdf(p + delta.xyy);\n    float dy = c - sdf(p + delta.yxy);\n    float dz = c - sdf(p + delta.yyx);\n    \n    return normalize(vec3(dx, dy, dz));\n}\n\nvec3 calculateBlackbody(float temp) {\n    vec3 result = vec3(0.0);\n\n    for (float i = 0.0; i < 3.0; i++) {\n        float f = 1.0 + 0.5 * i; \n        result[int(i)] += 100.0 * (f * f * f) / (exp(19E3 * f / temp) - 1.0);  // Planck law\n    }\n    \n    return result;\n}\n\n\nvec4 accretionDisk(vec3 p, vec3 axis) {\n    vec3 center = p - blackHolePos;\n\n    vec2 uv = center.xz;\n    float absHeight = abs(center.y);\n    float dist = length(uv);\n    \n    float outer = MASS * 13.0;\n    float inner = MASS * 2.0;\n    \n    if (dist > outer) {\n        return vec4(0.0);\n    }\n    \n    mat3 rotateMatrix = rotation3d(vec3(0.0, 1.0, 0.0), iTime + 10.0 * MASS / dist);\n    \n    vec3 noise = texture(iChannel1, rotateMatrix * center * 0.5).rgb;\n    \n    float heightTerm = exp(-absHeight * absHeight * 900.0 * (dist + 1.));\n    float diskTerm = clamp((1.0 - smoothstep(inner, outer, dist)) * 50.0, 0.0, 1.0);\n    \n    /*\n    float jet = clamp((1.0 - smoothstep(0.0, 0.05, dist - absHeight * 0.25)), 0.0, 1.0)\n              * clamp(absHeight - MASS, 0.0, 1.0) * noise.x\n              * clamp(exp(-(absHeight - MASS * 3.0) * 16.0), 0.0, 1.0);\n    */\n    \n    float density = diskTerm * heightTerm * clamp((dist - inner) * 4., 0.0, 1.0) * noise.x ;//+ jet;\n    vec3 color = calculateBlackbody(40.0 * (noise.x + 1.) / pow(max(dist - inner, 1e-6) * 0.1 + 0.05, 2.0));\n    \n    return vec4(color * 0.1, density);\n}\n\nfloat getGravitationalForce(float t) {\n    return MASS / (t * t * t);\n}\n\nvec3 bendRay(vec3 ray, vec3 halfVec, float t, float stepSize) {\n    float force = getGravitationalForce(t);\n    return normalize(ray - force * stepSize * halfVec);\n}\n\nvec3 calculateStars(vec3 rd) {\n    const float res = 64.0;\n    vec3 fl = floor(rd * res);\n    vec3 fr = fract(rd * res);\n    \n    float n = hash13(fl);\n    \n    float h = step(n, 0.01);\n    \n    return smoothstep(0.3, 0.0, length(fr - 0.5)) * h * vec3(1.0);\n    \n}\n\nvec3 renderImage(vec2 fragCoord) {\n    vec2 worldUv = (2.0 * fragCoord - iResolution.xy) / iResolution.x;\n    \n    vec3 rd = normalize(vec3(worldUv, 1.0));\n    \n    vec2 nMouse = iMouse.xy / iResolution.xy;\n    \n    if (int(iMouse.x + iMouse.y) < 4) {\n        nMouse = vec2(0.2, 0.2);\n    }\n    \n    vec3 ro = vec3(0.0, nMouse.y, nMouse.x * 4.);\n    mat3 rotateM = rotation3d(normalize(vec3(0.0, 1.0, 1.0)), nMouse.x * 2.);\n    rd = rotateM * rd;\n    \n    float t = 0.0;\n    vec3 raypos = ro;\n    vec3 bentRd = rd;\n    \n    bool bhHit = false;\n    bool hit = false;\n    \n    float maxRayStep = MAX_DIST / float(MAX_STEPS);\n    \n    vec3 scattering = vec3(0.0);\n    vec3 transmittance = vec3(1.0);\n    \n    for (int i = 0; i < MAX_STEPS; i++) {\n        //float currsdf = sdf(raypos);\n       \n        vec3 halfVec = raypos - blackHolePos;\n        float blackHoleT = length(halfVec);\n        \n        float heading = dot(bentRd, halfVec);\n        \n        float eh = blackHoleT - MASS * clamp(-heading / (abs(blackHoleT - MASS) + 1e-3), 0.0, 1.0);\n        \n        float closeSteps = 0.05 * eh * (eh + 2.0 * MASS) / MASS + 1e-3;\n        float stepDist = min(maxRayStep, closeSteps);\n        \n        bentRd = bendRay(bentRd, halfVec, blackHoleT, stepDist);\n        \n        vec4 disk = accretionDisk(raypos, vec3(0.0, 1.0, 0.0));\n        float density = disk.a * stepDist;\n        \n        vec3 stepTransmittance = exp(-density * scatterCoeff);\n        \n        scattering += (1.0 - stepTransmittance) * disk.rgb * transmittance;\n        transmittance *= exp(-density * scatterCoeff);\n        \n        if (blackHoleT <= MASS && heading < 0.0) {\n            bhHit = true;\n            break;\n        }\n        \n        //if (currsdf < DELTA) {\n        //    hit = true;\n        //    break;\n        //}\n        \n        raypos += bentRd * stepDist;\n    }\n    \n    //vec3 cubemap = texture(iChannel0, bentRd).rgb;\n    //cubemap = cubemap / (1.0 - cubemap + 1e-6);\n    vec3 cubemap = calculateStars(bentRd);\n\n    vec3 color = bhHit ? vec3(0.0) : cubemap;//* transmittance + scattering / PI;\n    \n    //if (hit) {\n    //    vec3 normal = getNormal(raypos);\n    //    color = vec3(1.);\n    //}\n    \n    color = color * transmittance + scattering; \n    \n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec3 color = vec3(0.0);\n        if (AA > 0) {\n        for (int i = -AA; i <= AA; i++) {\n            for (int j = -AA; j <= AA; j++) {\n                    vec2 offsetCoord = fragCoord + vec2(i, j) * 0.5 / float(AA);\n                    color += renderImage(offsetCoord);\n               }\n        }\n\n        int totalSteps = 2 * AA + 1;\n\n        color /= float(totalSteps * totalSteps);\n    } else {\n        color = renderImage(fragCoord);\n    }\n\n    color /= color + 1.0;\n    \n    fragColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "mat3 rotation3d(vec3 axis, float angle) {\n    axis = normalize(axis);\n    float s = sin(angle);\n    float c = cos(angle);\n    float oc = 1.0 - c;\n\n    return mat3(\n        oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,\n        oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,\n        oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c\n    );\n}\n\nfloat bayer2(vec2 a){\n    a = floor(a);\n    return fract( dot(a, vec2(.5, a.y * .75)) );\n}\n\n#define bayer4(a)   (bayer2( .5*(a))*.25+bayer2(a))\n#define bayer8(a)   (bayer4( .5*(a))*.25+bayer2(a))\n#define bayer16(a)  (bayer8( .5*(a))*.25+bayer2(a))\n\nfloat hash13(vec3 p3) {\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

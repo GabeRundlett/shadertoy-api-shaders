@@ -1,0 +1,44 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1706791548",
+            "description": "a",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MflGR7",
+            "likes": 9,
+            "name": "_Isoplanes",
+            "published": 3,
+            "tags": [
+                "a"
+            ],
+            "usePreview": 0,
+            "username": "pk1234",
+            "viewed": 204
+        },
+        "renderpass": [
+            {
+                "code": "\n\n\nconst float near_dist = 10.;\nconst float far_dist = 50.;\n\nconst float sin_range = (30.) * 0.7;\n\n\nconst float num_raymarch_steps = 128.;\n\nconst float y_modulo = 4.;\n\n\n\nconst float top_cloud = 3.;\nconst float bot_cloud = 50.;\n\n        \nconst float num_volumetric_rm_steps = 32.;\n\nmat2 rot(float angle){\n    float c = cos(angle);\n    float s = sin(angle);\n    \n    return mat2(c,-s,s,c);\n}\n\n\nfloat wave_pattern(vec3 pos){\n    float wave = 0.;\n    \n    // big horizontal wave\n    float big_wave = sin(pos.z * 0.04 - iTime * 1.);    \n    big_wave *= big_wave;    \n    big_wave *= big_wave; \n    wave += big_wave * sin_range * (0.6 + sin(pos.z * 0.0133 - iTime * 3.) * 0.3);\n    \n    // small horizontal waves\n    wave += (sin(pos.z * 0.1 - iTime * 1.7) + 1.) * sin_range * 0.10;\n    wave += (sin(pos.z * 0.3 - iTime * 9.3) + 1.) * sin_range * 0.02;\n        \n    // vertical wave\n    float vert_pos = pos.y - pos.z - sin(pos.z * 1.1) * 6.;\n    float vertical_wave = sin(vert_pos * 0.02  - iTime * 0.5);\n    vertical_wave *= vertical_wave;\n    vertical_wave *= vertical_wave;\n    wave += vertical_wave * sin_range * 0.5;\n    \n    return wave;\n}\n\nfloat sdf_dist(vec3 pos){\n\n    float plane_d = far_dist - abs(pos.x);\n    \n    //if (abs(pos.z) > 999142.)\n    if (abs(pos.y) > 11122.)\n    {\n        return 0.;\n        return plane_d;\n    }   \n\n    // to get a regular pattern of \"levels\", adjust pos.y\n    float pos_y_modulo = mod(pos.y, y_modulo);\n    pos.y = pos.y - pos_y_modulo;\n    \n    // get pos of wave\n    float wave = wave_pattern(pos);    \n    float wave_pos = far_dist - wave;\n    \n    \n    float dist = wave_pos - abs(pos.x);\n    \n    return dist;\n}\n\nvec3 get_normal(vec3 pos){\n    const float eps = 0.1;\n    vec3 eps_vec = vec3(eps, 0., 0.);\n    \n    float fx = sdf_dist(pos + eps_vec.xyz) - sdf_dist(pos - eps_vec.xyz);\n    float fy = sdf_dist(pos + eps_vec.yxz) - sdf_dist(pos - eps_vec.yxz);\n    float fz = sdf_dist(pos + eps_vec.yzx) - sdf_dist(pos - eps_vec.yzx);\n    return normalize(vec3(fx, fy, fz) / eps);\n}\n\nfloat raymarch(vec3 ro, vec3 rd, float start, float end){\n    \n    float t = start;\n    \n    // initial pos\n    vec3 pos = ro + rd * t;\n    \n    for (float step_idx = 0.; step_idx<num_raymarch_steps; ++step_idx){\n        // get current sdf dist\n        float dist = sdf_dist(pos);\n        \n        // break if close enough, or if we've gone outside far (shouldn't happen?)\n        if (dist < 0.001 || t > end ){ break; }\n            \n        // set pos for next iteration\n        t += dist * 0.5;  \n        pos = ro + rd * t;\n    }\n    \n    return t;\n}\n   \n      \nvec4 calc_transmission(vec3 ro, vec3 rd, float t_start, float t_end){\n    \n    vec4 sum_col = vec4(0.);\n    float step_sz = (t_end - t_start)/ num_volumetric_rm_steps;\n    \n    // initial pos\n    float t = t_start;   \n    step_sz = 1.001;\n    \n    for (float step_idx = 0.; step_idx<128.; ++step_idx){\n        if (sum_col.a > 0.99) break;\n        \n        vec3 pos = ro + rd * t;\n        \n        // get current cloud dens;\n        //float density = sample_density(pos * 0.25 +vec3(0, -01.1*iTime, -1.5*iTime));\n        \n        float density = sample_density(pos);\n        \n        vec4 col = vec4(mix(vec3(0), vec3(1), density), density);\n        col.a = density * 0.4;\n        col.rgb *= col.a;\n\n        sum_col += (1. - sum_col.a) * col;\n        sum_col.a *= 0.99;\n        \n        \n        t += step_sz;\n    }\n    \n    return sum_col;\n}\n        \n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord/iResolution.xy - 0.5) * 2.;\n    \n    vec3 ro = vec3(0);\n    vec3 rd = normalize(vec3(uv.x, uv.y, 1.));\n    \n    // mouse rot\n    vec2 mouse = (iMouse.xy / iResolution.xy) - 0.5;\n    mouse *= 2.;\n    mouse.x *= 3.1415;\n    mouse.y *= 3.1415 * 0.5;\n    rd.yz *= rot(-mouse.y);\n    rd.xz *= rot(-mouse.x);\n    \n    \n    // figure out where we start/end raymarching\n    float rd_x = max(abs(rd.x), 0.001);\n    float t_start = near_dist / rd_x;\n    float t_end = far_dist / rd_x;\n    \n    \n    // get ray dist\n    float t = raymarch(ro, rd, t_start, t_end);\n    vec3 intersection_point = ro + rd * t;\n    \n    vec3 normal = get_normal(intersection_point);\n    \n    vec3 light_dir = normalize(vec3(1,0,0));\n    float diff = abs(dot(light_dir, normal));\n    diff = pow(diff, 2.) * 1.;\n    vec3 col = vec3(diff);\n    \n    // color per level:\n    float intersection_y_level = mod(intersection_point.y, y_modulo);\n    float y_gradient = intersection_y_level / y_modulo;\n    col += vec3(y_gradient * 0.3);\n      \n\n    \n    // add fog    \n    vec3 fog_color = vec3(0.000,0.000,0.000);\n    float fog_val = -t * 0.0025 + t*(min(rd.y, 0.)) * 0.01;\n    fog_val += 0.;\n    fog_val = min(fog_val, 0.);\n    \n    col = mix(fog_color, col, exp(fog_val));\n    \n    \n    // get fog density\n    float fog_transmission = 0.;\n    //col = vec3(0);\n    if (rd.y < 0.){\n        float rd_y = max(abs(rd.y), 0.01);\n    \n        float fog_start = top_cloud / rd_y;\n        float fog_end = bot_cloud / rd_y;\n        \n        vec4 fog_col = calc_transmission(ro, rd, fog_start, fog_end);\n        float br = fog_col.x;\n        \n        br = pow(br, 1.);\n        //col = vec3(br);\n        //col = fog_col.rgb;\n        \n    }\n    \n    \n    float scattering = (1.-fog_transmission) * 0.2;\n    //col += vec3(1.000,1.000,1.000) * scattering;    \n    //col = mix(vec3(0.000,0.000,0.000), col, fog_transmission);\n    \n    \n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Hash for 3d vectors\nfloat rand3d(vec3 p){\n    return fract(4768.1232345456 * sin((p.x+p.y*43.0+p.z*137.0)));\n}\n\n// 3D value noise\nfloat noise3d(vec3 x){\n    vec3 p = floor(x);\n    vec3 fr = fract(x);\n    vec3 LBZ = p + vec3(0.0, 0.0, 0.0);\n    vec3 LTZ = p + vec3(0.0, 1.0, 0.0);\n    vec3 RBZ = p + vec3(1.0, 0.0, 0.0);\n    vec3 RTZ = p + vec3(1.0, 1.0, 0.0);\n\n    vec3 LBF = p + vec3(0.0, 0.0, 1.0);\n    vec3 LTF = p + vec3(0.0, 1.0, 1.0);\n    vec3 RBF = p + vec3(1.0, 0.0, 1.0);\n    vec3 RTF = p + vec3(1.0, 1.0, 1.0);\n\n    float l0candidate1 = rand3d(LBZ);\n    float l0candidate2 = rand3d(RBZ);\n    float l0candidate3 = rand3d(LTZ);\n    float l0candidate4 = rand3d(RTZ);\n\n    float l0candidate5 = rand3d(LBF);\n    float l0candidate6 = rand3d(RBF);\n    float l0candidate7 = rand3d(LTF);\n    float l0candidate8 = rand3d(RTF);\n\n    float l1candidate1 = mix(l0candidate1, l0candidate2, fr[0]);\n    float l1candidate2 = mix(l0candidate3, l0candidate4, fr[0]);\n    float l1candidate3 = mix(l0candidate5, l0candidate6, fr[0]);\n    float l1candidate4 = mix(l0candidate7, l0candidate8, fr[0]);\n\n\n    float l2candidate1 = mix(l1candidate1, l1candidate2, fr[1]);\n    float l2candidate2 = mix(l1candidate3, l1candidate4, fr[1]);\n\n\n    float l3candidate1 = mix(l2candidate1, l2candidate2, fr[2]);\n\n    return l3candidate1;\n}\n\n// 3D simplex noise, cool trick\nfloat supernoise3d(vec3 p){\n\tfloat a =  noise3d(p);\n\tfloat b =  noise3d(p + 10.5);\n\treturn (a + b) * 0.5;\n}\n\nfloat sample_density(vec3 p){\n    \n    float height_scale = smoothstep(-0.5, 0., p.y);\n    height_scale = 1.;\n    \n    //p *= 0.5;\n    \n    float a = 0.0;\n    float w = 0.5;\n    for(int i=0;i<4;i++){\n        float x = abs(0.5 - supernoise3d(p))*2.0;\n        a += x * w;\n        p = p * 2.9;\n        w *= 0.60;\n    }\n    \n    //return a;\n    return clamp(a - 1.0 - clamp(p.y, -1., 0.) , 0.0, 1.);\n    return clamp(a * height_scale, 0.01, 1.);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

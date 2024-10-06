@@ -1,0 +1,66 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1532773262",
+            "description": "Because real glass doesn't just refract, it also reflects.\n\nThe shadows are still totally faked, mind. I have a plan to do shadows of lenses but this is already getting a bit slow.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MldcD4",
+            "likes": 20,
+            "name": "Playtracing 2",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "glass"
+            ],
+            "usePreview": 0,
+            "username": "_polymath",
+            "viewed": 1136
+        },
+        "renderpass": [
+            {
+                "code": "// in theory these two sets of three numbers should each add to 1.0\n// but I find that not to matter much to the image\n// I blame gamma, with no evidence at all\n\n// how much light is reflected, scattered and transmitted\n// by the outer surface of the balls\n#define EXTGLOSS 0.3\n#define EXTMATTE 0.3\n#define EXTTRANS 0.7\n// and the inner surface\n#define INTGLOSS 0.3\n#define INTMATTE 0.2\n#define INTTRANS 0.8\n//#define INTATTENUATION 0.75\n//#define INTCOLOR vec4(0.3, 0.9, 0.6, 1.0)\n// and the floor\n#define FLOORMATTE 0.7\n#define FLOORGLOSS 0.4\n#define FLOORSMOOTH 4.0\n#define FLOORSCALE 0.2\n#define FLOORBUMPR 0.005\n#define SHADOWDEPTH 0.5\n// and the sky\n#define HIGHLIGHTBASE 0.8\n#define HIGHLIGHTDEPTH 10.0\n// refractive index\n#define ETA 0.85\n\n// raytracing params\n#define RCOUNT 20\n#define MAXITER 10\n#define MINPROP 0.1\n#define ZOOM 1.1\n\n// don't touch this probably\n#define OOETA 1./ETA\n#define FLOORBUMPX vec2(FLOORBUMPR, 0.)\n#define FLOORBUMPY vec2(0., FLOORBUMPR)\n\n// all balls are unit spheres, at least for now\n#define BCOUNT 4\nvec3[BCOUNT] balls = vec3[BCOUNT](\n    vec3(0., 1., 1.1547),\n    vec3(-1., 1., -0.57735),\n    vec3(+1., 1., -0.57735),\n    vec3(0., 2.633, 0.));\n\nstruct R {\n    bool on;\n    vec3 cam;\n    vec3 ray;\n    float prop;\n    int insideBall; // -1 for 'nope'\n};\nR[RCOUNT] allRays;\n    \nbool doneAny = false;\nvoid addRay(R newRay) {\n    float minProp = 2.0;\n    int minI = -1;\n    for (int i = 0; i < RCOUNT; ++i)\n        if (!allRays[i].on) {\n    \t\tdoneAny = true;\n            allRays[i] = newRay;\n            return;\n        } else if (allRays[i].prop < minProp) {\n            minProp = allRays[i].prop;\n            minI = i;\n        }\n    if (minProp < newRay.prop) {\n        doneAny = true;\n        allRays[minI] = newRay;\n    }\n}\n\nfloat point2rayDistSq(vec3 p, vec3 ray) {\n    vec3 dd = p - dot(p, ray) / dot(ray, ray) * ray;\n    return dot(dd, dd);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.y;\n    vec3 ray = normalize(vec3(uv, ZOOM));\n\tfloat theta = iMouse.a > 0.5\n        \t? -6.3 * iMouse.x / iResolution.x\n        \t: iTime * 0.165,\n        s = sin(theta),\n        c = cos(theta);\n    addRay(R(true,\n             vec3(6. * s,\n                  iMouse.a > 0.5\n                  \t? 2.0 - 2.0 * iMouse.y / iResolution.y\n                  \t: (1.3 + cos(iTime * 0.1)),\n                  6. * c),\n             vec3(ray.x * c - ray.z * s,\n             \t  ray.y,\n                  ray.z * -c + ray.x * -s),\n             1.0,\n             -1));\n    \n    fragColor = vec4(0.);\n    for (int j = 0; doneAny && j < MAXITER; ++j) {\n        doneAny = false;\n        for (int i = 0; i < RCOUNT; ++i) {\n            R ray = allRays[i];\n            if (!ray.on || ray.prop < MINPROP) continue;\n            allRays[i].on = false;\n            if (ray.insideBall >= 0) {\n                // calculate where the ray exits the ball\n                // add a bit of matte reflection plus some refraction\n                // and partial internal (gloss) reflection.\n                // we don't calculate how much refraction there should be\n                // compared to reflection, or attenuate light as it passes through\n                vec3 centre = balls[ray.insideBall],\n                    cc = centre - ray.cam,\n                    imp = ray.cam + ray.ray *\n                    \t(dot(cc, ray.ray) +\n                     \t\tsqrt(1. - point2rayDistSq(cc, ray.ray)));\n                #ifdef INTATTENUATION\n                \tfloat atten = pow(INTATTENUATION, length(imp - ray.cam));\n                \t#ifdef INTCOLOR\n                \t\tfragColor += INTCOLOR * (1. - atten) * ray.prop;\n                \t#endif\n                \tray.prop *= atten;\n                #endif\n                fragColor += max(0., cc.y) * INTMATTE * ray.prop;\n                addRay(R(true,\n                         imp,\n                         refract(ray.ray, centre - imp, OOETA),\n                         ray.prop * INTTRANS,\n                         -1));\n                addRay(R(true,\n                         imp,\n                         reflect(ray.ray, centre - imp),\n                         ray.prop * INTGLOSS,\n                         -1));\n            } else {\n                // check if the ray hits a ball...\n                float minD = 1000000000., minDs;\n                int minI = -1;\n                vec3 minCentre;\n                for (int b = 0; b < BCOUNT; ++b) {\n                    vec3 centre = balls[b], cc = centre - ray.cam;\n                    float ds = point2rayDistSq(cc, ray.ray);\n                    if (ds < 1.) {\n                        float distancetoCentre = dot(cc, ray.ray);\n                        if (distancetoCentre > 0. && distancetoCentre < minD) {\n                            minD = distancetoCentre;\n                            minDs = ds;\n                            minI = b;\n                            minCentre = centre;\n                        }\n                    }\n                }\n                if (minI >= 0) {\n                    // if it did, shade for matte reflection,\n                    // and then spawn new rays for gloss and refraction\n                \tvec3 imp = ray.cam + ray.ray * (minD - sqrt(1. - minDs)),\n                        normal = imp - minCentre;\n                    fragColor += max(0., normal.y) * EXTMATTE * ray.prop;\n                    addRay(R(true,\n                            imp,\n                            reflect(ray.ray, normal),\n                            ray.prop * EXTGLOSS,\n                            -1));\n                    // all refraction has the one index at the moment\n                    // life, or at least one frame, is too short for chromatic abberation\n                    addRay(R(true,\n                            imp,\n                            refract(ray.ray, normal, ETA),\n                            ray.prop * EXTTRANS,\n                            minI));\n                } else if (ray.ray.y < 0.) {\n                    // if the ray's pointing down, draw the floor\n                    vec2 floorUv = ray.cam.xz -\n                        ray.ray.xz * ray.cam.y / ray.ray.y;\n                    vec4 c = texture(iChannel0, floorUv * FLOORSCALE);\n                    for (int i = 0; i < BCOUNT; ++i) {\n                        vec2 xy = balls[i].xz - floorUv;\n                        if (dot(xy, xy) < 1.) {\n                            c *= SHADOWDEPTH;\n                            break;\n                        }\n                    }\n                    fragColor += c * ray.prop * FLOORMATTE;\n                    // and let's add a bump-mapped reflection ray\n                    float dx = texture(iChannel0, floorUv * FLOORSCALE + FLOORBUMPX).r -\n                        \ttexture(iChannel0, floorUv * FLOORSCALE - FLOORBUMPX).r,\n                        dy = texture(iChannel0, floorUv * FLOORSCALE + FLOORBUMPY).r -\n                        \ttexture(iChannel0, floorUv * FLOORSCALE - FLOORBUMPY).r;\n                    addRay(R(true,\n                            vec3(floorUv.x, 0., floorUv.y),\n                            reflect(ray.ray, normalize(vec3(dx, FLOORSMOOTH, dy))),\n                            ray.prop * FLOORGLOSS,\n                            -1));\n                } else {\n                    // lastly, add a skybox.\n                    vec4 c = texture(iChannel1, ray.ray);\n                    // shoot up the contrast way above 100% for the highlights\n                    // so we get bright whites even when ray.prop drops quite low\n                    if (c.r > HIGHLIGHTBASE)\n                        c.r = (c.r - HIGHLIGHTBASE) * HIGHLIGHTDEPTH + HIGHLIGHTBASE;\n                    if (c.g > HIGHLIGHTBASE)\n                        c.g = (c.g - HIGHLIGHTBASE) * HIGHLIGHTDEPTH + HIGHLIGHTBASE;\n                    if (c.b > HIGHLIGHTBASE)\n                        c.b = (c.b - HIGHLIGHTBASE) * HIGHLIGHTDEPTH + HIGHLIGHTBASE;\n                    fragColor += c * ray.prop;\n                }\n            }\n        }\n    }\n    fragColor.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

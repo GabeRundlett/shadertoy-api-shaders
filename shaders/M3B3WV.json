@@ -1,0 +1,212 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1708892000",
+            "description": "Reusing the spectral thing to get caustics from a line light source",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "M3B3WV",
+            "likes": 11,
+            "name": "Line caustic",
+            "published": 3,
+            "tags": [
+                "wave"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 328
+        },
+        "renderpass": [
+            {
+                "code": "//This is not exactly fast in fragment shaders, better to use the rasterizer\n\nvec3 SpectInt(float w1, float w2)\n{\n    return texture(iChannel3, wv2uv(vec2(w1,w2))).xyz;\n}\n\nstruct Point\n{\n    vec2 p;\n    float wv;\n    vec2 x;\n};\n\nfloat bilinear(vec2 a, float x00, float x10, float x11, float x01)\n{\n    return mix(mix(x00,x10,a.x),mix(x01,x11,a.x),a.y);\n}\n\nvec2 bilinear(vec2 a, vec2 x00, vec2 x10, vec2 x11, vec2 x01)\n{\n    return mix(mix(x00,x10,a.x),mix(x01,x11,a.x),a.y);\n}\n\nPoint spectralPatch(vec2 p, Point x00, Point x10, Point x11, Point x01)\n{\n    vec2 a = invBilinear(p, x00.p, x10.p, x11.p, x01.p);\n    if(a.x < 0.0) return Point(vec2(-1.0), -1.0, vec2(-1.0));\n    float w = bilinear(a, x00.wv, x10.wv, x11.wv, x01.wv);\n    vec2 x = bilinear(a, x00.x, x10.x, x11.x, x01.x);\n    return Point(a,w,x);\n}\n\nPoint minP(Point a, Point b)\n{\n    if(a.wv <= b.wv || b.p.x < 0.0)\n    return a;\n    else return b;\n}\n\nPoint maxP(Point a, Point b)\n{\n    if(a.wv > b.wv || b.p.x < 0.0)\n    return a;\n    else return b;\n}\n\nvec3 sampleBright(vec2 x, float w, float dwv, vec2 tile)\n{\n    vec2 a = textureLod(iChannel2, x/R, 1.0).xy;\n    return SpectInt(w, w + dwv) * mix(a.y,a.x,wv2uv(w));\n}\n\n#define spectrum_samples 3.0\n\nvec3 sampleSpectrum(Point minp, Point maxp, vec2 tile)\n{\n    vec3 X = vec3(0.0);\n    float dv = (maxp.wv - minp.wv)/spectrum_samples;\n    for(int i = 0; i < int(spectrum_samples); i++)\n    {\n        float w = mix(minp.wv, maxp.wv, float(i)/spectrum_samples);\n        vec2 x = mix(minp.x, maxp.x, wv2uv(w));\n        X += sampleBright(x, w, dv, tile);\n    }\n    return X;\n}\n\nvec2 min4(vec4 a, vec4 b)\n{\n    return min(min(a.xy,b.xy), min(a.zw,b.zw));\n}\n\nvec2 max4(vec4 a, vec4 b)\n{\n    return max(max(a.xy,b.xy), max(a.zw,b.zw));\n}\n\nvec3 renderCausticsSpectralPatch(vec2 p, vec2 tile)\n{\n    vec4 x00 = B(tile);\n    vec4 x01 = B(tile + vec2(0.0, caustics_scale));\n    vec4 x10 = B(tile + vec2(caustics_scale, 0.0));\n    vec4 x11 = B(tile + vec2(caustics_scale     ));\n    \n    vec2 xmin = min(min4(x00,x01),min4(x10,x11));\n    vec2 xmax = max(max4(x00,x01),max4(x10,x11));\n    \n    if(any(lessThan(p, xmin)) || any(greaterThan(p, xmax))) return vec3(0.0);\n    \n    //red mesh\n    Point R00 = Point(x00.xy, RWV, tile);\n    Point R01 = Point(x01.xy, RWV, tile + vec2(0.0, caustics_scale));\n    Point R10 = Point(x10.xy, RWV, tile + vec2(caustics_scale, 0.0));\n    Point R11 = Point(x11.xy, RWV, tile + vec2(caustics_scale     ));\n    \n    //blue mesh\n    Point B00 = Point(x00.zw, BWV, tile);\n    Point B01 = Point(x01.zw, BWV, tile + vec2(0.0, caustics_scale));\n    Point B10 = Point(x10.zw, BWV, tile + vec2(caustics_scale, 0.0));\n    Point B11 = Point(x11.zw, BWV, tile + vec2(caustics_scale     ));\n    \n    //closest and furthest spectral intersection with spectral volume mesh\n    Point minp = Point(vec2(-1.0), 1000.0, vec2(0.0));\n    Point maxp = Point(vec2(-1.0), 0.0, vec2(0.0));\n    //spectral cube patch (x, y, wavelength)\n    \n    //bottom\n    Point a = spectralPatch(p, B00, B10, B11, B01);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    //top\n    a = spectralPatch(p, R00, R10, R11, R01);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    //side1\n    a = spectralPatch(p, B00, R00, R01, B01);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    //side2\n    a = spectralPatch(p, B01, R01, R11, B11);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    //side3\n    a = spectralPatch(p, B11, R11, R10, B10);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    //side4\n    a = spectralPatch(p, B10, R10, R00, B00);\n    minp = minP(minp, a); maxp = maxP(maxp, a);\n    \n    if(minp.p.x < 0.0) return vec3(0.0);\n    \n    return sampleSpectrum(minp, maxp, tile);\n}\n\nvoid mainImage( out vec4 Q, in vec2 U )\n{\n    //zoom\n    //U = 100.0 + 0.4*U;\n    vec2 tile0 = caustics_scale * floor(U / caustics_scale);\n    vec3 col = vec3(0.0);\n    for(int i = -range; i <= range; i++)\n    for(int j = -range; j <= range; j++)\n    {\n        vec2 tile = tile0 + vec2(i,j) * caustics_scale;\n       // if((i + j) % 2 == 0) continue;\n        if(tile.x < 0.0 || tile.y < 0.0 || tile.x >= R.x || tile.y >= R.y) continue;\n        if(distance(tile, U) > MAX_DIST + 1.5*caustics_scale) continue;\n        col += renderCausticsSpectralPatch(U, tile); \n    }\n    col = XYZtosRGB(col);\n    Q.xyz = pow(col,vec3(1.0/2.4));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define R iResolution.xy\n\n//a way to sample pixels shorthand \n#define A(U) texture(iChannel0,(U)/R)\n#define Al(U) textureLod(iChannel0,(U)/R, 1.0)\n#define B(U) texture(iChannel1,(U)/R)\n#define Bl(U) textureLod(iChannel1,(U)/R, 1.0)\n#define C(U) texture(iChannel2,(U)/R)\n#define D(U) texture(iChannel3,(U)/R)\n\n//the time step\n#define dt 1.0\n\n//caustics quad tile size in pixels\n#define caustics_scale 2.0\n//wave height\n#define height_scale 2.0\n//index of refraction\n#define IORR 1.5\n#define RWV 700.0\n#define IORB 1.5\n#define BWV 390.0\n//distance to plane where caustic is projected\n#define water_depth 1500.0\n//loop radius over how many caustic quads\n#define range 10\n\n#define MAX_DIST (float(range) * caustics_scale)\n\nfloat cross2d( in vec2 a, in vec2 b ) { return a.x*b.y - a.y*b.x; }\nvec2 invBilinear( in vec2 p, in vec2 a, in vec2 b, in vec2 c, in vec2 d )\n{\n    vec2 res = vec2(-1.0);\n\n    vec2 e = b-a;\n    vec2 f = d-a;\n    vec2 g = a-b+c-d;\n    vec2 h = p-a;\n        \n    float k2 = cross2d( g, f );\n    float k1 = cross2d( e, f ) + cross2d( h, g );\n    float k0 = cross2d( h, e );\n    \n    // if edges are parallel, this is a linear equation\n    if( abs(k2)<0.001 )\n    {\n        res = vec2( (h.x*k1+f.x*k0)/(e.x*k1-g.x*k0), -k0/k1 );\n    }\n    // otherwise, it's a quadratic\n\telse\n    {\n        float w = k1*k1 - 4.0*k0*k2;\n        if( w<0.0 ) return vec2(-1.0);\n        w = sqrt( w );\n\n        float ik2 = 0.5/k2;\n        float v = (-k1 - w)*ik2;\n        float u = (h.x - f.x*v)/(e.x + g.x*v);\n        \n        if( u<0.0 || u>1.0 || v<0.0 || v>1.0 )\n        {\n           v = (-k1 + w)*ik2;\n           u = (h.x - f.x*v)/(e.x + g.x*v);\n        }\n        res = vec2( u, v );\n    }\n    if(res.x<0.0 || res.x>1.0 || res.y<0.0 || res.y>1.0 || res.x != res.x) return vec2(-1.0);\n    return res;\n}\n\n\nvec2 rclamp(vec2 x, float maxr)\n{\n    float l = length(x);\n    return (l > maxr) ? maxr * x / l : x;\n}\n\nfloat saturate (float x)\n{\n    return min(1.0, max(0.0,x));\n}\nvec3 saturate (vec3 x)\n{\n    return min(vec3(1.,1.,1.), max(vec3(0.,0.,0.),x));\n}\n\n\nvec3 bump3y (vec3 x, vec3 yoffset)\n{\n\tvec3 y = vec3(1.,1.,1.) - x * x;\n\ty = saturate(y-yoffset);\n\treturn y;\n}\n// --- Spectral Zucconi 6 --------------------------------------------\n\n// Based on GPU Gems\n// Optimised by Alan Zucconi\nvec3 spectral_zucconi6 (float w)\n{\n\t// w: [400, 700]\n\t// x: [0,   1]\n\tfloat x = saturate(w);\n\n\tconst vec3 c1 = vec3(3.54585104, 2.93225262, 2.41593945);\n\tconst vec3 x1 = vec3(0.69549072, 0.49228336, 0.27699880);\n\tconst vec3 y1 = vec3(0.02312639, 0.15225084, 0.52607955);\n\n\tconst vec3 c2 = vec3(3.90307140, 3.21182957, 3.96587128);\n\tconst vec3 x2 = vec3(0.11748627, 0.86755042, 0.66077860);\n\tconst vec3 y2 = vec3(0.84897130, 0.88445281, 0.73949448);\n\n\treturn\n\t\tbump3y(c1 * (x - x1), y1) +\n\t\tbump3y(c2 * (x - x2), y2) ;\n}\n\nvec2 wv2uv(vec2 wv)\n{\n    return (wv - 380.0) / 320.0;\n}\n\nfloat wv2uv(float wv)\n{\n    return (wv - 380.0) / 320.0;\n}\n\nvec2 uv2wv(vec2 uv)\n{\n    return uv * 320.0 + 380.0;\n}\n\nvec3 XYZtosRGB( vec3 XYZ )\n{\n    // XYZ to sRGB\n    // http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html\n   mat3 m = mat3 (\n        3.2404542, -1.5371385, -0.4985314,\n\t\t-0.9692660,  1.8760108,  0.0415560,\n \t\t0.0556434, -0.2040259,  1.0572252 );\n    \n    return XYZ * m;\n}\n\nvec3 sRGBtoXYZ( vec3 RGB )\n{\n   // sRGB to XYZ\n   // http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html\n\n   mat3 m = mat3(  \t0.4124564,  0.3575761, 0.1804375,\n \t\t\t\t\t0.2126729,  0.7151522, 0.0721750,\n \t\t\t\t\t0.0193339,  0.1191920, 0.9503041 );\n    \n    \n    return RGB * m;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "float generateWave(vec2 pos) {\n    return sin(pos.x * -0.7210 + pos.y * -0.6589 - 0.0303) +\n           sin(pos.x * -0.4157 + pos.y * -0.8699 - 2.9255) +\n           sin(pos.x * -0.2673 + pos.y * 0.8978 + 2.5718) +\n           sin(pos.x * -0.0879 + pos.y * 0.9313 - 1.5156) +\n           sin(pos.x * 0.5704 + pos.y * 0.6168 + 1.0212) +\n           sin(pos.x * -0.6007 - pos.y * 0.3908 - 1.1831) +\n           sin(pos.x * 0.0285 - pos.y * 0.8047 + 0.1261) +\n           sin(pos.x * 0.1848 + pos.y * 0.3685 + 0.2935) +\n           sin(pos.x * -0.9071 - pos.y * 0.1197 - 1.9801) +\n           sin(pos.x * 0.2151 - pos.y * -0.7559 + 2.9505);\n}\n\nvoid mainImage( out vec4 field, in vec2 pos )\n{\n    //THE field consists of 2 values\n    //x component - is the amplitude\n    //y component - is the speed with which the amplitude changes, ie velocity\n    //zw - unused\n    \n    //load the previous frame field state in this pixel\n    field = A(pos);\n \n    //wave simulation HERE\n       \n    //average of the neighbor pixels\n    vec4 avg = 0.25*(A(pos+vec2(0,1))+A(pos-vec2(0,1))+A(pos+vec2(1,0))+A(pos-vec2(1,0)));\n    \n    // the average of the amplitude around minus the amplitude here \n    //is the force actig on this pixel amplitude\n    float force = avg.x-field.x; \n    \n    //velocity update first\n    field.y += dt*force; //velocity += force * time step\n    \n    //field amplitude update then\n    field.x += dt*field.y - field.x*dt*0.0003; //position += velocity*time step\n\n    //initial conditions\n    if (iFrame < 1) {\n        //set initial amplitude for which we want to know its future state\n    \tfield.x = generateWave(pos*0.1) * exp(-0.0002*dot(pos-0.5*R,pos-0.5*R));\n        field.y = 0.;\n    }\n    \n    if(iMouse.z>.5){\n        vec2 dx = pos-iMouse.xy;\n        dx /= 5.5;\n        field.x += 0.25*exp(-dot(dx,dx));\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//compute vertex offsets of the caustic mesh\nvec3 normal(vec2 p)\n{\n    float s = 2.0;\n    vec3 a = vec3(0,s,height_scale*Al(p+vec2(0,s)).x);\n    vec3 b = vec3(0,-s,height_scale*Al(p+vec2(0,-s)).x);\n    vec3 c = vec3(s,0,height_scale*Al(p+vec2(s,0)).x);\n    vec3 d = vec3(-s,0,height_scale*Al(p+vec2(-s,0)).x);\n    return normalize(cross(a-b, c-d));\n}\n\nvec2 getI(vec2 p, vec3 n, vec3 l, float IOR)\n{\n    vec3 r = refract(l, n, 1.0/IOR);\n    vec3 ro = vec3(p, water_depth + 0.0*height_scale*Al(p).x);\n    //bottom intersection\n    vec2 i = p + rclamp(ro.z * r.xy/r.z, MAX_DIST);\n    return i;\n}\n\nvoid mainImage( out vec4 c, in vec2 p )\n{\n    vec3 n = normal(p);\n    vec3 l = vec3(0,0,1);\n    \n    c = vec4(getI(p, n, normalize(vec3(0.005,0,1)), IORR), getI(p, n, normalize(vec3(-0.005,0,1)), IORB));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//compute the concentration of light in this point of the light front\n\nvoid mainImage( out vec4 col, in vec2 p )\n{\n    float s = 0.5;//caustics_scale;\n    vec4 a = A(p+vec2(0,s));\n    vec4 b = A(p+vec2(0,-s));\n    vec4 c = A(p+vec2(s,0));\n    vec4 d = A(p+vec2(-s,0));\n    float area0 = length(cross(vec3(a.xy - b.xy, 0), vec3(c.xy - d.xy, 0)));\n    float area1 = length(cross(vec3(a.zw - b.zw, 0), vec3(c.zw - d.zw, 0)));\n    col.xyz = vec3(1.0 / (area0 + 0.05), 1.0 / (area1 + 0.05), 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float xFit_1931( float wave )\n{\n    float t1 = (wave-442.0)*((wave<442.0)?0.0624:0.0374),\n          t2 = (wave-599.8)*((wave<599.8)?0.0264:0.0323),\n          t3 = (wave-501.1)*((wave<501.1)?0.0490:0.0382);\n    return 0.362*exp(-0.5*t1*t1) + 1.056*exp(-0.5*t2*t2)- 0.065*exp(-0.5*t3*t3);\n}\nfloat yFit_1931( float wave )\n{\n    float t1 = (wave-568.8)*((wave<568.8)?0.0213:0.0247),\n          t2 = (wave-530.9)*((wave<530.9)?0.0613:0.0322);\n    return 0.821*exp(-0.5*t1*t1) + 0.286*exp(-0.5*t2*t2);\n}\nfloat zFit_1931( float wave )\n{\n    float t1 = (wave-437.0)*((wave<437.0)?0.0845:0.0278),\n          t2 = (wave-459.0)*((wave<459.0)?0.0385:0.0725);\n    return 1.217*exp(-0.5*t1*t1) + 0.681*exp(-0.5*t2*t2);\n}\n\n#define xyzFit_1931(w) vec3( xFit_1931(w), yFit_1931(w), zFit_1931(w) ) \n\n// http://www.cie.co.at/technical-work/technical-resources\nvec3 standardObserver1931[] =\n    vec3[] (\n    vec3( 0.001368, 0.000039, 0.006450 ), // 380 nm\n    vec3( 0.002236, 0.000064, 0.010550 ), // 385 nm\n    vec3( 0.004243, 0.000120, 0.020050 ), // 390 nm\n    vec3( 0.007650, 0.000217, 0.036210 ), // 395 nm\n    vec3( 0.014310, 0.000396, 0.067850 ), // 400 nm\n    vec3( 0.023190, 0.000640, 0.110200 ), // 405 nm\n    vec3( 0.043510, 0.001210, 0.207400 ), // 410 nm\n    vec3( 0.077630, 0.002180, 0.371300 ), // 415 nm\n    vec3( 0.134380, 0.004000, 0.645600 ), // 420 nm\n    vec3( 0.214770, 0.007300, 1.039050 ), // 425 nm\n    vec3( 0.283900, 0.011600, 1.385600 ), // 430 nm\n    vec3( 0.328500, 0.016840, 1.622960 ), // 435 nm\n    vec3( 0.348280, 0.023000, 1.747060 ), // 440 nm\n    vec3( 0.348060, 0.029800, 1.782600 ), // 445 nm\n    vec3( 0.336200, 0.038000, 1.772110 ), // 450 nm\n    vec3( 0.318700, 0.048000, 1.744100 ), // 455 nm\n    vec3( 0.290800, 0.060000, 1.669200 ), // 460 nm\n    vec3( 0.251100, 0.073900, 1.528100 ), // 465 nm\n    vec3( 0.195360, 0.090980, 1.287640 ), // 470 nm\n    vec3( 0.142100, 0.112600, 1.041900 ), // 475 nm\n    vec3( 0.095640, 0.139020, 0.812950 ), // 480 nm\n    vec3( 0.057950, 0.169300, 0.616200 ), // 485 nm\n    vec3( 0.032010, 0.208020, 0.465180 ), // 490 nm\n    vec3( 0.014700, 0.258600, 0.353300 ), // 495 nm\n    vec3( 0.004900, 0.323000, 0.272000 ), // 500 nm\n    vec3( 0.002400, 0.407300, 0.212300 ), // 505 nm\n    vec3( 0.009300, 0.503000, 0.158200 ), // 510 nm\n    vec3( 0.029100, 0.608200, 0.111700 ), // 515 nm\n    vec3( 0.063270, 0.710000, 0.078250 ), // 520 nm\n    vec3( 0.109600, 0.793200, 0.057250 ), // 525 nm\n    vec3( 0.165500, 0.862000, 0.042160 ), // 530 nm\n    vec3( 0.225750, 0.914850, 0.029840 ), // 535 nm\n    vec3( 0.290400, 0.954000, 0.020300 ), // 540 nm\n    vec3( 0.359700, 0.980300, 0.013400 ), // 545 nm\n    vec3( 0.433450, 0.994950, 0.008750 ), // 550 nm\n    vec3( 0.512050, 1.000000, 0.005750 ), // 555 nm\n    vec3( 0.594500, 0.995000, 0.003900 ), // 560 nm\n    vec3( 0.678400, 0.978600, 0.002750 ), // 565 nm\n    vec3( 0.762100, 0.952000, 0.002100 ), // 570 nm\n    vec3( 0.842500, 0.915400, 0.001800 ), // 575 nm\n    vec3( 0.916300, 0.870000, 0.001650 ), // 580 nm\n    vec3( 0.978600, 0.816300, 0.001400 ), // 585 nm\n    vec3( 1.026300, 0.757000, 0.001100 ), // 590 nm\n    vec3( 1.056700, 0.694900, 0.001000 ), // 595 nm\n    vec3( 1.062200, 0.631000, 0.000800 ), // 600 nm\n    vec3( 1.045600, 0.566800, 0.000600 ), // 605 nm\n    vec3( 1.002600, 0.503000, 0.000340 ), // 610 nm\n    vec3( 0.938400, 0.441200, 0.000240 ), // 615 nm\n    vec3( 0.854450, 0.381000, 0.000190 ), // 620 nm\n    vec3( 0.751400, 0.321000, 0.000100 ), // 625 nm\n    vec3( 0.642400, 0.265000, 0.000050 ), // 630 nm\n    vec3( 0.541900, 0.217000, 0.000030 ), // 635 nm\n    vec3( 0.447900, 0.175000, 0.000020 ), // 640 nm\n    vec3( 0.360800, 0.138200, 0.000010 ), // 645 nm\n    vec3( 0.283500, 0.107000, 0.000000 ), // 650 nm\n    vec3( 0.218700, 0.081600, 0.000000 ), // 655 nm\n    vec3( 0.164900, 0.061000, 0.000000 ), // 660 nm\n    vec3( 0.121200, 0.044580, 0.000000 ), // 665 nm\n    vec3( 0.087400, 0.032000, 0.000000 ), // 670 nm\n    vec3( 0.063600, 0.023200, 0.000000 ), // 675 nm\n    vec3( 0.046770, 0.017000, 0.000000 ), // 680 nm\n    vec3( 0.032900, 0.011920, 0.000000 ), // 685 nm\n    vec3( 0.022700, 0.008210, 0.000000 ), // 690 nm\n    vec3( 0.015840, 0.005723, 0.000000 ), // 695 nm\n    vec3( 0.011359, 0.004102, 0.000000 ), // 700 nm\n    vec3( 0.008111, 0.002929, 0.000000 ), // 705 nm\n    vec3( 0.005790, 0.002091, 0.000000 ), // 710 nm\n    vec3( 0.004109, 0.001484, 0.000000 ), // 715 nm\n    vec3( 0.002899, 0.001047, 0.000000 ), // 720 nm\n    vec3( 0.002049, 0.000740, 0.000000 ), // 725 nm\n    vec3( 0.001440, 0.000520, 0.000000 ), // 730 nm\n    vec3( 0.001000, 0.000361, 0.000000 ), // 735 nm\n    vec3( 0.000690, 0.000249, 0.000000 ), // 740 nm\n    vec3( 0.000476, 0.000172, 0.000000 ), // 745 nm\n    vec3( 0.000332, 0.000120, 0.000000 ), // 750 nm\n    vec3( 0.000235, 0.000085, 0.000000 ), // 755 nm\n    vec3( 0.000166, 0.000060, 0.000000 ), // 760 nm\n    vec3( 0.000117, 0.000042, 0.000000 ), // 765 nm\n    vec3( 0.000083, 0.000030, 0.000000 ), // 770 nm\n    vec3( 0.000059, 0.000021, 0.000000 ), // 775 nm\n    vec3( 0.000042, 0.000015, 0.000000 )  // 780 nm\n);\nfloat standardObserver1931_w_min = 380.0f;\nfloat standardObserver1931_w_max = 780.0f;\nint standardObserver1931_length = 81;\n\nvec3 WavelengthToXYZLinear( float fWavelength )\n{\n    float fPos = ( fWavelength - standardObserver1931_w_min ) / (standardObserver1931_w_max - standardObserver1931_w_min);\n    float fIndex = fPos * float(standardObserver1931_length);\n    float fFloorIndex = floor(fIndex);\n    float fBlend = clamp( fIndex - fFloorIndex, 0.0, 1.0 );\n    int iIndex0 = int(fFloorIndex);\n    int iIndex1 = iIndex0 + 1;\n    iIndex1 = min( iIndex1, standardObserver1931_length - 1);\n\n    return mix( standardObserver1931[iIndex0], standardObserver1931[iIndex1], fBlend );\n}\n\nvec3 WavelengthToXYZ( float f )\n{    \n    //return xyzFit_1931( f ) * mXYZtoSRGB;\n    \n    return WavelengthToXYZLinear( f );\n}\n\nfloat BlackBody( float t, float w_nm )\n{\n    float h = 6.6e-34; // Planck constant\n    float k = 1.4e-23; // Boltzmann constant\n    float c = 3e8;// Speed of light\n\n    float w = w_nm / 1e9;\n\n    // Planck's law https://en.wikipedia.org/wiki/Planck%27s_law\n    \n    float w5 = w*w*w*w*w;    \n    float o = 2.*h*(c*c) / (w5 * (exp(h*c/(w*k*t)) - 1.0));\n\n    return o;    \n}\n\nvec3 Integrate(float w1, float w2)\n{\n    vec3 X = vec3(0.0);\n    \n    for(float w = w1; w <= w2; w += 1.0)\n    {\n        float blackb = 1e-13 * BlackBody(6500.0, w);\n        X += vec3(1.0);\n    }\n    return X / 1500.;;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Output to screen\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec2 w = uv2wv(uv);\n    fragColor = vec4(Integrate(w.x, w.y),1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

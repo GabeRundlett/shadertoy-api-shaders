@@ -1,0 +1,105 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1691237601",
+            "description": "This is my first physics simulation, and I just followed my gut, so feel free to comment on how this can be improved\n\nUpdate: Implemented suggestions by @fenix (no more jittering + general improvements)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mlsyDj",
+            "likes": 12,
+            "name": "Balls Simulated (updated)",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "sphere",
+                "balls",
+                "ball",
+                "physics"
+            ],
+            "usePreview": 0,
+            "username": "beans_please",
+            "viewed": 207
+        },
+        "renderpass": [
+            {
+                "code": "/* -----------------------------------------------\n  Shadertoy Unit: Image\n  Description: Rendering\n  iChannel0: Cubemap\n  iChannel1: Buffer A\n  iChannel2: None\n  iChannel3: None\n----------------------------------------------- */\n\nfloat fake_hdr(float x)\n{\n    if (x < 0.6) return x;\n    const float a = 1.5, b = 2.0;\n    return a * pow(x, b) + 0.6 - a * pow(0.6, b);\n}\n\nvec3 get_env(vec3 dir)\n{\n    vec3 c = pow(texture(iChannel0, dir.xzy).xyz, vec3(2.2));\n    c *= vec3(0.32, 0.8, 1.0) * 2.5;\n    //c = vec3(fake_hdr(c.r), fake_hdr(c.g), fake_hdr(c.b));\n    c *= 1.1;\n    return c;\n}\n\nfloat get_visibility(ray_t r)\n{\n    // Raycast to the balls\n    for (int i = 0; i < num_balls; i++)\n    {\n        vec4 data = texelFetch(iChannel1, index2icoord(i * ppe + 1), 0);\n        vec3 ball_pos = vec3(data.x, 1.0, data.y);\n        hit_t h2;\n        ray_sphere(ball_pos, ball_radius, r, h2);\n        if (h2.hit)\n        {\n            return 0.0;\n        }\n    }\n    return 1.0;\n}\n\nvec2 screen_to_uv(vec2 coord)\n{\n    return (2.0 * coord - iResolution.xy) / min(iResolution.x, iResolution.y);\n}\n\nray_t gen_cam_ray(vec2 uv)\n{\n    // Camera params\n    const vec3 cam_pos = vec3(0.0, -4.3, 1.5);\n    const float cam_fov = 47.0;\n    \n    // Camera details\n    const float cam_zoom = 90.0 / cam_fov;\n    const vec3 cam_forward = normalize(vec3(0.0, 0.0, 1.85) - cam_pos);\n    const vec3 cam_right = normalize(cross(cam_forward, vec3(0, 0, 1)));\n    const vec3 cam_up = cross(cam_right, cam_forward);\n    \n    // Ray\n    ray_t r;\n    r.orig = cam_pos;\n    r.dir = normalize(cam_forward + cam_right * (uv.x / cam_zoom) + cam_up * (uv.y / cam_zoom));\n    return r;\n}\n\nvec3 view_transform(vec3 col)\n{\n\t// OETF (Gamma)\n    return pow(col, vec3(1.0 / 2.2));\n}\n\nvec3 render(vec2 frag_coord)\n{\n    // UV\n    vec2 uv = screen_to_uv(frag_coord);\n    \n    // Generate camera ray\n    ray_t r = gen_cam_ray(uv);\n    \n    // Hit info\n    int ball_id = -1;\n    hit_t closest;\n    closest.hit = false;\n    closest.t = 1000.;\n    \n    // Raycast to ground\n    hit_t h;\n    ray_aabb(vec3(-7.0, -7.0, -0.1), vec3(7.0, 7.0, 0.0), r, h);\n    if (h.hit && h.t < closest.t)\n    {\n        ball_id = -1;\n        closest = h;\n    }\n    \n    // Raycast to the balls\n    for (int i = 0; i < num_balls; i++)\n    {\n        vec4 data = texelFetch(iChannel1, index2icoord(i * ppe + 1), 0);\n        vec3 ball_pos = vec3(data.x, 1.0, data.y);\n        hit_t h2;\n        ray_sphere(ball_pos, ball_radius, r, h2);\n        if (h2.hit && h2.t < closest.t)\n        {\n            ball_id = i;\n            closest = h2;\n        }\n    }\n    \n    // Shade\n    vec3 col = vec3(0);\n    if (closest.hit)\n    {\n        float t = -TAU * iTime * 0.1;\n        vec3 light_dir = normalize(vec3(cos(t), sin(t), 2.5));\n        if (ball_id < 0)\n        {\n            // Ground shading\n            const vec3 mat_diff = vec3(.14, .4, .7);\n            vec3 diffuse = 0.8 * mat_diff * max(0., dot(closest.normal, light_dir));\n            vec3 hv = normalize(light_dir - r.dir);\n            vec3 spec = vec3(1.0) * pow(dot(hv, closest.normal), 15.0);\n            col = diffuse + spec;\n            \n            // Shadows\n            ray_t rshadow;\n            rshadow.orig = closest.pos + r.dir * 0.002;\n            rshadow.dir = light_dir;\n            col *= get_visibility(rshadow);\n            \n            // Ambient\n            col += mat_diff * 0.1;\n        }\n        else\n        {\n            // Ball shading\n            \n            const vec3 mat_diff = vec3(1.0, 0.5, 0.06);\n            vec3 diffuse = mat_diff * max(0., dot(closest.normal, light_dir));\n            vec3 ambient = 0.065 * mat_diff + vec3(0., .002, .01);\n            \n            vec3 envref = get_env(reflect(r.dir, closest.normal));\n            float fresnel = pow(1.0 - dot(-r.dir, closest.normal), 5.0);\n            vec3 spec = envref * lerp(0.01, 0.8, fresnel);\n            \n            col = diffuse + ambient + spec;\n        }\n    }\n    else\n    {\n        col = get_env(r.dir);\n    }\n    return col;\n}\n\nvoid mainImage(out vec4 frag_col, in vec2 frag_coord)\n{\n    // Render with super sampling\n    vec3 col = vec3(0.0);\n    col += render(frag_coord + vec2(-0.25, -0.25));\n    col += render(frag_coord + vec2(-0.25, +0.25));\n    col += render(frag_coord + vec2(+0.25, +0.25));\n    col += render(frag_coord + vec2(+0.25, -0.25));\n    col /= 4.;\n    \n    // Output\n    col *= 1.2;\n    col = view_transform(col);\n    frag_col = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/* -----------------------------------------------\n  Shadertoy Unit: Common\n----------------------------------------------- */\n\n\n\n// -----------------------------------------------\n// What to define\n// -----------------------------------------------\n\n/* Math Utils */\n#define MATH_UTILS 1\n\n// -----------------------------------------------\n// End\n// -----------------------------------------------\n\n\n\n// -----------------------------------------------\n// Math Utils\n// -----------------------------------------------\n\n#if MATH_UTILS\n\n#define PI 3.1415926535897932384626433832\n#define TAU 6.283185307179586476925286766\n#define PI_OVER_2 1.57079632679489661923132169163\n#define DEG_TO_RAD 0.01745329251994329576923690768\n#define RAD_TO_DEG 57.2957795130823208767981548141\n\n#define FUNC_LERP(T) \\\nT lerp(T a, T b, float t) \\\n{ \\\n    return a + t*(b-a); \\\n}\n\n#define FUNC_WRAP(T) \\\nT wrap(T inp, float start, float end) \\\n{ \\\n    return start + mod(inp - start, end - start); \\\n}\n\n#define FUNC_MAP_RANGE(T) \\\nT map_range(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    return out_start + ((out_end - out_start) / (inp_end - inp_start)) * (inp - inp_start); \\\n}\n\n#define FUNC_MAP_RANGE_CLAMP(T) \\\nT map_range_clamp(T inp, float inp_start, float inp_end, float out_start, float out_end) \\\n{ \\\n    T t = clamp((inp - inp_start) / (inp_end - inp_start), 0.0, 1.0); \\\n    return out_start + t * (out_end - out_start); \\\n}\n\nFUNC_LERP(float)\nFUNC_LERP(vec2)\nFUNC_LERP(vec3)\nFUNC_LERP(vec4)\n\nFUNC_WRAP(float)\nFUNC_WRAP(vec2)\nFUNC_WRAP(vec3)\nFUNC_WRAP(vec4)\n\nFUNC_MAP_RANGE(float)\nFUNC_MAP_RANGE(vec2)\nFUNC_MAP_RANGE(vec3)\nFUNC_MAP_RANGE(vec4)\n\nFUNC_MAP_RANGE_CLAMP(float)\nFUNC_MAP_RANGE_CLAMP(vec2)\nFUNC_MAP_RANGE_CLAMP(vec3)\nFUNC_MAP_RANGE_CLAMP(vec4)\n\n#endif\n\n// -----------------------------------------------\n// End\n// -----------------------------------------------\n\n\n\nstruct ray_t\n{\n    vec3 orig;\n    vec3 dir;\n};\n\nstruct hit_t\n{\n    bool hit;\n    float t;\n    vec3 pos;\n    vec3 normal;\n};\n\n// https://www.reddit.com/r/opengl/comments/8ntzz5/comment/dzyqwgr\nvoid ray_aabb(const vec3 box_min, const vec3 box_max, in ray_t r, out hit_t h) {\n    vec3 inv_dir = 1.0 / r.dir;\n    vec3 tbot = inv_dir * (box_min - r.orig);\n    vec3 ttop = inv_dir * (box_max - r.orig);\n    vec3 tmin = min(ttop, tbot);\n    vec3 tmax = max(ttop, tbot);\n    vec2 t = max(tmin.xx, tmin.yz);\n    float t0 = max(t.x, t.y);\n    t = min(tmax.xx, tmax.yz);\n    float t1 = min(t.x, t.y);\n    if (t1 > max(t0, 0.0))\n    {\n        h.hit = true;\n        h.t = t0;\n        h.pos = r.orig + r.dir * t0;\n        h.normal = vec3(0.0, 0.0, 1.0); // what's the proper way? please comment\n    }\n}\n\nvoid ray_sphere(const vec3 center, const float radius, in ray_t r, out hit_t h)\n{\n    vec3 ro = r.orig - center;\n    \n    // Quadratic equation\n    float a = dot(r.dir, r.dir);\n    float b = 2.0 * dot(ro, r.dir);\n    float c = dot(ro, ro) - radius*radius;\n    float discriminant = (b * b) - (4.0 * a * c);\n    \n    if (discriminant < 0.0)\n    {\n        // No hits\n        h.hit = false;\n        return;\n    }\n    \n    float sqrt_d = sqrt(discriminant);\n    float t = (-b - sqrt_d) / (2.0 * a);\n    \n    if (t < 0.0)\n    {\n        h.hit = false;\n        return;\n    }\n    \n    h.hit = true;\n    h.t = t;\n    h.pos = r.orig + (t * r.dir);\n    \n    // Normal\n    h.normal = (h.pos - center) / radius;\n}\n\n// A 20x10 grid of pixels in buffer A will be used to store\n// and manipulate simulation data.\nconst ivec2 data_res = ivec2(20, 10);\n\n// Pixels per element. Every N pixels hold information about\n// one ball.\nconst int ppe = 2;\n\n// Ball parameters\nconst int num_balls = 100;\nconst float ball_radius = 0.2;\n\n// Convert pixel indices in the data buffer to a 1D index\nint icoord2index(ivec2 icoord)\n{\n    if (icoord.x >= data_res.x || icoord.y >= data_res.y)\n        return -1;\n    return icoord.x + icoord.y * data_res.x;\n}\n\n// Convert a 1D index to pixel indices in the data buffer\nivec2 index2icoord(int index)\n{\n    return ivec2(index % data_res.x, index / data_res.x);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/* -----------------------------------------------\n  Shadertoy Unit: Buffer A\n  Description: Simulation\n  iChannel0: Buffer A (self-feeding)\n  iChannel1: None\n  iChannel2: None\n  iChannel3: None\n----------------------------------------------- */\n\nvoid mainImage(out vec4 o, in vec2 frag_coord)\n{\n    // Integer coordinates\n    ivec2 icoord = ivec2(floor(frag_coord));\n    \n    // Are we outside the data buffer?\n    if (icoord.x >= data_res.x || icoord.y >= data_res.y)\n    {\n        o = vec4(0);\n        return;\n    }\n    \n    // Convert pixel indices to 1D index\n    int idx = icoord2index(icoord);\n    \n    // Ball index\n    int ball_id = int(floor(float(idx) / float(ppe)));\n    \n    // Ball data index\n    // 0 = Velocity,\n    // 1 = Position\n    int data_id = idx % ppe;\n    \n    // Ball data\n    vec4 vel = texelFetch(iChannel0, index2icoord(idx + 0 - data_id), 0);\n    vec4 pos = texelFetch(iChannel0, index2icoord(idx + 1 - data_id), 0);\n    \n    // First frames / Initialization\n    const float valid_w = 2.0;\n    bool init = (iFrame < 5 || iTime <= 0. || texelFetch(iChannel0, icoord, 0).w != valid_w);\n    \n    // Delta time\n    float dt = 1.0 * min(iTimeDelta, 0.016);\n    \n    // Step\n    if (!init)\n    {\n        // Update values\n        const vec2 gravity = vec2(0.0, -2.);\n        vel.xy += gravity * dt;\n        pos.xy += vel.xy * dt;\n        \n        if (pos.y < ball_radius)\n        {\n            // Collision with the ground\n            vel.y *= -.3;\n            pos.y = ball_radius;\n        }\n        else\n        {\n            // (2 * radius) ^ 2\n            const float d2 = 4. * ball_radius * ball_radius;\n            \n            // Collision with the other balls\n            for (int i = 0; i < num_balls; i++)\n            {\n                // Skip self\n                if (i == ball_id) continue;\n                \n                // Get other ball's position\n                vec2 vel2 = texelFetch(iChannel0, index2icoord(i * ppe + 0), 0).xy;\n                vec2 pos2 = texelFetch(iChannel0, index2icoord(i * ppe + 1), 0).xy;\n                \n                // Check their distance\n                vec2 temp = pos.xy - pos2;\n                if (pos.y > pos2.y && dot(temp, temp) < d2)\n                {\n                    vec2 rel_vel = vel2 - vel.xy;\n                    vel.xy += normalize(temp) * max(0., dot(rel_vel, temp));\n                    pos.xy = pos2 + normalize(pos.xy - pos2) * ball_radius * 2.;\n                }\n            }\n        }\n    }\n    \n    // Velocity\n    if (data_id == 0)\n    {\n        // First frame\n        if (init)\n        {\n            o = vec4(0.0, 0.0, 0.0, valid_w);\n            return;\n        }\n        o = vel;\n    }\n    \n    // Position\n    if (data_id == 1)\n    {\n        // First frame\n        if (init)\n        {\n            int ix = ball_id % 10;\n            int iy = ball_id / 10;\n            o = vec4(\n                float(ix - 5) * 2.0 * ball_radius * 1.2 + sin(float(iy) * 500.0) * .4,\n                0.005 + ball_radius + float(iy) * 2.0 * ball_radius * 1.2,\n                0.0, valid_w\n            );\n            return;\n        }\n        o = pos;\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

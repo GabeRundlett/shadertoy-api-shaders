@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1521831876",
+            "description": "After yesterday's false start, think I finally got my math right. See comments at top of code for legend. Use the mouse for an enlarged comparison. Click in lower left to reset view. Keyboard enabled.",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "4sVyWh",
+            "likes": 45,
+            "name": "SDF texture filtering, take 2",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "texture",
+                "font",
+                "smoothing"
+            ],
+            "usePreview": 1,
+            "username": "mattz",
+            "viewed": 2697
+        },
+        "renderpass": [
+            {
+                "code": "/* \"SDF texture filtering, take 2\" by mattz\n   License Creative Commons Attribution 3.0 (CC BY 3.0) Unported License.\n\n   LEGEND: \n\n     TOP LEFT (red):       raw, low-res SDF texture \n     BOTTOM LEFT: (green): Gaussian blurred SDF texture\n     TOP RIGHT (blue):     new nonlinear filtering scheme\n     BOTTOM RIGHT (gold):  average of blue and green \n\n   More details at https://twitter.com/matt_zucker/status/977269288359915520\n\n   This is combining thoughts from my previous two textures:\n\n     - \"distance texture smoothing\"\n       https://www.shadertoy.com/view/4sycW1\n\n     - \"sketchy font distance\"\n       https://www.shadertoy.com/view/MdycWh\n\n   The first one started with an inspiration about nonlinear \n   filtering of distance textures, but I got the math wrong and ended\n   up with an overcomplicated implementation of Gaussian smoothing.\n\n   The second one was an attempt to visualize the local linear \n   approximations to boundary implied by the distance and gradient\n   at each point in the SDF texture.\n\n   This time I think I finally got the math right on my nonlinear\n   filtering, and I'm really pleased with the results! It does a much\n   better job preserving corners than the Gaussian-blurred distance\n   texture.\n\n   The only downside is that it uses 16 texture fetches per distance\n   query. If you comment out the HIGH_QUALITY define below, you \n   can see what the 9-tap version looks like (does worse on letters\n   like A,M,N,W with steep inward-facing corners).\n\n   See https://www.shadertoy.com/view/llcXRl for documentation about\n   the font texture.\n\n */\n\n#define HIGH_QUALITY\n\n// texture is 1024x1024\nconst float TEX_RES = 1024.;\n\n// texture is 16x16 glyphs\nconst float GLYPHS_PER_UV = 16.;\n\n// since the texture is uint8 it has a bias to represent 0\nconst float TEX_BIAS = 127./255.;\n\n// get font UV coords from screen coords\nvec2 font_from_screen(vec2 tpos, float font_size, vec2 char_pos) {    \n    return (tpos/font_size + char_pos + 0.5)/GLYPHS_PER_UV;\n}\n\n//////////////////////////////////////////////////////////////////////\n// sample font texture \n\nvec3 sample_grad_dist(vec2 uv, float font_size) {\n    \n    vec3 grad_dist = (textureLod(iChannel0, uv, 0.).yzw - TEX_BIAS) * font_size;\n\n    grad_dist.y = -grad_dist.y;\n    grad_dist.xy = normalize(grad_dist.xy + 1e-5);\n    \n    return grad_dist;\n    \n}\n\n//////////////////////////////////////////////////////////////////////\n// Gaussian blur of distance channel - does not use gradient info\n\nfloat sample_dist_gaussian(vec2 uv, float font_size) {\n\n    float dsum = 0.;\n    float wsum = 0.;\n    \n    const int nstep = 3;\n    \n    const float w[3] = float[3](1., 2., 1.);\n    \n    for (int i=0; i<nstep; ++i) {\n        for (int j=0; j<nstep; ++j) {\n            \n            vec2 delta = vec2(float(i-1), float(j-1))/TEX_RES;\n            \n            float dist = sample_grad_dist(uv-delta, font_size).z;\n            float wij = w[i]*w[j];\n            \n            dsum += wij * dist;\n            wsum += wij;\n\n        }\n    }\n    \n    return dsum / wsum;\n}\n\n//////////////////////////////////////////////////////////////////////\n// Nonlinear filtering of SDF texture using gradient info.\n// \n// Here's the story, slightly changed from yesterday's version:\n//\n// Given a signed distance and a gradient, every pixel in an SDF\n// texture provides a local linear approximation to the distance\n// function.\n//\n// We assume the SDF texture stores for every pixel location A both\n// the signed distance d(A) to the surface, as well as the gradient\n// g(A) of the SDF. For d to be a true signed distance function,\n// it must be true that g(A) is a unit vector; however, in practice\n// we need to normalize g due to filtering and precision issues.\n//\n// Now if we linearize the distance function in the vicinity of A,\n// we find for any small displacement 𝛿:\n//\n//   d(A + 𝛿) ≈ d(A) + dot(𝛿, g(A))\n//\n// Ok, now let's imagine that we want an improved estimate of the\n// distance at some pixel location B. We will take a weighted average\n// over the local linearizations of the distance function provided\n// in a small window around B, with roughly Gaussian weights:\n//\n//   +---+---+---+  \n//   |A00|A01|A02|  d(Aij + 𝛿ij) ≈ d(Aij) + dot(𝛿ij, g(Aij))\n//   +---+---+---+  \n//   |A10| B |A12|  now let B = Aij + 𝛿ij, so 𝛿ij = B - Aij \n//   +---+---+---+  \n//   |A20|A21|A22|  and so d(B) ≈ d(Aij) + dot(B - Aij, g(Aij))\n//   +---+---+---+\n//\n// In fact, we don't even need to restrict ourselves to the texel\n// grid; we can use GPU's texture resampling to compute these local\n// linearizations anywhere, not just at texel centers. In practice, \n// I find a 4x4 neighborhood looks nicer than 3x3.\n//\n// Along the way we can compute a Gaussian blur of the distance \n// function (as the function above does) for very little extra\n// effort.\n//\n// Since the new filtering method tends to make convex corners\n// bulge and concave corners pucker and the Gaussian blur tends \n// to have the *opposite* effect, simply averaging the two looks\n// better than either one alone, I think.\n\n\nvec2 sample_dist_smart(vec2 uv, float font_size) {\n        \n#ifdef HIGH_QUALITY\n    const int nstep = 4;\n    const float w[4] = float[4](1., 2., 2., 1.);\n#else\n    const int nstep = 3;\n    const float w[3] = float[3](1., 2., 1.);\n#endif\n    \n    vec2  dsum = vec2(0.);\n    float wsum = 0.;\n    \n    for (int i=0; i<nstep; ++i) {\n        \n        float ui = float(i)/float(nstep-1);\n                \n        for (int j=0; j<nstep; ++j) {\n            \n            float uj = float(j)/float(nstep-1);\n            \n            vec2 delta = (-1.  + 2.*vec2(ui,uj))/TEX_RES;\n            \n            vec3 grad_dist = sample_grad_dist(uv-delta, font_size);\n            vec2 pdelta = delta * GLYPHS_PER_UV * font_size;\n            \n            float dline = grad_dist.z + dot(grad_dist.xy, pdelta);\n               \n            float wij = w[i]*w[j];\n            \n            dsum += wij * vec2(dline, grad_dist.z);\n            wsum += wij;\n\n        }\n    }\n    \n    return dsum / wsum;\n    \n}\n\n//////////////////////////////////////////////////////////////////////\n// main function\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    // which character to render now\n    int cidx = int(mod(iTime + 64., 256.));\n    if (cidx == 64) { cidx = 29; } else if (cidx == 29) { cidx = 64; }\n    \n    for (int i=32; i<127; ++i) {\n        if (texelFetch(iChannel1, ivec2(i,0), 0).x != 0.) {\n            cidx = i;\n        }\n    }\n        \n    const bool screenshot_mode = false; \n    bool use_mouse = max(iMouse.x, iMouse.y) > 20.;\n    \n    vec2 p, m;\n    float font_size = 1.1 * iResolution.y;\n\n    if (use_mouse) {\n        \n        p = (fragCoord - 0.5*iResolution.xy);\n        m = fragCoord - iMouse.xy;\n        \n    } else {\n        \n        font_size = 0.6 * iResolution.y;\n        \n        p = (fragCoord - iResolution.xy * vec2(0.25, 0.25));\n        m = fragCoord - iResolution.xy * 0.5;\n\n        vec2 repeat = iResolution.xy * vec2(0.5, 0.5);\n        p -= floor(p/repeat + 0.5) * repeat;\n    \n    }  \n    \n    // character offset  within font texture\n    vec2 char_pos = vec2(ivec2(cidx%16, 15-cidx/16));\n        \n    // get uv in font texture\n    vec2 uv = font_from_screen(p, font_size, char_pos);\n \n    vec3 bgcolor;\n    float dfont;\n    \n    if (m.x < 0.) {\n        if (m.y > 0.) {\n            bgcolor = vec3(1, 0.9, 0.9);\n            dfont = sample_grad_dist(uv, font_size).z;\n        } else {\n            bgcolor = vec3(0.9, 1, 0.9);\n            dfont = sample_dist_gaussian(uv, font_size);\n        }\n    } else {\n        if (m.y > 0.) {\n            bgcolor = vec3(0.9, 0.95, 1);\n            dfont = sample_dist_smart(uv, font_size).x;\n        } else {\n            \n            bgcolor = vec3(1, 0.95, 0.9);\n            vec2 sg = sample_dist_smart(uv, font_size);\n            dfont = mix(sg.y, sg.x, 0.5);\n            \n        }\n    }\n    \n    vec2 box = abs(p) - 0.5*font_size;\n    dfont = max(dfont, max(box.x, box.y));\n    \n    float dborder = min(abs(m.x), abs(m.y));\n\n    vec3 color = bgcolor*smoothstep(0., 1., dfont);\n    color = mix(color, vec3(0.7), smoothstep(1., 0., dborder-.5));\n\n    fragColor = vec4(color, 1);\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

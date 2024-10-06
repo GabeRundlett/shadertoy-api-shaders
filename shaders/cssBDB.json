@@ -1,0 +1,45 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1689136527",
+            "description": "High-quality random right in GLSL!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "cssBDB",
+            "likes": 1,
+            "name": "PCG Random",
+            "published": 3,
+            "tags": [
+                "noise",
+                "random",
+                "hash",
+                "pcg",
+                "lcg",
+                "pcgrandom",
+                "mcg",
+                "splitmix",
+                "murmurhash",
+                "splitmix32"
+            ],
+            "usePreview": 0,
+            "username": "miyaokamarina",
+            "viewed": 220
+        },
+        "renderpass": [
+            {
+                "code": "// SPDX-License-Identifier: CC0-1.0\n//\n// # GLSL PCG Random + SplitMix32\n//\n// This implementation supports three modes (see `MODE`)\n// and provides four output functions (see `initfn` and `outputfn`).\n//\n// It has 32 bits of state and produces 16-bit values.\n//\n// Usage:\n//\n// ```\n// rng my_rng = SeedRNG(seed, stream);\n//\n// uint x = rand_u16(my_rng); // random 16-bit int in `[0, 2^16)`\n// float y = rand_f32(my_rng); // random float in `[0, 1)` (16 bits of random)\n// float z = jitter_f32(my_rng, 2.0); // low discrepancy random\n// ```\n//\n// Streams allow a generator to produce 2^31 *different*\n// pseudorandom sequences, that will *never* overlap.\n// When using the `out_id` scrambler, these sequences\n// usually have correlations, so be careful.\n// Each stream is identified by an unsigned odd integer.\n\n// `0` - BW\n// `1` - RGB\n// `2` - RGBA\n#define COLOR 0\n\n// `0` - all pixels have the same seed\n// `1` - each pixel has a unique seed\n#define VAR_SEED 1\n\n//       mode                    - period - speed/quality\n// ------------------------------------------------------\n// `0` - LCG                     - 2^32   - best quality\n// ------------------------------------------------------\n// `1` - MCG, implies VAR_SEED   - 2^30   - faster, but has a reduced period\n//                                          and doesn’t support streams\n// ------------------------------------------------------\n// `2` - counter (SplitMix-like) - 2^32   - even faster, but requires\n//                                          a good seed and/or scrambler function\n#define MODE 0\n\n// Seed function:\n//\n// function        - details                  - speed       - quality\n// ------------------------------------------------------------------\n// `init_id`       - identity                 - the fastest - worst quality\n// ------------------------------------------------------------------\n// `init_xsh_rs`   - fixed xorsh              - fast        - somewhat acceptable quality\n// ------------------------------------------------------------------\n// `init_rxs_m_xs` - random xorsh, MCG, xorsh - slower      - even better\n// ------------------------------------------------------------------\n// `init_mmh3`     - MurmurHash3              - ±same here  - the bestest\n#define initfn init_mmh3\n\n// Scrambler function:\n//\n// `out_id`\n// `out_xsh_rs`\n// `out_rxs_m_xs`\n// `out_mmh3`\n#define outputfn out_mmh3\n\nstruct rng {\n    uint state;\n    #if MODE != 1\n    uint stream;\n    #endif\n};\n\nrng   SeedRNG(uint, uint);\nvoid  bump(inout uint, uint);\nvoid  bump(inout rng);\n\nuint  init_id(uint);\nuint  init_xsh_rs(uint);\nuint  init_rxs_m_xs(uint);\nuint  init_mmh3(uint);\n\nuint  out_id(uint);\nuint  out_xsh_rs(uint);\nuint  out_rxs_m_xs(uint);\nuint  out_mmh3(uint);\n\nuint  rand_u16(inout rng);\nfloat rand_f32(inout rng);\n\nrng SeedRNG(uint seed, uint line) {\n    seed = initfn(seed);\n    \n    #if MODE == 1\n        seed |= 3u;\n        rng rng = rng(seed);\n    #else\n        line = initfn(line);\n        rng rng = rng(seed, line | 1u);\n    #endif\n\n    bump(rng);\n    return rng;\n}\n\nvoid bump(inout uint s, uint c) {\n    #if   MODE == 0\n        s *= 747796405u;\n        s += c;\n    #elif MODE == 1\n        s *= 741103597u;\n    #else\n        s += c;\n    #endif\n}\n\nvoid bump(inout rng rng) {\n    #if MODE != 1\n        bump(rng.state, rng.stream);\n    #else\n        bump(rng.state, 0u);\n    #endif\n}\n\nuint init_id(uint old) {\n    return old;\n}\n\nuint init_xsh_rs(uint old) {\n    return old ^ old >> 16;\n}\n\nuint init_rxs_m_xs(uint old) {\n    uint shr = old >> 28;\n    old ^= old >> (4u + shr);\n    old *= 277803737u;\n    old ^= old >> 22;\n    return old;\n}\n\nuint init_mmh3(uint old) {\n    old ^= old >> 16;\n    old *= 0x85EBCA6Bu;\n    old ^= old >> 13;\n    old *= 0xC2B2AE35u;\n    old ^= old >> 16;\n    return old;\n}\n\nuint out_id(uint old) {\n    return old >> 16;\n}\n\nuint out_xsh_rs(uint old) {\n    uint rsh = old >> 30;\n    old  ^= old >> 19;\n    old >>= 11u + rsh;\n    old  &= 0xFFFFu;\n    return old;\n}\n\nuint out_rxs_m_xs(uint old) {\n    uint shr = old >> 29;\n    old  ^= old >> (3u + shr);\n    old  *= 277803737u;\n    old >>= 16;\n    old  ^= old >> 11;\n    return old;\n}\n\nuint out_mmh3(uint old) {\n    return init_mmh3(old) & 0xFFFFu;\n}\n\nuint rand_u16(inout rng rng) {\n    uint old = rng.state;\n    bump(rng);\n    return outputfn(old);\n}\n\nfloat rand_f32(inout rng rng) {\n    uint raw = 0x3F800000u | (rand_u16(rng) << 7);\n    return uintBitsToFloat(raw) - 1.0;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    uint x = uint(fragCoord.x) << 0xBu;\n    uint y = uint(fragCoord.y) << 0x2u;\n\n    uint line = x | y;\n    \n    #if VAR_SEED == 1 || MODE == 1\n        uint seed = line;\n    #else\n        uint seed = 2434u;\n    #endif\n\n    rng rng = SeedRNG(seed, line);\n\n    #if COLOR == 0\n        fragColor = vec4(vec3(rand_f32(rng)), 1.0);\n    #elif COLOR == 1\n        fragColor = vec4(rand_f32(rng), rand_f32(rng), rand_f32(rng), 1.0);\n    #else\n        fragColor = vec4(rand_f32(rng), rand_f32(rng), rand_f32(rng), rand_f32(rng));\n    #endif\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

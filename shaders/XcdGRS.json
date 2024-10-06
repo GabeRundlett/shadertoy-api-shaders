@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1712016603",
+            "description": "This shader implements tube lights from the 2013 Karis paper (UE4).\nI'm not sure if the artifacts at the boundaries of the segments are an implementation bug, or a limitation of the approximation.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XcdGRS",
+            "likes": 9,
+            "name": "Light rod test",
+            "published": 3,
+            "tags": [
+                "arealight",
+                "lighttube",
+                "lightrod"
+            ],
+            "usePreview": 0,
+            "username": "Zavie",
+            "viewed": 161
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nThis shader demonstrates light rod (aka. tube light) shading\napproximation, using most representative point.\n\nIt implements the estimation described in the 2013 paper\n\"Real Shading in Unreal Engine 4\" by Brian Karis:\nhttps://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf\n\nLicense: CC BY 4.0\n\n--\nZavie\n\n*/\n\n#define MAX_STEPS 96\n#define MAX_LIGHTS 6\n#define EPSILON 1e-4\n#define PI acos(-1.)\n#define DEBUG_CONSTANT_GROUND_ROUGHNESS 0\n#define DEBUG_COMPARE_WITH_POINT_LIGHT 0\n#define DEBUG_SEPARATE_DIFFUSE_SPECULAR 0\n\nvec3 palette(float t, vec3 a, vec3 b, vec3 c, vec3 d)\n{\n    return a + b * cos(2. * PI * (c * t + d));\n}\n\nstruct light\n{\n    vec3 p0;\n    vec3 p1;\n    vec3 color;\n};\nlight lights[MAX_LIGHTS];\n\nstruct material\n{\n    vec3 albedo;\n    float roughness;\n};\nmaterial materials[2];\n\nvoid setLightsAndMaterials()\n{\n    for (int i = 0; i < MAX_LIGHTS; ++i)\n    {\n        vec3 p0;\n        vec3 p1;\n\n        float t = float(i) / float(MAX_LIGHTS);\n        float theta = 2. * PI * t - iTime;\n        float s = sin(theta);\n        float c = cos(theta);\n\n        if (i % 3 == 0)\n        {\n            float r = 2.5;\n            float lMax = r * 2. * PI * 3. / float(MAX_LIGHTS);\n            float l = lMax / 2.;\n\n            vec3 p = vec3(r * s, 0.1, r * c);\n            vec3 dp = vec3(c, 0., -s) * (l * 0.5);\n            p0 = p + dp;\n            p1 = p - dp;\n        }\n        else if (i % 3 == 1)\n        {\n            float r = 2.;\n            float lMax = r * 2. * PI * 3. / float(MAX_LIGHTS);\n            float l = lMax / 4.;\n\n            vec3 p = vec3(r * s, 0.1, r * c);\n            p0 = p;\n            p1 = p + vec3(0., l, 0.);\n        }\n        else\n        {\n            float r = 1.;\n            float lMax = r * 2. * PI * 3. / float(MAX_LIGHTS);\n            float l = lMax / 2.;\n\n            p0 = vec3(r * s, 1., r * c);\n            p1 = p0 + l * vec3(c, 1., -s);\n        }\n        float id = float(i) / float(MAX_LIGHTS);\n        id = fract(1001. * id);\n        vec3 color = palette(id, vec3(0.5), vec3(0.5), vec3(1.), vec3(0., 0.33, 0.67));\n#if DEBUG_COMPARE_WITH_POINT_LIGHT\n        p1 = p0;\n#endif\n        lights[i] = light(p0, p1, color * 10. / float(MAX_LIGHTS));\n    }\n    \n    materials[0] = material(vec3(0.01, 0.5, 1.), 0.1);\n    materials[1] = material(vec3(0.2), 0.1);\n}\n\nfloat sceneSDF(vec3 p, out int mid)\n{\n    float d = 1e6;\n\n    float sphere = length(p) - 1.;\n    if (sphere < d)\n    {\n        d = sphere;\n        mid = 0;\n    }\n\n    float ground = p.y + 0.0;\n    if (ground < d)\n    {\n        d = ground;\n        mid = 1;\n    }\n\n    for (int i = 0; i < MAX_LIGHTS; ++i)\n    {\n        light l = lights[i];\n        vec3 Ld = l.p1 - l.p0;\n        float h = clamp(dot(p - l.p0, Ld) / dot(Ld, Ld), 0., 1.);\n        float rod = length(p - l.p0 - h * Ld) - 0.05;\n        if (rod < d)\n        {\n            d = rod;\n            mid = -i - 1;\n        }\n    }\n\n    return d;\n}\n\nvec3 evalNormal(vec3 p, float fp)\n{\n    const float h = 1e-3;\n    const vec2 k = vec2(1., -1.);\n    int dummy;\n    return normalize(\n        k.xyy * sceneSDF(p + k.xyy * h, dummy) + \n        k.yyx * sceneSDF(p + k.yyx * h, dummy) + \n        k.yxy * sceneSDF(p + k.yxy * h, dummy) + \n        k.xxx * sceneSDF(p + k.xxx * h, dummy)\n    );\n}\n\nvec3 cookTorrance(\n    vec3 f0,\n\tfloat roughness,\n\tvec3 NcrossH,\n\tfloat VdotH,\n    float NdotL,\n    float NdotV)\n{\n\tfloat alpha = roughness * roughness;\n    float sqrAlpha = alpha * alpha;\n\n\tfloat distribution = dot(NcrossH, NcrossH) * (1. - sqrAlpha) + sqrAlpha;\n\tfloat D = sqrAlpha / (PI * distribution * distribution);\n\n\tfloat SmithL = (2. * NdotL) / max(1e-8, NdotL + sqrt(NdotL * NdotL * (1. - sqrAlpha) + sqrAlpha));\n\tfloat SmithV = (2. * NdotV) / max(1e-8, NdotV + sqrt(NdotV * NdotV * (1. - sqrAlpha) + sqrAlpha));\n\tfloat G = SmithL * SmithV;\n\n\tfloat x = 1. - VdotH;\n\tx = x*x*x*x*x;\n\tvec3 F = x + f0 * (1. - x);\n\n\treturn F * (D * G * 0.25 / max(1e-8, NdotV * NdotL));\n}\n\nvec3 pointLightContribution(material m, light l, vec3 p, vec3 N, vec3 V)\n{\n    vec3 L0 = l.p0 - p;\n    float d0 = length(L0);\n    vec3 L = L0 / d0;\n\n    float NdotL = dot(N, L);\n    if (NdotL <= 0.)\n        return vec3(0.);\n\n    vec3 intensity = l.color / (d0 * d0);\n    vec3 radiance = intensity * NdotL;\n\n    vec3 H = normalize(L + V);\n    vec3 NcrossH = cross(N, H);\n    float VdotH = clamp(dot(V, H), 0., 1.);\n    float NdotV = clamp(dot(N, V), 0., 1.);\n\n    vec3 diff = m.albedo;\n    vec3 spec = cookTorrance(vec3(0.04), m.roughness, NcrossH, VdotH, NdotL, NdotV);\n\n    return radiance * (diff + spec);\n}\n\nvec3 rodLightContribution(material m, light l, vec3 p, vec3 N, vec3 V)\n{\n    vec3 L0 = l.p0 - p;\n    vec3 L1 = l.p1 - p;\n    float d0 = length(L0);\n    float d1 = length(L1);\n    \n    float NdotL0 = dot(N, L0) / d0;\n    float NdotL1 = dot(N, L1) / d1;\n\n    float topPart = 2. * clamp((NdotL0 + NdotL1) / 2., 0., 1.);\n    float bottomPart = d0 * d1 + dot(L0, L1);\n    float contribution = topPart / bottomPart;\n    // The Karis paper has a +2 term in the bottom part,\n    // but I found the result to better match point lights\n    // when the length is zero.\n    // Then again, there could be an implementation error.\n\n    if (contribution <= 0.)\n    {\n        return vec3(0.);\n    }\n\n    vec3 irradiance = l.color * contribution;\n\n    vec3 Ld = l.p1 - l.p0;\n    vec3 R = reflect(-V, N);\n    float RdotLd = dot(R, Ld);\n    \n    float t = clamp((dot(R, L0) * RdotLd - dot(L0, Ld)) / (dot(Ld, Ld) - RdotLd * RdotLd), 0., 1.);\n    vec3 Lmrp = mix(L0, L1, t);\n\n    vec3 L = normalize(Lmrp);\n    float NdotL = clamp(dot(N, L), 0., 1.);\n\n    vec3 H = normalize(L + V);\n    vec3 NcrossH = cross(N, H);\n    float VdotH = clamp(dot(V, H), 0., 1.);\n    float NdotV = clamp(dot(N, V), 0., 1.);\n\n    vec3 diff = m.albedo;\n    vec3 spec = cookTorrance(vec3(0.04), m.roughness, NcrossH, VdotH, NdotL, NdotV);\n#if DEBUG_SEPARATE_DIFFUSE_SPECULAR\n    if (gl_FragCoord.x < iResolution.x / 3.)\n    {\n        spec = vec3(0.);\n    }\n    if (gl_FragCoord.x > iResolution.x * 2. / 3.)\n    {\n        diff = vec3(0.);\n    }\n#endif\n\n    return irradiance * (diff + spec);\n}\n\nvec3 evalRadiance(int mid, vec3 p, vec3 V, vec3 N)\n{\n    if (mid < 0)\n    {\n        return lights[-mid - 1].color;\n    }\n    material m = materials[mid];\n#if !DEBUG_CONSTANT_GROUND_ROUGHNESS\n    if (mid == 1)\n    {\n        m.roughness = 1. - texture(iChannel0, p.xz/4.).r;\n    }\n#endif\n\n    vec3 radiance = vec3(0.);\n    for (int i = 0; i < MAX_LIGHTS; ++i)\n    {\n#if DEBUG_COMPARE_WITH_POINT_LIGHT\n        if (gl_FragCoord.x < iResolution.x / 2.)\n        {\n            radiance += pointLightContribution(m, lights[i], p, N, V);\n        }\n        else\n#endif\n        {\n            radiance += rodLightContribution(m, lights[i], p, N, V);\n        }\n    }\n    return radiance;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord/iResolution.xy * 2. - 1.) * vec2(1., iResolution.y / iResolution.x);\n    setLightsAndMaterials();\n\n    vec3 ro = vec3(0, 2., 10.);\n    vec3 rd = normalize(vec3(uv.x, uv.y - 0.5, -3.));\n\n    vec3 p;\n    float d;\n    float t = 0.;\n    int mid = 0;\n\n#define ZERO (min(iFrame,0))\n    for (int i = ZERO; i < MAX_STEPS; ++i)\n    {\n        p = ro + t * rd;\n        d = sceneSDF(p, mid);\n        if (d < EPSILON)\n        {\n            break;\n        }\n        t += d;\n    }\n\n    vec3 radiance = vec3(0.);\n    if (d < 1024. * EPSILON)\n    {\n        vec3 N = evalNormal(p, d);\n        radiance = evalRadiance(mid, p, -rd, N);\n    }\n    \n    vec3 color = pow(radiance, vec3(1./2.2));\n    fragColor = vec4(color, 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

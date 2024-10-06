@@ -1,0 +1,93 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665669280",
+            "description": "WIP. What did I do wrong ?\nMultigrid solver of buoyant fluid with combustion ported from [url]https://www.cs.uaf.edu/2017/spring/cs482/example/03_31_fire_expanding.html[/url].",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "cdl3zH",
+            "likes": 8,
+            "name": "Multigrid Fluid Dynamics: Fire ",
+            "published": 3,
+            "tags": [
+                "fire",
+                "port",
+                "fluiddynamics",
+                "pressure",
+                "buoyancy",
+                "cubemapa",
+                "multigrid"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 439
+        },
+        "renderpass": [
+            {
+                "code": "// porting https://www.cs.uaf.edu/2017/spring/cs482/example/03_31_fire_expanding.html\n// using power-of-two square pseudobuffers via https://shadertoy.com/view/3tGBDz\n// ( first try <ith regular buffers: https://www.shadertoy.com/view/css3RH )\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy;\n                 \n    if ( U.x < R.x/2. ) O = texture( 0, (U-vec2(   R.x/2.-R.y,0)/2.) /R.y , 0.);\n    else                O = texture( 3, (U-vec2(3.*R.x/2.-R.y,0)/2.) /R.y , 0.);\n                     \n // O = O.aaaa;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ported from https://www.cs.uaf.edu/2017/spring/cs482/example/03_24_multigrid_fluid.html\n\nvoid mainCubemap( out vec4 fragColor, vec2 fragCoord, vec3 o, vec3 D )\n{\n vec3 A = abs(D);\n int n = A.x > A.y ? A.x > A.z ? 0 : 2 : A.y > A.z ? 1 : 2; // faceID\n if (D[n]<0.) n += 3;\n    \n // O = texture(iChannel0,D);                               // restore global state\n    \n// $$$ port of uniforms and varyings\n#define time         iTime                      // lib.time, seconds\n#define dt          (1./60.)                    // lib.dt timestep, seconds\n#define texcoords   (fragCoord/iResolution.xy)  // our texture coords, [0-1]\n#define texF         0                          // fluid source texture\n#define texR         3                          // reaction source texture\n#define texsize      iResolution.xy             // texcoord change per pixel\n#define del         (1./texsize)                // texcoord change per pixel\n//#define OFS          vec4(.5,.5,0,0)          // to avoid leaks with other faces\n  #define OFS          vec4(0)                  // original encoding: buffer values in [0,1]\n\n if ( n==texF ) {   // $$$ replaces main(){  // ---------- pseudobuffer#0 : fluid surface ( .5+V, 0, div )\n\n/* This GLSL shader calculates the new wave texture. */\n\n// float tex_size=512.0; // pixels across\n// float del=1.0/tex_size; // texture coordinates per pixel\n   float bias=-1000.0; // mipmap bias (disable mipmaps)\n   \n   // P stores our texture coordinates\n   vec2 P=texcoords;\n   vec4 CR=texture(texR,P,bias); // reaction values\n   vec4 CF=texture(texF,P,bias) + OFS; // $$$\n   \n   vec4 A=vec4(0.0); // acceleration\n   // A.y+=-0.05; // weak gravity\n\n// Multigrid pressure physics\n   float P2V=0.1; /* pressure-to-velocity */\n   float V2P=1.0; /* velocity-to-pressure */\n   vec4 L,R,T,B;\n   float divergence=0.0; // sum across levels\n   for (float lvl=9.0;lvl>=0.0;lvl-=1.0) {\n     float scale=pow(2.0,lvl);\n     vec2 dist=scale*del; // texture coordinate jump\n     float dx=0.2; // grid size, meters/pixel\n     float dy=0.2; // grid size, meters/pixel\n     L=texture(texF,P+vec2(-dist.x,0.0),lvl) + OFS; // $$$\n     R=texture(texF,P+vec2(+dist.x,0.0),lvl) + OFS; // $$$\n     T=texture(texF,P+vec2(0.0,+dist.y),lvl) + OFS; // $$$\n     B=texture(texF,P+vec2(0.0,-dist.y),lvl) + OFS; // $$$\n\n  // Compute divergence at this level\n     divergence+=((R.x - L.x)/dx + (T.y - B.y)/dy);\n\n  // pseudo pressure drives velocity\n  //   (from Navier Stokes equation)\n     A.x += -P2V*(R.a - L.a)/dx;\n     A.y += -P2V*(T.a - B.a)/dy;\n   }\n   divergence+=-10000.0*CR.a; // burning -> want divergence\n\n   // velocity convergence *is* pseudo pressure\n   CF.a = 0.5-V2P*divergence;\n\n   // Advection physics via explicit dot(V,grad(V)):\n   vec2 V=CF.xy-vec2(0.5);\n   vec3 gradX=vec3(R-L);\n   vec3 gradY=vec3(T-B);\n   vec3 VgV=vec3(V.x*gradX+V.y*gradY);\n   A.xyz-=10.0*VgV;\n   \n   // Blur, to simulate viscosity:\n   vec4 blur=0.25*(L+R+T+B); /* neighborhood average */\n   float blurFrac=5.0;\n   A+=blurFrac*(blur-CF);\n   \n   CF+=A*dt; // adjust velocities\n\n   if (P.y<0.001) { \n      CF.xy=vec2(0.5); // stationary bottom chunk\n   }\n\n   // hot gas -> accelerate Y upwards\n   CF.y+=0.3*CR.r*dt;\n\n   // limit velocities (for stability)\n   CF.xy=clamp(CF.xy,0.0,1.0); \n  \n  if (iFrame==0)  // $$$ // Initialize fluid values\n      CF = vec4(0.5,0.5,0.0,1.0); \n      \n  fragColor = CF - OFS; // $$$ // return CF;\n  \n    \n } else if( n==texR ) {  // $$$ replaces main(){   // ---------- pseudobuffer#1 : combustion reaction ( T°, fuel, air, burnt )\n \n \n/* This GLSL shader calculates the new reaction texture.\n     red: temperature\n     green: propane\n     blue: air\n*/\n\n //float tex_size=512.0; // pixels across\n //float del=1.0/tex_size; // texture coordinates per pixel\n   float bias=-1000.0; // mipmap bias (disable mipmaps)\n   \n   // P stores our texture coordinates\n   vec2 P=texcoords;\n   vec4 CR=texture(texR,P,bias);\n   vec4 CF=texture(texF,P,bias) + OFS; // $$$\n\n   // Read neighbors\n   vec2 dist=del; // $$$ was float\n   float lvl=bias;\n   vec4 L=texture(texR,P+vec2(-dist.x,0.0),lvl);\n   vec4 R=texture(texR,P+vec2(+dist.x,0.0),lvl);\n   vec4 T=texture(texR,P+vec2(0.0,+dist.y),lvl);\n   vec4 B=texture(texR,P+vec2(0.0,-dist.y),lvl);\n\n   vec4 A=vec4(0.0);\n   // Advection physics via explicit dot(V,grad(V)):\n   vec2 V=CF.xy-vec2(0.5);\n   vec3 gradX=vec3(R-L);\n   vec3 gradY=vec3(T-B);\n   vec3 VgV=vec3(V.x*gradX+V.y*gradY);\n   A.xyz-=10.0*VgV;\n\n\n   // drop blue out (cooling)\n   // combustion rate needs three things: heat, fuel, oxygen\n   float burn=0.0;\n   if (CR.r>0.3 && CR.g>0.0 && CR.b>0.0) {\n     burn=10.0*CR.r*CR.g*CR.b;\n     CR.r+=10.0*burn;\n     CR.g-=burn;\n     CR.b-=burn;\n   }\n\n   CR.r-=0.5*CR.r*dt; // fast cooling\n\n   // Clamp values, to keep them from getting too big\n   CR=clamp(CR,0.0,1.0);\n\n   // Blur, to simulate viscosity:\n   vec4 blur=0.25*(L+R+T+B); /* neighborhood average */\n   float blurFrac=3.0;\n   A+=blurFrac*(blur-CR);\n\n   CR+=A*dt;\n\n   CR.a=burn;\n      \n   if (iFrame==0) { // $$$  // Initialize reaction values\n       vec2 sphere=vec2(0.5,0.2);   // Boundary condition sphere\n       float r=length(sphere-texcoords);\n       if (r<0.2) CR = vec4((texcoords.y>0.395)?1.0:0.0,1.0,0.0,0);\n       else CR = vec4(0.0,0.0,1.0,0.0);\n   }\n    \n   fragColor = CR; // $$$ // return CR;\n }\n \n else fragColor = vec4(0,0,0,0); \n\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "#define texture(ch,U,l) cubeFace(iChannel0,ch,U,l)\n\n\nvec4 cubeFace(samplerCube ch,int n,vec2 U,float l) {\n\n#if 0  // --- trying to prevent leaking to neighbor faces when interpolating border pixels.\n       //     not true wrapping: just prevent interpolation on borders.\n\n    float R = exp2(10. - max(0.,ceil(l)));  // shortest size at LOD l\n    U = fract(U)* R;\n    vec2 I = floor(U), F = fract(U);        // pixel Id + interpolation coefs\n       if   ( I.x== 0.  && F.x<.5) F.x=.5;\n    else if ( I.x==l-1. && F.x>.5) F.x=.5;\n       if   ( I.y== 0.  && F.y<.5) F.y=.5;\n    else if ( I.y==l-1. && F.y>.5) F.y=.5;\n    U = (I+F)/R;\n#endif\n\n    vec3 E =   vec3( 2.*fract(U) -1., 1 )                              \n             * vec3( n==0||n==5 ?-1:1 , n!=1 ?-1:1 , n>2 ?-1:1 );         \n    E = (n)%3 != 2 ? E.yzx : E.xzy;                               \n    return textureLod( ch, vec3( E[(n+1)%3], E[(n)%3], E[(n+2)%3] ) , l );\n}\n\n/** // --- trying to prevent leaking to neighbor faces when interpolating border pixels.\n    //     does correct wrapping doing manual bilinear interpolation (for integer LOD only ).\n    //     Rename the function above as  cubeFace0 .\n\n#define face(x,y) cubeFace0(ch,n, fract( ( I+vec2(x,y)+.5 ) / R ) , l )\n\nvec4 cubeFace(samplerCube ch,int n,vec2 U,float l) {\n    float R = exp2(10. - max(0.,l));              // size at LOD l, assuming l is an integer LOD\n    U = fract(U-.5/R)* R;\n    vec2 I = floor(U), F = fract(U);              // pixel Id + interpolation coefs\n    return mix( mix( face(0,0), face(1,0), F.x ), // manual bilinear interpolation\n                mix( face(0,1), face(1,1), F.x ),\n                F.y );\n}\n/**/",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

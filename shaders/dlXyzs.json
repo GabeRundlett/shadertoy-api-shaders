@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1691043563",
+            "description": "imprecise distance fields tend to overstepping\nlogeps() can sometimes perform better on bad distance fields, but it is an issue of scaling and of how convex/concave the object is.\nlogeps fails if the camera is inside the surface.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dlXyzs",
+            "likes": 4,
+            "name": "logeps for heighmapped terrain",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "terrain",
+                "sdf"
+            ],
+            "usePreview": 0,
+            "username": "ollj",
+            "viewed": 222
+        },
+        "renderpass": [
+            {
+                "code": "//maxRays increased to 100\n//, increasing maxRays to something like 2000 WITHIN LOGEPS\n//, while understepping more, is pretty normal for logeps\n//, that shines at LOD-downscaling at larger distqances.\n//and that shines at converging faster within distorted sets.\n#define MAX_RAYS 100\n#define MAX_DIST 5.0\n\n//logeps demoes that are low-gpu-cost\n//https://www.shadertoy.com/view/tdXXzl\n//https://www.shadertoy.com/view/dlXyzs#\n//https://www.shadertoy.com/view/4tXyDH\n\n//beware if camera is inside object, it may march as if the object is hollow.\n//beware, if camera is inside object, it may skip over all convex gaps (much worse overstepping)\n//, to toggle between various LOD-scales (distance field zoom levels)\n//, to make it toggleAble (sometimes a simpler end condition is better)\nbool logEps(float s,float c//s=distanceToSurface c=DistanceToCamera\n){  //if(s<0.0001)return true;return false;//basic raymarching with epsilon=0.01\n \n if(s<0.)return true;\n //avoids exp(<0) and log(<0) undefined issues\n //avoids oscillating-distances from negative to positive, while close to 0. (bad-performance risk avoided)\n //logeps negative distances returned as distance==0, instead of as hollowed shell distance; d=abs(d)\n  \n //if(1./exp(s)<.01)return s<.001;\n   //better for short distance REFLECTIONS, that need extra precision+CONTINUITY, that logeps likely lacks (for spheres)\n   //this reflection-fix fails for a nearby tensor-distorted-object\n   //the main issue here is that SHORT is a RELATIBE term, rleative to the model-SCALE\n\n //return log(c*c/s/1e5)>0. //FAST long-distance logeps for spinor /tdXXzl\n    //goes VERY bloated beyond d>2000, just set zFar<2000\n  \n    //other logebs work better (for less distorted fields)\n    //, but they tend to be slower by multiplying/dividing more\n    //, allowing for near-infinite-zfar within 10000 steps\n    //, because log() is fun like that:\n  \n  //the more common logeps looks something like below (work well for nearby heavily distorted sets)\n \n  return log(c*c/s/s/1000000.)>0.5  \n     //equires +1 division, and thats not needed for strong distortions\n     //performs better for longer distances.\n     //2 constants are more arbitiary than it seems.\n\n  //return log(c*c*c/s/s/100000000000.)>0.\n    //this is what lobeps tend to look like before it grows inefficient by diminishing-returns\n    //at the cost of quite a LOT of divisions and being cubic-by-distance \n    //, and dividing by a large number, this may fail in 16bit.\n    //but it keeps gettign more exponential within the log() \n    //and larger numbers tend to be bad for nearby precision\n    //this is ideal for a set like in the game OuterWilds, while it may even be useful for an earh-moon-syste-to-scale.\n    \n  //in summary, the later log()-eps variants  are better for VERY large zFar (almost-to-scale planetary systems fit in this)\n  //and much less distorted fields.\n  //and the upper ones are better for more distorted fields, but lower zFar max distances.\n  //the lower-distance-ones generally need less divisions (and mults) to work, so they tend to perform better \n  //(also for having a lower zFar bound, like its 90s gaming with a close fog)\n ;}\n//some very-long-distance-logeps variants dared to also log(NumberOfSteps), but this had very few use cases (solar systems too scale)\n//, and other issues of precision long before overstepping.\n\nfloat N(float uv) {\n    return fract(sin(uv + 5.0) * 39352.212);\n}\nfloat noise(float uv) {\n    float s = uv;\n    float frac = fract(s);\n    float id = floor(s);\n    \n    float l = N(id);\n    float r = N(id + 1.0);\n    float m = mix(l, r, frac);\n    \n    return m;\n}\nfloat fbnoise(float uv) {\n    float n = noise(uv * 4.0);\n    n += noise(uv * 8.0) * 0.5;\n    n += noise(uv * 16.0) * 0.25;\n    n += noise(uv * 32.0) * 0.125;\n    \n    n /= 1.875;\n    \n    return n;\n}\n\nfloat line(vec2 uv, vec2 a, vec2 b) {\n    vec2 pa = uv - a;\n    vec2 ba = b - a;\n    float p = dot(pa, ba) / dot(ba, ba);\n    return length(uv - ba * min(max(p, 0.0), 1.0));\n}\nfloat map(vec2 uv) {\n    return uv.y - 0.8 + fbnoise(uv.x * 0.5 + iTime * 0.05) * 2.0;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    vec2 mouseP = (2.0 * iMouse.xy - iResolution.xy) / iResolution.y;\n\n    float d = map(uv);\n    //ground is greener to differ from parent\n    vec3 col = mix(mix(vec3(0.6, 0.6, 0.0), vec3(0.5, 0.6, 0.9), step(0.0, d)), vec3(0.8), sin(d * 50.0 + iTime * 4.0 * sign(-d)) * 0.3 + 0.3);\n    col -= smoothstep(0.01, 0.0, abs(d));\n    \n    vec2 origin = vec2(0.0);\n    vec2 dir = normalize(mouseP - origin);\n    \n    float t = 0.0;\n    for (int i = 0; i < MAX_RAYS && t < MAX_DIST; i++) {\n        vec2 p = origin + dir * t;\n        float dist = map(p);\n        col = mix(col, vec3(1.0, 0.0, 0.0), step(abs(length(uv - p) - dist) - 0.005, 0.0));\n        //if (dist < 0.0001) break;//original\n        if (logEps(dist,t))break;\n        t += dist * mix(0.2,1.,(cos(iTime*10.)*.5+.5));//oscillating understepping over time\n        // by multiplying dist by some fraction here, you-\n        // can decrease the potential of overshoothing\n    }\n    col = mix(col, vec3(0.0), step(line(uv, origin, origin + dir * t) - 0.01, 0.0));\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,128 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1713113019",
+            "description": "An implementation of \"Joint Bilateral Upsampling\" (2007) by Kopf et al. using a rendered low resolution image and high resolution depth data to achieve the depicted result.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MfVGRy",
+            "likes": 8,
+            "name": "Joint bilateral upsampling",
+            "published": 3,
+            "tags": [
+                "jointbilateralupsampling"
+            ],
+            "usePreview": 0,
+            "username": "pwyr",
+            "viewed": 209
+        },
+        "renderpass": [
+            {
+                "code": "// =============================================================================\n// Joint Bilateral Upsampling\n// =============================================================================\n\nfloat gaussianDistrib(float x, const float sigma) {\n    return (1.0/(2.0*PI*pow(sigma,2.0)))*exp(-x*x/(2.0*pow(sigma,2.0)));\n}\n\nvec4 upsampleAt(vec2 p) {\n    float totalWeight = 0.0;\n    vec4 color = vec4(0.0);\n    \n    const float sigmaSpatial = 0.5;\n    const float sigmaRange = 0.1;\n    \n    const int hw = 3;\n    for (int u = -hw; u <= hw; ++u) {\n        for (int v = -hw; v <= hw; ++v) {\n            vec2 q = UPSCALE_FACTOR*floor(p/UPSCALE_FACTOR) + vec2(0.5) + UPSCALE_FACTOR*vec2(u,v);\n            \n            vec4 Sq = texelFetch(iChannel1, ivec2(q/UPSCALE_FACTOR), 0);\n            \n            float wSpatial = gaussianDistrib(length((p-q)/UPSCALE_FACTOR), sigmaSpatial);\n            float pDepth = texelFetch(iChannel0, ivec2(p), 0).x;\n            float qDepth = texelFetch(iChannel0, ivec2(q), 0).x;\n            float wRange = gaussianDistrib(abs(pDepth-qDepth), sigmaRange);\n            totalWeight += wSpatial*wRange;\n            color += wSpatial*wRange*Sq;\n        }\n    }\n    return color / totalWeight;\n}\n\n// =============================================================================\n// Side-by-side Comparison (Low Resolution vs Upsampled High Resolution Image)\n// =============================================================================\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float t = 0.5 + 0.5*sin(iTime);\n    \n    if (abs(fragCoord.x-floor(t*iResolution.x)) < 2.0) {\n        fragColor = vec4(1.0,0.0,0.0,1.0);\n        return;\n    } else if (fragCoord.x/iResolution.x < t) {\n        fragColor = texelFetch(iChannel1, ivec2(fragCoord/UPSCALE_FACTOR), 0);\n        return;\n    }\n\n    fragColor = upsampleAt(fragCoord);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// =============================================================================\n// Raymarching Algorithm\n// =============================================================================\n\nfloat rayMarch(vec3 pos, vec3 dir) {\n    int rbIndex; // never read\n    const float hitEps = 0.00001;\n    const int maxIter = 128;\n    \n    float d = 0.0;\n    for (int i = 0; i != maxIter; ++i) {\n        if (d >= MAX_DISTANCE) break;\n        \n        float curDist = signedDistance(pos + d * dir, rbIndex);\n        if (curDist < hitEps) {\n            return d;\n        }\n        d += curDist;\n    }\n    \n    return MAX_DISTANCE;\n}\n\n// =============================================================================\n// Computation of the High Resolution Depth Data\n// =============================================================================\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    updateCamera();\n    vec3 dir = viewDir(fragCoord, iResolution.xy);\n    float dist =  rayMarch(cam.pos, dir);\n    fragColor = vec4(dist);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define UPSCALE_FACTOR 4.0\n\n#define PI 3.1415926535897932384626433832795\n#define MAX_DISTANCE 10000.0\n#define GAMMA_VALUE 2.2\n\n// =============================================================================\n// Rigid Bodies\n// =============================================================================\n\nstruct RectCuboid{\n    vec3 pos;\n    vec4 rot; // w component is the scalar part (quaternion)\n    vec3 scale;\n};\n\nconst int rigidBodyCount = 1;\n\nRectCuboid[rigidBodyCount] rigidBodies = RectCuboid[](\n    RectCuboid(vec3(-0.18, 0.5, 0.8), vec4(0.0, 0.891, 0.0, 0.454), vec3(1.0,1.0,2.7))\n);\n\n// =============================================================================\n// Utilities\n// =============================================================================\n\nmat3 rotMatrixOf(vec4 q) {\n    float xx = q.x*q.x;\n    float yy = q.y*q.y;\n    float zz = q.z*q.z;\n    float xy = q.x*q.y;\n    float xz = q.x*q.z;\n    float xw = q.x*q.w;\n    float yz = q.y*q.z;\n    float yw = q.y*q.w;\n    float zw = q.z*q.w;\n    return mat3(1.0-2.0*(yy+zz), 2.0*(xy-zw), 2.0*(xz+yw),\n                2.0*(xy+zw), 1.0-2.0*(xx+zz), 2.0*(yz-xw),\n                2.0*(xz-yw), 2.0*(yz+xw), 1.0-2.0*(xx+yy));\n}\n\nvec4 gamma(vec4 color) {\n    return pow(color, vec4(vec3(1.0 / GAMMA_VALUE), 1.0));\n}\n\n// =============================================================================\n// Raymarching - Data Retrieval\n// =============================================================================\n\nfloat signedDistanceTo(RectCuboid c, vec3 pos) {\n    // transform in rigid body space\n    vec3 x = rotMatrixOf(c.rot)*(pos - c.pos); \n    // closest point on the cuboid surface\n    vec3 cx = clamp(x, -0.5*c.scale, 0.5*c.scale);\n    return sign(dot(cx,x-cx))*length(x-cx);\n}\n\nfloat signedDistance(vec3 pos, out int rbIndex) {\n    float dist = MAX_DISTANCE;\n    for (int i = 0; i != rigidBodyCount; ++i) {\n        float curDist = signedDistanceTo(rigidBodies[i], pos);\n        if (curDist < dist) {\n            dist = curDist;\n            rbIndex = i;\n        }\n    }\n    return dist;\n}\n\nvec3 normalOf(RectCuboid c, vec3 pos) {\n    vec2 eps = vec2(0.000001, 0.0);\n\n    vec3 normal = vec3(\n        signedDistanceTo(c, pos+eps.xyy) - signedDistanceTo(c, pos-eps.xyy),\n        signedDistanceTo(c, pos+eps.yxy) - signedDistanceTo(c, pos-eps.yxy),\n        signedDistanceTo(c, pos+eps.yyx) - signedDistanceTo(c, pos-eps.yyx)\n    );  \n    \n    // lazy workaround to avoid the necessity of double-precision floating-points\n    if (dot(normal, normal) == 0.0) {\n        eps *= 1000.0;\n        normal = vec3(\n            signedDistanceTo(c, pos+eps.xyy) - signedDistanceTo(c, pos-eps.xyy),\n            signedDistanceTo(c, pos+eps.yxy) - signedDistanceTo(c, pos-eps.yxy),\n            signedDistanceTo(c, pos+eps.yyx) - signedDistanceTo(c, pos-eps.yyx)\n        );  \n    }\n    return normalize(normal);\n}\n\nvec3 colorOf(RectCuboid c, sampler2D tex, vec3 pos) {\n    float eps = 0.01;\n\n    vec3 x = rotMatrixOf(c.rot)*(pos - c.pos); \n    vec3 cx = clamp(x, -0.5*c.scale, 0.5*c.scale);\n    vec2 uv;\n    if (abs(cx.x) > 0.5*c.scale.x - eps)\n        uv = cx.yz+0.5*c.scale.yz;\n    else if (abs(cx.y) > 0.5*c.scale.y - eps)\n        uv = cx.xz+0.5*c.scale.xz;\n    else \n        uv = cx.xy+0.5*c.scale.xy;\n    return texture(tex, uv).xyz;\n} \n\n// =============================================================================\n// Camera\n// =============================================================================\n\nstruct Camera {\n    vec3 pos;\n    mat3 rot;\n} cam;\n\nvoid updateCamera() {\n    float angle = 0.0;\n    vec4 quat = vec4(sin(angle/2.0)*vec3(0.0,1.0,0.0), cos(angle/2.0));\n    cam.rot = rotMatrixOf(quat);\n    cam.pos = cam.rot * vec3(-0.3, 0.7, 5.0);\n}\n\nvec3 viewDir(vec2 fragCoord, vec2 iResolution) {\n    float aspectRatio = iResolution.x / iResolution.y;\n    float fov = 0.5 * PI;\n    vec2 uv = fragCoord/iResolution.xy;\n    float uvScaleX = tan(0.5 * fov);\n    vec2 uvScale = vec2(uvScaleX, uvScaleX / aspectRatio);\n    return cam.rot * rotMatrixOf(vec4(0.0157,0.0,0.0,0.99999)) * normalize(vec3(uvScale*(uv-vec2(0.5)), -1.0));\n}\n\n// =============================================================================\n// Light Source\n// =============================================================================\n\nstruct Light {\n    vec3 pos;\n    vec3 ambient;\n    vec3 diffuse;\n    vec3 specular;\n} light;\n\nvoid updateLight() {\n    light.pos = vec3(1.0, 0.0, 16.0);\n    light.ambient = vec3(0.25, 0.25, 0.25);\n    light.diffuse = vec3(0.3, 0.3, 0.7);\n    light.specular = vec3(0.3, 0.3, 0.7);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// =============================================================================\n// Color Computations\n// =============================================================================\n\nvec4 backgroundColor(vec3 dir) {\n    float t = pow(abs(dot(vec3(0.0,1.0,0.0), dir)), 0.3);\n    return (1.0-t)*vec4(0.01,0.01,0.7,1.0) + t*vec4(vec3(1.0),1.0); \n}\n\nvec3 floorColor(vec3 pos) {\n    const float invScale = 1.5;\n    float t = 0.3; // texture strength\n    \n    vec2 tileUV = mod(invScale*pos.xz, 1.0);\n    ivec2 pattern = ivec2(mod(invScale*pos.xz, 2.0));\n    if ((pattern.x+pattern.y) % 2 == 0) {\n        return (1.0-t) * vec3(0.2,0.2,0.2) + t * texture(iChannel0, tileUV).xyz;\n    } else {\n        return (1.0-t) * vec3(0.6,0.6,0.6) + t * texture(iChannel1, tileUV).xyz;\n    }\n}\n\n// =============================================================================\n// Rendering of the Low Resolution Image\n// =============================================================================\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // only render to the bottom left of buffer B\n    if (any(greaterThan(fragCoord, iResolution.xy / UPSCALE_FACTOR + vec2(1)))) {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    vec2 scaledFragCoord = (fragCoord-vec2(0.5))*UPSCALE_FACTOR+vec2(0.5);\n\n    // camera updates\n    updateCamera();\n    vec3 dir = viewDir(scaledFragCoord, iResolution.xy);\n    \n    // use the distance of the last pass to get the rigid body index\n    int rbIndex;\n    float dist = texelFetch(iChannel1, ivec2(scaledFragCoord), 0).x;\n    vec3 pos = cam.pos + dist*dir;\n    \n    if (dist == MAX_DISTANCE) rbIndex = -1;\n    else signedDistance(pos, rbIndex);\n\n    // bg and rigid body color computation\n    if (rbIndex == -1) {\n        fragColor = gamma(backgroundColor(dir));\n        return;\n    }\n    vec3 color = colorOf(rigidBodies[rbIndex], iChannel0, pos).zyx; // modified texel color\n\n    // set light pos and colors\n    updateLight();\n\n    // Blinn-Phong shading\n    vec3 ambient = light.ambient * color;\n    \n    \n    vec3 n = normalOf(rigidBodies[rbIndex], pos);\n    vec3 l = normalize(light.pos - pos);\n    vec3 diffuse = light.diffuse * color * max(0.0, dot(n, l));\n    \n    vec3 v = normalize(cam.pos - pos);\n    vec3 h = normalize(l + v);\n    vec3 specular = light.specular * color * pow(max(0.0, dot(h, n)), 8.0);\n    \n\n    fragColor = gamma(vec4(ambient + diffuse + specular, dist));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

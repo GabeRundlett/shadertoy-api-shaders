@@ -1,0 +1,201 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1670766521",
+            "description": "Its the method of Horn and Schunck for flow estimation. This happens between 2 frames of the input in Buffer A.\nMight need more time to fully diffuse and obtain a stable result, thus the video might need to be paused, for this system to settle.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "cdSXRd",
+            "likes": 9,
+            "name": "Horn and Schunck flow estimation",
+            "published": 3,
+            "tags": [
+                "global",
+                "iterative",
+                "opticalflow"
+            ],
+            "usePreview": 0,
+            "username": "Gegell",
+            "viewed": 338
+        },
+        "renderpass": [
+            {
+                "code": "/*\n * This shader tries to implement the Horn and Schunk method for global flow estimation.\n * Especially it tries to minimize following energy functional:\n *\n *   E(u, v) = ∫_Ω (f_x u + f_y v + f_t)^2 + α (|∇u|^2 + |∇v|^2) dx dy\n *                 `----- data term -----´   `--- smoothness ---´\n *\n * Where the variable assignments are as follows:\n *   - Ω the image domain\n *   - f_x, f_y, f_t the spatial and temporal derivatives of the image grayscale values\n *   - u, v the flow amount in x and y direction\n *   - α the smoothness regularisation parameter\n *\n * From this functional the following Euler-Lagrange equations are derived:\n *\n *   2 f_x (f_x u + f_y v + f_t) - α Δ u = 0\n *   2 f_y (f_x u + f_y v + f_t) - α Δ v = 0\n *\n * These are then discretized and solved for iteratively with the Jacobi method.\n * This solves a matrix A by decomposing it to A = D-N, which means that for Ax = b\n * we obtain the iterative step:\n *\n *   x = D^-1 (b + Nx)\n *\n * Here D are the diagonal entries, and N is the rest. This method is especially suited\n * for sparse matrices and parallel computation. (Which both applies here).\n * To find the fully employed method in this shader, see Buffer C.\n */\n \n/*\n * The shader is structured as follows:\n * - Common     Defines some of the parameters regarding RENDERING and flow COMPUTATION.\n * - Buffer A   Contains the current input frame.\n * - Buffer B   Contains a snapshot of Buffer A taken at a set interval (see common tab).\n * - Buffer C   Iteratively computes the minimizing flow.\n * - Image      Contains various rendering methods for the computed flow.\n *\n * To actually see a complete solution, the solver needs a lot of iterations (~10 000)\n * Thus it's advisable to pause the input video in Buffer A to obtain a pair of images\n * for which the full flow is then computed.\n */\n\n#define PI 3.1415926\n#define TAU (PI*2.)\n\nvec3 hue(float h)\t{\n    h = fract(h);\n    float r = abs(h * 6. - 3.) - 1.;\n    float g = 2. - abs(h * 6. - 2.);\n    float b = 2. - abs(h * 6. - 4.);\n    return clamp(vec3(r, g, b), 0., 1.);\n}\n\nvec4 HSVtoRGB(vec3 hsv) {\n    return vec4(((hue(hsv.x) - 1.) * hsv.y + 1.) * hsv.z, 1.);\n}\n\nvec3 dirToHSV(vec2 dir) {\n    return vec3(atan(dir.y, dir.x) / TAU, 1., min(length(dir) * HSV_BACKDROP_BRIGHTNESS_SCALE * FLOW_SCALE, 1.));\n}\n\nfloat sdSegment( in vec2 p, in vec2 a, in vec2 b )\n{\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nvec4 renderFlowArrows(vec2 fragCoord) {    \n    vec2 cellID = floor(fragCoord / ARROW_GRID_SPACE) * ARROW_GRID_SPACE;\n    vec2 cellPos = fragCoord - cellID - ARROW_GRID_SPACE / 2.;\n    \n    \n    // Sample at the center of the cell and render a line pointing in the direction of the flow\n    vec2 cellFlow = texelFetch(iChannel0, ivec2(cellID), 0).xy * ARROW_GRID_SCALE * FLOW_SCALE;\n    cellFlow /= max(length(cellFlow), 1.);\n    float d = sdSegment(cellPos, vec2(0.), cellFlow * ARROW_GRID_SPACE / 2.1) - ARROW_GRID_THICKNESS;\n\n    float mask = smoothstep(-.7, .7, -d);\n    return vec4(vec3(1.), mask);\n}\n\nvec4 renderMouseFlowLine(vec2 fragCoord) {\n    vec2 oldPos = iMouse.xy;\n    float d = 1e20;\n    vec3 col = vec3(1);\n    for (int i = 0; i < 20; i++) {\n        vec2 flow = texelFetch(iChannel0, ivec2(oldPos), 0).xy;\n        vec2 _step = flow / max(length(flow), 1.0) * MOUSE_FLOW_LINE_STEP_SIZE;\n        vec2 newPos = oldPos + _step;\n        float newD = sdSegment(fragCoord, oldPos, newPos) - MOUSE_ARROW_THICKNESS;\n        if (newD < d) {\n            d = newD;\n            col = HSVtoRGB(dirToHSV(flow / FLOW_SCALE)).rgb;\n        }\n        oldPos = newPos;\n    }\n    float mask = smoothstep(-.7, .7, -d + 1.0);\n    float colMask = smoothstep(-.7, .7, -d);\n    col = mix(vec3(0), col, colMask);\n    return vec4(col, mask);\n}\n\nvec4 renderMovedImage(vec2 fragCoord) {\n    // Actually move the source image according to the computed flow field\n    vec2 flow = texelFetch(iChannel0, ivec2(fragCoord), 0).xy * FLOW_SCALE;\n    \n    float t1 = fract(iTime * DEFORMATION_SPEED);\n    vec2 sourcePoint1 = fragCoord - t1 * flow;\n    vec4 c1 = texture(iChannel1, sourcePoint1 / iResolution.xy);\n    \n    float t2 = fract(iTime * DEFORMATION_SPEED + 0.5);\n    vec2 sourcePoint2 = fragCoord - t2 * flow;\n    vec4 c2 = texture(iChannel1, sourcePoint2 / iResolution.xy);\n    \n    float alpha1 = smoothstep(0.1, 0.4, abs(t1 - 0.5));\n    float alpha2 = smoothstep(0.1, 0.4, abs(t2 - 0.5));\n    \n    float alpha = alpha1 / (alpha1 + alpha2);\n    return mix(c1, c2, alpha);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // Render the flow direction as HSV color\n    vec2 flow = texture(iChannel0, uv).xy;\n    vec3 hsv = dirToHSV(flow);\n    fragColor = HSVtoRGB(hsv);\n    \n    // Render the original image animated along flow\n    vec4 movedImage = renderMovedImage(fragCoord);\n    fragColor = movedImage;\n    \n    // Render composite of direction as HSV and animated image\n    hsv = vec3(hsv.x, .6 *hsv.z, luminance(movedImage.rgb));\n    fragColor = HSVtoRGB(hsv);\n    \n    // Direction line grid\n    vec4 lines = renderFlowArrows(fragCoord);\n    fragColor.rgb = mix(fragColor.rgb, lines.rgb, lines.a);\n    \n    // Flow at mouse location\n    vec4 mouseLine = renderMouseFlowLine(fragCoord);\n    fragColor.rgb = mix(fragColor.rgb, mouseLine.rgb, mouseLine.a);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texture(iChannel0, fragCoord/iResolution.xy);\n    \n    if (all(equal(ivec2(fragCoord), ivec2(0, 0)))) {\n        fragColor = vec4(iChannelTime[0], 0., 0., 1.);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 29,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/3405e48f74815c7baa49133bdc835142948381fbe003ad2f12f5087715731153.ogv"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    vec4 metadata = texelFetch(iChannel1, ivec2(0,0), 0);\n    vec4 metadataNew = texelFetch(iChannel0, ivec2(0,0), 0);\n\n    float currentTime = metadataNew.x;\n    float lastSnapshotTime = metadata.x;\n    \n    if (currentTime > lastSnapshotTime + TIME_BETWEEN_SNAPSHOTS || currentTime == 0.0) {\n        if (all(equal(ivec2(fragCoord), ivec2(0, 0)))) {\n            fragColor = vec4(currentTime, 0., 0., 1.);\n        } else {\n            fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n        }\n    } else {\n        fragColor = texelFetch(iChannel1, ivec2(fragCoord), 0);\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec3 sampleFlow(ivec2 coord) {\n    if (   any(lessThan(coord, ivec2(0))) \n        || any(greaterThan(coord, ivec2(iResolution.xy)))\n        ) {\n        return vec3(0.);\n    }\n    return vec3(texelFetch(iChannel2, coord, 0).rg, 1.);\n    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ipos = ivec2(fragCoord);\n\n    // Sample from both the A and B buffer to get a frame delta\n    vec4 colNow = texelFetch(iChannel0, ipos, 0);\n    vec4 colPrev = texelFetch(iChannel1, ipos, 0);\n    \n    vec4 metadataNow = texelFetch(iChannel0, ivec2(0,0), 0);\n    vec4 metadataPrev = texelFetch(iChannel1, ivec2(0,0), 0);\n    \n    vec3 gradient = vec3(\n        dFdx(luminance(colNow.rgb)),\n        dFdy(luminance(colPrev.rgb)),\n         (luminance(colNow.rgb) - luminance(colPrev.rgb)) / (metadataNow.x - metadataPrev.x)\n    );\n    \n    vec3 flowNeighbors = vec3(0.);\n    flowNeighbors += sampleFlow(ipos + ivec2( 0, -1));\n    flowNeighbors += sampleFlow(ipos + ivec2( 0,  1));\n    flowNeighbors += sampleFlow(ipos + ivec2( 1,  0));\n    flowNeighbors += sampleFlow(ipos + ivec2(-1,  0));\n    \n    vec2 curFlow = sampleFlow(ipos).xy;\n    \n    vec2 newFlow = vec2(\n        - gradient.x * (gradient.y * curFlow.y + gradient.z) + SMOOTHNESS_REGULARISATION * flowNeighbors.x,\n        - gradient.y * (gradient.x * curFlow.x + gradient.z) + SMOOTHNESS_REGULARISATION * flowNeighbors.y\n    ) / vec2(\n        gradient.x * gradient.x + SMOOTHNESS_REGULARISATION * flowNeighbors.z,\n        gradient.y * gradient.y + SMOOTHNESS_REGULARISATION * flowNeighbors.z\n    );\n    \n    if (metadataNow.x == metadataPrev.x) {\n        fragColor = vec4(0.);\n    } else {\n        fragColor = vec4(newFlow, 0., 0.);\n    }\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*\n * COMPUTATIONAL SETTINGS\n */\n\n// How much to punish non smooth areas in the energy functional\n#define SMOOTHNESS_REGULARISATION 5.0\n\n// The maximum time between the input video time and the time of the taken snapshot\n#define TIME_BETWEEN_SNAPSHOTS 1.0\n\n/*\n * RENDER SETTINGS\n */\n\n// How much to globally scale the flow vector before rendering\n#define FLOW_SCALE 20.\n\n// How many pixels between the arrows in the grid view\n#define ARROW_GRID_SPACE 20.\n#define ARROW_GRID_THICKNESS 0.7\n#define ARROW_GRID_SCALE 1.\n\n// Settings for the arrow attached to the mouse\n#define MOUSE_ARROW_THICKNESS 0.7\n#define MOUSE_FLOW_LINE_STEP_SIZE 10.0\n\n// Backdrop settings\n#define HSV_BACKDROP_BRIGHTNESS_SCALE 1.\n#define DEFORMATION_SPEED .1\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n// Shared code\nfloat luminance(vec3 col) {\n    return sqrt(dot(vec3(0.299, 0.587, 0.114), col * col));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

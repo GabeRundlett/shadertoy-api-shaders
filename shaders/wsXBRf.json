@@ -1,0 +1,65 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1588732613",
+            "description": "Learning dof from dissecting P_Malin's awesome Meta CRT code: https://frame.42yeah.casa/2020/05/02/dof.html",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wsXBRf",
+            "likes": 18,
+            "name": "Simple DoF",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "dof"
+            ],
+            "usePreview": 0,
+            "username": "42yeah",
+            "viewed": 785
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.14159265\n\n// Random hash function\nvec2 rand2d(vec2 uv) {\n    return fract(sin(vec2(\n        dot(uv, vec2(215.1616, 82.1225)),\n        dot(uv, vec2(12.345, 856.125))\n    )) * 41234.45) * 2.0 - 1.0;\n}\n\n// Calculate CoC: https://developer.download.nvidia.com/books/HTML/gpugems/gpugems_ch23.html\nfloat getCoC(float depth, float focalPlane) {\n    float focalLength = 0.1;\n    float aperture = min(1.0, focalPlane * focalPlane);\n    return abs(aperture * (focalLength * (focalPlane - depth)) /\n        (depth * (focalPlane - focalLength)));\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // Sample original texture data at uv\n    vec4 texData = texture(iChannel0, uv);\n    \n    // Get its depth\n    float depth = texData.w;\n    \n    // Focal plane at 3.9 (the camera is looking at the center from ~4.0)\n    float focalPlane = 3.9;\n    \n    // Calculate CoC, see above\n    float coc = getCoC(depth, focalPlane);\n    \n    // Sample count\n    const int taps = 32;\n    \n    // Golden ratio: https://www.youtube.com/watch?v=sj8Sg8qnjOg\n    float golden = 3.141592 * (3.0 - sqrt(5.0));\n    \n    // Color & total weight\n    vec3 color = vec3(0.0);\n    float tot = 0.0;\n    \n    for (int i = 0; i < taps; i++) {\n        // Radius slowly increases as i increases, all the way up to coc\n        float radius = coc * sqrt(float(i) / float(taps));\n        \n        // Golden ratio sample offset\n        float theta = float(i) * golden;\n        vec2 tapUV = uv + sin(theta + vec2(0.0, PI / 2.0)) * radius;\n        \n        // Sample the bit over there\n        vec4 tapped = texture(iChannel0, tapUV);\n        float tappedDepth = tapped.w;\n\n        if (tappedDepth > 0.0) {\n            // Use CoC over there as weight\n            float tappedCoC = getCoC(tappedDepth, focalPlane);\n            float weight = max(0.001, tappedCoC);\n            \n            // Contribute to final color\n            color += tapped.rgb * weight;\n            // And final weight sum\n            tot += weight;\n        }\n    }\n    // And normalize the final color by final weight sum\n    color /= tot;\n    fragColor = vec4(color, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// It's \"floor\" because floor is reserved keyword\nfloat sol(vec3 pos) {\n    return pos.y;\n}\n\n// Finite repetition: https://iquilezles.org/articles/distfunctions\nfloat cube(vec3 pos, vec3 off) {\n    vec3 c = vec3(3.0, 0.0, 3.0);\n    vec3 l = vec3(1.0);\n    pos = pos - c * clamp(floor(pos / c + 0.5), -l, l);\n    pos -= off;\n    vec3 d = abs(pos) - vec3(0.5);\n    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);\n}\n\n// Classic map from raymarching. I ripped it off from iq's fruxis: https://www.shadertoy.com/view/ldl3zl \nvec2 map(vec3 pos) {\n    float closest = 1000.0;\n    float id = -1.0;\n    \n    // Ground\n    float dist = sol(pos);\n    if (dist < closest) { closest = dist; id = 0.5; }\n    \n    // Cubes\n    dist = cube(pos, vec3(0.0, 0.48, 0.0));\n    if (dist < closest) { closest = dist; id = 1.5; }\n    \n    return vec2(closest, id);\n}\n\n// Raymarching\nvec2 trace(vec3 ro, vec3 rd) {\n    float depth = 0.0;\n    float id = -1.0;\n    for (int i = 0; i < 200; i++) {\n        vec2 info = map(ro + rd * depth);\n        if (abs(info.x) <= 0.001) {\n            id = info.y;\n            break;\n        }\n        depth += info.x;\n    }\n    return vec2(depth, id);\n}\n\n// Returns a grid like color\nvec3 getFloorColor(vec3 pos) {\n    pos *= 2.0;\n    vec3 baseColor = vec3(1.0, 1.0, 1.0);\n    vec3 f = mod(floor(pos), 2.0);\n    return baseColor * clamp(abs(f.x - f.z), 0.8, 1.0);\n}\n\n// Returns a slowly-turning-from-blue-to-white-as-ray-direction-increases color\nvec3 getSkyColor(vec3 rd) {\n    vec3 baseColor = vec3(0.69, 0.89, 0.99);\n    return mix(baseColor, vec3(1.0, 1.0, 1.0), clamp(rd.y * 4.6, 0.0, 1.0));\n}\n\n// General getColor function. You plug object id in, and get the respective object color\nvec3 getColor(float id, vec3 pos, vec3 rd) {\n    if (id < -0.5) { return getSkyColor(rd); } // sky\n    if (id < 1.0) { return getFloorColor(pos); } // ground\n    if (id < 2.0) { return vec3(1.0, 0.5, 0.0); }\n    return vec3(1.0, 0.0, 0.0); // red for undefined\n}\n\n// Estimate normal function\nvec3 getNormal(vec3 p) {\n    const float epsilon = 0.001;\n    float mapped = map(p).x;\n    return normalize(vec3(\n        mapped - map(vec3(p.x - epsilon, p.yz)).x,\n        mapped - map(vec3(p.x, p.y - epsilon, p.z)).x,\n        mapped - map(vec3(p.x, p.y, p.z - epsilon)).x\n    ));\n}\n\n// Soft shadow calculation: https://iquilezles.org/articles/rmshadows\nfloat getShadowIntensity(vec3 ro, vec3 rd) {\n    float depth = 0.001;\n    float res = 1.0;\n    for (int i = 0; i < 25; i++) {\n        float dist = map(ro + rd * depth).x;\n        res = min(res, 20.0 * dist / depth);\n        if (res < 1e-6) { break; }\n        depth += clamp(dist, 0.001, 2.0);\n    }\n    return clamp(res, 0.0, 1.0);\n}\n\n// Calculate ray direction\nvec3 getRd(vec3 ro, vec2 uv) {\n    vec3 center = vec3(0.0, 0.0, 0.0);\n\n    vec3 front = normalize(center - ro);\n    vec3 right = normalize(cross(front, vec3(0.0, 1.0, 0.0)));\n    vec3 up = normalize(cross(right, front));\n    \n    mat4 lookAt = mat4(\n        vec4(right, 0.0),\n        vec4(up, 0.0),\n        vec4(front, 0.0),\n        vec4(0.0, 0.0, 0.0, 1.0)\n    );\n    vec3 rd = normalize(vec3(lookAt * vec4(uv, 2.0, 1.0)));\n    return rd;\n}\n\n// Get fragment color according to raymarched id, pos, etc.\nvec3 getFinalColor(float id, vec3 pos, vec3 n, vec3 rd, vec3 lightDir) {\n    float ambient = 1.0;\n    float diffuse = max(dot(n, lightDir), 0.0);\n    float dome = 0.2 + 0.8 * clamp(n.y, 0.0, 1.0);\n    float sol = 0.2 + 0.8 * clamp(-n.y, 0.0, 1.0);\n    float back = max(dot(n, vec3(-lightDir.x, 0.0, -lightDir.z)), 0.0);\n    float shadow = getShadowIntensity(pos + n * 1e-3, lightDir);\n\n    vec3 light = vec3(1.0);\n    if (id > 0.0) {\n        light = vec3(0.0);\n        light += ambient * vec3(0.2, 0.2, 0.2) * shadow;\n        light += diffuse * vec3(0.82, 0.80, 0.82) * shadow;\n        light += dome * vec3(0.26, 0.32, 0.334);\n        light += sol * vec3(0.3, 0.21, 0.23);\n        light += back * vec3(0.2, 0.21, 0.23);\n    }\n\n    vec3 objColor = getColor(id, pos, rd) * light;\n    return objColor;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = fragCoord.xy / iResolution.xy * 2.0 - 1.0;\n    float aspect = iResolution.x / iResolution.y;\n    uv.x *= aspect;\n    \n    // Ray origin\n    vec3 ro = vec3(4.0 * sin(iTime * 1.0), 1.5, 4.0 * cos(iTime * 1.0));\n    \n    // Ray direction\n    vec3 rd = getRd(ro, uv);\n    \n    // Raymarch. info.x is depth, and info.y is object id\n    vec2 info = trace(ro, rd);\n    vec3 pos = ro + rd * info.x;\n    vec3 n = getNormal(pos);\n\n    vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));\n\n    // Get final color & apply gamma correction\n    vec3 color = getFinalColor(info.y, pos, n, rd, lightDir);\n    color = pow(color, vec3(0.4545));\n\n    fragColor = vec4(color, info.x);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

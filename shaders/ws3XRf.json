@@ -1,0 +1,69 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1575284727",
+            "description": "Just wanted to make some chromed metaballs.\nFor better performances I use a 1 ray edge detection to select where AA is most needed.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ws3XRf",
+            "likes": 8,
+            "name": "Mercury Balls",
+            "published": 3,
+            "tags": [
+                "metaballs",
+                "antialiasing",
+                "edgedetection",
+                "chrome",
+                "selective"
+            ],
+            "usePreview": 0,
+            "username": "PixelPhil",
+            "viewed": 650
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_DST 40.0\n#define MIN_DST 0.001\n#define S(a,b,c) smoothstep(a,b,c)\n#define sat(a) clamp(a,0.0,1.0)\n#define ZERO (min(iFrame,0))\n\n\nfloat sdSphere(vec3 pos, vec3 center, float radius)\n{\n    return length(pos - center) - radius;\n}\n\n// polynomial smooth min (k = 0.1);\nfloat smin( float a, float b, float k )\n{\n    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h);\n}\n\nfloat SDF(vec3 pos)\n{\n    float dist = 10000.0;\n    \n    pos += vec3(sin((pos.z+ iTime) * 8.0) * 0.025,\n                sin((pos.x+ iTime) * 8.0) * 0.025,\n                sin((pos.y + iTime) * 8.0) * 0.025);\n    \n    \n    for (float i = 0.0; i < 8.0; i++)\n    {\n        vec3 center = vec3(sin(iTime * (0.5 + mod(i * 3.12, 1.3)) + 12.0) * 1.2,\n                        sin(iTime * (0.5 + mod(i * 6.45, 1.45))  + 56.12),\n                        sin(iTime * (0.5 + mod(i * 32.1, 0.8))  + 456.4) + 1.0);\n        \n       dist = smin(dist, sdSphere(pos, center, 0.7), 0.3);\n    }\n \n\treturn dist;\n}\n\nvec3 lightPos = vec3(3.0, 3.0, -3.0);\n\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal( vec3 pos )\n{\n    // inspired by tdhooper and klems - a way to prevent the compiler from inlining map() 4 times\n    vec3 n = vec3(0.0);\n    \n    for( int i=ZERO; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e * SDF(pos+0.0005*e);\n    }\n    return normalize(n);\n}\n\n\n// inspired by\n// https://iquilezles.org/articles/rmshadows\nfloat shadow(vec3 pos, vec3 lPos)\n{\n    //lPos.xyz += (vec3(N2(pos.xy), N2(pos.yz), N2(pos.zx)) - 0.5)* 0.03; //jitters the banding away\n    \n    vec3 dir = lPos - pos;  // Light direction & disantce\n    \n    float len = length(dir);\n    dir /= len;\t\t\t\t// It's normalized now\n    \n    pos += dir * MIN_DST * 10.0;  // Get out of the surface\n    \n    float dst = SDF(pos); // Get the SDF\n    \n    // Start casting the ray\n    float t = 0.0;\n    float obscurance = 1.0;\n    \n    while (t < len)\n    {\n        if (dst < MIN_DST) return 0.0; \n        \n        obscurance = min(obscurance, (20.0 * dst / t)); \n        \n        t += dst;\n        pos += dst * dir;\n        dst = SDF(pos);\n    }\n    \n    return obscurance;     \n}\n\nfloat shadow(vec3 p, vec3 n, vec3 lPos)\n{\n    return shadow(p + n * MIN_DST * 4.0, lPos);\n}\n\nfloat castRay(vec3 pos, vec3 dir, float maxDst, float minDst)\n{\n    float dst = SDF(pos);\n    //return dst;\n    \n    float t = 0.0;\n    \n    while (dst > minDst && t < maxDst)\n    {\n        t += dst;\n        pos += dst * dir;\n        dst = SDF(pos);\n    }\n    \n    return t + dst;\n}\n\n// A simpler rendering for reflections (diffuse only)\nvec3 reflection(vec3 pos, vec3 ref)\n{\n    //ref = normalize(ref);\n    \n    pos += ref * MIN_DST * 4.0;\n    float d = castRay(pos, ref, MAX_DST, MIN_DST);\n    \n    //vec3 nPos = pos + ref * d.x;\n\n    \n    if (d > MAX_DST)\n    {\n        return textureLod(iChannel1, ref, 4.0).rgb;\n    }\n    else   \n    {\n   \n        vec3 col = vec3(1.0, 0.0, 0.0);\n        \n        vec3 pointDir = lightPos - pos;\n        float len = length(pointDir);\n        \n        float atten = sat(1.0 - len / 20.0);\n        \n        pointDir /= len;\n        float lambertPoint = 0.0;\n        \n        vec3 n = calcNormal(pos);\n        \n       // float shadow = shadow(pos, n, lightPos); \n        \n        lambertPoint = sat(dot(n, pointDir));\n        \n        lambertPoint *= /*shadow */ atten; \n        \n        vec3 refl = reflect(ref, n);\n        //float specular =  sat(dot(pointDir, refl));\n        \n        //specular = specular * specular * shadow * atten;\n\n        vec3 diffuseCol = vec3(lambertPoint);\n        \n        //vec3 specularCol = vec3(specular);\n        \n        col =  diffuseCol;// + specularCol;\n        \n        float dst = 1.0 - sat(SDF(pos + n * 0.5) * 1.0);\n\n        col *= vec3((1.0 - dst * dst) * 0.7 + 0.3); // Fake AO\n        \n        float fresnel = pow(1.0 - abs(dot(n, ref)), 1.0);\n        \n        //col += reflection(pos, ref, lightPos)\n        \n        col += textureLod(iChannel1, n, 4.0).rgb * fresnel;\n        \n        \n        \n        return col;\n    }\n}\n\n\nvec4 render(vec3 camPos, vec3 rayDir)\n{\n       \n\n    vec3 col;\n    rayDir = normalize(rayDir);\n    \n    float d = castRay(camPos, rayDir, MAX_DST, MIN_DST);\n    \n\n  \n    \n    if (d > MAX_DST)\n    {\n        col = textureLod(iChannel0, rayDir, 0.0).rgb;\n        d = MAX_DST;\n    }\n    else   \n    {\n        //float field = fract(d * 1.0);\n\t    col = vec3(0.0);//\n        vec3 pos = camPos + rayDir * d;\n \n        vec3 n = calcNormal(pos);\n        \n\n        vec3 pointDir = lightPos - pos;\n        float len = length(pointDir);\n        \n        float atten = sat(1.0 - len / 20.0);\n        \n        pointDir /= len;\n        \n        //float ambient = (n.y + 0.5) * 0.1;// mix(vec3(0.1, 0.1, 0.1), vec3(0.5, 0.5, 0.0), n.y * 0.5 + 0.5);\n        \n        float lambertPoint = 0.0;\n        \n \t\tatten *= atten;\n     \n        float shadow = shadow(pos, n, lightPos); \n        \n        lambertPoint = sat(dot(n, pointDir));\n        \n        lambertPoint *= shadow * atten; \n        \n        vec3 ref = reflect(rayDir, n);\n        float specular =  sat(dot(pointDir, ref));\n        \n        specular = specular * specular * shadow * atten;\n\n        vec3 diffuseCol = vec3(lambertPoint);\n        \n        vec3 specularCol = vec3(specular);\n        \n        col = diffuseCol + specularCol;\n        \n        float dst = 1.0 - sat(SDF(pos + n * 0.5) * 1.0);\n\n        col *= vec3((1.0 - dst * dst) * 0.7 + 0.3); // Fake AO\n        \n        float fresnel = pow(1.0 - abs(dot(n, rayDir)), 1.0);\n        \n        col += reflection(pos, ref) * fresnel;\n        //https://www.shadertoy.com/img/themes/classic/play.png\n    }\n    \n    return vec4(col, d);\n}\n\n\n//A 1 raycast approach to In-Out edge detection \nbool needAA(vec3 pos, vec3 dir)\n{\n    float growA = -0.005;\n    float growB = 0.05;\n    \n    float dst = SDF(pos) + growA;\n\n    float t = 0.0;\n    \n    while (dst > MIN_DST && t < MAX_DST)\n    {\n        t += dst;\n        pos += dst * dir;\n        dst = SDF(pos) + growA;\n    }\n    \n    float tA = t + dst;\n    \n    dst = SDF(pos) + growB;\n\n    while (dst > MIN_DST && t < MAX_DST)\n    {\n        t += dst;\n        pos += dst * dir;\n        dst = SDF(pos) + growB;\n    }\n    \n    float tB = t + dst;\n    \n    return tB - tA > 0.5;\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv =(fragCoord - .5 * iResolution.xy) / iResolution.y; \n\n    \n    vec3 camPos = vec3(0.0, 0.0, -6.0);\n    vec3 camDir = vec3(0.0, 0.0,  1.0);\n    \n    vec3 rayDir = camDir + vec3(uv * 0.5, 0.0);\n    \n    \n   \tvec3 res = vec3(0.0);\n    \n   \n    \n\tvec3 nrmDir = normalize(rayDir);\n    \n    \n\n    if (needAA(camPos, nrmDir))\n    {\n        vec3 offset = vec3(0.15, 0.3, 0.0) / iResolution.y;\n        \n        for (int i = 0; i < 4; i++)\n        {\n           res += render(camPos, rayDir + offset).rgb;\n           offset = vec3(-offset.y, offset.x, offset.z);\n        }\n        \n        res.rgb /= 4.0;\n        \n        //Uncomment to see where AA is applied\n        // res.rgb = vec3(1.0);\n    }\n    else\n    {\n        res = render(camPos, rayDir).rgb;\n    }\n \t\n\n    // Output to screen\n    fragColor = vec4(res.rgb,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

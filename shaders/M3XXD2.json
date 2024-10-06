@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1709995567",
+            "description": "Dispersing a gaussian bump in deep water.\n\n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "M3XXD2",
+            "likes": 3,
+            "name": "Deep Water Drop Wave",
+            "published": 3,
+            "tags": [
+                "wave",
+                "simulation",
+                "water"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 155
+        },
+        "renderpass": [
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n// https://twitter.com/Mirko_Salm\n\n/*\n\n    Dispersing a gaussian bump in deep water.\n    \n    Buffer B: height field computation\n    Buffer C: prepare height field for bi-cubic reconstruction\n    Image   : presentation\n\n    Version with physical quantities and support for surface tension: https://www.shadertoy.com/view/MXlXDs\n*/\n\n\n// CUBIC AND BICUBIC RECONSTRUCTION KERNELS ============================================================================================\n// https://www.shadertoy.com/view/WtsBDH (\"Bicubic C2 cont. Interpolation\")\n\nfloat kern_v(float x) { return 1.0-x*x*(3.0-2.0*abs(x)); }\nfloat kern_d(float x) { float o = abs(x)-1.0; return x*(o*o); }\n\nfloat kern_vD1(float x) { return x*(abs(x)*6.0-6.0); }\nfloat kern_dD1(float x) { return (abs(x)-1.0)*(abs(x)*3.0-1.0); }\n\n\nvec4 kern(vec2 p)\n{\n    return vec4(kern_d(p.x) * kern_v(p.y),\n                kern_v(p.x) * kern_d(p.y),\n                kern_d(p.x) * kern_d(p.y),\n                kern_v(p.x) * kern_v(p.y));\n}\n\nmat4 kern4x4(vec2 p)\n{\n    vec2 v   = vec2(kern_v  (p.x), kern_v  (p.y));\n    vec2 d   = vec2(kern_d  (p.x), kern_d  (p.y));\n    \n    vec2 vD1 = vec2(kern_vD1(p.x), kern_vD1(p.y));\n    vec2 dD1 = vec2(kern_dD1(p.x), kern_dD1(p.y));\n    \n    mat4 m = mat4\n    (\n        /*   kernDx       |  kernDy       |  kernDxy        |  kern    */\n        vec4(dD1.x * v.y  ,  d.x * vD1.y  ,  dD1.x * vD1.y  ,  d.x * v.y),\n        vec4(vD1.x * d.y  ,  v.x * dD1.y  ,  vD1.x * dD1.y  ,  v.x * d.y),\n        vec4(dD1.x * d.y  ,  d.x * dD1.y  ,  dD1.x * dD1.y  ,  d.x * d.y),\n        vec4(vD1.x * v.y  ,  v.x * vD1.y  ,  vD1.x * vD1.y  ,  v.x * v.y)\n    );\n    \n    return m;\n}\n\n\n// BICUBIC SAMPLING ROUTINES =============================================================================================================\n\n// this is the most basic version which only evaluates the function value\nfloat SampleBicubic(sampler2D channel, vec2 uv)\n{\n    uv -= vec2(0.5);\n    \n    vec2 uvi = floor(uv);\n    vec2 uvf = uv - uvi;\n\n    ivec2 uv0 = ivec2(uvi);\n    \n    float r = 0.0;\n    for(int j = 0; j < 2; ++j)\n    for(int i = 0; i < 2; ++i)\n    {\n        vec4 c = texelFetch(channel, uv0 + ivec2(i, j), 0);\n        \n        vec2 l = uvf;\n        \n        if(i != 0) l.x -= 1.0;\n        if(j != 0) l.y -= 1.0;\n        \n        r += dot(c, kern(l));\n    }\n    \n\treturn r;\n}\n\n// ... this version also outputs derivatives (used here to compute normals)\nvec4 SampleBicubic2(sampler2D channel, vec2 uv)\n{\n    uv -= vec2(0.5);\n    \n    vec2 uvi = floor(uv);\n    vec2 uvf = uv - uvi;\n\n    ivec2 uv0 = ivec2(uvi);\n    \n    vec4 r = vec4(0.0);\n    for(int j = 0; j < 2; ++j)\n    for(int i = 0; i < 2; ++i)\n    {\n        vec4 c = texelFetch(channel, uv0 + ivec2(i, j), 0);\n        \n        vec2 l = uvf;\n        \n        if(i != 0) l.x -= 1.0;\n        if(j != 0) l.y -= 1.0;\n        \n        r += kern4x4(l) * c;\n    }\n    \n    // r = vec4(df/dx, df/dy, ddf/dxy, f)\n\treturn r;\n}\n\n\n// IMAGE ==========================================================================================================================\n\nvoid mainImage( out vec4 fragColor, in vec2 uv0 )\n{    \n    vec3 col;\n    \n    vec2 uv = uv0;\n    vec2 tc = uv0 / iResolution.xx;\n    \n    col = vec3(texture(iChannel0, uv0/iResolution.xy*0.125).r);\n    \n    vec2 uv2 = PatchUVfromScreenUV(uv0.xy, iResolution.xy);\n\n    vec3 V = vec3(0.0, 0.0, 1.0);\n    vec3 L = normalize(vec3(1.0, 1.0, 1.0));\n    vec3 L2 = normalize(vec3(-1.0, -1.0, 2.0));\n\n    vec4 h = SampleBicubic2(iChannel0, uv2);// sample water surface\n    \n    float nscale = 32.0;\n    vec3 N = normalize(vec3(-h.xy * nscale, 1.0));\n    \n    vec3 R = 2.0*dot(V, N)*N - V;\n\n    float ct = clamp01(dot(N, L));\n    float ct2 = dot(N, L) * 0.5 + 0.5;    \n        \n    // diffuse\n    float v =  clamp01(ct2+0.15);\n    v = 1.0-v;\n    v = v*v*(3.0-2.0*v);\n    \n    //col = exp(-(v * 20.0 + 5.) * vec3(0.04, 0.3, 1.))*2.;\n    col = exp(-(v * 10.0 + 6.) * vec3(0.1, 0.15, 1.).bgr)*2.0;\n\n    col += vec3(-0.2, -0.5, 1.0).bgr*0.2;\n    \n    // specular\n    float c = 1.0 - (dot(R, L)*0.5+0.5);\n    float c2 = 1.0 - (dot(R, L2)*0.5+0.5);\n    float spec = 0.0;\n    spec += smoothstep(0.9, 0.99, dot(R, L))*0.5; \n    float spec0 = spec;\n    spec += smoothstep(0.7, 0.9, dot(R, L))*0.125; \n    spec += smoothstep(0.8, 0.9, dot(R, L2))*0.02; \n    spec += smoothstep(0.95, 0.99, N.z)*0.02; \n    spec += exp2(-32.0*(c))*0.25;\n    \n    col += spec;\n    \n    col += texture(iChannel3, R).rgb*0.3;\n    \n    col = GammaEncode(clamp01(col));\n    \n    fragColor = vec4(col, 0.0);\n}\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\nfloat GetGridSize(vec2 screenResolution)\n{\n    return screenResolution.y < 512.0 ? 256.0 : 512.0;\n}\n\nvec2 PatchUVfromScreenUV(vec2 screenUV, vec2 screenResolution)\n{\n    float GridSize = GetGridSize(screenResolution);\n    \n    return vec2(GridSize * 0.5) + (screenUV - screenResolution.xy*0.5)/screenResolution.xx * 226.0;\n}\n\n#define rsqrt inversesqrt\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define If(cond, resT, resF) mix(resF, resT, cond)\n\nconst float Pi = 3.14159265359;\nconst float Pi05 = Pi * 0.5;\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\n\nvec3 GammaEncode(vec3 x) {return pow(x, vec3(1.0 / 2.2));}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/* \n    height field computation\n*/\n\n\n// https://link.springer.com/article/10.1007/s40314-020-01238-z\nfloat BesselJ0(float x)\n{\n    float xx = x * x;\n    float lamb = 0.865;\n    float q    = 0.7172491568;\n    float p0   = 0.6312725339;\n    float ps0  = 0.4308049446;\n    float p1   = 0.3500347951;\n    float ps1  = 0.4678202347;\n    float p2   =-0.06207747907;\n    float ps2  = 0.04253832927;\n\n    float lamb4 = (lamb * lamb) * (lamb * lamb);\n    float t0 = sqrt(1.0 + lamb4 * xx);\n    float t1 = sqrt(t0);\n    \n    return xx == 0.0 ? 1.0 : 1.0/(t1 * (1.0 + q * xx)) * ((p0 + p1*xx + p2*t0) * cos(x) + ((ps0 + ps1*xx) * t0 + ps2*xx) * (sin(x)/x));\n}\n\nfloat Wave(float x, float k, float w)\n{\n    float ts = 16.0;// reset afer 16 seconds (about the time the aliases begin to noticeably bleed into the image)\n    float t = fract(iTime / ts) * ts;\n    \n    return BesselJ0(x * k) * cos(w * t);// radially symmetric standing wave\n}\n\nvoid mainImage(out vec4 col, in vec2 uv0)\n{\n    col = vec4(0.0);\n    \n    float GridSize = GetGridSize(iResolution.xy);\n    \n    bool isGrid = uv0.x < GridSize && uv0.y < GridSize;\n\n    if(!isGrid) discard;\n    \n    float l = length(uv0/(GridSize * 0.5) - 1.0);\n    \n    float v = 0.0;\n    float wa = 0.0;\n    float count = 256.0;\n    \n    for(float i = 1.0; i <= count; ++i)\n    {\n        float k = i * Pi;\n        \n        float w = exp2(-Pow2(k / count)) * i;// exp() -> gauss bump | i -> weigh wave by radius\n        \n        v += Wave(l, k, sqrt(k)) * w;// sqrt() -> deep water dispersion\n        \n        wa += w;\n    }\n    \n    col.r = v / wa;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\n    pre-filter pass (prepares height field for rendering)\n    https://www.shadertoy.com/view/WtsBDH (\"Bicubic C2 cont. Interpolation\")\n*/\n\n#define FETCH(uv) (texelFetch(iChannel0, uv, 0).r)\n\nvoid mainImage( out vec4 fragColor, in vec2 uv0 )\n{    \n    float GridSize = GetGridSize(iResolution.xy);\n\n    if(uv0.x > GridSize || uv0.y > GridSize) return;\n\n    ivec2 uv = ivec2(uv0 - 0.5);\n    \n    vec4 col = vec4(0.0);\n    \n    // ======================================================= GENERALIZED CUBIC BSPLINE =======================================================\n    \n    float kernD0[3];\n    float kernD1[3];\n    \n    kernD0[0] = 2.0/3.0; kernD0[1] = 1.0/6.0; kernD0[2] = 0.0;\n    kernD1[0] =     0.0; kernD1[1] =    -0.5; kernD1[2] = 0.0;\n    \n    float sw;// side lobes weight\n\n    sw = 0.0;// cubic BSpline\n    \n   #if 0\n   \n    sw = 0.25;// similar to 1/3 but less ringing\n    \n   #elif 0\n   \n    sw = 1.0/3.0;// kernD0[0] == 1\n    \n   #elif 0\n    \n    sw = 0.186605;// max abs derivative == 1\n    \n   #elif 0\n    \n    sw = 1.0/6.0;// maximaly flat pass band\n    \n   #elif 1\n    \n    sw = -0.25;// spectrum falls off to 0 at Nyquist frequency\n    \n   #endif\n    \n    // add a pair of side lobes:\n    kernD0[0] += 1.0 * sw; kernD0[1] += -1.0/3.0 * sw; kernD0[2] += -1.0/6.0 * sw;\n    \t                   kernD1[1] += -1.0     * sw; kernD1[2] +=  0.5     * sw;\n    \n    int r = sw == 0.0 ? 1 : 2;\n    for(int j = -r; j <= r; ++j)\n    for(int i = -r; i <= r; ++i)\n    {\n    \tfloat f = FETCH(uv + ivec2(i, j));\n        \n        int x = abs(i);\n        int y = abs(j);\n        \n        float kAx = kernD0[x];\n        float kAy = kernD0[y];\n        \n        float kBx = kernD1[x] * (i > 0 ? -1.0 : 1.0);\n        float kBy = kernD1[y] * (j > 0 ? -1.0 : 1.0);\n        \n        col += f * vec4(kBx * kAy, \n                        kAx * kBy, \n                        kBx * kBy,\n                        kAx * kAy);\n    }\n    \n    // col = vec4(df/dx, df/dy, d^2f/dxy, f)\n    fragColor = col;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

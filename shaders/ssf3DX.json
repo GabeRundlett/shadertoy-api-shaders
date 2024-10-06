@@ -1,0 +1,116 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1616644812",
+            "description": "slapping denoise stuff together like it's play-doh",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ssf3DX",
+            "likes": 17,
+            "name": "Real-Time Raytracing (PPT)",
+            "published": 3,
+            "tags": [
+                "raytracer",
+                "ray",
+                "globalillumination",
+                "raytrace",
+                "raytraced",
+                "pathtracing",
+                "pathtracer",
+                "pathtraced",
+                "taa",
+                "temporalantialiasing"
+            ],
+            "usePreview": 0,
+            "username": "Zi7ar21",
+            "viewed": 810
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage(out vec4 fragColor, in vec2 fragCoord){\n    fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ####### Real-Time Ray-Tracing (PPT) #######\n// Made by Zi7ar21 (Jacob Bingham)\n\n// PPT: Pure Path-Tracing\n\n// Made on March 24th, 2021\n// Last Updated: March 24th, 2021 at 21:56 Mountain Standard Time\n\n// This shader is a fully path-traced sphere with Temporal Anti-Aliasing. It doesn't have reprojection.\n\n// If you found this anywhere except Shadertoy, the original and possibly updated version can be found at:\n// https://www.shadertoy.com/view/ssf3DX\n\n// You can remove these social media links when using elsewhere:\n// Discord: @Zi7ar21#2168\n//\n// Twitter: @Zi7ar21\n// https://twitter.com/Zi7ar21\n//\n// YouTube: Jacob Bingham\n// https://www.youtube.com/channel/UCuOqD4WwtUZMOquSIeJ-AAA\n\n// ##### PARAMETERS #####\n// Temporal Anti-Aliasing (TAA)\n#define TAA\n// I made this poor implementation of Temporal Anti-Aliasing.\n// Basically, it blends the newly rendered frame with the old one\n// and is more biased to the new frame when the difference between\n// the old and new depth is smaller.\n\n// Camera Field of View\n#define camfov 1.0\n\n// Mouse Control Sensitivity (Comment to Disable Mouse)\n#define mousesensitivity 8.0\n\n// Maximum Ray Bounces\n#define maxbounces 8U\n\n// Step Size Threshold (because 0.0 gives yucky artifacts on surfaces!)\n#define stepthreshold 1e-4\n\n// Light Source Direction\n#define lightdir vec3(1.0)\n\n// Samples-Per-Pixel (SPP)\n#if HW_PERFORMANCE >= 0\n#define SPP 8U\n#elif\n#define SPP 1U\n#endif\n// (If Shadertoy detects that you are on a potato, it should be disabled by default)\n// Examples:\n// SPP 1: 1*iFrame (1x Performance)\n// SPP 2: 2*iFrame (2x Slower)\n// SPP 4: 4*iFrame (4x Slower)\n// SPP 8: 8*iFrame (8x Slower)\n\n// ##### CONSTANTS #####\n// Octuple Precision, even though Shadertoy is Full Precision (32-Bit Floating Point)\n#define pi 3.1415926535897932384626433832795028841971693993751058209749445923078164\n#define twopi pi*2.0\n\n// ##### RNG #####\n// RNG Utilities from Michael0884: https://www.shadertoy.com/user/michael0884\n// https://www.shadertoy.com/view/wltcRS\nuint ns;\n#define INIT_RNG ns = 185730U*uint(iFrame)+uint(fragCoord.x+fragCoord.y*iResolution.x);\nvoid pcg(){\n    uint state = ns*747796405U+2891336453U;\n    uint word = ((state>>((state>>28U)+4U))^state)*277803737U;\n    ns = (word>>22U)^word;\n}\n\nfloat rand(){pcg(); return float(ns)/float(0xffffffffU);}\nvec2 rand2(){return vec2(rand(), rand());}\nvec3 rand3(){return vec3(rand(), rand(), rand());}\nvec4 rand4(){return vec4(rand(), rand(), rand(), rand());}\n\n// Normalized Random: https://www.shadertoy.com/view/WttyWX\nvec2 nrand2(float sigma, vec2 mean){vec2 Z = rand2(); return mean+sigma*sqrt(-2.0*log(Z.x))*vec2(cos(twopi*Z.y),sin(twopi*Z.y));}\nvec3 nrand3(float sigma, vec3 mean){vec4 Z = rand4(); return mean+sigma*sqrt(-2.0*log(Z.xxy))*vec3(cos(twopi*Z.z), sin(twopi*Z.z), cos(twopi*Z.w));}\n\n// ##### TEXTURES #####\n// Fractal Brownian Motion (FBM) Noise Octaves\n#define octaves 8U\n\n// Gradient Noises (from Samplers)\nfloat noise(vec3 pos){\n    return texture(iChannel1, pos).r;\n}\n\nfloat noise(vec2 pos){\n    return texture(iChannel2, pos).r;\n}\n\n// Fractal Brownian Motion Noises\nfloat fbm(vec3 pos){\n    float outCol = 0.0, attenuation = 0.5;\n    for(uint i = 0U; i < octaves; i++){\n        outCol += attenuation*noise(pos);\n        attenuation *= 0.5;\n        pos = pos.zyx*2.0;\n    }\n    return outCol;\n}\n\nfloat fbm(vec2 pos){\n    float outCol = 0.0, attenuation = 0.5;\n    for(uint i = 0U; i < octaves; i++){\n        outCol += attenuation*noise(pos);\n        attenuation *= 0.5;\n        pos = pos.yx*2.0;\n    }\n    return outCol;\n}\n\n// ##### OTHER FUNCTIONS #####\n// Rotation Matrix\nmat3 rotmat(vec3 rotation){\n    // Precalculate the Trig Functions\n    vec3 s = sin(rotation), c = cos(rotation);\n\n    // X Rotation\n    mat3 rx = mat3(\n    1.0, 0.0, 0.0,\n    0.0, c.x,-s.x,\n    0.0, s.x, c.x);\n\n    // Y Rotation\n    mat3 ry = mat3(\n    c.y, 0.0,-s.y,\n    0.0, 1.0, 0.0,\n    s.y, 0.0, c.y);\n\n    // Z Rotation\n    mat3 rz = mat3(\n    c.z,-s.z, 0.0,\n    s.z, c.z, 0.0,\n    0.0, 0.0, 1.0);\n\n    // Output the Final Matrix\n    return rx*ry*rz;\n}\n\n// ##### INTERSECTION FUNCTIONS #####\n// Almost everything is from the great Inigo Quilez:\n// https://iquilezles.org/articles/intersectors\n// Sphere Intersection Function\nfloat sphere(vec3 raydir, vec3 rayori, vec3 sphpos, float sphrad){\n    vec3 oc = rayori-sphpos;\n    float b = dot(oc, raydir);\n    float c = dot(oc, oc)-sphrad*sphrad;\n    float h = b*b-c;\n    if(h < 0.0){return -1.0;}\n    h = sqrt(h);\n    return -b-h;\n}\n\n// Unused\n/*// Triangle Intersection Function\nvec3 tri(vec3 raydir, vec3 rayori, mat3 triangle){\n    vec3 v1v0 = triangle[1]-triangle[0];\n    vec3 v2v0 = triangle[2]-triangle[0];\n    vec3 rov0 = rayori-triangle[0];\n    vec3 n = cross(v1v0, v2v0);\n    vec3 q = cross(rov0, raydir);\n    float d = 1.0/dot(raydir, n);\n    float u = d*dot(-q, v2v0);\n    float v = d*dot( q, v1v0);\n    float t = d*dot(-n, rov0);\n    if(u < 0.0 || u > 1.0 || v < 0.0 || (u+v) > 1.0 ){t = -1.0;}\n    return vec3(t, u, v);\n}*/\n\n// Plane Intersection Function (with help from LoicVDB)\n// https://www.shadertoy.com/user/loicvdb\nfloat plane(vec3 raydir, vec3 rayori, vec3 point, vec3 norm){\n    float normdotp = dot(raydir, norm);\n    if(normdotp >= 0.0){return -1.0;}\n    return dot(point-rayori, norm)/normdotp;\n}\n\n// Scene Intersection Function\nfloat intersect(vec3 raydir, vec3 rayori, out vec3 norm, out uint objectid){\n    // Compute all intersections, and find the closest object\n    float int0 = plane(raydir, rayori, vec3(0.0), vec3(0.0, 1.0, 0.0));\n    float int1 = sphere(raydir, rayori, vec3(0.0, 0.5, 0.0), 0.5);\n    float minimum = min(int0, int1);\n    if(int0 <= 0.0){minimum = int1;}\n    if(int1 <= 0.0){minimum = int0;}\n\n    // Find the Normal and Intersection of the Nearest Object\n    if(minimum == int0){\n        norm = vec3(0.0, 1.0, 0.0);\n        objectid = 1U;\n        return int0;\n    }\n\n    if(minimum == int1){\n        norm = normalize((rayori+(raydir*int1))-vec3(0.0, 0.5, 0.0));\n        objectid = 2U;\n        return int1;\n    }\n\n    // NULL Object (just to be safe)\n    norm = vec3(0.0);\n    objectid = 0U;\n    return -1.0;\n}\n\n// ##### PBR AND MATERIALS #####\n// Poorly Based on: https://learnopengl.com/PBR/Theory\n// Trowbridge-Reitz GGX Normal Distribution Function\nfloat GGX(vec3 norm, vec3 highlightdir, float roughness){\n    float a2     = roughness*roughness;\n    float NdotH  = max(dot(norm, highlightdir), 0.0);\n    float NdotH2 = NdotH*NdotH;\n    float nom    = a2;\n    float denom  = (NdotH2*(a2-1.0)+1.0);\n          denom  = pi*denom*denom;\n    return nom/denom;\n}\n\n// Fresnel Schlick\nvec3 fresnel(vec3 raydir, vec3 normal, vec3 F0){\n    return F0+(1.0-F0)*pow(1.0-dot(-raydir, normal), 5.0);\n}\n\n// Get the Material Properties of an Object\nvoid getmat(in uint objectid, in vec3 raypos, out vec3 albedo, out vec3 spec, inout vec3 norm, out float rough){\n    if(objectid == 1U){\n        albedo = vec3(0.5);\n        spec = vec3(0.6);\n        rough  = (fbm(raypos.xz*0.025)/10.0)+0.125;\n        return;\n    }\n\n    if(objectid == 2U){\n        albedo = vec3(0.8, 0.4, 0.2);\n        spec = vec3(0.6);\n        rough  = (fbm(normalize(raypos-vec3(0.0, 0.5, 0.0))*0.125)*0.5)+0.125;\n        return;\n    }\n\n    // NULL Object\n    albedo = vec3(0.0);\n    spec = vec3(0.0);\n    rough  = 0.0;\n    return;\n}\n\n// ##### RENDERING #####\n// Sky\nvec3 skycol(vec3 raydir){\n    vec3 outCol;\n\n    // Light Source\n    if(length(raydir-normalize(lightdir)) < 0.25){\n        outCol = vec3(10.0);\n        return outCol;\n    }\n\n    // Background Gradient\n    outCol = vec3(dot(raydir+vec3(0.0), vec3(0.0, 1.0, 0.0)));\n    return outCol;\n}\n\n// Ray-Tracing\nvec4 raytrace(vec3 raydir, vec3 rayori){\n    vec3 raypos = rayori, outCol = vec3(1.0), albedo, spec, norm;\n    float depth, rough;\n    uint objectid;\n    for(uint i = 0U; i < maxbounces; i++){\n        float intersection = intersect(raydir, raypos, norm, objectid);\n        if(i == 0U){\n            depth = intersection;\n        }\n        if(intersection <= 0.0){break;}\n        raypos += raydir*intersection;\n        raypos += norm*stepthreshold;\n        getmat(objectid, raypos, albedo, spec, norm, rough);\n        outCol *= albedo*fresnel(raydir, norm, spec);\n        raydir = reflect(raydir, normalize(nrand3(rough, norm)));\n    }\n\n    // Return the Color of the Sky\n    return vec4(outCol*skycol(raydir), depth);\n}\n\n// ##### OUTPUT IMAGE #####\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n    vec4 backbuffer = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    INIT_RNG;\n    vec4 color = vec4(0.0);\n    for(uint i = 0U; i < SPP; i++){\n        // Normalized Screen UV Coordinates Centered on (0.0, 0.0)\n        vec2 uv = 2.0*(nrand2(0.5, fragCoord)-0.5*iResolution.xy)/max(iResolution.x, iResolution.y);\n\n        // Calculate the Ray Direction\n        vec2 mouse = vec2(iTime*pi*0.125, 0.0);\n        #ifdef mousesensitivity\n        if(iMouse.z > 0.0){mouse = mousesensitivity*(iMouse.xy-0.5*iResolution.xy)/max(iResolution.x, iResolution.y);}\n        #endif\n        mat3 rotmatrix = rotmat(vec3(0.0, mouse.x, 0.0));\n        vec3 raydir = normalize(camfov*(uv.x*rotmatrix[0]+uv.y*rotmatrix[1])+rotmatrix[2]);\n\n        // Render the Image\n        color += raytrace(raydir, vec3(-sin(mouse.x)*2.0, (sin(iTime*pi)/8.0)+0.5, -cos(mouse.x)*2.0));\n    }\n\n    color /= float(SPP);\n\n    // HDR to SDR Tonemapping\n    color = vec4(pow(color.rgb/(1.0+color.rgb), vec3(1.0/2.2)), color.w);\n\n    // Temporal Anti-Aliasing (TAA)\n    // See the first parameter in the list at the top of this shader for an explanation\n    #ifdef TAA\n    if(color.w > 0.0 || iFrame != 0){\n        color = vec4(mix(color.rgb, backbuffer.rgb, 1.0-clamp(abs(color.w-backbuffer.w)+0.125, 0.0, 1.0)), color.w);\n    }\n    #endif\n\n    // Output to Screen\n    fragColor = vec4(max(color.rgb, 0.0), color.w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

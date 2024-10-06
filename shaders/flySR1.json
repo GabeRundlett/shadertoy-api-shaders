@@ -1,0 +1,93 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1640137658",
+            "description": "voxel DDA plus raymarching for individual cells",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "flySR1",
+            "likes": 11,
+            "name": "Voxel City Raymarched",
+            "published": 3,
+            "tags": [
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 376
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.141593\n#define MAX_VOXELS 400\n#define MAX_HEIGHT 100.\n#define MAXSTEP 200\n#define MAX_SHADOW_VOXELS 100\n#define TOL 0.001\n#define NORMTOL 0.001\n#define FDIST 0.5\n\n#define PERIOD 11.\n#define BUILDINGRAD 4.\n#define RIM_SIZE .1\n#define SPEED 5.\n\nstruct Hit {\n    float t;\n    int mat;\n    vec3 n;\n    vec3 id;\n};\n    \nfloat noise2d(in vec2 uv) {\n    return fract(814.*sin(uv.x*15829.+uv.y*874.));\n}\n\nfloat smoothnoise( in vec2 p )\n{\n    vec2 i = floor( p );\n    vec2 f = fract( p );\n\t\n\tvec2 u = f*f*(3.0-2.0*f);\n\n    return mix( mix( noise2d( i + vec2(0.0,0.0) ), \n                     noise2d( i + vec2(1.0,0.0) ), u.x),\n                mix( noise2d( i + vec2(0.0,1.0) ), \n                     noise2d( i + vec2(1.0,1.0) ), u.x), u.y);\n}\n\nvec2 condmin(in vec2 d1, in vec2 d2) {\n    return vec2(min(d1.x, d2.x), mix(d1.y, d2.y, step(d2.x, d1.x)));\n}\n\nfloat occupancy(in vec3 id, out int mat) {\n    vec2 block = floor(id.xy/PERIOD+0.5);\n    vec3 modid = vec3(mod(id.xy+0.5*PERIOD, PERIOD)-0.5*PERIOD, id.z);\n    float randval1 = noise2d(block);\n    float randval2 = noise2d(vec2(block.y, randval1));\n    \n    vec2 mindist = vec2(max(modid.z-(500. * max(0.,randval1 - 0.1)), PERIOD*0.5 - length(modid.xy)), 3.); //base\n    vec2 buildings = vec2(max(length(modid.xy)-BUILDINGRAD, -30.+modid.z-100.*randval2), 2.);\n    buildings.x = max(buildings.x, -length(vec2(mix(modid.x, modid.y, mod(floor(modid.z/4.), 2.0)), mod(modid.z, 4.)-2.)) + 2.);\n    mindist = condmin(mindist, buildings);\n    vec2 ground = vec2(modid.z + smoothnoise(id.xy/4.), 1.0);\n    mindist = mix(mindist, ground, step(0.2, randval1));\n    float occ = step(mindist.x, 0.5);\n    mat = int(occ * round(mindist.y));\n    return occ;\n}\n\nfloat map(in vec3 ro, float blend) {\n    vec3 roabs = abs(0.5-ro);\n    vec3 diffs = .5 - RIM_SIZE - roabs;\n    float scaffdist = max(min(diffs.x, diffs.y), max(min(diffs.y, diffs.z), min(diffs.z, diffs.x)));\n    //float blockdist = length(0.5-ro)-0.73;\n    if (roabs.x < roabs.y) roabs.xy = roabs.yx;\n    vec2 ro2 = abs(roabs.xy - vec2(0.5, 0));\n    vec2 diffs2 = .2 - ro2;\n    float blockdist = min(diffs2.x, diffs2.y);\n    //blockdist = max(blockdist, -length(roabs - vec3(0.8, 0.,0.))+0.55);\n    return mix(blockdist, scaffdist, blend);\n}\n\nvec3 getnormal(vec3 ro, float blend) {\n    vec2 d = vec2(NORMTOL, 0.0);\n    return normalize(vec3(\n        map(ro+d.xyy, blend)-map(ro-d.xyy, blend),\n        map(ro+d.yxy, blend)-map(ro-d.yxy, blend),\n        map(ro+d.yyx, blend)-map(ro-d.yyx, blend)));\n}\n\nHit voxtrace(in vec3 ro, in vec3 rd) {\n    Hit h;\n    h.mat = 0;\n    h.t = 0.;\n    // box marching with fb39ca4's DDA\n    h.id = floor(ro);        \n    vec3 ri = 1.0/rd;\n    vec3 rs = sign(rd);\n    vec3 dis = (h.id-ro + 0.5 + rs*0.5) * ri;\n    vec3 mm = vec3(0.0);\n    //int j=0;\n    for (int i=0; i<MAXSTEP; i++) {\n        mm = step(dis.xyz, dis.yzx) * step(dis.xyz, dis.zxy);\n\t\tdis += mm * rs * ri;\n        h.id += mm * rs;\n        if (h.id.z > MAX_HEIGHT) {\n            return h;\n        }\n        if (occupancy(h.id, h.mat) > 0.5) {\n            h.n = -mm*rs;\n\t\n            vec3 mini = (h.id-ro + 0.5 - 0.5*vec3(rs))*ri;\n            float t_enter = max ( mini.x, max ( mini.y, mini.z ) );\n            vec3 maxi = (h.id-ro + 0.5 + 0.5*vec3(rs))*ri;\n            float t_exit = min ( maxi.x, min ( maxi.y, maxi.z ) );\n            \n            float dt = t_exit - t_enter;\n            \n            float matblend = float(h.mat - 2);\n            \n            \n            //raymarch\n            if (h.mat != 1) {\n                float t = 0.0;\n                vec3 eye = ro + rd * t_enter - h.id;\n                while (i < MAXSTEP) {\n                    ++i;\n                    vec3 modpos2 = eye + rd*t;\n\n                    float height = map(modpos2, matblend);\n                    t += height;\n                    if (abs(height) < TOL) {\n                        h.t = t_enter + t;\n                        h.n = getnormal(eye + rd * t, matblend);\n                        return h;\n                    } else if (t < 0.0) {\n                        h.t = t_enter;\n                        return h;\n                    } else if (t > dt) {\n                        h.t = t_exit;\n                        break;\n                    }\n                }\n                h.t = t_exit;\n            } else {\n                h.t = t_enter;\n                return h;\n            }\n    \t}\n    }\n    \n    \n\t     \n    return h;\n}\n\nvec2 shadowtrace(in vec3 ro, in vec3 rd) {\n    float t = 0.;\n    vec3 id = floor(ro);\n    vec3 ri = 1.0/rd;\n    vec3 rs = sign(rd);\n    vec3 dis = (id-ro + 0.5 + rs*0.5) * ri;\n    vec3 mm = vec3(0.0);\n    //int j=0;\n    for (int i=0; i<MAX_SHADOW_VOXELS; i++) {\n        mm = step(dis.xyz, dis.yzx) * step(dis.xyz, dis.zxy);\n\t\tdis += mm * rs * ri;\n        id += mm * rs;\n        int mat;\n        if (id.z > MAX_HEIGHT) {\n            return vec2(1., i);\n        }\n        if (occupancy(id, mat) > 0.5) {\n            if (mat != 3)\n            return vec2(0., i);\n    \t}\n    }\n    return vec2(1., MAX_SHADOW_VOXELS);\n}\n\nvec3 sampleTriplanar(in vec3 dir2, in vec3 pos, in sampler2D tex) {\n    return dir2.x * texture(tex, pos.yz).xyz + dir2.y * texture(tex, pos.zx).xyz + dir2.z * texture(tex, pos.xy).xyz;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float mouseY = iMouse.y < 1. ? 0. : (0.5-iMouse.y/iResolution.y) * PI;\n    float mouseX = iMouse.x < 1. ? iTime*0.25 : -(iMouse.x/iResolution.x) * 2. * PI;\n    vec2 uv = (fragCoord - 0.5*iResolution.xy)/iResolution.x;\n\tvec3 eye = vec3(PERIOD*0.5, iTime * SPEED, 6.4);\n    vec3 w = vec3(cos(mouseX) * cos(mouseY), sin(mouseX) * cos(mouseY), -sin(mouseY)+.00001);\n    vec3 u = normalize(cross(w, vec3(0., 0., 1.)));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(FDIST*w + uv.x*u + uv.y*v);\n    \n    Hit h = voxtrace(eye, rd);\n    vec3 pos = eye + h.t * rd;\n    vec3 LIGHTDIR = normalize(vec3(1., -2., 1.5));\n    vec2 shadowfac = shadowtrace(pos, LIGHTDIR);\n    float attenuation_fac = shadowfac.y/float(MAX_SHADOW_VOXELS) * .5;\n    float shadowfac_attenuated = mix(shadowfac.x, 1., (attenuation_fac));\n    \n    float lightfac = max(0., dot(h.n, LIGHTDIR));\n    //dummy visualization\n    \n    vec3 n2 = h.n * h.n;\n    //vec3 col = ((h.n * (float(h.mat)/4.))*.5 +.5);\n    vec3 skycol = texture(iChannel3, rd.yzx).xyz * vec3(0.6, 0.8, 0.9);\n    vec3 texpos = pos / 2.;\n    vec3 col = mix(sampleTriplanar(n2, texpos, iChannel0), mix(sampleTriplanar(n2, texpos, iChannel1), sampleTriplanar(n2, texpos, iChannel2), clamp(float(h.mat-2), 0., 1.)), clamp(float(h.mat-1), 0., 1.));\n    col = mix(skycol, col * (mix(lightfac * shadowfac_attenuated, 1., 0.1)), min(1., float(h.mat)));\n    col = mix(col, vec3(1.8, 0.5, 0.6), sqrt(clamp(-pos.z/50., 0., 1.)));\n    \n    fragColor = vec4(pow(col, vec3(0.75)), 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

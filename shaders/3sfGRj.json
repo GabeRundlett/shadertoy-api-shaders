@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1546804517",
+            "description": "Simple method for Voronoi cell boundaries - keep 3 closest points and check bisector between first and third as well as first and second. Also allow cell point to travel outside cell boundary (we check 16 cells around nearest grid point).",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "3sfGRj",
+            "likes": 8,
+            "name": "Voronoi Cell Boundaries",
+            "published": 3,
+            "tags": [
+                "2d",
+                "voronoi",
+                "lines"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 618
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Created 2019 by Matthew Arcus\n//\n// Simple 2D Voronoi. Examine the 16 cells nearest to the nearest grid point.\n// This allows us to let the cell point range outside the cell, up to 1.0\n// in each direction from the centre (we should keep it to about 0.75 to\n// avoid glitches, but with 1.0 we only get occasional misalignments).\n//\n// For drawing the lines, taking the minimum distance to the boundary lines\n// of the two closest points seems to avoid most of the more serious glitches\n// (see iq's various Voronoi shaders for the proper way to do this).\n//\n// Mouse-x: zoom\n// Mouse-y: line width\n// 'g': show grid\n// 'v': show voronoi cells\n// 'p': show cell points\n// 'x': only check nearest point for line\n//\n////////////////////////////////////////////////////////////////////////////////\n\n// Wang Hash, used to seed RNG\nuint ihash(uint a) {\n  a = (a ^ 61U) ^ (a >> 16);\n  a *= 9U;\n  a = a ^ (a >> 4);\n  a = a * 0x27d4eb2dU;\n  a = a ^ (a >> 15);\n  return a;\n}\n\n// Note that we convert from float to integer to unsigned\nuint ihash(ivec2 p) {\n  uint i = uint(p.x), j = uint(p.y);\n  return ihash((i << 16) ^ j);\n}\n\nuint xorshift(uint value) {\n  // Xorshift*32\n  // Based on George Marsaglia's work: http://www.jstatsoft.org/v08/i14/paper\n  value ^= value << 13;\n  value ^= value >> 17;\n  value ^= value << 5;\n  return value;\n}\n\nuint seed = 1U;\nuint rng() {\n  //seed = lcg(seed);\n  seed = xorshift(seed);\n  return seed;\n}\n\n// Uniform random float in [0,1)\nfloat rand() {\n  return float(rng())/pow(2.0,32.0);\n}\n\nconst int CHAR_G = 71;\nconst int CHAR_H = 72;\nconst int CHAR_P = 80;\nconst int CHAR_V = 86;\nconst int CHAR_X = 88;\n\nbool keypress(int code) {\n  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;\n}\n\n// Smooth HSV to RGB conversion \n// Function by iq, from https://www.shadertoy.com/view/MsS3Wc\nvec3 hsv2rgb(float h, float s, float v) {\n  vec3 rgb = clamp( abs(mod(h*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n  rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing       \n  return v * mix( vec3(1.0), rgb, s);\n}\n\nvec2 perp(vec2 r) {\n  return vec2(-r.y,r.x);\n}\n\nfloat segment(vec2 p, vec2 a, vec2 b) {\n  vec2 pa = p - a;\n  vec2 ba = b - a;\n  float h = dot(pa, ba) / dot(ba, ba);\n  //h = clamp(h, 0.0, 1.0);\n  float d = length(pa-ba*h);\n  return d;\n}\n\nfloat bisectordistance(vec2 pos, vec2 a, vec2 b) {\n  vec2 centre = 0.5*(a+b);\n  vec2 r = perp(a-centre);\n  return segment(pos,centre-r,centre+r);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  float scale = 1.0;\n  float gridsize = 4.0; // Cells per unit distance\n  float lwidth = 0.05;\n  float speed = 0.5;\n  \n  if (iMouse.x != 0.0) {\n    scale *= 2.0*iMouse.x/iResolution.x;\n    lwidth *= 2.0*iMouse.y/iResolution.y;\n  }\n  vec2 pos  = (2.0*fragCoord - iResolution.xy)/ iResolution.y;\n  pos *= scale;\n  pos *= gridsize;\n  vec2 grid = round(pos); // Nearest grid point\n  // vec4(p.x,p.y,distance,color);\n  vec4 minpoint[3] = vec4[](vec4(1e8),vec4(1e8),vec4(1e8));   // Keep 3 closest points in here.\n  // And iterate through 16 cells around the grid point.\n  for (float i = -2.0; i <= 1.0; i++) {\n    for (float j = -2.0; j <= 1.0; j++) {\n      vec2 cell = grid + vec2(i,j);\n      seed = ihash(ivec2(cell)); // Seed RNG for this cell\n      vec2 p = vec2(rand(),rand());\n      vec2 offset = p*(speed*iTime);\n      float K = 4.0;\n      offset = mod(offset,K);\n      offset = min(offset,K-offset);\n      offset -= 0.25*K;\n      vec2 cellpoint = cell+vec2(0.5)+offset;\n      float d = distance(cellpoint,pos);\n      vec4 celldata = vec4(cellpoint,d,rand());\n      // Insertion sort for 3 closest points\n      if (d < minpoint[2].z) {\n\tif (d >= minpoint[1].z) {\n\t  minpoint[2] = celldata;\n\t} else {\n\t  minpoint[2] = minpoint[1];\n\t  if (d >= minpoint[0].z) {\n\t    minpoint[1] = celldata;\n\t  } else {\n\t    minpoint[1] = minpoint[0];\n\t    minpoint[0] = celldata;\n\t  }\n\t}\n      }\n    }\n  }\n  vec3 basecolor = vec3(0.8);\n  if (!keypress(CHAR_V)) {\n    float d = 1e8;\n    d = min(d,bisectordistance(pos,minpoint[0].xy,minpoint[1].xy));\n    if (!keypress(CHAR_X)) d = min(d,bisectordistance(pos,minpoint[0].xy,minpoint[2].xy));\n    basecolor = hsv2rgb(minpoint[0].w,1.0,1.0);\n    basecolor = mix(vec3(0.2),basecolor,smoothstep(lwidth,1.25*lwidth,d));\n  }\n  \n  if (keypress(CHAR_G)) {\n    // Draw grid\n    vec2 gridpos = pos-floor(pos); // Distance to cell wall\n    gridpos = min(gridpos,1.0-gridpos);\n    basecolor = mix(vec3(0.5),basecolor,\n                    smoothstep(0.02,0.025,min(gridpos.x,gridpos.y)));\n  }\n  if (!keypress(CHAR_P)) {\n    basecolor = mix(vec3(0),basecolor,\n                    smoothstep(1.25*lwidth,1.5*lwidth,distance(pos,minpoint[0].xy)));\n  }\n  fragColor = vec4(basecolor,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

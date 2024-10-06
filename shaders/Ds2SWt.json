@@ -1,0 +1,82 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1674932880",
+            "description": "Log-polar fractal noise with analytic normals.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Ds2SWt",
+            "likes": 24,
+            "name": "Log-Polar Fractal Noise",
+            "published": 3,
+            "tags": [
+                "noise",
+                "fbm",
+                "zoom",
+                "logpolar"
+            ],
+            "usePreview": 0,
+            "username": "amhall",
+            "viewed": 297
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\n    Log-Polar Fractal Noise\n    Created by Anthony Hall, 2023\n\n    Infinitely descendable procedural fractal noise! I once saw an animation\n    with something like this but haven't been able to find it since.\n\n    The obstacle with any log-polar transform is the theta discontinuity. The\n    solution is to ensure that when your un-transformed theta coordinate shifts\n    by 2pi, you should see the exact same thing.\n\n    In addition to adding several rotated and scaled layers as in traditional\n    fractal noise, each layer has that constraint: moving 2pi units in the\n    un-rotated, un-scaled space lands you at the same part of the same noise\n    texel. So the scale and rotation of each layer are rounded such that in the\n    transformed space, a radial traversal's x and y components are integers,\n    and the domain's x and y are looped to those sizes.\n\n    Since every layer now needs its own rotation matrices, it's certainly\n    pricier than traditional fractal noise. It looks nice though!\n\n    A note on the analytic normals: They are only correct with a constant number\n    of layers. For anti-aliasing, the number of layers is proportional to the\n    log of the radius (the last layer is scaled by the decimal part). The exact\n    normals with this fade have hard edges between the start of each layer\n    because of the product rule. Changing the level fade to smooth the normals,\n    then computing that analytically, doesn't seem worth it. The last layer's\n    normals are scaled like the amplitude, without applying the product rule,\n    and still look good.\n\n*/\n\n// View a cross section of the noise. In the top-down view, it's kind of hard\n// to see what's really going on.\n// #define CROSSSECTION\n\n// Stay on one visualization method\n// 0 - colored and shaded, 1 - normalized height, 2 - normals\n// #define VIEW 0\n\n// Continually shift all the noise texel values (looks cool)\n// #define SHIFT\n\n// Generate a new seed on reset\n#define RESEED\n\n// Compare analytic vs numerical normals\n// #define DEBUGNORMALS\n\n\nconst float pi = radians(180.0);\nconst float tau = radians(360.0);\n\n// Globals calculated in mainImage()\nfloat shiftAmount;\nfloat seed;\n\n\nmat2 rotate(float theta)\n{\n  vec2 cs = vec2(cos(theta), sin(theta));\n  return mat2(cos(theta), sin(theta), -sin(theta), cos(theta));\n}\n\n// Slightly modified hash from Dave Hoskins\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p, vec2 domainSize)\n{\n    // Tl;dr large inputs behave better when negated.\n    // Long version: The core of this all is that offsetting by domainSize\n    // needs to generate the same value. When this doesn't happen, there's\n    // visible discontinuity on the negative x axis. Normally, this starts to\n    // happen around time = 1620, but when negating the input, it never happened\n    // when I checked up to time = 10000.\n    p = -p;\n    \n    p = mod(p, domainSize);\n    \n    #ifdef RESEED\n        p.x += seed;\n    #endif\n    \n    vec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    float result = fract((p3.x + p3.y) * p3.z);\n\n    #ifdef SHIFT\n        return 0.5 - 0.5 * cos((result + shiftAmount) * tau);\n    #endif\n\n    return result;\n}\n\n// Interpolation function for noise\nvec2 interpolate(vec2 t)\n{\n    return t * t * (3.0 - 2.0 * t);\n}\n\n// Derivative of interpolation function\nvec2 dInterpolate(vec2 t)\n{\n    return 6.0 * (t - t * t);\n}\n\n// Gets the interpolated value and gradient of a single noise layer\nvec3 sampleNoise(vec2 point, vec2 domainSize)\n{\n    vec4 coords = vec4(floor(point), ceil(point));\n\n    float valTopLeft = hash12(coords.xw, domainSize);\n    float valTopRight = hash12(coords.zw, domainSize);\n    float valBottomLeft = hash12(coords.xy, domainSize);\n    float valBottomRight = hash12(coords.zy, domainSize);\n    \n    vec2 interp = interpolate(fract(point));\n    vec2 dInterp = dInterpolate(fract(point));\n\n    float top = mix(valTopLeft, valTopRight, interp.x);\n    float bottom = mix(valBottomLeft, valBottomRight, interp.x);\n    float left = mix(valBottomLeft, valTopLeft, interp.y);\n    float right = mix(valBottomRight, valTopRight, interp.y);\n\n    float height = mix(bottom, top, interp.y);\n    float dhdx = (right - left) * dInterp.x;\n    float dhdy = (top - bottom) * dInterp.y;\n    return vec3(height, dhdx, dhdy);\n}\n\n// Returns normalized height (not scaled), actual height (scaled with radius),\n// and gradient (xy partial derivaives)\nvec4 logPolarNoise(vec2 point)\n{\n    // Ideal deltas per layer. The true size and angle are rounded per layer\n    const float layerSizeScale = 2.0;\n    const float layerHeightScale = 0.5;\n    const float layerRotation = sqrt(0.5);\n\n    float r = length(point);\n    float logR = log(r);\n    float theta = atan(point.y, point.x);\n\n    #ifndef CROSSSECTION\n        vec2 zoom = vec2(0.01, 0.02) * iTime;\n        zoom.x = fract(zoom.x);\n    #else\n        vec2 zoom = vec2(0.0, 0.075 * iTime);\n    #endif\n    \n    vec2 logPolar = vec2(theta, logR) / tau - zoom;\n\n    float currentLayerSize = 13.0;\n    float currentLayerTheta = 0.0;\n    float currentLayerHeight = 1.0;\n    \n    float height = 0.0;\n    float maxHeight = 0.0;\n    vec2 gradient = vec2(0.0);\n \n    float layers = max(6.5 + logR / log(layerSizeScale), 1.0);\n    for (float i = 0.0; i < layers; i += 1.0)\n    {\n        // Calculate the rounded domain size based on the ideal scale and angle\n        vec2 domainSize = currentLayerSize \n            * vec2(cos(currentLayerTheta), sin(currentLayerTheta));\n        domainSize = floor(domainSize + 0.5);\n        float actualLayerSize = length(domainSize);\n        float actualLayerTheta = atan(domainSize.y, domainSize.x);\n        \n        // The offset is to prevent a visible \"lump\" where every layer's\n        // origins coincide\n        vec2 layerPoint = actualLayerSize\n          * rotate(actualLayerTheta) * logPolar + vec2(10.0, 0.0);\n        \n        // Fade in the fractional part of the last layer\n        float actualLayerHeight = currentLayerHeight * min(layers - i, 1.0);\n        maxHeight += actualLayerHeight;\n\n        // If a domain size evaluates to 0, it never has to repeat, so pretend\n        // by making it repeat infrequently\n        domainSize = abs(domainSize);\n        domainSize += 1e4 * step(domainSize, vec2(0.5));\n        \n        vec3 data = sampleNoise(layerPoint, domainSize);\n        height += actualLayerHeight * data.x;\n        gradient += actualLayerHeight * rotate(-actualLayerTheta - theta)\n          * data.yz * actualLayerSize;\n\n        currentLayerSize *= layerSizeScale;\n        currentLayerHeight *= layerHeightScale;\n        currentLayerTheta += layerRotation;\n    }\n    height /= maxHeight;\n    gradient = gradient.yx / tau / maxHeight;\n    \n    // Apply the product rule to the gradient. Note that the log-polar\n    // transform already scaled the domain by 1/r and the height by r\n    vec2 rGradient = point / r;\n    return vec4(height, height * r, rGradient * height + gradient);\n}\n\nvec3 visualizeData(vec4 data, int index)\n{\n    vec3 normal = normalize(vec3(-data.zw, 1.0));\n    \n    // Visualize height and shading with a moving light\n    if (index == 0)\n    {\n        float lightT = -1.59 * iTime;\n        vec3 toLight = normalize(vec3(cos(lightT), sin(lightT), 4.0));\n        return max(dot(normal, toLight), 0.0) * pow(vec3(data.x), vec3(4.0, 1.75, 1.0));\n        \n    }\n    // Raw noise (Not scaled with radius)\n    else if (index == 1)\n    {\n        return vec3(data.x);\n    }\n    // Surface normals\n    else\n    {\n        return 0.5 + 0.5 * normal;\n    }\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    #ifdef RESEED\n    \n        seed = texelFetch(iChannel0, ivec2(0), 0).x;\n    \n    #endif\n\n    #ifdef SHIFT\n    \n        if (iMouse.z > 0.0)\n        {\n            shiftAmount = iMouse.x / iResolution.x;\n        }\n        else\n        {\n            shiftAmount = 0.175 * iTime;\n        }\n    \n    #endif\n    \n    #ifndef DEBUGNORMALS\n    \n        #ifndef CROSSSECTION\n\n            // uv is not resolution-invariant to perserve fine detail in fullscreen\n            vec2 uv = (2.0 * fragCoord - iResolution.xy) / 450.0;\n            vec4 data = logPolarNoise(uv);\n\n            #ifndef VIEW\n\n                float view = iTime / 6.0;\n                int currentIndex = int(view) % 3;\n                int nextIndex = (currentIndex + 1) % 3;\n\n                float transitionLine = 0.5 * (fragCoord.x / iResolution.x + fragCoord.y / iResolution.y);\n                transitionLine -= 4.0 * (1.0 - fract(view));\n                float transition = smoothstep(-0.6, 0.0, transitionLine);\n\n                vec3 color = mix(\n                    visualizeData(data, currentIndex),\n                    visualizeData(data, nextIndex),\n                    transition);\n\n            #else\n\n                vec3 color = visualizeData(data, VIEW);\n\n            #endif\n\n        #else\n\n            // It would be way more efficient to just use a buffer but this is\n            // more for debug purposes anyway\n            float x = (2.0 * fragCoord.x - iResolution.x) / 800.0;\n            float y = fragCoord.y / 450.0;\n            vec4 data = logPolarNoise(vec2(x, 0.0));\n            \n            float yNorm = fragCoord.y / iResolution.y;\n            vec3 ground = mix(vec3(0.5, 0.25, 0), vec3(0), yNorm);\n            vec3 sky = pow(vec3(1.0 - yNorm), vec3(6.0, 2.0, 1.0));\n            vec3 color = mix(ground, sky, step(0.1 + data.y, y));\n\n        #endif\n    \n    #else\n    \n        // 10% pixel size epsilon\n        const vec2 eps = vec2(0.0, 0.2 / 450.0);\n        \n        vec2 uv = (2.0 * fragCoord - iResolution.xy) / 450.0;\n        vec4 data = logPolarNoise(uv);\n        \n        // A lot of the visible differences are because the numerical normal\n        // isn't symmetrically sampled. Taking 5 samples is not worth it, and\n        // making epsilon smaller makes fperror noticeable. Hopefully you're\n        // convinced the analytic normals are exact with constant layer count\n        vec3 analyticNormal = normalize(vec3(-data.zw, 1.0));\n        vec3 numericalNormal = normalize(vec3(\n            data.y - logPolarNoise(uv + eps.yx).y,\n            data.y - logPolarNoise(uv + eps.xy).y,\n            eps.y));\n       \n        // Display numerical or anayltic normal based on mouse X\n        // Display normal or difference between normals based on mouse Y\n        vec2 transition = (fragCoord.xy - iMouse.xy) / iResolution.xy;\n       \n        vec3 color = 0.5 + 0.5\n            * mix(numericalNormal, analyticNormal, step(0.0, transition.x));\n        color = mix(color, vec3(1.0), smoothstep(0.003, 0.0, abs(transition.x)));\n       \n        color = mix(0.5 + (analyticNormal - numericalNormal),\n            color, step(0.0, transition.y));\n        color = mix(color, vec3(1.0), smoothstep(0.003, 0.0, abs(transition.y)));\n    \n    #endif\n\n    fragColor = vec4(color, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Random seed on reset\n\n// Dave Hoskins\n// https://www.shadertoy.com/view/4djSRW\nfloat hash14(vec4 p4)\n{\n\tp4 = fract(p4  * vec4(.1031, .1030, .0973, .1099));\n    p4 += dot(p4, p4.wzxy+33.33);\n    return fract((p4.x + p4.y) * (p4.z + p4.w));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.0);\n    if (fragCoord == vec2(0.5))\n    {\n        if (iFrame == 0)\n        {\n            fragColor.x = hash14(iDate);\n        }\n        else\n        {\n            fragColor.x = texelFetch(iChannel0, ivec2(0), 0).x;\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

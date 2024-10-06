@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1706297603",
+            "description": "Pretty typical tunnel marcher with some claustrophobic themes",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Mf2XD1",
+            "likes": 14,
+            "name": "Between ",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "tunnel",
+                "path"
+            ],
+            "usePreview": 0,
+            "username": "liamegan",
+            "viewed": 210
+        },
+        "renderpass": [
+            {
+                "code": "\n  /* Shading constants */\n  /* --------------------- */\n  const vec3 LC = vec3(.85,0.80,0.70);    // light colour\n  const vec3 HC1 = vec3(.5, .1, .0);      // hemisphere light colour 1\n  const vec3 HC2 = vec3(0.1,.1,.6);    // hemisphere light colour 2\n  const vec3 HLD = vec3(0,1,0)*.5+.5;     // hemisphere light direction\n  const vec3 BC = vec3(0.25,0.25,.5);   // back light colour\n  const vec3 FC = vec3(.30,1.20,1.00);   // fresnel colour\n  const float AS = .5;                     // ambient light strength\n  const float DS = 1.;                     // diffuse light strength\n  const float BS = .3;                     // back light strength\n  const float FS = .3;                     // fresnel strength\n  /* Raymarching constants */\n  /* --------------------- */\n  const float MAX_TRACE_DISTANCE = 10.;             // max trace distance\n  const float INTERSECTION_PRECISION = 0.001;       // precision of the intersection\n  const int NUM_OF_TRACE_STEPS = 256;               // max number of trace steps\n  const float STEP_MULTIPLIER = .8;                 // the step mutliplier - ie, how much further to progress on each step\n  \n  /* Structures */\n  /* ---------- */\n  struct Camera {\n    vec3 ro;\n    vec3 rd;\n    vec3 forward;\n    vec3 right;\n    vec3 up;\n    float FOV;\n  };\n  struct Surface {\n    float len;\n    vec3 position;\n    vec3 colour;\n    float id;\n    float steps;\n    float AO;\n  };\n  struct Model {\n    float dist;\n    vec3 colour;\n    float id;\n  };\n  \n  /* RNG */\n  /* ---------- */\n  float hash11(float p) {\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n  }\n  \n  /* Utilities */\n  /* ---------- */\n  vec2 toScreenspace(in vec2 p) {\n    vec2 uv = (p - 0.5 * iResolution.xy) / min(iResolution.y, iResolution.x);\n    return uv;\n  }\n  mat2 R(float a) {\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, -s, s, c);\n  }\n  Camera getCamera(in vec2 uv, in vec3 pos, in vec3 target) {\n    vec3 f = normalize(target - pos);\n    vec3 r = normalize(vec3(f.z, 0., -f.x));\n    vec3 u = normalize(cross(f, r));\n    \n    float FOV = 3. + smoothstep(.1, 1.5, length(uv))*2.;\n    \n    return Camera(\n      pos,\n      normalize(f + FOV * uv.x * r + FOV * uv.y * u),\n      f,\n      r,\n      u,\n      FOV\n    );\n  }\n  vec3 path(in float delta) {\n    return vec3(\n      cos(delta*.2) * 4.2 + sin((delta) * .3) * .5*cos(delta * .05),\n      sin(delta * .04) * 10.4+cos(delta * .04) * 5.4,\n      delta);\n  }\n  float smin(float a, float b, float k) {\n    float h = clamp(0.5 + 0.5*(a-b)/k, 0.0, 1.0);\n    return mix(a, b, h) - k*h*(1.0-h);\n  }\n  /*\n   * Biplanar mapping curtesy IQ\n   * https://www.shadertoy.com/view/ws3Bzf\n   */\n  vec4 biplanar( sampler2D sam, in vec3 p, in vec3 n, in float k ) {\n    // grab coord derivatives for texturing\n    vec3 dpdx = dFdx(p);\n    vec3 dpdy = dFdy(p);\n    n = abs(n);\n\n    // major axis (in x; yz are following axis)\n    ivec3 ma = (n.x>n.y && n.x>n.z) ? ivec3(0,1,2) :\n               (n.y>n.z)            ? ivec3(1,2,0) :\n                                      ivec3(2,0,1) ;\n    // minor axis (in x; yz are following axis)\n    ivec3 mi = (n.x<n.y && n.x<n.z) ? ivec3(0,1,2) :\n               (n.y<n.z)            ? ivec3(1,2,0) :\n                                      ivec3(2,0,1) ;\n        \n    // median axis (in x;  yz are following axis)\n    ivec3 me = ivec3(3) - mi - ma;\n    \n    // project+fetch\n    vec4 x = textureGrad( sam, vec2(   p[ma.y],   p[ma.z]), \n                               vec2(dpdx[ma.y],dpdx[ma.z]), \n                               vec2(dpdy[ma.y],dpdy[ma.z]) );\n    vec4 y = textureGrad( sam, vec2(   p[me.y],   p[me.z]), \n                               vec2(dpdx[me.y],dpdx[me.z]),\n                               vec2(dpdy[me.y],dpdy[me.z]) );\n    \n    // blend and return\n    vec2 m = vec2(n[ma.x],n[me.x]);\n    // optional - add local support (prevents discontinuty)\n    m = clamp( (m-0.5773)/(1.0-0.5773), 0.0, 1.0 );\n    // transition control\n    m = pow( m, vec2(k/8.0) );\n\treturn (x*m.x + y*m.y) / (m.x + m.y);\n}\n\n  \n  \n  //--------------------------------\n  // Modelling\n  //--------------------------------\n  #define SC 1.\n  #define RS .5\n  #define ZS .02\n  float box( in vec2 p, in vec2 b ) {\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n  }\n  Model model(vec3 p) {\n    p.xy -= path(p.z).xy;\n    \n    vec3 q = p;\n    \n    // pass one\n    float id = floor(q.z/SC);\n    q.z = mod(q.z,SC)-SC/2.;\n    float r = hash11(id*256.);\n    q.xy *= R(sin(id*ZS)+r*RS);\n    q.y = abs(q.y)-1.2;\n    float d = box(q.yz, vec2(1., SC/4.-.1));\n    \n    // pass 2\n    q = p+vec3(0,0,SC/2.);\n    id = floor(q.z/SC);\n    q.z = mod(q.z,SC)-SC/2.;\n    q.xy *= R(sin(id*ZS)+hash11(id*1024.)*RS);\n    q.y = abs(q.y)-1.2;\n    d = min(d, box(q.yz, vec2(1., SC/4.-.1)));\n    \n    d = max(d,box(mod(p.xy-.1,.4)-.2,vec2(.185)));\n    \n    vec3 colour = vec3(.8,.3,.6);\n    return Model(d-.01, colour, 1.);\n  }\n  Model map( vec3 p ){\n    return model(p);\n  }\n  \n  /* Modelling utilities */\n  /* ---------- */\n  // Calculates the normal by taking a very small distance,\n  // remapping the function, and getting normal for that\n  vec3 calcNormal( in vec3 pos ){\n    vec3 eps = vec3( 0.001, 0.0, 0.0 );\n    vec3 nor = vec3(\n      map(pos+eps.xyy).dist - map(pos-eps.xyy).dist,\n      map(pos+eps.yxy).dist - map(pos-eps.yxy).dist,\n      map(pos+eps.yyx).dist - map(pos-eps.yyx).dist );\n    return normalize(nor);\n  }\n  \n  //--------------------------------\n  // Raymarcher\n  //--------------------------------\n  Surface march( in Camera cam ){\n    float h = 1e4; // local distance\n    float d = 0.; // ray depth\n    float id = -1.; // surace id\n    float s = 0.; // number of steps\n    float ao = 0.; // march space AO. Simple weighted accumulator\n    vec3 p; // ray position\n    vec3 c; // surface colour\n\n    for( int i=0; i< NUM_OF_TRACE_STEPS ; i++ ) {\n      if( abs(h) < INTERSECTION_PRECISION || d > MAX_TRACE_DISTANCE ) break;\n      p = cam.ro+cam.rd*d;\n      Model m = map( p );\n      h = m.dist;\n      d += h * STEP_MULTIPLIER;\n      id = m.id;\n      s += 1.;\n      ao += max(h, 0.);\n      c = m.colour;\n    }\n\n    if( d >= MAX_TRACE_DISTANCE ) id = -1.0;\n\n    return Surface( d, p, c, id, s, ao );\n  }\n  \n  //--------------------------------\n  // Shading\n  //--------------------------------\n  /*\n   * Soft shadows curtesy of Inigo Quilez\n   * https://iquilezles.org/articles/rmshadows\n  */\n  float softshadow( in vec3 ro, in vec3 rd, in float mint, in float tmax ) {\n    float res = 1.0;\n    float t = mint;\n    for( int i=0; i<16; i++ ) {\n      float h = map( ro + rd*t ).dist;\n      res = min( res, 8.0*h/t );\n      t += clamp( h, 0.02, 0.10 );\n      if( h<0.001 || t>tmax ) break;\n    }\n    return clamp( res, 0.0, 1.0 );\n  }\n  float AO( in vec3 pos, in vec3 nor ) {\n    float occ = 0.0;\n    float sca = 1.0;\n    for( int i=0; i<5; i++ )\n    {\n      float hr = 0.01 + 0.12*float(i)/4.0;\n      vec3 aopos =  nor * hr + pos;\n      float dd = map( aopos ).dist;\n      occ += -(dd-hr)*sca;\n      sca *= 0.95;\n    }\n    return clamp( 1.0 - 3.0*occ, 0.0, 1.0 );    \n  }\n  vec3 shade(vec3 col, vec3 pos, vec3 nor, vec3 ref, Camera cam, Surface sur) {\n    \n    vec3 LP = path(cam.ro.z-.2);\n    vec3 plp = LP - pos; // point light\n    float fo = pow(1./dot(plp, plp), .5);\n    \n    float o = pow(AO( pos, nor ), 2.);                 // Ambient occlusion\n    vec3  l = normalize( plp );                    // light direction\n    \n    float d = clamp( dot( nor, l ), 0.0, 1.0 )*DS;   // diffuse component\n    float b = clamp( dot( nor, normalize(vec3(-l.x,0,-l.z))), 0.0, 1.0 )*clamp( 1.0-pos.y,0.0,1.0)*BS; // back light component\n    float f = pow( clamp(1.0+dot(nor,cam.rd),0.0,1.0), 2.0 )*FS; // fresnel component\n    // float spe = pow(clamp( dot( ref, l ), 0.0, 1.0 ),16.0); // specular component\n    float s = softshadow(pos, normalize(plp), .21, .5);\n\n    vec3 c = vec3(0.0);\n    c += d*LC*s*fo;                           // diffuse light integration\n    c += mix(HC1,HC2,dot(nor, HLD))*AS;        // hemisphere light integration (ambient)\n    c += b*BC*o;       // back light component\n    c += f*FC*o;       // fresnel component\n    \n    return col*c;\n  }\n  vec3 render(Surface surface, Camera cam, vec2 uv) {\n    vec3 colour = vec3(.01,.015,.1);\n    vec3 colourB = vec3(.5, .1, .0);\n    \n    vec2 pp = uv;\n    \n    colour = mix(colour, colourB, cam.rd.y*.5+.5);\n    vec3 bg = colour;\n\n    if (surface.id > -1.){\n      vec3 nor = calcNormal( surface.position );\n      vec3 ref = reflect(cam.rd, nor);\n      vec3 pos = surface.position;\n      \n      float o = texture(iChannel1, pos*16.).r;\n      nor = normalize(nor+vec3(o*.1));\n      \n      vec3 col = biplanar( iChannel0, 3.*pos, nor, 1.0 ).xyz;\n      col *= o;\n      \n      float fog = smoothstep(MAX_TRACE_DISTANCE, 2., surface.len);\n      \n      colour = mix(\n        colour, \n        mix(\n          shade(col, pos, nor, ref, cam, surface),\n          vec3(1./surface.steps),\n          0.), fog);\n    }\n\n    return colour;\n  }\n  \n  void mainImage( out vec4 c, in vec2 f ) {\n    vec2 uv = toScreenspace(f);\n    \n    float t = iTime*.5;\n    vec3 la = path(t+.5);\n    Camera cam = getCamera(uv, path(t), la);\n    \n    vec2 a = sin(vec2(1.5707963, 0) - path(la.z).x/4.); \n    mat2 rM = mat2(a, -a.y, a.x);\n    cam.rd.xy *= rM;\n    \n    Surface surface = march(cam);\n    \n    c = vec4(render(surface, cam, uv), 1.);\n  }",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

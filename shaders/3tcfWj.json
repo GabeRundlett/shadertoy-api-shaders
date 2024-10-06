@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1613417810",
+            "description": "Taking physically based rendering for a spin",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3tcfWj",
+            "likes": 14,
+            "name": "Peebeearray",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "brdf"
+            ],
+            "usePreview": 0,
+            "username": "ruojake",
+            "viewed": 418
+        },
+        "renderpass": [
+            {
+                "code": "// Peebeearray by Kristian Sivonen (ruojake)\n// CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)\n\n// 2021-02-16:\n// - Separated metallic and roughness parameters,\n//   resulting in more diverse materials\n// - Added random offset to noise per sphere\n// - Adjusted color selection\n// - Removed negative light (oops!) and\n//   darkened the bottom of the sky accordingly\n// - Boosted diffuse lighting\n// - Made light shape less awkward\n// - Moved camera back and tightened FOV\n\n// 2021-02-17:\n// - Fixed some enormous goofs re: noise,\n//   now pattern sharpness has variation\n// - Improved noise interpolation\n\n// 2021-02-22:\n// - Squared glare falloff and boosted it a bit\n\n#define sat(x) clamp(x, 0., 1.)\n\nvec3 hash32(vec2 p)\n{\n    vec3 q = vec3(p, fract(p.x * 31.));\n    return fract(sin(q * vec3(11.312, 17.415, 13.651)) * 5131.931);\n}\n\nvec3 hash33(vec3 p)\n{\n    return fract(sin(p * vec3(11.312, 17.415, 13.651) + dot(p, vec3(.523))) * 41251.931) * 2. - 1.;\n}\n\nmat2 rot(float a)\n{\n    float s = sin(a);\n    float c = cos(a);\n    return mat2(c, -s, s, c);\n}\n\nfloat index(vec3 p)\n{\n    p -= vec3(0,0,3);\n    return fract(.621 + 6143.21 * sin(dot(floor(p.xy * .5 + .5), vec2(31.73, 23.46))));\n}\n\nfloat scene(vec3 p)\n{\n    p -= vec3(0,0,3);\n    p.xy = fract(p.xy * .5 + .5) * 2. - 1.;\n    return length(p) - .8;\n}\n\nvec3 normal(vec3 p, float d)\n{\n    const vec2 e = vec2(.001, 0.);\n    return normalize(d - vec3(\n        scene(p - e.xyy),\n        scene(p - e.yxy),\n        scene(p - e.yyx)\n    ));\n}\n\nvec3 color(float v)\n{\n    vec3 res = vec3(1.,0,0);\n    res.xy *= rot(v * 139.);\n    res.yz *= rot(v * 199.);\n    res *= res;\n    float lum = dot(res, vec3(.2126, .7152, .0722));\n    return mix(vec3(lum), res, fract(v * 311.)) * fract(v * 239.);\n}\n\nvec3 sky(vec3 rd, vec3 ld, float k)\n{\n    vec3 col = mix(vec3(.005, .02, .05), vec3(1., .1, .5) * 1.25, rd.y * .5 + .5);\n    float sun = sat(dot(rd, ld));\n    k = max(k, .0001);\n    col += pow(sat((sun - .9992 + k) / k), 5. / k) * (30. - 25. * k * (2. - k)) + sun * sun * vec3(1.,.9,.8) * (.25 + k);\n    return col;\n}\n\nfloat fresnel(float v)\n{\n    return pow(1. - v, 5.);\n}\n\n// https://google.github.io/filament/Filament.md.html#table_texturedfg\nvec3 DFGAppr(vec3 f0, float ndv, float roughness)\n{\n    vec4 c0 = vec4(-1., -.0275, -.572, .022);\n    vec4 c1 = vec4(1., .0425, 1.04, -.04);\n    vec4 r = roughness * c0 + c1;\n    float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;\n    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;\n    return f0 * ab.x + ab.y;\n}\n\nfloat noise(vec3 p)\n{\n    vec3 i = floor(p);  \n    vec3 f = fract(p);\n    vec3 f3 = f * f * f;\n    vec3 u = 6. * f3 * f * f - 15. * f3 * f + 10. * f3;\n    vec2 o = vec2(1,0);\n    \n    return mix(\n        mix(\n            mix(dot(hash33(i + o.yyy), f - o.yyy), dot(hash33(i + o.xyy), f - o.xyy), u.x),\n            mix(dot(hash33(i + o.yxy), f - o.yxy), dot(hash33(i + o.xxy), f - o.xxy), u.x),\n            u.y\n        ),\n        mix(\n            mix(dot(hash33(i + o.yyx), f - o.yyx), dot(hash33(i + o.xyx), f - o.xyx), u.x),\n            mix(dot(hash33(i + o.yxx), f - o.yxx), dot(hash33(i + o.xxx), f - o.xxx), u.x),\n            u.y\n        ),\n        u.z);\n}\n\nfloat fbm(vec3 p)\n{\n    return (noise(p)\n        + noise(p * 2. + 1.) * .5\n        + noise(p * 4. + 2.) * .25\n        + noise(p * 8. + 4.) * .125)\n        / 1.875;\n}\n\nfloat pattern(vec3 p, float h)\n{\n    p -= vec3(0,0,3);\n    p = fract(p * .5 + .5) * 2. - 1.;\n    float t = iTime * .5;\n    p.xz *= rot((fract(h * 1111.) * 2. - 1.) * t);\n    p.xy *= rot((fract(h * 773.) * 2. - 1.) * t);\n    float n = fbm(p * (.5 + fract(h * 127.)) + h * 541.);\n    float q = fract(h * 41.) * .5 + .49;\n    return smoothstep(-1. + q, 1. - q, n) * (fract(h * 229.) * .5 + .5);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5) / iResolution.y;\n\n    vec3 ro = vec3(0,iTime * .2,-7);\n    vec3 rd = normalize(vec3(uv, 2.));\n    float t = 7.;\n    float d = 0.;\n    vec3 p = vec3(0);\n    float i = 0.;\n    \n    for(; i < 1. && p.z < 4.; i += 1./128.)\n    {\n        p = ro + rd * t;\n        d = scene(p);\n        t += d * 1.1;\n        if(abs(d) < .001) break;\n    }\n    \n    vec3 ld = normalize(vec3(1,sin(iTime * .125) * .35 + .4,1));\n    ld.xz *= rot(iTime * .25);\n    vec3 col = vec3(0);\n    \n    if (p.z < 4.)\n    {\n        float h = index(p);\n        vec3 n = normal(p, d);\n        float pat = pattern(p, h);\n        vec3 abd = mix(color(h), color(h * 47.), pat);\n        float mtl = mix(fract(h * 113.), fract(h * 311.), pat);\n        float rgh = mix(fract(h * 487.), fract(h * 83.), pat);\n        vec3 spec = sky(reflect(rd, n), ld, max(rgh, .0001));\n        \n        vec3 diff = abd * sky(n, ld, 1.) * mtl;\n        vec3 f0 = max(abd * (1. - mtl), vec3(.04));\n        col = mix(diff, spec, DFGAppr(f0, dot(-rd, n), rgh));\n    }\n    else\n        col = sky(rd, ld, .01);\n        \n    col = col * (1. + col / 20.) / (1. + col);\n    col = pow(col, vec3(1./2.2));\n    col += hash32(fragCoord) / 255.;\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

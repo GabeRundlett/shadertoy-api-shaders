@@ -1,0 +1,115 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1666928475",
+            "description": "My first attempt at a sound shader! It...works but I'm not sure I actually like the result. It definitely has an effect! What do you think, is this sound evil?\n*rewind to start sound, or maybe, don't...it's obnoxious*\n*space to reset*\n*mouse to \"steer\"*",
+            "flags": 56,
+            "hasliked": 0,
+            "id": "cdlGzf",
+            "likes": 14,
+            "name": "Shepard Tone Warp (sound)",
+            "published": 3,
+            "tags": [
+                "2d",
+                "sound",
+                "particles",
+                "warp",
+                "stars",
+                "starfield",
+                "shepard"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 472
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  My first attempt at a sound shader! It...works but I'm not sure I actually\n//  like the result. It definitely has an effect! What do you think, is this sound evil?\n// \n//  Shepard tones have been done before here, like here:\n//\n//      https://www.shadertoy.com/view/XdlXWX\n//  \n//  but the sound tab on that one takes 332 chars while mine is 140, so this could my\n//  contribution to golfing of Shepard tone genenerators. :)\n//\n//  The idea is that this sound has harmonics that extend beyond hearing range in both\n//  directions. We sweep all the pitches upwards, and the ones disappearing at the top\n//  and appearing at the bottom have such high and low frequencies that we can't hear\n//  them. So, ignoring those extreme pitches we can't hear, after sweeping upwards, the\n//  frequencies of all the harmonics match up exactly and can form a loop.\n//\n//  The particle system is one of the new kind I've been trying lately, where the\n//  particles live \"in\" pixels so there's no need for any neighborhood tracking. It's\n//  stripped down for simplicity and optimization reasons, though. For example the\n//  particles do not need a velocity since their velocity is inferred from their position.\n//\n//  A big optimization is that I don't need to search blindly in a square around each\n//  pixel to find density that wants to move in, because of the same velocity-field\n//  property. I am however still wasting a lot of fetches, because I'm still fetching\n//  all texels within a rectangle. A Bresenham algorithm seems like it would work better\n//  here, and I tried it but it didn't work so I gave up, for now.\n//\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    data d = unpack(texelFetch(iChannel0, ivec2(fragCoord), 0));\n    \n    fragColor = cos(d.c * vec4(6,17,8,0) + .3 * iTime) * d.t;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Particles are created each frame on each pixel with this probability\nconst float SPAWN_PROBABILITY = 5e-5;\nconst float SPEED = 19.;\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ifc = ivec2(fragCoord);\n    vec4 s = texelFetch(iChannel0, ivec2(0), 0);\n    \n    if (ifc == ivec2(0))\n    {\n        // Reset if resolution doesn't match\n        if (iFrame == 0 || abs(s.xy) != iResolution.xy || keyDown(KEY_SPACE))\n            fragColor = vec4(-iResolution.xy, iResolution.xy*.5);\n        else\n        {\n            if (iMouse.z > 0.) s.zw = iMouse.xy;\n            fragColor = vec4(abs(s.xy), s.zw);\n        }\n        \n        return;\n    }\n    \n    vec3 h = hash(uvec3(ifc, iFrame));\n    data d;\n    \n    if (iFrame == 0 || s.x < 0.)\n    {\n        // Clear buffer    \n        d.p = vec2(0);\n        d.t = d.c = d.d = 0.;\n    }\n    else if (h.x > 1. - SPAWN_PROBABILITY)\n    {\n        // Spawn new particle\n        d.p = vec2(.5); // Start in the middle of the cell\n        d.d = d.t = 1.;\n        d.c = h.y;\n    }\n    else\n    {\n        d = unpack(texelFetch(iChannel0, ifc, 0));\n        d.d = 0.; // new density will be zero if we don't find any density to move here\n        d.t *= 0.95; // Fade out old density to keep the display from becoming too busy\n \n        vec2 center =  -SPEED * (fragCoord - s.zw)/iResolution.y;\n        ivec2 ci = ivec2(center) + ivec2(sign(center));\n        \n        ivec2 mins = min(ivec2(0), ci - 1);\n        ivec2 maxs = max(ivec2(0), ci);\n        for (int x = mins.x; x <= maxs.x; ++x)\n        for (int y = mins.y; y <= maxs.y; ++y)\n        {\n            if (ifc.x + x < 0 || ifc.x + x >= int(iResolution.x)) continue;\n            if (ifc.y + y < 0 || ifc.y + y >= int(iResolution.y)) continue;\n\n            data n = unpack(texelFetch(iChannel0, ifc + ivec2(x, y), 0));\n\n            vec2 p = n.p + vec2(x, y);\n            vec2 np = p + ((fragCoord + vec2(x, y) - s.zw)/iResolution.y) * float(SPEED);\n\n            if (n.d > 0.)\n            {\n                // Draw smooth line from old position to new, even if it jumped past our position\n                float aa = 1. - smoothstep(.5, 2.5, linePointDist(fragCoord + np, fragCoord + p, fragCoord));\n\n                // Use full color if we're drawing on black\n                d.c = d.t < .2 || aa > .2 ? n.c : d.c;\n                d.t += aa;\n\n                if (all(greaterThan(np, vec2(0))) && all(lessThan(np, vec2(1))))\n                {\n                    d.p = np;\n                    d.d = 1.;\n\n                    d.c = n.c; // Copy over the whole color so it doesnt get lost even with thin lines\n                }\n            }\n        }        \n    }\n\n    fragColor = pack(d);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "struct data\n{\n    vec2 p;  // 0 ... 1, position within the cell\n    float d; // either 0 or 1, depending on if a particle is present\n    float t; // 0 ... 1, allows particles to leave trails behind\n    float c; // 0 ... 1, color of trail\n};\n\ndata unpack(vec4 c)\n{\n    data d;\n    \n    d.p = unpackSnorm2x16(floatBitsToUint(c.x));\n    d.d = c.y;\n    d.t = c.z;\n    d.c = c.w;\n    \n    return d;\n}\n\nvec4 pack(data d)\n{\n    return vec4(uintBitsToFloat(packSnorm2x16(d.p)), d.d, d.t, d.c);\n}\n\n// Integer Hash - II by iq\n// https://www.shadertoy.com/view/XlXcW4\nconst uint k = 1103515245U;  // GLIB C\n\nvec3 hash( uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\nfloat linePointDist(in vec2 a, in vec2 b, in vec2 u)\n{\n    vec2 c, d = a - b;\n    float l = dot(d, d), s = inversesqrt(l);\n\n    // Find the closest point on the line segment from old to new\n    if (l > 1e-6)\n    {\n        d *= s;\n        c = b + d * max(0.0, min(1.0 / s, dot(d, u - b)));\n    }\n    else\n    {\n        // Line is very short; either end will do\n        c = b;\n    }\n\n    // Distance to closest point on line segment\n    return distance(c, u);\n}\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SPACE 32\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "vec2 mainSound( int s, float t )\n{\n    float r, i;\n        \n    for (r = i = 0.; i < 40.; ++i)\n        r += sin(t * 40. * pow(1.189, i + fract(t * .3)))\n        \n        // 120 hz modulation, not necessary but makes it sound less annoying, maybe?\n        * (.7 + .3 * sin(120. * t));\n    \n    return vec2(r / 40.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Sound",
+                "outputs": [],
+                "type": "sound"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1673143347",
+            "description": "Heavily adapted from Inigo Quilez (https://iquilezles.org/). Renamed some variables and added comments to improve readability and understanding",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "clj3Wz",
+            "likes": 9,
+            "name": "Infinite Neurons",
+            "published": 3,
+            "tags": [
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "nsbalbi",
+            "viewed": 346
+        },
+        "renderpass": [
+            {
+                "code": "\nconst float D_MAX = 30.0;  // max marching distance\n\n#define PI 3.1416\n#define AA 1  // number of anti-aliasing passes\n\n// SDF Transforms\n\nfloat intersectSDF(float distA, float distB) {\n  return max(distA, distB);\n}\n\nfloat unionSDF(float distA, float distB) {\n  return min(distA, distB);\n}\n\nfloat differenceSDF(float distA, float distB) {\n  return max(distA, -distB);\n}\n\nfloat opSmoothUnion( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); \n}\n\n// SDFs\n\nfloat sdBox( vec3 p, vec3 b ) {\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat sdOctahedron( vec3 p, float s)\n{\n  p = abs(p);\n  return (p.x+p.y+p.z-s)*0.57735027;\n}\n\nfloat sdSphere( vec3 p, float s )\n{\n  return length(p)-s;\n}\n\nfloat sceneSDFnoRep(vec3 samplePoint) {    \n  //return sdBox(samplePoint, vec3(0.05, 0.05, 0.5));\n  float smallEdge = 0.01;\n  float s1 = sdBox(samplePoint, vec3(smallEdge, smallEdge, 0.25));\n  float s2 = sdBox(samplePoint, vec3(0.25, smallEdge, smallEdge));\n  float s3 = sdBox(samplePoint, vec3(smallEdge, 0.25, smallEdge));\n  float s123 = unionSDF(s1, unionSDF(s2, s3));\n  float s4 = sdOctahedron(samplePoint, 0.09);\n  // float s4 = sdSphere(samplePoint, 0.2);\n\n  return opSmoothUnion(s123, s4, 0.03);\n}\n\n// Repeat SDF infinitely\n// c is ~size of repeated unit\nfloat opRep( in vec3 p, in vec3 c){\n  vec3 q = mod(p+0.5*c,c)-0.5*c;\n  return sceneSDFnoRep( q );\n}\n\n// Scene SDF\nfloat sceneSDF(vec3 samplePoint) {    \n  return opRep(samplePoint, vec3(0.5));\n}\n\n// Calculates surface normal\nvec3 calcNormal( in vec3 pos ) {\n  vec2 e = vec2(1.0,-1.0)*0.5773;\n  const float eps = 0.0005;  // small increment epsilon\n  return normalize( e.xyy*sceneSDF( pos + e.xyy*eps ) + \n          e.yyx*sceneSDF( pos + e.yyx*eps ) + \n          e.yxy*sceneSDF( pos + e.yxy*eps ) + \n          e.xxx*sceneSDF( pos + e.xxx*eps ) );\n}\n\n// Apply fog\nvec3 applyFog( in vec3  rgb,       // original color of the pixel\n               in float dist,     // camera to point distance\n               in float distFactor) {\n  float fogAmount = 1.0 - exp( -dist * distFactor );\n  vec3  fogColor  = vec3(0.0, 0.0, 0.0);\n  return mix( rgb, fogColor, fogAmount );\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  // camera movement\t\n\t// float angle = 0.25 * PI * iTime + 0.75 * PI;\n\t// vec3 eye = vec3( 1.2*cos(angle), 0.4, 1.2*sin(angle) );\n  // vec3 center = vec3( 0.0, 0.0, 0.0 );\n\tvec3 eye = vec3( 1.0 - iTime, 0.25, -0.25 + iTime );\n  vec3 center = vec3( 0.0  - iTime, 0.25, 0.75  + iTime );\n  // camera matrix\n  vec3 ww = normalize( center - eye );  // vect from center to eye\n  vec3 uu = normalize( cross(ww, vec3(0.0,1.0,0.0)) );  // cross with up\n  vec3 vv = normalize( cross(uu, ww) );\n\n  vec3 tot = vec3(0.0);\n  \n  #if AA>1  // anti-aliasing passes\n  for( int m=0; m<AA; m++ )\n  for( int n=0; n<AA; n++ ) {\n    // pixel coordinates\n    vec2 offset = vec2(float(m),float(n)) / float(AA) - 0.5;  // offset for anti-aliasing passes\n    vec2 p = (-iResolution.xy + 2.0*(fragCoord.xy+offset))/iResolution.y;\n    #else    \n    vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/iResolution.y;\n    #endif\n\n    // create view ray\n    vec3 ray = normalize( p.x*uu + p.y*vv + 1.5*ww );\n\n    // raymarch\n    float dTot = 0.0;\n    for( int i=0; i<256; i++ ) {\n      vec3 pos = eye + dTot*ray;\n      float d = sceneSDF(pos);\n      if( d < 0.0001 || dTot > D_MAX ) break;\n      dTot += d;\n    }\n    \n    // shading/lighting\t\n    vec3 color = vec3(0.0);\n    if( dTot < D_MAX ) {\n      vec3 pos = eye + dTot * ray;  // position of point on surface\n      vec3 normal = calcNormal(pos);  // surface normal\n      float diffuse = clamp( dot(normal, vec3(0.5)), 0.0, 1.0 );\n      float ambient = 0.5 + 0.5 * dot(normal, vec3(0.0,1.0,0.0));\n      //color = vec3(0.7, 0.7, 0.7) * ambient + vec3(3.0/255.0, 44.0/255.0, 252.0/255.0) * diffuse;\n      color = vec3(3.0/255.0, 44.0/255.0, 252.0/255.0) * ambient + vec3(0.7, 0.7, 0.7) * diffuse;\n\n      color = applyFog(color, dTot, 0.3);\n    }\n\n    // gamma        \n    color = sqrt( color );\n    tot += color;\n    #if AA>1\n  }\n  tot /= float(AA*AA);  // take mean if multiple anti-aliasing passes\n  #endif\n\n\tfragColor = vec4( tot, 1.0 );\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,60 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1635234272",
+            "description": "Simple traditional raytrace scene.times faster than \"ray step search\" method \n pathtrace i will post later. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "fsKXDG",
+            "likes": 3,
+            "name": "Raytrace make it faster",
+            "published": 3,
+            "tags": [
+                "raytrace",
+                "pbr"
+            ],
+            "usePreview": 0,
+            "username": "rockhard",
+            "viewed": 324
+        },
+        "renderpass": [
+            {
+                "code": "mat3 rotXY(float rX, float rY){\n float cx = cos(rX),sx = sin(rX),cy = cos(rY),sy=sin(rY);\n return mat3(-sy, 0, -cy, -sx * cy, cx, sx * sy,cx * cy, sx, -cx * sy);\n}\n//to much cross add reduce ect still get the same!just a simple math.\nvec3 getdir(vec2 p,mat3 m){\n  return normalize(vec3(p.x * m[0].x + p.y * m[1].x - m[2].x, \n       p.x * m[0].y + p.y * m[1].y - m[2].y, \n       p.x * m[0].z + p.y * m[1].z - m[2].z));\n}\n\nfloat move(float sto){\n    float n = mod(floor(iTime), 8.); // 8 keyframe.\n    float t = mod(iTime, 8.); // Fractional time.\n    return  smoothstep(.0, .9, fract(t+sto)); // Smoothing. \n }\n\nstruct box{vec3 p,s,c;};\nbox boxes(int i){\n  if(i==0)return box(vec3(0.0,-0.2,0.0),vec3(3.0,0.5,3.0),vec3(0.6,0.58,0.57));\n  else  return box(vec3(0.0,0.5,0.0),vec3(0.65,0.5,0.65),vec3(0,1.0,0));\n} \n\nstruct sphere{vec3 p,c;float r;};\nsphere sphs(int i){\n  if(i==0) return sphere(vec3(1.0,move(1.0)*0.3+0.3,0.6),vec3(1.0,1.0,0.0),0.3);\n  else if(i==1) return sphere(vec3(-1.0,move(2.0)*0.5+0.5,0.8),vec3(0.0,1.0,1.0),\n           0.15*move(sin(iTime))+0.5);\n  else return sphere(vec3(1.0,move(2.0)*0.5+0.5,-0.6),vec3(1.0,0.0,1.0),0.5);\n}\n \n#define MAX_STEPS 6\n#define MAX_DIST 1.0\nfloat sdPlane(vec3 p) { return p.y;}\nfloat sdSphere(vec3 p, float r) { return length(p)-r;}\nfloat smin( float a, float b, float k ) {\n    float h = clamp( 0.5 + 0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h); }\n\nfloat sdShapes(vec3 p){\n   float d = sdSphere(vec3(p.x,p.y+0.5*sin(iTime)-0.225,p.z),0.25);\n   d = smin(d, sdPlane(p),0.5);\n   return d;\n}\n\nvec3 mapcol=vec3(0.0);\n\nfloat map(vec3 p,int id){\n  if(id==0){\n    mapcol=texture(iChannel0,p.xz*0.1).xyz;\n       return p.y - mapcol.x*0.06;}\n   else if(id==1) return sdShapes(p);   \n   else return 0.0;\n}\n//this displacement looks better than normalmap\nfloat raymatch(inout vec3 p, vec3 d,float tmax,int id){\n\tfloat dist = 0.0; \n    for(int i=0; i<10; i++){\n   \t    float stepdist = map(p,id);\n        dist+=stepdist;\n        if(dist>tmax) return 0.0;\n        else  if(dist<0.001) return dist;\n        p+=stepdist*d; \n    }\n    return dist;\n}\nvec3 normal(vec3 p,int id){ vec2 e = vec2(-DELTA,DELTA);   \n  return normalize(e.yxx*map(p + e.yxx,id) + e.xxy*map(p + e.xxy,id) + \n\t\t e.xyx*map(p + e.xyx,id) + e.yyy*map(p + e.yyy,id));   \n}\nvec3 hitpos,hitnor,hitcol;\nvec2 hitmm;\n//The id is main entry index to materials list if you wanna use.\nint hitid;\n//main trace throughout all objects to find nearest.\nvoid rayhit(vec3 ro,vec3 rd){\n    vec3 bp=vec3(0.0);\n    float near=1000.0;\n    hitid=-1; \n    float tmax=0.0;\n    for(int i=0;i<2;i++){\n       box b=boxes(i);\n       vec4 d=raybox(ro,rd,b.p,b.s,bp,tmax);\n       if(d.w>0.0){ \n         if(i==0||i==1){\n            float ndist= raymatch(bp,rd,tmax-d.w,i); \n            if(ndist==0.0)continue;\n            d.w+=ndist; \n            d.xyz=normal(bp,i);\n         }\n         if(near>d.w){ \n         near=d.w;\n         hitid=i;\n         hitpos=bp;hitnor=d.xyz;\n         if(i==0) hitcol=mapcol;\n         else hitcol=b.c;\n         hitmm=vec2(near,tmax);}\n    }}   \n    for(int j=0;j<3;j++){\n       sphere s=sphs(j);\n       float ds=raysphere(ro,rd,s.p,s.r);\n       if(ds>0.0&&near>ds){       \n        near=ds; hitid=j+2;\n        hitpos=ro+rd*ds;hitnor=normalize(hitpos-s.p);\n        hitcol=s.c;\n        hitmm=vec2(ds,ds);\n      }\n    } \n}\n\nvec3 diffuse(vec3 p,vec3 rd, vec3 n,vec3 li,vec3 c){\n   float d2l;  \n   vec3 col=PBR(li,n,-rd,c,0.05,.02,d2l); //c*(max(0.0,d2l)*0.7+0.3); \n   if(d2l>0.0){\n      //  col+=pow(max(0.0, dot(n,normalize(li-rd))),60.0)*vec3(0.25,0.21,0.12);\n      //shadow trace\n      rayhit(p+n*DELTA,li);\n      if(hitid!=-1)col*=0.5;\n   }   \n   return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{  \n    vec2 uv = fragCoord/iResolution.xy-0.5;\n    uv.x*=iResolution.x/iResolution.y; \n\n    //the yaw roll pitch matrix without roll.\n    mat3 camrot=rotXY(0.35,iTime*0.2+iMouse.x/iResolution.x*0.1);\n    vec3 ro=camrot[2]*3.85;\n    vec3 rd=getdir(uv,camrot);\n    vec3 light=normalize(vec3(0.6,0.8,0.6));\n  \n    vec3 col=vec3(0.0);\n    \n    rayhit(ro,rd);\n    //store the first result is importent\n    //to avoid hit id changes.\n    int bid=hitid;\n    vec3 nor=hitnor;\n    vec3 pos=hitpos;\n    vec3 c=hitcol;\n    if(bid!=-1){      \n        col=diffuse(pos,rd,nor,light,c); \n       //the floor box is reflective..\n        if(bid==0||bid==4){\n          vec3 rn=reflect(rd,nor);\n          rayhit(pos+0.001*nor,rn);\n          if(hitid!=-1){\n            vec3 cr=diffuse(hitpos,rd,hitnor,light,hitcol);\n            //energy based reflection as the world always be...\n            float d2e=0.6-0.5*clamp(dot(nor,-rd),0.0,1.0);\n            col=mix(col,cr,d2e*min(1.0,max(cr.z,max(cr.x,cr.y))));\n        }}\n    }\n    fragColor = vec4(pow(col,vec3(0.5)),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define DELTA 1e-4\nfloat raysphere(vec3 p,vec3 d,vec3 sp,float sr) {\n    vec3 m = p - sp;\n    float b = dot(m,d);\n    float c = dot(m, m) - sr * sr;\n    if (c > 0.0 && b > 0.0) return 0.0;\n    float discr = b * b - c; \n    if (discr < 0.0) return 0.0; \n    return -b - sqrt(discr);//-b+sqrt(discr);\n}\nvec4 raybox(vec3 p,vec3 d,vec3 boxp,vec3 boxs,inout vec3 hp,inout float hmax) {\n    vec4 hit=vec4(0.0);     \n    vec3 bmin=boxp-boxs;\n    vec3 bmax=boxp+boxs;\n    float tymin, tzmin, tymax, tzmax; \n    float tmin,tmax; \n\n    if (d.x >= 0.0){ tmin = (bmin.x - p.x) / d.x; tmax = (bmax.x - p.x) / d.x; }\n    else { tmin = (bmax.x - p.x) / d.x; tmax = (bmin.x - p.x) / d.x;  }\n    if (d.y >= 0.0) { tymin = (bmin.y - p.y) / d.y; tymax = (bmax.y - p.y) / d.y; }\n    else { tymin = (bmax.y - p.y) / d.y;  tymax = (bmin.y - p.y) / d.y; }\n\n    if ((tmin > tymax) || (tymin > tmax)) return hit;\n    if (tymin > tmin) tmin = tymin;\n    if (tymax < tmax) tmax = tymax;\n\n    if (d.z >= 0.0){ tzmin = (bmin.z - p.z) / d.z; tzmax = (bmax.z - p.z) / d.z; }\n    else { tzmin = (bmax.z - p.z) / d.z; tzmax = (bmin.z - p.z) / d.z; }\n    if ((tmin > tzmax) || (tzmin > tmax)) return hit;\n    if (tzmin > tmin) tmin = tzmin;\n    if (tzmax < tmax) tmax = tzmax;\n    if(tmin<0.0) return hit;//inside box \n    hit.w = tmin;hmax=tmax;\n    vec3 center = boxp;\n\tvec3 size = boxs;\n    hp=p+tmin*d;\n\tvec3 pc =hp-center;\n\tvec3 normal = vec3(sign(pc.x)* step(abs(abs(pc.x) - size.x),DELTA),\n\tsign(pc.y) * step(abs(abs(pc.y) - size.y), DELTA),\n\tsign(pc.z) * step(abs(abs(pc.z) - size.z), DELTA));\n\thit.xyz= normalize(normal);\n    return hit;\n} \n\nfloat G1V (float dotNV, float k ) { return 1.0 / (dotNV*(1.0 - k) + k); }\n\nvec3 PBR (vec3 L,vec3 N, vec3 V, vec3 albedo, float roughness,\n    float F0,inout float d2l) {\n \n\tvec3 H = normalize (V + L);\n\n\tfloat dotNL = clamp (dot (N, L), 0.0, 1.0);\n\tfloat dotNV = clamp (dot (N, V), 0.0, 1.0);\n\tfloat dotNH = clamp (dot (N, H), 0.0, 1.0);\n\tfloat dotLH = clamp (dot (L, H), 0.0, 1.0);\n\n    d2l=dotNL;\n    float ambient=mix(0.5,0.0,acos(N.y)*0.31831);\n    dotNL+=ambient;\n    \n\tfloat D, vi ,vis, F;\n\n\t// NDF : GGX\n\tfloat alphaSqr = roughness*roughness;\n\tfloat pi = 3.1415926535;\n\tfloat denom = dotNH * dotNH *(alphaSqr - 1.0) + 1.0;\n\tD = alphaSqr / (pi * denom * denom);\n\n\t// Visibility term (G) : Smith with Schlick's approximation\n\tfloat k = roughness / 2.0;\n\tvis = G1V (dotNL, k) * G1V (dotNV, k);\n\n    // Fresnel (Schlick)\n\tfloat Fresnel = pow (1.0 - dotLH, 5.0);\n\tF = F0 + (1.0 - F0)*Fresnel;\n    \n\tfloat specular = /*dotNL */ D * F * vis;\n\t \n\tvec3 diffuse = (albedo * 0.31831);\n\n\treturn (diffuse+specular)*(dotNL);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

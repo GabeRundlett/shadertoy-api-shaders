@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1651026136",
+            "description": "my best Sine SDF approximation yet. no loops at all!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "flXBzB",
+            "likes": 48,
+            "name": "Sine SDF (Analytic Chebyshev)",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "sine"
+            ],
+            "usePreview": 0,
+            "username": "blackle",
+            "viewed": 2739
+        },
+        "renderpass": [
+            {
+                "code": "//excluding the function cubicRoot:\n//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\n//this works by exploiting the fact that there exist polynomials T_n\n//such that T_n(cos(x)) = cos(n*x). these are chebyshev polynomials\n//of the first kind. T_2 is a parabola, and we can estimate the\n//distance to the cosine curve by using the analytic distance to this\n//parabola.\n//\n//to get the distance from p to the sine curve, we first do\n//p.x = sin(p.x*frequency)/frequency\n//then we produce the closest point on the parabola\n//T_2(x) = 2x^2 - 1\n//call this point \"q\". we undo the mapping we made to p with\n//q.x = asin(q.x*frequency)/frequency\n//we do need to clamp it between -1 and 1 before passing into asin\n//but that is the gist of the method.\n//\n//this estimate only works for one half of the principal half cycle,\n//so we need to use two estimates for either side, and take the closest\n//point to p. finally we do a single newton's method update to finalize\n//the estimate. I'm not sure how accurate this is, but it looks extremely\n//close to the ground truth.\n//\n// article: https://suricrasia.online/demoscene/sine-distance/\n//\n//other solutions:\n//  iq:        https://www.shadertoy.com/view/3t23WG\n//  fabrice:   https://www.shadertoy.com/view/tsXXRM\n//  blackle 2: https://www.shadertoy.com/view/3lSyDG\n\n#define PI 3.141592653\n\n//perform one step of netwon's method to finalize the estimate\n#define ONE_NEWTON_STEP\n\n// of equation x^3+c1*x+c2=0\n/* Stolen from http://perso.ens-lyon.fr/christophe.winisdoerffer/INTRO_NUM/NumericalRecipesinF77.pdf,\n   page 179 */\n// subsequently stolen from https://www.shadertoy.com/view/MdfSDn\nfloat cubicRoot(float c1, float c2) {\n\tfloat q = -c1/3.;\n\tfloat r = c2/2.;\n\tfloat q3_r2 = q*q*q - r*r;\n\tif(q3_r2 < 0.) {\n\t\tfloat a = -sign(r)*pow(abs(r)+sqrt(-q3_r2),.333333);\n\t\tfloat b = a == 0. ? 0. : q/a;\n\t\treturn a+b;\n\t}\n\tfloat theta = acos(r/pow(q,1.5));\n\treturn -2.*pow(q,.5)*cos(theta/3.);\n}\n\nvec2 cls_one(vec2 p, float f) {\n    //sorry this is unreadable\n    float f2 = f*f; //sq\n    float cmn = 8.*f2*f2;\n    float x = sin(p.x*f)/f;\n    float pp = ((-4.*p.y-4.)*f2 + 1.)/cmn;\n    float qq = -x/cmn;\n    float sol = cubicRoot(pp, qq);\n    \n    x = asin(clamp(sol*f,-1.,1.))/f;\n    return vec2(x,-cos(f*2.*x));\n}\n\nvec3 sine_SDF(vec2 p, float freq) {\n    float wavelen = PI/freq;\n\n    //map p to be within the principal half cycle\n    float cell = round(p.x/wavelen)*wavelen;\n    float sgn = sign(cos(p.x*freq));\n    p.x = (p.x-cell)*sgn;\n    \n    vec2 off = vec2(-PI/freq/2.,0);\n    //approximate either side of the principal half cycle with\n    //the distance to the 2nd chebyshev polynomial of the 1st kind\n    vec2 a = -off+cls_one(off+p, freq/2.);\n    vec2 b =  off-cls_one(off-p, freq/2.);\n\n    //pick closest, comment out to see how the one-sided approximation looks\n    if (length(p-b) < length(p-a)) a = b;\n\n#ifdef ONE_NEWTON_STEP\n    //newton's method update via lagrange multipliers\n    //visually very close after one step, but more increases accuracy quadratically\n    vec3 K = vec3(a,p.x-p.y);\n    \n    //it might be possible to simplify this a lot...\n    vec3 lagrange = vec3(2.*(K.x-p.x)+K.z*-cos(K.x*freq)*freq,\n        2.*(K.y-p.y)-K.z,\n        K.y+sin(K.x*freq));\n    K -= (inverse(mat3(2.-K.z*-sin(K.x*freq)*freq*freq,0,cos(K.x*freq)*freq,0,2,1,-cos(K.x*freq)*freq,-1,0))*lagrange);\n    a = K.xy;\n    a.y = -sin(a.x*freq);\n#endif\n\n    float dist = length(p-a)*sign(p.y+sin(p.x*freq));\n    //map the closest point back to global coordinates\n    a.x *= sgn; a.x += cell;\n    return vec3(dist,a);\n}\n\nvec3 shadeDistance(float d) {\n    d *= .5;\n    float dist = d*120.;\n    float banding = max(sin(dist), 0.0);\n    float strength = sqrt(1.-exp(-abs(d)*2.));\n    float pattern = mix(strength, banding, (0.6-abs(strength-0.5))*0.3);\n    \n    vec3 color = vec3(pattern);\n    \n    color *= d > 0.0 ? vec3(1.0,0.56,0.4) : vec3(0.4,0.9,1.0);\n\n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-0.5*iResolution.xy)/iResolution.y;\n    vec2 mouse = (iMouse.xy-0.5*iResolution.xy)/iResolution.y;\n\tfloat scale = 5.;\n    uv*=scale; mouse*=scale;\n    float pixel_size = scale/iResolution.y;\n    \n    float t = sin(iTime)*.5+.5;\n    float freq = mix(20.,.1,sqrt(t));\n\n    vec3 mousedist = sine_SDF(mouse, freq);\n    vec3 col = shadeDistance(sine_SDF(uv, freq).x);\n    if (iMouse.z > 0.) {\n        col *= smoothstep(-pixel_size,pixel_size, distance(mouse, uv) - abs(mousedist.x)) *.5 +.5;\n        col = mix(vec3(.8,.9,.4), col, smoothstep(-pixel_size,pixel_size, distance(mousedist.yz, uv) - .05));\n    }\n    float sn = abs(uv.y+cos(uv.x*freq))-.01;\n    float snl = 0.*smoothstep(fwidth(sn),0.,sn);\n\n    fragColor = vec4(col,1.0) + snl;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1692933405",
+            "description": "Support by UnrealEngine, https://www.pbr-book.org",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "mlXfDN",
+            "likes": 0,
+            "name": "PBR Training",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "pbr",
+                "physicallybasedrendering"
+            ],
+            "usePreview": 0,
+            "username": "AYAYA2",
+            "viewed": 178
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_STEPS 1000\n#define MAX_DIST 1000.\n#define SURF_DIST .01\n#define saturate(x) clamp(x, 0.0, 1.0)\n#define rcp(x) 1.0 / (x)\n#define PI 3.14159265359\n\nfloat dot2( in vec2 v ) { return dot(v,v); }// 二维向量模长\nfloat dot2( in vec3 v ) { return dot(v,v); }// 三维向量模长\nfloat ndot( in vec2 a, in vec2 b ) { return a.x * b.x - a.y * b.y; }\nfloat Pow4( float x ) { float xx = x * x; return xx * xx; }\nfloat Pow5( float x ) { return Pow4(x) * x; }\n\nvec3 lerp( vec3 a, vec3 b, float c)\n{\n    float x = mix(a.x, b.x, c);\n    float y = mix(a.y, b.y, c);\n    float z = mix(a.z, b.z, c);\n    return vec3(x, y, z);\n}\n\n/////////////////////SDF/////////////////////\n\nfloat sdPlane(vec3 p) { return p.y; }\n\nfloat dSphere(vec3 p, vec3 o, float radius) { return length(p - o.xyz) - radius; }\n\nvec2 opUnion(vec2 d1, vec2 d2) {\n    return d1.x < d2.x ? d1 : d2;\n}\n\n// 场景\nvec2 GetDist(vec3 p)\n{\n    float planeDist = sdPlane(p);// ground\n    \n    // 遍历形式所有物体 物体摆放\n    float sd = dSphere(p, vec3(0, 1, 3), 1.25);\n    vec2 hit = opUnion(vec2(planeDist, 0), vec2(sd, 1));\n    \n    return hit;\n}\n\nvec2 RayMarch(vec3 ro, vec3 rd)\n{\n    float dO = 0.;\n    float MaterialID = 0.0;\n    \n    for(int i = 0; i < MAX_STEPS; i++){\n        vec3 p = ro + rd * dO;\n        vec2 dS = GetDist(p);\n        dO += dS.x;\n        MaterialID = dS.y;\n        if (dO > MAX_DIST || dS.x < SURF_DIST) break;     \n    }\n    \n    return vec2(dO, MaterialID);\n}\n\nvec3 GetNormal(vec3 p)\n{\n    float d = GetDist(p).x;\n    vec2 e = vec2(.01,0);\n    \n    vec3 n = d - vec3(\n        GetDist(p - e.xyy).x,\n        GetDist(p - e.yxy).x,\n        GetDist(p - e.yyx).x);\n    return normalize(n);\n}\n\nfloat GetLight(vec3 p, vec3 lightPos)\n{\n    vec3 l = normalize(lightPos - p);\n    vec3 n = GetNormal(p);\n    \n    float dif = clamp(dot(n,l),0.,1.);\n    float d = RayMarch(p + n * SURF_DIST * 2.,l).x;\n    if(d < length(lightPos - p)) dif*=.1;\n    \n    return dif;\n}\n\nfloat GetShadow(vec3 P, vec3 LightPos)\n{\n    vec3 L = normalize(LightPos - P);\n    vec3 N = GetNormal(P);\n    \n    float Shadow = 1.0;\n    float Dist = RayMarch(P + N * SURF_DIST * 2., L).x;\n    if(Dist < length(LightPos - P)) Shadow = 0.0;\n    \n    return Shadow;\n}\n\n/////////////////////BSDF/////////////////////\n\n// GGX / Trowbridge-Reitz\n// [Walter et al. 2007, \"Microfacet models for refraction through rough surfaces\"]\nfloat D_GGX( float a2, float NoH )\n{\n\tfloat d = ( NoH * a2 - NoH ) * NoH + 1.0;\t// 2 mad\n    return a2 / ( PI * d * d );\t\t\t\t\t    // 4 mul, 1 rcp\n}\n\n// Appoximation of joint Smith term for GGX\n// [Heitz 2014, \"Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs\"]\nfloat Vis_SmithJointApprox( float a2, float NoV, float NoL )\n{\n\tfloat a = sqrt(a2);\n\tfloat Vis_SmithV = NoL * ( NoV * ( 1.0 - a ) + a );\n\tfloat Vis_SmithL = NoV * ( NoL * ( 1.0 - a ) + a );\n\treturn 0.5 * rcp( Vis_SmithV + Vis_SmithL );\n}\n\n// [Schlick 1994, \"An Inexpensive BRDF Model for Physically-Based Rendering\"]\nvec3 F_Schlick( vec3 SpecularColor, float VoH )\n{\n\tfloat Fc = Pow5( 1.0 - VoH );\t\t\t\t// 1 sub, 3 mul\n\t//return Fc + (1 - Fc) * SpecularColor;\t\t  // 1 add, 3 mad\n\t\n\t// Anything less than 2% is physically impossible and is instead considered to be shadowing\n\treturn saturate( 50.0 * SpecularColor.y ) * Fc + (1.0 - Fc) * SpecularColor;\n}\n\nfloat DielectricSpecularToF0(float Specular)\n{\n\treturn 0.08f * Specular;\n}\n\nvec3 ComputeF0(float Specular, vec3 BaseColor, float Metallic)\n{\n\treturn lerp(vec3(DielectricSpecularToF0(Specular)), BaseColor, Metallic);\n}\n\n\n/////////////////////Tone mapping and transfer functions/////////////////////\n\nvec3 Tonemap_ACES(const vec3 x)\n{\n    // Narkowicz 2015, \"ACES Filmic Tone Mapping Curve\"\n    const float a = 2.51;\n    const float b = 0.03;\n    const float c = 2.43;\n    const float d = 0.59;\n    const float e = 0.14;\n    return (x * (a * x + b)) / (x * (c * x + d) + e);\n}\n\nvec3 OECF_sRGBFast(const vec3 linear)\n{\n    return pow(linear, vec3(1.0 / 2.2));\n}\n\n/////////////////////Main/////////////////////\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // User Control\n    vec3 BaseColor = vec3(1.0, 1.0, 1.0);\n    float Specular = 0.9f;\n    float Roughness = 0.9f;\n    float Metalic = 0.9f;\n    \n    vec3 Ray0 = vec3(0, 3, 0);// CameraPos\n    vec3 LightPos = vec3(0, 3, 1);\n    //LightPos.xz += vec2(sin(iTime), cos(iTime)) * 2.;\n    LightPos.x += sin(iTime) * 2.5;// Time varying pixel color\n    \n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 UV = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n    \n    // RayTracing\n    vec3 RayDir = normalize(vec3(UV.x, UV.y -.3, .35));// cameraDir\n    vec2 Dist = RayMarch(Ray0, RayDir);   \n    vec3 Pos = Ray0 + RayDir * Dist.x;\n       \n    // BSDF\n    vec3 N = GetNormal(Pos);\n    vec3 V = normalize(Ray0 - Pos);\n    vec3 L = normalize(LightPos - Pos);\n    vec3 H = normalize(L + V);\n    \n    float NoV = abs(dot(N, V)) + 1e-5;\n    float NoL = saturate(dot(N, L));\n    float NoH = saturate(dot(N, H));\n    float LoH = saturate(dot(L, H));\n    float VoH = saturate(dot(V, H));\n    \n    float a2 = Pow4(Roughness);\n    \n    float D = D_GGX(a2, NoH);\n    \n    float G = Vis_SmithJointApprox(a2, NoV, NoL);\n    \n    // Diffuse\n    vec3 DiffuseColor = BaseColor - BaseColor * Metalic;\n    vec3 LightingDiffuse = DiffuseColor * (1.0 / PI);// Diffuse_Lambert\n    \n    // Specular\n    vec3 SpecularColor = ComputeF0(Specular, BaseColor, Metalic);\n    vec3 F = F_Schlick(SpecularColor, VoH);\n    \n    vec3 LightingSpecular = vec3(G);//D * G * F;\n    \n    vec3 FinalColor = LightingSpecular;// + LightingDiffuse;\n    \n    float MaterialID = Dist.y;\n    if (MaterialID < 1.0)\n        FinalColor = vec3(0.3);\n    \n    // Shadow\n    float Shadow = GetShadow(Pos, LightPos);\n    FinalColor *= Shadow;\n    \n    // Tone mapping\n    FinalColor = Tonemap_ACES(FinalColor);\n\n    // Exponential distance fog\n    //color = mix(color, 0.8 * vec3(0.7, 0.8, 1.0), 1.0 - exp2(-0.011 * distance * distance));\n\n    // Gamma compression\n    FinalColor = OECF_sRGBFast(FinalColor);\n\n    // Output to screen\n    fragColor = vec4(FinalColor, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

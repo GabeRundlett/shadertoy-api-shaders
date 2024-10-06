@@ -1,0 +1,118 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1581247877",
+            "description": "- Single pass fluid simulation on 128x128x128 voxels (references: see top of \"Cube A\")\n- Hit space to clear the density, mouse drag to change viewing position\n- Not perfect, but I guess it's interesting as is!",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "wlG3RW",
+            "likes": 130,
+            "name": "Volumetric 3D fluid",
+            "published": 3,
+            "tags": [
+                "fire",
+                "fluid",
+                "volumetric",
+                "vorticity"
+            ],
+            "usePreview": 0,
+            "username": "tmst",
+            "viewed": 5974
+        },
+        "renderpass": [
+            {
+                "code": "#define FIXED_UP vec3(0.0, 1.0, 0.0)\n#define TAN_HALF_FOVY 0.5773502691896257\n#define CAM_Z_NEAR 0.1\n#define CAM_Z_FAR 50.0\n\n#define BOX_MIN vec3(-1.0)\n#define BOX_MAX vec3(1.0)\n\n#define EPS 0.001\n\nmat4 getClipToWorld(float aspectWoverH, vec3 nvCamFw) {\n    mat4 clipToEye = mat4(\n        aspectWoverH * TAN_HALF_FOVY, 0.0, 0.0, 0.0,\n        0.0, TAN_HALF_FOVY, 0.0, 0.0,\n        0.0, 0.0,  0.0, (CAM_Z_NEAR - CAM_Z_FAR)/(2.0 * CAM_Z_NEAR * CAM_Z_FAR),\n        0.0, 0.0, -1.0, (CAM_Z_NEAR + CAM_Z_FAR)/(2.0 * CAM_Z_NEAR * CAM_Z_FAR)\n    );\n\n    vec3 nvCamRt = normalize(cross(nvCamFw, FIXED_UP));\n    vec3 nvCamUp = cross(nvCamRt, nvCamFw);\n    mat4 eyeToWorld = mat4(\n         nvCamRt, 0.0,\n         nvCamUp, 0.0,\n        -nvCamFw, 0.0,\n        0.0, 0.0, 0.0, 1.0\n    );\n\n    return eyeToWorld * clipToEye;\n}\n\nvoid boxClip(\n    in vec3 boxMin, in vec3 boxMax,\n    in vec3 p, in vec3 v,\n    out vec2 tRange, out float didHit\n){\n    //for each coord, clip tRange to only contain t-values for which p+t*v is in range\n    vec3 tb0 = (boxMin - p) / v;\n    vec3 tb1 = (boxMax - p) / v;\n    vec3 tmin = min(tb0, tb1);\n    vec3 tmax = max(tb0, tb1);\n\n    //t must be > tRange.s and each tmin, so > max of these; similar for t1\n    tRange = vec2(\n        max(max(tmin.x, tmin.y), tmin.z),\n        min(min(tmax.x, tmax.y), tmax.z)\n    );\n\n    //determine whether ray intersects the box\n    didHit = step(tRange.s, tRange.t);\n}\n\nvec3 lmnFromWorldPos(vec3 p) {\n    vec3 uvw = (p - BOX_MIN) / (BOX_MAX - BOX_MIN);\n    return floor(uvw * vec3(BOX_N));\n}\n\nvec4 readLMN(vec3 lmn) {\n    return texture(iChannel0, vcubeFromLMN(1, lmn));\n}\n\nvec3 readCurlAtLMN(vec3 lmn) {\n    return texture(iChannel0, vcubeFromLMN(2, lmn)).xyz;\n}\n\nvoid boxFromLMN(in vec3 lmn, out vec3 boxMin, out vec3 boxMax) {\n    vec3 boxSize = (BOX_MAX - BOX_MIN) / BOX_N;\n\n    boxMin = BOX_MIN + (floor(lmn)/BOX_N) * (BOX_MAX - BOX_MIN);\n    boxMax = boxMin + boxSize;\n}\n\nfloat unmix(float a, float b, float x) {\n    return (x - a)/(b - a);\n}\n\nvec3 colormapInferno(float t) {\n    return vec3(\n        1.0 - (t - 1.0)*(t - 1.0),\n        t*t,\n        t * (3.0*t - 2.0)*(3.0*t - 2.0)\n    );\n}\n\nvoid march(\n    in vec3 p, in vec3 nv,\n    out vec4 color\n) {\n    vec2 tRange;\n    float didHitBox;\n    boxClip(BOX_MIN, BOX_MAX, p, nv, tRange, didHitBox);\n\n    color = vec4(0.0);\n    if (didHitBox < 0.5) {\n        return;\n    }\n\n    float t = tRange.s;\n    for (int i=0; i<800; i++) {\n\t\t// Get voxel data\n        vec3 lmn = lmnFromWorldPos( p + (t+EPS)*nv );\n        vec4 data = readLMN(lmn);\n\n        vec3 curlV = readCurlAtLMN(lmn);\n\n        float normalizedDensity = unmix(0.5, 3.0, data.w);\n        float normalizedSpeed = pow(unmix(0.0, 10.0, length(data.xyz)), 0.5);\n        float normalizedVorticity = clamp(pow(length(curlV),0.5), 0.0, 1.0);\n\n        #ifdef VORTICITY_CONFINEMENT\n        vec3 cbase = colormapInferno( normalizedVorticity );\n        float calpha = pow(normalizedSpeed, 3.0);\n        #else\n        vec3 cbase = colormapInferno( normalizedSpeed );\n        float calpha = pow(normalizedDensity, 3.0);\n        #endif\n\n        vec4 ci = vec4(cbase, 1.0)*calpha;\n\n        // Determine path to next voxel\n        vec3 curBoxMin, curBoxMax;\n        boxFromLMN(lmn, curBoxMin, curBoxMax);\n\n        vec2 curTRange;\n        float curDidHit;\n        boxClip(curBoxMin, curBoxMax, p, nv, curTRange, curDidHit);\n\n        // Adjust alpha for distance through the voxel\n        ci *= clamp((curTRange.t - curTRange.s)*15.0, 0.0, 1.0);\n\n        // Accumulate color\n        color = vec4(\n            color.rgb + (1.0-color.a)*ci.rgb,\n            color.a + ci.a - color.a*ci.a\n        );\n\n        // Move up to next voxel\n        t = curTRange.t;\n        if (t+EPS > tRange.t || color.a > 1.0) { break; }\n    }\n}\n\nvec3 skybox(vec3 vDir) {\n    return texture(iChannel1, vDir).rgb;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n\n    float isMousePressed = clamp(iMouse.z, 0.0, 1.0);\n    vec2 mouseAng = mix(\n        vec2(-iTime*0.27, 0.5*3.14159 + 0.6*sin(iTime*0.21)),\n        3.14159 * iMouse.xy / iResolution.xy,\n        isMousePressed\n    );\n    vec3 camPos = 2.5 * (\n        sin(mouseAng.y) * vec3(cos(2.0*mouseAng.x), 0.0, sin(2.0*mouseAng.x)) +\n        cos(mouseAng.y) * vec3(0.0, 1.0, 0.0)\n    );\n    vec3 lookTarget = vec3(0.0);\n\n \tvec3 nvCamFw = normalize(lookTarget - camPos);\n    mat4 clipToWorld = getClipToWorld(iResolution.x/iResolution.y, nvCamFw);\n\n    vec4 vWorld = clipToWorld * vec4(uv*2.0 - 1.0, 1.0, 1.0);\n    vec3 nvCamDir = normalize(vWorld.xyz / vWorld.w);\n\n    vec3 bgColor = 0.2 * skybox(nvCamDir);\n\n    vec4 finalColor;\n    march(camPos, nvCamDir, finalColor);\n    fragColor = vec4(finalColor.rgb + (1.0 - finalColor.a)*bgColor, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define VORTICITY_CONFINEMENT\n#define VORTICITY_COEFF 1.0\n\n#define BOX_N 128.0\n\n// Data is organized into 3 \"pages\" of 128x128x128 voxels.\n// Each \"page\" takes up 2 faces of the 1024x1024 cubemap,\n// each face storing 8x8=64 of the 128x128 slices.\n\nvec3 vcubeFromLMN(in int page, in vec3 lmn)\n{\n    // subtexture within [0,8)^2\n    float l = mod(floor(lmn.x), 128.0);\n    float tm = mod(l, 8.0);\n    float tn = mod((l - tm)/8.0, 8.0);\n    vec2 tmn = vec2(tm, tn);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(floor(lmn.yz), 128.0);\n\n    // pixel position on 1024x1024 face\n    vec2 fragCoord = 128.0*tmn + mn + 0.5;\n    vec2 p = fragCoord*(2.0/1024.0) - 1.0;\n\n    vec3 fv;\n    if (page == 1) {\n        fv = vec3(1.0, p);\n    } else if (page == 2) {\n        fv = vec3(p.x, 1.0, p.y);\n    } else {\n        fv = fv = vec3(p, 1.0);\n    }\n\n    if (l < 64.0) {\n        return fv;\n    } else {\n        return -fv;\n    }\n}\n\nvoid lmnFromVCube(in vec3 vcube, out int page, out vec3 lmn)\n{\n    // page and parity, and pixel position on 1024x1024 texture\n    vec2 p;\n    float parity;\n    if (abs(vcube.x) > abs(vcube.y) && abs(vcube.x) > abs(vcube.z)) {\n        page = 1;\n        p = vcube.yz/vcube.x;\n        parity = vcube.x;\n    } else if (abs(vcube.y) > abs(vcube.z)) {\n        page = 2;\n        p = vcube.xz/vcube.y;\n        parity = vcube.y;\n    } else {\n        page = 3;\n        p = vcube.xy/vcube.z;\n        parity = vcube.z;\n    }\n    vec2 fragCoord = floor((0.5 + 0.5*p)*1024.0);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(fragCoord, 128.0);\n\n    // subtexture within [0,8)^2\n    vec2 tmn = floor(fragCoord/128.0);\n\n    float lAdd;\n    if (parity > 0.0) {\n        lAdd = 0.0;\n    } else {\n        lAdd = 64.0;\n    }\n    lmn = vec3(tmn.y*8.0 + tmn.x + lAdd, mn);\n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Description and references:\n// -------------------------------------------------------------------------------\n// This shader adapts the fluid simulation described in [1] to 3D and adds\n// vorticity confinement as described in [2].  The shader [3] does the same in 2D.\n// Some other 3D fluids here include [4], [5].  If there are others, leave a comment!\n// - [1] \"Simple and Fast Fluids\" (Guay, Colin, Egli) for the single-pass fluid simulation.\n// - [2] \"Visual Simulation of Smoke\" (Fedkiw, Stam, Jensen) for vorticity confinement.\n// - [3] nimitz - \"Chimera's Breath\" (https://www.shadertoy.com/view/4tGfDW)\n// - [4] flockaroo - \"single pass 3D fluid\" (https://www.shadertoy.com/view/tl33RM)\n// - [5] wyatt - \"Fluid 3D Volumetric*\" (https://www.shadertoy.com/view/WsSXRy)\n// -------------------------------------------------------------------------------\n\n// Keyboard input description: https://www.shadertoy.com/view/lsXGzf\n#define KEY_SPACE 32\n\n#define DENSITY_SMOOTHING 0.2\n#define VISCOSITY 0.15\n#define TIME_STEP 0.1\n#define MAX_VELOCITY 10.0\n#define K_CONST 0.3\n\nvec4 getDataNearest(vec3 lmn) {\n\treturn texture(iChannel0, vcubeFromLMN(1, lmn));\n}\n\nvec3 getCurlNearest(vec3 lmn) {\n    return texture(iChannel0, vcubeFromLMN(2, lmn)).xyz;\n}\n\nvec4 getDataInterp(vec3 lmn) {\n    vec3 flmn = floor(lmn);\n\n    vec4 d000 = getDataNearest( flmn );\n    vec4 d001 = getDataNearest( flmn + vec3(0.0, 0.0, 1.0) );\n    vec4 d010 = getDataNearest( flmn + vec3(0.0, 1.0, 0.0) );\n    vec4 d011 = getDataNearest( flmn + vec3(0.0, 1.0, 1.0) );\n    vec4 d100 = getDataNearest( flmn + vec3(1.0, 0.0, 0.0) );\n    vec4 d101 = getDataNearest( flmn + vec3(1.0, 0.0, 1.0) );\n    vec4 d110 = getDataNearest( flmn + vec3(1.0, 1.0, 0.0) );\n    vec4 d111 = getDataNearest( flmn + vec3(1.0, 1.0, 1.0) );\n\n    vec3 t = lmn - flmn;\n    vec4 dY0Z0 = mix(d000, d100, t.x);\n    vec4 dY1Z0 = mix(d010, d110, t.x);\n    vec4 dY0Z1 = mix(d001, d101, t.x);\n    vec4 dY1Z1 = mix(d011, d111, t.x);\n    vec4 dZ0 = mix(dY0Z0, dY1Z0, t.y);\n    vec4 dZ1 = mix(dY0Z1, dY1Z1, t.y);\n    return mix(dZ0, dZ1, t.z);\n}\n\nvoid addSource(\n    in vec3 uvw,\n    in vec3 uvwSource, in vec3 dirSource,\n    inout float nextDensity, inout vec3 nextVelocity\n) {\n    float t = 1.0 - smoothstep( 0.0, 0.4, distance(uvw, uvwSource) );\n    nextDensity += t * 0.1;\n    nextVelocity += t * MAX_VELOCITY*normalize(dirSource);\n}\n\nvoid doPage1(out vec4 fragColor, in vec3 lmn)\n{\n    float isSpacePressed = texelFetch(iChannel1, ivec2(KEY_SPACE,0), 0).x;\n    if (isSpacePressed > 0.5) {\n        fragColor = vec4(0.0, 0.0, 0.0, 0.5);\n        return;\n    }\n\n    vec4 data0  = getDataNearest( lmn );\n    vec4 dataLA = getDataNearest( lmn + vec3(-1.0,  0.0,  0.0) );\n    vec4 dataLB = getDataNearest( lmn + vec3( 1.0,  0.0,  0.0) );\n    vec4 dataMA = getDataNearest( lmn + vec3( 0.0, -1.0,  0.0) );\n    vec4 dataMB = getDataNearest( lmn + vec3( 0.0,  1.0,  0.0) );\n    vec4 dataNA = getDataNearest( lmn + vec3( 0.0,  0.0, -1.0) );\n    vec4 dataNB = getDataNearest( lmn + vec3( 0.0,  0.0,  1.0) );\n\n    #ifdef VORTICITY_CONFINEMENT\n    vec3 curl0  = getCurlNearest( lmn );\n    vec3 curlLA = getCurlNearest( lmn + vec3(-1.0,  0.0,  0.0) );\n    vec3 curlLB = getCurlNearest( lmn + vec3( 1.0,  0.0,  0.0) );\n    vec3 curlMA = getCurlNearest( lmn + vec3( 0.0, -1.0,  0.0) );\n    vec3 curlMB = getCurlNearest( lmn + vec3( 0.0,  1.0,  0.0) );\n    vec3 curlNA = getCurlNearest( lmn + vec3( 0.0,  0.0, -1.0) );\n    vec3 curlNB = getCurlNearest( lmn + vec3( 0.0,  0.0,  1.0) );\n    #endif\n\n    // Various derivative approximations\n    vec4 dxData = 0.5 * (dataLB - dataLA);\n    vec4 dyData = 0.5 * (dataMB - dataMA);\n    vec4 dzData = 0.5 * (dataNB - dataNA);\n\n    vec3 gradDensity = vec3(dxData.w, dyData.w, dzData.w);\n    float divVelocity = dxData.x + dyData.y + dzData.z;\n    vec3 laplacian = dataLA.xyz + dataLB.xyz + dataMA.xyz + dataMB.xyz + dataNA.xyz + dataNB.xyz - 6.0*data0.xyz;\n\n    #ifdef VORTICITY_CONFINEMENT\n    vec3 gradAbsCurl = vec3(\n        length(curlLB) - length(curlLA),\n        length(curlMB) - length(curlMA),\n        length(curlNB) - length(curlNA)\n\t);\n    vec3 fVorticityConfinement = vec3(0.0);\n    if (length(gradAbsCurl) > 0.0) {\n    \tfVorticityConfinement =  VORTICITY_COEFF*cross(normalize(gradAbsCurl), curl0);\n    }\n    #else\n    vec3 fVorticityConfinement = vec3(0.0);\n    #endif\n\n    // Solve for density\n    float nextDensity = mix(data0.w, (dataLA.w + dataLB.w + dataMA.w + dataMB.w + dataNA.w + dataNB.w)/6.0, DENSITY_SMOOTHING);\n    nextDensity -= TIME_STEP*( dot(gradDensity,data0.xyz) + divVelocity*data0.w );\n\n    // Solve for velocity\n    vec3 nextVelocity = getDataInterp(lmn - TIME_STEP*data0.xyz).xyz;\n    vec3 fViscosity = VISCOSITY * laplacian;\n    vec3 fCorrectivePressure = gradDensity * K_CONST;\n    nextVelocity += TIME_STEP*(fViscosity + fVorticityConfinement) - fCorrectivePressure;\n\n    // Add sources\n    vec3 uvw = (2.0*lmn - vec3(BOX_N)) / vec3(BOX_N);\n    addSource(uvw, vec3(0.0,-0.5,0.5), vec3(0.1*sin(iTime),1.0,0.0), nextDensity, nextVelocity);\n    addSource(uvw, vec3(0.0,0.0,-0.5), vec3(cos(iTime), sin(iTime*2.0), sin(iTime)), nextDensity, nextVelocity);\n\n    // Clamp and set boundary values\n    nextDensity = clamp(nextDensity, 0.5, 3.0);\n    if (length(nextVelocity) > MAX_VELOCITY) {\n        nextVelocity = normalize(nextVelocity)*MAX_VELOCITY;\n    }\n    nextVelocity *= step(0.5, lmn) * (1.0 - step(BOX_N-1.5, lmn));\n\n    // Done!\n    fragColor = vec4(nextVelocity, nextDensity);\n}\n\nvoid doPage2(out vec4 fragColor, in vec3 lmn)\n{\n    vec4 data0  = getDataNearest( lmn );\n    vec4 dataLA = getDataNearest( lmn + vec3(-1.0,  0.0,  0.0) );\n    vec4 dataLB = getDataNearest( lmn + vec3( 1.0,  0.0,  0.0) );\n    vec4 dataMA = getDataNearest( lmn + vec3( 0.0, -1.0,  0.0) );\n    vec4 dataMB = getDataNearest( lmn + vec3( 0.0,  1.0,  0.0) );\n    vec4 dataNA = getDataNearest( lmn + vec3( 0.0,  0.0, -1.0) );\n    vec4 dataNB = getDataNearest( lmn + vec3( 0.0,  0.0,  1.0) );\n\n    // Various derivative approximations\n    vec4 dxData = 0.5 * (dataLB - dataLA);\n    vec4 dyData = 0.5 * (dataMB - dataMA);\n    vec4 dzData = 0.5 * (dataNB - dataNA);\n\n    vec3 curlVelocity = vec3(dyData.z - dzData.y, dzData.x - dxData.z, dxData.y - dyData.x);\n    fragColor = vec4(curlVelocity, 1.0);\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    vec3 lmn;\n    int pageDst;\n    lmnFromVCube(rayDir, pageDst, lmn);\n\n    if (pageDst == 1) {\n        doPage1(fragColor, lmn);\n    } else if (pageDst == 2) {\n\n        #ifdef VORTICITY_CONFINEMENT\n        doPage2(fragColor, lmn);\n        #else\n        discard;\n        #endif\n\n    } else if (pageDst == 3) {\n        discard;\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

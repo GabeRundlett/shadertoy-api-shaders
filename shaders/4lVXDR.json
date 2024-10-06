@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1483875461",
+            "description": "Just an experiment with ray tracing a sphere then rejecting solutions based on a hash and see what happens.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4lVXDR",
+            "likes": 42,
+            "name": "Loading hash...",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "sphere",
+                "hash"
+            ],
+            "usePreview": 0,
+            "username": "Zavie",
+            "viewed": 1389
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nJust a test ray tracing a sphere with a twist.\n\n--\nZavie\n\n*/\n\n#define MAX_BOUNCES 3\nfloat gamma = 2.2;\n\n// ---8<----------------------------------------------------------------------\n// Material\n\nstruct Material\n{\n    vec3 c;\t\t// diffuse color\n    vec3 f0;\t// specular color (colored)\n};\n\n// ---8<----------------------------------------------------------------------\n// Geometry\n\n#define PI acos(-1.)\nfloat hash(float x) { return fract(sin(x) * 43758.5453); }\nfloat hash(vec2 v){ return fract(sin(dot(v.xy ,vec2(12.9898,78.233))) * 43758.5453); }\n\nstruct Ray\n{\n    vec3 o;\t\t// origin\n    vec3 d;\t\t// direction\n};\n\nstruct Hit\n{\n    float t;\t// solution to p=o+t*d\n    vec3 n;\t\t// normal\n    Material m;\t// material\n};\nconst Hit noHit = Hit(1e10, vec3(0.), Material(vec3(-1.), vec3(-1.)));\n\nstruct Plane\n{\n    float d;\t// solution to dot(n,p)+d=0\n    vec3 n;\t\t// normal\n    Material m;\t// material\n};\n\nstruct Sphere\n{\n\tfloat r;\t// radius\n    vec3 p;\t\t// center position\n    Material m;\t// material\n};\n\nHit intersectPlane(Plane p, Ray r)\n{\n    float dotnd = dot(p.n, r.d);\n    if (dotnd > 0.) return noHit;\n\n    float t = -(dot(r.o, p.n) + p.d) / dotnd;\n    return Hit(t, p.n, p.m);\n}\n\nfloat surfaceHash(vec2 p, float freq)\n{\n    float h = 0.;\n    float sum = 0.;\n    for (int i = 0; i < 5; ++i)\n    {\n        h = 2. * h + hash(floor(freq * p));\n        sum = 2. * sum + 1.;\n        freq *= 2.;\n    }\n    \n    return h / sum;\n}\n\nHit intersectHashedSphere(Sphere s, Ray r)\n{\n\tvec3 op = s.p - r.o;\n    float b = dot(op, r.d);\n    float det = b * b - dot(op, op) + s.r * s.r;\n    if (det < 0.) return noHit;\n\n    det = sqrt(det);\n    float t1 = b - det;\n    float t2 = b + det;\n\n    float t = t1;\n    vec3 p = r.o + t * r.d;\n    vec3 n = (r.o + t*r.d - s.p) / s.r;\n    \n    // Reject intersection solution based on random magic.\n    if (t < 0. || surfaceHash(p.xy + vec2(0., -iTime), 3.) < 0.5)\n    {\n        t = t2;\n        p = r.o + t * r.d;\n        n = -(r.o + t*r.d - s.p) / s.r;\n    }\n    if (t < 0. || surfaceHash(p.xy + vec2(0., -iTime), 3.) < 0.5)\n    {\n        return noHit;\n    }\n\n    return Hit(t, n, s.m);\n}\n\nvec3 randomVector(float seed)\n{\n    float r2 = hash(seed);\n    float phi = 2. * PI * hash(seed + r2);\n    float sina = sqrt(r2);\n    float cosa = sqrt(1. - r2);\n\n\treturn vec3(cos(phi) * sina, cosa, sin(phi) * sina);\n}\n\nbool compare(inout Hit a, Hit b)\n{\n    if (b.m.f0.r >= 0. && b.t < a.t)\n    {\n        a = b;\n        return true;\n    }\n    return false;\n}\n\nHit intersectScene(Ray r)\n{\n    vec3 axis1 = randomVector(floor(iTime));\n    vec3 axis2 = randomVector(floor(iTime+1.));\n    vec3 axis = normalize(mix(axis1, axis2, fract(iTime)));\n    float translation = 4.*abs(2.*fract(iTime/8.)-1.) - 2.;\n\n    Material weirdMat = Material(0.05 * vec3(0., 0.05, 1.), 0.1 * vec3(1.1, 0.08, 0.01));\n    Sphere s = Sphere(1.6, vec3(0., 1.6, 0.), weirdMat);\n    Plane p  = Plane(0., vec3(0., 1., 0.), Material(vec3(0.05), vec3(0.02)));\n\n    Hit hit = noHit;\n    compare(hit, intersectPlane(p, r));\n    compare(hit, intersectHashedSphere(s, r));\n    return hit;\n}\n\n// ---8<----------------------------------------------------------------------\n// Light\n\nstruct DirectionalLight\n{\n    vec3 d;\t\t// Direction\n    vec3 c;\t\t// Color\n};\n\nDirectionalLight sunLight = DirectionalLight(normalize(vec3(1., .5, .5)), vec3(1e3));\nvec3 skyColor(vec3 d)\n{\n    float transition = pow(smoothstep(0.02, .5, d.y), 0.4);\n\n    vec3 sky = 2e2*mix(vec3(0.52, 0.77, 1), vec3(0.12, 0.43, 1), transition);\n    vec3 sun = sunLight.c * pow(abs(dot(d, sunLight.d)), 5000.);\n    return sky + sun;\n}\n\nfloat pow5(float x) { return x * x * x * x * x; }\n\n// Schlick approximation\nvec3 fresnel(vec3 h, vec3 v, vec3 f0)\n{\n    return pow5(1. - clamp(dot(h, v), 0., 1.)) * (1. - f0) + f0;\n}\n\nfloat epsilon = 4e-4;\n\nvec3 accountForDirectionalLight(vec3 p, vec3 n, DirectionalLight l)\n{\n    if (intersectScene(Ray(p + epsilon * l.d, l.d)).m.f0.r < 0.)\n    {\n        return clamp(dot(n, l.d), 0., 1.) * l.c;\n    }\n\treturn vec3(0.);\n}\n\nvec3 radiance(Ray r)\n{\n    vec3 accum = vec3(0.);\n    vec3 attenuation = vec3(1.);\n\n    for (int i = 0; i <= MAX_BOUNCES; ++i)\n    {\n        Hit hit = intersectScene(r);\n\n        if (hit.m.f0.r >= 0.)\n        {\n            vec3 f = fresnel(hit.n, -r.d, hit.m.f0);\n\n            vec3 hitPos = r.o + hit.t * r.d;\n\n            // Diffuse\n            vec3 incoming = vec3(0.);\n            incoming += accountForDirectionalLight(hitPos, hit.n, sunLight);\n\n            accum += (1. - f) * attenuation * hit.m.c * incoming;\n\n            // Specular: next bounce\n            attenuation *= f;\n            vec3 d = reflect(r.d, hit.n);\n            r = Ray(r.o + hit.t * r.d + epsilon * d, d);\n        }\n        else\n        {\n            accum += attenuation * skyColor(r.d);\n            break;\n        }\n    }\n    return accum;\n}\n\n// ---8<----------------------------------------------------------------------\n// Tone mapping\n\n// See: http://filmicgames.com/archives/75\nvec3 Uncharted2ToneMapping(vec3 color)\n{\n\tfloat A = 0.15;\n\tfloat B = 0.50;\n\tfloat C = 0.10;\n\tfloat D = 0.20;\n\tfloat E = 0.02;\n\tfloat F = 0.30;\n\tfloat W = 11.2;\n\tfloat exposure = 0.012;\n\tcolor *= exposure;\n\tcolor = ((color * (A * color + C * B) + D * E) / (color * (A * color + B) + D * F)) - E / F;\n\tfloat white = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;\n\tcolor /= white;\n\tcolor = pow(color, vec3(1. / gamma));\n\treturn color;\n}\n\n// ---8<----------------------------------------------------------------------\n// Scene\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.;\n\n    float o1 = 0.25;\n    float o2 = 0.75;\n    vec2 msaa[4];\n    msaa[0] = vec2( o1,  o2);\n    msaa[1] = vec2( o2, -o1);\n    msaa[2] = vec2(-o1, -o2);\n    msaa[3] = vec2(-o2,  o1);\n\n    vec3 color = vec3(0.);\n    for (int i = 0; i < 4; ++i)\n    {\n        vec3 p0 = vec3(0., 1.1, 4.);\n        vec3 p = p0;\n        vec3 offset = vec3(msaa[i] / iResolution.y, 0.);\n        vec3 d = normalize(vec3(iResolution.x/iResolution.y * uv.x, uv.y, -1.5) + offset);\n        Ray r = Ray(p, d);\n        color += radiance(r) / 4.;\n    }\n\n\tfragColor = vec4(Uncharted2ToneMapping(color),1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

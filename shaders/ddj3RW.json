@@ -1,0 +1,146 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1669839691",
+            "description": "Phong distribution for the specular highlights. Now with ACES tonemapping from https://www.shadertoy.com/view/XsGfWV. Mouse, WASD, Space and Shift to move\nSkybox reflections! Sky color made by @nimitz",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ddj3RW",
+            "likes": 9,
+            "name": "Raymarched Lake",
+            "published": 3,
+            "tags": [
+                "shadow",
+                "raymarcher",
+                "penumbra",
+                "diffuse"
+            ],
+            "usePreview": 0,
+            "username": "fishy",
+            "viewed": 293
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.1415926535\n\n#define AMBIENT 0.01\n#define SHADOW_STRENGTH 0.9\n#define SHADOW_K 16.0\n#define AO_DIST 0.02\n#define AO_STRENGTH 0.3\n\n#define FOG_DIST 100.0\n\n#define FRESNEL_IOR 0.9\n#define FRESNEL_BASE 0.0\n\n\n//PROJECTION MODE (not intended to be physically accurate)\n// 0: Rectilinear lens\n// 1: Fisheye lens\n#define PROJECTION 1\n\n//54 seems to be a good value... 360 is also fun.\n#define FOV_X radians(54.)\n#define FOV_Y radians(54.)\n\n#define CAM_FAR     100.\n#define CAM_STEP    500\n#define MARCH_FAC   1.0\n#define SHADOW_FAR  50.\n#define SHADOW_STEP 1\n\nstruct material\n{\n    vec3 baseColor;\n    float roughness;\n    float reflectivity;\n    float emission;\n    int matOverride;\n};\n\nvec3 evaluateMatOverride(int i, vec3 p, vec3 n, vec3 vDir, material mat, out vec3 normalMap)\n{\n    vec3 c;\n    normalMap = vec3(0.0);\n    switch (i)\n    {\n        case 0:\n            c = texture(iChannel2, p.xy*0.01*vec2(1.0, 5.0)).rgb;\n            break;\n        case 1:\n            c = texture(iChannel3, vec2(p.x+p.y, p.z)).rgb;\n            break;\n    }\n    return c;\n}\n\n\n\n\nfloat calcSpecular(vec3 e, vec3 n, vec3 l, float p)\n{\n    return pow(clamp(dot(l, reflect(e, n)), 0.0, 1.0), p);\n}\n\nfloat join(inout float a, float b, material bm, inout material m)\n{\n    if(a < b)\n    {\n        return a;\n    }\n    else\n    {\n        m = bm;\n        return b;\n    }\n    \n}\n\n\nfloat sjoin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n    \nfloat ssub( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );\n    return mix( d2, -d1, h ) + k*h*(1.0-h); }\n\nfloat sdPlane(vec3 p, float y)\n{\n    return (p.y - y);\n}\n\nfloat sdSphere(vec3 p, vec3 pos, float r)\n{\n    return length(p - pos) - r;\n}\n\nfloat sdBox( vec3 p, vec3 b )\n{\n    vec3 q = abs(p) - b;\n    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat sdBox( vec3 p, vec3 bPos, vec3 b)\n{\n    return sdBox(p - bPos, b);\n}\nfloat sdCross( in vec3 p )\n{\n    float da = sdBox(p.xyz,vec3(100000.0,1.0,1.0));\n    float db = sdBox(p.yzx,vec3(1.0,100000.0,1.0));\n    float dc = sdBox(p.zxy,vec3(1.0,1.0,100000.0));\n    return min(da,min(db,dc));\n}\n\nfloat sdMenger(vec3 p)\n{\n    float d = sdBox(p,vec3(1.0));\n\n    float s = 1.0;\n    \n    for( int m=0; m<4; m++ )\n    {\n        vec3 a = mod( p*s, 2.0 )-1.0;\n        s *= 3.0;\n        vec3 r = 1.0 - 3.0*abs(a);\n\n        float c = sdCross(r)/s;\n        d = max(d,c);\n    }\n\n    return d;\n}\n\nfloat oceanHeight(in vec2 p, float o)\n{\n    float h = 0.0;\n    for(float i = 0.; i < 5.; i++)\n    {\n        p.xy = rotZ(p.xyx, hash11(float(i))*1.0).xy;\n        float fac = exp(-i*0.8);\n        h += sin(mod((p.x+o) / fac, 6.28))*fac;\n    }\n    return h;\n}\n\n#define join(a, m1, m2) join(dist, a, m1, m2)\n\nfloat sceneDist(vec3 p, out material m)\n{\n    p.y -= 0.3;\n    m = material(vec3(0.0, 0.0, 1.0), 1.0, 1.0, 0.0, 0);\n    float dist = CAM_FAR;\n    //\n    //dist = join(sdSphere(p, vec3(-0.3, sin(iTime)*0.1, 2.0), 0.2),\n    //            material(vec3(0.0, 0.5, 1.0), 8.0, 0.0, 2), m);\n    //\n    //dist = join(sdBox(p, vec3(0.0,-0.3, 2.0), vec3(0.5, 0.06, 0.5)) - 0.02,\n    //            material(vec3(1.0, 0.0, 0.0), 8.0, 1.0, -1), m);\n    //\n    //dist = join(sdMenger(p / 0.5 - vec3(0.5, 0.4, 8.0)) * 0.5,\n    //            material(vec3(1.0, 1.0, 1.0), 8.0, 1.0, 0), m);\n    dist = join(sdPlane(p, -0.5+oceanHeight(p.xz*0.5, iTime)*0.05),\n                material(vec3(0.1, 0.3, 0.9), 1.0, 1.0, 0.0, -1), m);\n    \n    dist = join(sdPlane(p, -0.9+fbm(p.xz*0.05, 4.0, 4.0, 0.0)*15.*smoothstep(90., 100., length(p.xz))),\n                material(vec3(0.1, 0.3, 0.1), 0.01, 0.0, 0.0, 0), m);\n    \n    \n    return dist;\n}\n\nvec3 calcNormal( in vec3 p ) // for function f(p) by iq\n{\n    material m;\n    const float h = 0.001;\n    #define ZERO (min(iFrame,0))\n    vec3 n = vec3(0.0);\n    for( int i=ZERO; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*sceneDist(p+e*h, m);\n    }\n    return normalize(n);\n}\n\nfloat calcAO(vec3 p, float dist)\n{\n    material m;\n    return 1.0 - sceneDist(p + dist*calcNormal(p), m) / dist;\n}\n\nvoid march(vec3 dir, inout vec3 p, int maxSteps, float maxDist, float minDist, out bool hit, out float depth, out vec3 normal, out material m, out int iter)\n{\n    vec3 oldP = p;\n    depth = 0.0;\n    int i;\n    for(i = 0; i < maxSteps && depth < maxDist && !hit; i++)\n    {\n        float sd = sceneDist(p+depth*dir, m);\n        depth += sd*MARCH_FAC;\n\n        hit = sd < minDist;\n    }\n    \n    p = p+depth*dir;\n    normal = calcNormal(p);\n    iter = i;\n}\n\nvoid marchShadow(vec3 dir, vec3 p, int maxSteps, float maxDist, float minDist, out float inShadow, float k)\n{\n    vec3 oldP = p;\n    float dist = 0.001;\n    float totalDist = dist;\n\n    p += dist*dir;\n    inShadow = 1.0;\n    material m = material(vec3(0.0, 0.0, 0.0), 0.0, 0.0, 0.0, 0);\n    for(int i = 0; totalDist < maxDist && i < maxSteps; i++)\n    {\n        dist = sceneDist(p, m);\n        totalDist += dist;\n\n        if(dist < minDist)\n        {\n            inShadow = 1.0;\n            return;\n        }\n        \n        p += dist*dir;\n        inShadow = min(inShadow, k*dist/totalDist);\n    }\n    inShadow = 1.0-inShadow;\n}\n\nfloat vignette(vec2 p, vec2 k)\n{\n    vec2 a = 1.-(2.*pow(abs(0.5-p), vec2(k)));\n    return a.y+a.x-1.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    uv -= 0.5;\n    uv.y *= iResolution.y/iResolution.x;\n    \n    vec4 c = texture(iChannel0, vec2(0.0));\n    \n    vec2 empty = vec2(1.0, 0.0);\n    \n    vec3 eyeDir;\n    \n    switch(PROJECTION)\n    {\n\n    case(0):\n        eyeDir = normalize(vec3(uv * vec2(FOV_X, FOV_Y), 1.0));\n        eyeDir = rotX(eyeDir, -c.w);\n        eyeDir = rotY(eyeDir, -c.z);\n        break;\n    case(1):\n        eyeDir = empty.yyx;\n        eyeDir = rotX(eyeDir, -c.w-(uv.y*FOV_Y));\n        eyeDir = rotY(eyeDir, -c.z-(uv.x*FOV_X));\n    }\n    \n    vec3 eyePos = vec3(c.y, 0.9, c.x);\n    \n    vec3 lightingDir = normalize(vec3(0.0, 1.0, 1.0));\n    lightingDir = rotX(vec3(0.0, 0.0, 1.0), -3.341+mod(iTime*0.25, 3.6415));\n    if(iMouse.z > 0.0) { lightingDir = rotX(vec3(0.0, 0.0, 1.0), -iMouse.y/iResolution.y*3.0+0.5); }\n    \n\n    \n    bool hit = false;\n    float depth = 0.0;\n    vec3 normal = vec3(0.0);\n    vec3 normalMod = vec3(0.0);\n    material hitMat;\n    int cost;\n    march(eyeDir, eyePos, CAM_STEP, CAM_FAR, 0.05, hit, depth, normal, hitMat, cost);\n    float ao = calcAO(eyePos, AO_DIST);\n    if(hitMat.matOverride > -1)\n    {\n        hitMat.baseColor = evaluateMatOverride(hitMat.matOverride, eyePos, normal, eyeDir, hitMat, normalMod);\n        normal += normalMod;\n    }\n    float fresnel = FRESNEL_BASE+pow(abs(dot(normalize(eyeDir), normal)), FRESNEL_IOR)*(1.-FRESNEL_BASE);\n    hitMat.baseColor = mix(hitMat.baseColor, mix(skyTex(reflect(eyeDir, normal), lightingDir).rgb, hitMat.baseColor, fresnel), hitMat.reflectivity);\n    \n    float inShadow = 0.0;\n    marchShadow(lightingDir, eyePos, SHADOW_STEP, SHADOW_FAR, 0.0001, inShadow, SHADOW_K);\n    \n    vec3 fogColor = skyTex(vec3(eyeDir.xy, .0), lightingDir).rgb;\n    float skyBrightness = maxcomp(fogColor);\n    \n    float lighting = max(0.0, dot(normal, lightingDir)*skyBrightness);\n    float specular = calcSpecular(eyeDir, normal, lightingDir, 8.0 * hitMat.roughness);\n    inShadow *= float(hit);\n    inShadow = mix(0.0, inShadow, SHADOW_STRENGTH);\n\n\n    vec3 color = (((lighting + specular)*skyBrightness) * hitMat.baseColor) * (1.0-inShadow);\n\n    color = mix(color, hitMat.baseColor, AMBIENT);\n    color *= 1.0 - ao*AO_STRENGTH;\n    \n    color = mix(color, fogColor, pow(min(1.0, depth / FOG_DIST), 1.3));\n    color = hit? color : skyTex(eyeDir, lightingDir).rgb;\n    color = aces_tonemap(sqrt(color))*mix(vignette(fragCoord/iResolution.xy, vec2(2.5)), 1., 0.3);\n    \n    float fr = 1.-step(0., print((uv-vec2(0.474, 0.25))*9., iFrameRate, 0.3));\n\n    //fragColor = vec4(vec3(smoothstep(0.15, 0.099, ao)),1.0);\n    fragColor = vec4(color+fr,1.0);\n    //fragColor = vec4(float(cost)*0.01*(1.-float(hit)));\n    //fragColor = vec4(specular);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define MOVE_SPEED 10.\n\nconst int keyW = 87;\nconst int keyA = 65;\nconst int keyS = 83;\nconst int keyD = 68;\nconst int keyLA = 37;\nconst int keyRA = 39;\nconst int keyUA = 38;\nconst int keyDA = 40;\n\nconst int keySpace = 16;\nconst int keyShift = 32;\n\n\n\nfloat keyPressed(int keyCode)\n{\n    return texelFetch(iChannel0, ivec2(keyCode, 0), 0).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec4 keyVec = texture(iChannel1, uv);\n    \n    if(iFrame == 0)\n    {\n        keyVec = vec4(0.0);\n    }\n    \n    keyVec.xy += rotMat(-keyVec.z)*vec2(keyPressed(keyW) - keyPressed(keyS), keyPressed(keyD) - keyPressed(keyA)) * iTimeDelta * MOVE_SPEED;\n    keyVec.zw += vec2(keyPressed(keyRA) - keyPressed(keyLA), keyPressed(keyUA) - keyPressed(keyDA)) * iTimeDelta;\n    \n    fragColor = keyVec;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Sky color made by @nimitz from https://www.shadertoy.com/view/wl3czN\n#define atmoDepth 8228.\n#define earthRadius 6371000.\n#define mieDepth 1800\n#define sunColor vec3( .95, 0.96, 1.2 )\n#define ozoneHeight 30000.\n#define ozoneCoefficient (vec3(3.426, 8.298, .356) * 6e-5 / 100.)\n#define mieCoefficient 16e-6 // adjust for foggier look\n\n// custom\n#define rayleighCoefficient vec3(0.0000056  , 0.0000125 , 0.000029)\n\nvec3 getThickness(vec3 rd)\n{\n    const vec4 cns = earthRadius + \n        \t\t\tvec4(atmoDepth, mieDepth, ozoneHeight, ozoneHeight + atmoDepth);\n    const float r2 = earthRadius * earthRadius;\n    float b = -rd.y*earthRadius;\n    vec4 z = sqrt( cns*cns + (b*b - r2) );\n    return vec3(b + z.xy, z.w - z.z);\n}\n\n#define addDepth 0.0\n\nvec4 skyTex(vec3 rd, vec3 lgt)\n{\n    const vec3 addCol = vec3(1.,1.,1.);\n    const mat3 coeffs = mat3(rayleighCoefficient, vec3(mieCoefficient), ozoneCoefficient)/0.693147;\n    vec3 thickness = getThickness(rd) + addDepth*addCol;\n    float rdl = max(dot(rd, lgt), 0.0);\n\n    vec3 rayleighScatter =(thickness.x * (0.4*rdl*rdl + 1.12))* rayleighCoefficient;\n    float g = 0.8 - lgt.y*0.15 - mieCoefficient*1500.;\n    float g2 = g*g;\n    float a = inversesqrt(g2 - (2.0*g*rdl - 1.0));\n    float phaseMie = (0.4 + lgt.y*0.1 + mieCoefficient*7000.)*(1.0 - g2)*a*a*a;\n    float mieScatter = thickness.y * phaseMie * mieCoefficient;\n\n    vec3 sunCoeff = coeffs*(getThickness(lgt) + addDepth*addCol);\n    vec3 viewCoeff = coeffs*thickness;\n    vec3 absorption = (exp2(-viewCoeff) - exp2(-sunCoeff))/((sunCoeff - viewCoeff)*0.693147);\n    \n    vec3 c = clamp(sunColor*(rayleighScatter + mieScatter)*absorption*(0.6 + lgt.y*0.3), 0., 100.5);\n    \n    vec3 sun = vec3(100.0, 50.0, 0.2) * smoothstep(1.-0.008726646, 1., 1.-clamp(acos(dot(rd, lgt)), 0.001, 1.0));\n    \n    c +=  sun * smoothstep(0.0, 0.2, lgt.y);\n\n    return vec4(c, sunCoeff);\n}\n\nvec2 hash22(vec2 p)\n{\n    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nfloat hash11(float p)\n{\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat erp(float x, float k)\n{\n    return x < 0.5 ? pow(2.0*x, k)*0.5  : 1. - pow(2.0*(1.0-x), k) / 2.;\n}\n\nmat2 rotMat(float r){ return  mat2(cos(r), -sin(r), sin(r), cos(r)); }\n\n\nvec3 rotX(vec3 p, float r)\n{\n    return vec3(p.x, p.yz * rotMat(r));\n}\n\nvec3 rotY(vec3 p, float r)\n{\n    vec2 t = p.xz * rotMat(r);\n    return vec3(t.x, p.y, t.y);\n}\n\nvec3 rotZ(vec3 p, float r)\n{\n    return vec3(p.xy * rotMat(r), p.z);\n}\n\nvec3 aces_tonemap(vec3 color) // https://www.shadertoy.com/view/XsGfWV\n{\t\n\tmat3 m1 = mat3(\n        0.59719, 0.07600, 0.02840,\n        0.35458, 0.90834, 0.13383,\n        0.04823, 0.01566, 0.83777\n\t);\n\tmat3 m2 = mat3(\n        1.60475, -0.10208, -0.00327,\n        -0.53108,  1.10813, -0.07276,\n        -0.07367, -0.00605,  1.07602\n\t);\n\tvec3 v = m1 * color;    \n\tvec3 a = v * (v + 0.0245786) - 0.000090537;\n\tvec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;\n\treturn pow(clamp(m2 * (a / b), 0.0, 1.0), vec3(1.0 / 2.2));\t\n}\n\nfloat maxcomp(vec3 p) {return max(max(p.x,p.y),p.z);}\n\nvoid join(inout float a, float b)\n{\n    a = min(a, b);\n}\n\nvoid subt(inout float a, float b)\n{\n    a = max(a, -b);\n}\n\nfloat box(vec2 p, vec2 s)\n{\n    return max((abs(p)-s).x,(abs(p)-s).y);\n}\n\nfloat digit(vec2 p, int d)\n{\n    float r = 100000000.0;\n    switch(d)\n    {\n        case(0):\n            join(r, box(p, vec2(0.1, 0.15)));\n            subt(r, box(p, vec2(0.05, 0.1)));\n            break;\n        case(1):\n            join(r, box(p, vec2(0.025, 0.15)));\n            break;\n        case(2):\n            join(r, box(p, vec2(0.1, 0.15)));\n            subt(r, box(p-vec2(0.15, -0.06), vec2(0.2, 0.035)));\n            subt(r, box(p-vec2(-0.15, 0.06), vec2(0.2, 0.035)));\n            break;\n        case(3):\n            join(r, box(p, vec2(0.1, 0.15)));\n            subt(r, box(p-vec2(-0.15, -0.06), vec2(0.2, 0.035)));\n            subt(r, box(p-vec2(-0.15, 0.06), vec2(0.2, 0.035)));\n            break;\n        case(4):\n            join(r, box(p-vec2(0.075, 0.0), vec2(0.025, 0.15)));\n            join(r, box(p-vec2(0.0, 0.05), vec2(0.1, 0.1)));\n            subt(r, box(p-vec2(0.0, 0.09), vec2(0.05, 0.085)));\n            break;\n        case(5):\n            join(r, box(p, vec2(0.1, 0.15)));\n            subt(r, box(p-vec2(0.15, 0.06), vec2(0.2, 0.035)));\n            subt(r, box(p-vec2(-0.15,-0.06), vec2(0.2, 0.035)));\n            break;\n        case(6):\n            p = -p;\n            join(r, box(p-vec2(0.075, 0.0), vec2(0.025, 0.15)));\n            join(r, box(p-vec2(0.0, 0.05), vec2(0.1, 0.1)));\n            subt(r, box(p-vec2(0.0, 0.05), vec2(0.05, 0.05)));\n            break;\n        case(7):\n            join(r, box(p-vec2(0.0), vec2(0.1, 0.15)));\n            subt(r, box(p-vec2(-0.05), vec2(0.1, 0.15)));\n            break;\n        case(8):\n            join(r, box(p-vec2(0.0), vec2(0.1, 0.15)));\n            subt(r, box(p-vec2(0.0, 0.05), vec2(0.05, 0.05)));\n            subt(r, box(p-vec2(0.0, -0.05), vec2(0.05, 0.05)));\n            join(r, box(p-vec2(0.0), vec2(0.1, 0.025)));\n            break;\n        case(9):\n            join(r, box(p-vec2(0.075, 0.0), vec2(0.025, 0.15)));\n            join(r, box(p-vec2(0.0, 0.05), vec2(0.1, 0.1)));\n            subt(r, box(p-vec2(0.0, 0.05), vec2(0.05, 0.05)));\n            break;\n    }\n    return r;\n}\n\nfloat getDig(float num, float d)\n{\n    float a = floor(num/pow(10., d));\n    return a - floor(a/10.)*10.;\n}\n\nfloat print(vec2 p, float num, float spacing)\n{\n    float r = 10000.0;\n    int fig = int(ceil(log2(num) / 3.32192809489)); // log base 10 of x equals log base 2 of x divided by log base 2 of 10\n    for(int i = 0; i < fig; i++)\n    {\n        int di = int(getDig(num, float(i)));\n        join(r, digit(p+vec2(i, 0)*spacing, di));\n    }\n    return r;\n}\n\nfloat perlinNoise(vec2 p, float s, float t)\n{\n    mat2 r = rotMat(t*2.0);\n    vec2 tlVal = r*hash22(vec2(floor(p.x),  ceil(p.y)));\n    vec2 blVal = r*hash22(vec2(floor(p.x), floor(p.y)));\n    vec2 trVal = r*hash22(vec2( ceil(p.x),  ceil(p.y)));\n    vec2 brVal = r*hash22(vec2( ceil(p.x), floor(p.y)));\n    \n    vec2 tlOffset = p - vec2(floor(p.x),  ceil(p.y));\n    vec2 blOffset = p - vec2(floor(p.x), floor(p.y));\n    vec2 trOffset = p - vec2( ceil(p.x),  ceil(p.y));\n    vec2 brOffset = p - vec2( ceil(p.x), floor(p.y));\n    \n    float tl = dot(tlOffset, tlVal);\n    float bl = dot(blOffset, blVal);\n    float tr = dot(trOffset, trVal);\n    float br = dot(brOffset, brVal);\n    \n    float a = mix(bl, tl, erp(fract(p.y), s));\n    float b = mix(br, tr, erp(fract(p.y), s));\n    \n    return mix(a, b, erp(fract(p.x), s)) / 2.0 + 0.5;\n}\n\n\n\nfloat fbm(in vec2 x, float s, in float H, float time)\n{    \n    float G = exp2(-H);\n    float f = 1.0;\n    float a = 1.0;\n    float t = 0.0;\n    for( int i=0; i<8; i++ )\n    {\n        t += a*perlinNoise(f*x, s, time);\n        f *= 2.0;\n        a *= G;\n    }\n    return t * 0.5;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

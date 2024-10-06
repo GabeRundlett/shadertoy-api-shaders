@@ -1,0 +1,135 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1666332173",
+            "description": "Experiment to attempt to compute antialiasing by traversing texels.\n\n*mouse to move magnifying glass*\n*shift-mouse to turn camera*\n*arrow keys to move*\n*key A to switch to supersample aa*\n*key S to show step count*\n*space to resume camera spin*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "dds3R4",
+            "likes": 12,
+            "name": "Antialiasing via Texel Traversal",
+            "published": 3,
+            "tags": [
+                "pixel",
+                "voxel",
+                "voxel",
+                "antialiasing",
+                "checker",
+                "aa",
+                "traversal"
+            ],
+            "usePreview": 1,
+            "username": "fenix",
+            "viewed": 309
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Created by fenix in 2022\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n// Experiment to attempt to compute antialiasing by traversing pixels. This is like\n// voxel traversal, but done in 2D so I guess it traverses pixels instead of voxels.\n// I've seen some stuff written talking about 2D voxels, but to me, that's a pixel,\n// or a texel in this case since the pixels are part of a texture.\n//\n// If you click, you'll move the red \"magnifying glass\" that lets you browse the colors\n// of screen pixels. It also focuses the overhead camera in the inset window, showing\n// a birds-eye view of the situation. The red quadrilateral shows what the pixel's outline\n// projects to on the ground, in context with its surrounding texels. Hopefully you shold\n// see that when the red shape mostly crosses texels of a certain color, the color in the\n// in the magnfying glass (and thus the color on the ground at that point) should be similar.\n//\n// The pixels at the bottom of the screen are pretty boring...it's hard to even hit one that\n// crosses a boundary. But up near the top of the screen things are a bit more interesting.\n//\n// If you hold shift and click and drag with the mouse, you can aim the camera. You can fly\n// the camera around using the arrow keys. Also, pressing space restarts the camera spin.\n//\n// The approximation here is that I integrate the color just linearly, along the shape\n// formed by the projection of the four corners of the pixel. This is the same shape drawn \n// in red in the inset overhead camera view. That's where the texel traversal comes in;\n// it allows me to compute the total length of the shape clipped to each texel. The resulting\n// color is then the average color, weighted by line length.\n//\n// This works pretty well for extremely elongated pixels (close to the horizon) because\n// their projections are very nearly a line anyway. This is demonstrated clearly by\n// how long and skinny horizon pixels become in the inset view.\n//\n// It produces artifacts if you fly far enough into the sky and look down, as the pixel\n// projections grow large enough to encompass an entire texel, because we can go all the\n// way around the interior texel without noticing it.\n//\n// I thought about trying to implement a 2D (maybe DDA) search over all the texels in\n// the projection, but that seems complicated, probably requiring polygon clipping of\n// each square? If there's a cheap way to do this, I'd be interested.\n//\n// I have a feeling that those kind of \"shrinking\" projections (many more texels than\n// screen pixels) are better handled in hardware anyway. Surely once we start to fetch a\n// few hundred texels this way, our GPUS are going to bog down. Maybe this kind of\n// anti-aliasing could be combined with hardware mip maps for some kind of benefit...?\n//\n// You can compare to super-sampled aa by holding the A key, but it's a lot slower. I\n// suppose one of those adaptive antialiasing schemes would be faster, and I'm curious\n// if it would give the same quality and performance as the texel traversal method.\n//\n// Buffer A is only for managing persistent state\n//\n// --------------------------------------------------------------------------------------------\n\nconst vec3 SKY_RGB = vec3(.5, .5, 1.);\nconst vec3 SKY = pow(SKY_RGB, vec3(2.2));\nconst int BLUR = 2; // change to 1 for higher resolution but some shimmering when moving\n\nvec2 norm(vec2 coord)\n{\n     return (2. * coord - iResolution.xy ) / iResolution.y;\n}\n\nvec3 linear2srgb(vec3 linear)\n{\n    return pow(linear, vec3(1./2.2));\n}\n\nvec3 srgb2linear(vec3 srgb)\n{\n    return pow(srgb, vec3(2.2));\n}\n\nvec2 rayHitGround(vec2 p, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft)\n{\n    vec3 ray = fxCalcRay(p, cameraFwd, cameraUp, cameraLeft);    \n    return cameraPos.xz + cameraPos.y * ray.xz / ray.y;\n}\n\nvec2[4] getPixelCornerHits(vec2 p, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft)\n{\n    // sorta-hack: increase pixel size to create some blur. This minimizes some artifacts.\n    vec2 delta = vec2(BLUR, -BLUR) / iResolution.y;\n    return vec2[] (\n        rayHitGround(p + delta.yx, cameraPos, cameraFwd, cameraUp, cameraLeft),\n        rayHitGround(p + delta.yy, cameraPos, cameraFwd, cameraUp, cameraLeft),\n        rayHitGround(p + delta.xy, cameraPos, cameraFwd, cameraUp, cameraLeft),\n        rayHitGround(p + delta.xx, cameraPos, cameraFwd, cameraUp, cameraLeft));\n}\n\nvec3 colorMap(ivec2 mapPos)\n{\n    vec3 result = mix(vec3(abs(mapPos.x + mapPos.y) % 2 == 1), // checker\n        texture(iChannel1, vec2(mapPos) / iChannelResolution[1].xy).xyz, // texture\n        float(mapPos.y >= 0));\n    return result;\n}\n\nvec2 intersectXY(ivec2 xy, vec2 from, vec2 dir) { return (vec2(xy) - from) / dir; }\n\nvec3 pixelTrace(vec2 from, vec2 to)\n{\n    vec2 rayDir = to - from;\n\tivec2 mapPos = ivec2(floor(from));\n\tivec2 finalMapPos = ivec2(floor(to));\n    vec2 cur = from;\n\tvec2 deltaDist = abs(length(rayDir) / rayDir);\n    ivec2 rayStep = ivec2(sign(rayDir));\n    vec2 fixup = sign(rayDir) * 0.5 + 0.5;\n\tvec2 sideDist = (sign(rayDir) * (vec2(mapPos) - from) + fixup) * deltaDist; \n\t\n    vec3 color = vec3(0);\n    float len = 0.;\n    const int MAX_RAY_STEPS = 128;\n\n    int i;\n\tfor (i = 0; i < MAX_RAY_STEPS; i++)\n    {\n\t\tif (mapPos == finalMapPos)\n        {\n            // add the color from the last segment, which only goes to \"to\"\n            color += colorMap(mapPos) * distance(cur, to);\n            cur = to;\n            break;\n        }\n        \n        bvec2 mask = lessThanEqual(sideDist.xy, sideDist.yx);\n        \n        // find where the ray intersects the next pixel\n        vec2 ts = intersectXY(mapPos + ivec2(fixup), from, rayDir);\n        vec2 next = from + rayDir * sum(vec2(mask) * ts);\n        \n        // add up the color weigthed by length\n        color += colorMap(mapPos) * distance(cur, next);\n        cur = next;\n\t\n        // go to the next pixel\n\t\tsideDist += vec2(mask) * deltaDist;\n\t\tmapPos += ivec2(vec2(mask)) * rayStep;\n\t}\n    \n    color /= distance(from, cur);\n    \n    // if we gave up, turn grey (reduces artifacts at horizon from high altitudes)\n    color = mix(color, vec3(.5), float(i == MAX_RAY_STEPS));\n    \n    // handle debug step draw\n    color = mix(color, sin(float(i) * vec3(9,11,33)), float(keyDown(KEY_S)));\n    \n    return color;\n}\n\nvec3 integratePixelEdges(vec2 p, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft)\n{\n    vec2 groundHits[4] = getPixelCornerHits(p, cameraPos, cameraFwd, cameraUp, cameraLeft);\n\n    float len = 0.;\n    vec3 color = vec3(0);\n    for (int i = 0; i < 4; ++i)\n    {\n        vec2 from = groundHits[i];\n        vec2 to = groundHits[(i + 1) % 4];\n        float segLen = distance(from, to);\n        \n        len += segLen;\n        color += pixelTrace(from, to) * segLen;\n    }\n    \n    return color / len;\n}\n\nvec3 superSamplePixel(vec2 p, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft)\n{\n    vec2 points[4] = getPixelCornerHits(p, cameraPos, cameraFwd, cameraUp, cameraLeft);\n\n    const int NUM_SAMPLES_X = 32;\n    const int NUM_SAMPLES_Y = 64;\n    vec2 deltaX = (points[1] - points[0]) / float(NUM_SAMPLES_X - 1);\n    vec2 deltaY = (points[2] - points[1]) / float(NUM_SAMPLES_Y - 1);\n    vec2 rowPos = points[0];\n    vec3 color = vec3(0);\n    \n    for (int i = 0; i < NUM_SAMPLES_X; ++i)\n    {\n        vec2 pos = rowPos;\n        \n        for (int j = 0; j < NUM_SAMPLES_Y; ++j)\n        {\n            ivec2 mapPos = ivec2(floor(pos));\n            color += colorMap(mapPos);\n\n            pos += deltaX;\n        }\n        \n        rowPos += deltaY;\n    }\n    \n    return color / float(NUM_SAMPLES_X * NUM_SAMPLES_Y);\n}\n\nvec3 renderFloor(vec2 p, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft)\n{\n    if (keyDown(KEY_A)) return superSamplePixel(p, cameraPos, cameraFwd, cameraUp, cameraLeft);\n    \n    return integratePixelEdges(p, cameraPos, cameraFwd, cameraUp, cameraLeft);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 state = texelFetch(iChannel0, ivec2(1, 0), 0);\n    vec3 cameraPos = texelFetch(iChannel0, ivec2(2, 0), 0).xyz;\n    vec3 cameraFwd = spherical(state.zw);\n\n    vec3 cameraLeft, cameraUp;\n    fxCalcCamera(cameraPos, vec3(0, 1, 0), cameraFwd, cameraLeft, cameraUp);\n\n    vec2 p = norm(fragCoord);\n    vec3 rayDir = fxCalcRay(p, cameraFwd, cameraUp, cameraLeft);    \n    vec2 mouseP = norm(state.xy);\n    vec3 mouseDir = fxCalcRay(mouseP, cameraFwd, cameraUp, cameraLeft);    \n    vec2 mouseGroundHit = cameraPos.xz + cameraPos.y * mouseDir.xz / mouseDir.y;\n\n    vec2 INSET_BOTTOM = vec2(.4 * iResolution.x / iResolution.y, -.9);\n    vec2 INSET_TOP = vec2(.95 * iResolution.x / iResolution.y, 0.);\n    float FRAME_WIDTH = 0.01;\n    if (all(greaterThan(p, INSET_BOTTOM - FRAME_WIDTH)) &&\n        all(lessThan(p, INSET_TOP + FRAME_WIDTH)))\n    {\n        // inset frame\n        fragColor = vec4(0,1,0,1);\n        \n        if (all(greaterThan(p, INSET_BOTTOM)) &&\n            all(lessThan(p, INSET_TOP)))\n        {\n            // draw inset\n            if (mouseDir.y >= 0.)\n            {\n                fragColor = vec4(SKY, 1);\n            }\n            else\n            {            \n                vec2 mouseHits[4] = getPixelCornerHits(mouseP, cameraPos, cameraFwd, cameraUp, cameraLeft);\n                vec2 delta0 = mouseHits[0] - mouseGroundHit;\n                vec2 delta1 = mouseHits[1] - mouseGroundHit;\n                float insetScale = max(delta0.x, max(delta0.y, max(delta1.x, delta1.y)));\n                p -= (INSET_TOP + INSET_BOTTOM) * 0.5;                \n                p *= 25.*insetScale / vec2(INSET_TOP - INSET_BOTTOM) * 0.5;\n                p.x *= .32*iResolution.x / iResolution.y;\n\n                vec3 insetCameraPos\t= vec3(mouseGroundHit.x, 1, mouseGroundHit.y);\n                vec3 insetCameraFwd = vec3(0, -1, 0);\n                \n                vec3 insetCameraLeft, insetCameraUp;\n                fxCalcCamera(insetCameraPos, cameraFwd, insetCameraFwd, insetCameraLeft, insetCameraUp);\n\n                vec2 insetGroundHit = rayHitGround(p, insetCameraPos, insetCameraFwd, insetCameraUp, insetCameraLeft);\n                if (insetGroundHit.y < 0.)\n                {\n                    vec2 m = mod(insetGroundHit, vec2(2.));\n                    float sd = min(boxDist(vec2(.5, 1.5), m), boxDist(vec2(1.5, .5), m));\n                    fragColor = vec4(smoothstep(0., insetScale*3./iResolution.y, vec3(.5 - sd)), 1);\n                }\n                else\n                {\n                    fragColor = vec4(renderFloor(p, insetCameraPos, insetCameraFwd, insetCameraUp, insetCameraLeft), 1);\n                }\n                \n                // render pixel outline\n                float d = 0.01 * insetScale;                \n                drawLine(mouseHits[0], mouseHits[1], insetGroundHit, d, d*4., fragColor);\n                drawLine(mouseHits[1], mouseHits[2], insetGroundHit, d, d*4., fragColor);\n                drawLine(mouseHits[2], mouseHits[3], insetGroundHit, d, d*4., fragColor);\n                drawLine(mouseHits[3], mouseHits[0], insetGroundHit, d, d*4., fragColor);\n            }\n        }\n    }\n    else\n    {\n        vec3 floorColor = renderFloor(p, cameraPos, cameraFwd, cameraUp, cameraLeft);\n        fragColor = vec4(mix(SKY, floorColor, float(rayDir.y < 0.)), 1);\n        \n        // draw mouse\n        float mouseDist = distance(mouseP, p);\n        const float d = 0.003;\n        if (mouseDist < d*12.)\n        {\n            vec3 mouseColor = mouseDir.y < 0. ?\n                renderFloor(mouseP, cameraPos, cameraFwd, cameraUp, cameraLeft) :\n                SKY;\n\n            fragColor.xyz = mix(fragColor.xyz, vec3(1,0,0), 1. - smoothstep(d*8., d*9., mouseDist));\n            fragColor.xyz = mix(fragColor.xyz, vec3(mouseColor), 1. - smoothstep(d*6., d*7., mouseDist));\n        }\n    }\n    \n    fragColor.xyz = linear2srgb(fragColor.xyz);\n    fragColor.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// --------------------------------------------------------------------------------------------\n// Handle persistent state: mouse input, attract mode, etc\n// --------------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ifc = ivec2(fragCoord);\n    if (ifc == ivec2(0))\n    {\n        if (iFrame == 0)\n        {\n            fragColor = vec4(0,0,-iResolution.xy);\n            return;\n        }\n\n        fragColor.xy = iMouse.xy; // record previous mouse for diffs\n        fragColor.zw = texelFetch(iChannel0, ifc, 0).zw; // remember resolution; negative means attract mode on\n        if (abs(fragColor.zw) != iResolution.xy || keyDown(KEY_SPACE))\n        {\n            fragColor.zw = -iResolution.xy;\n        }\n        else if (iMouse.z > 0. || keyDown(KEY_LEFT) || keyDown(KEY_UP) || keyDown(KEY_RIGHT) || keyDown(KEY_DOWN))\n        {\n            fragColor.zw = abs(fragColor.zw);\n        }\n        return;\n    }\n    \n    vec4 oldMouseRes = texelFetch(iChannel0, ivec2(0), 0);\n    \n    if (ifc == ivec2(1, 0))\n    {\n        float y = iResolution.y * (.92 + 0.02 * smoothstep(0., 1400., iResolution.y));\n        vec2 initPos = vec2(iResolution.x * .5, y);\n        if (iFrame == 0)\n        {\n            fragColor = vec4(initPos, 0, 2);\n            return;\n        }\n\n        fragColor = texelFetch(iChannel0, ifc, 0);\n        if (oldMouseRes.z < 0.)\n        {\n            // attract mode\n            fragColor.xy = initPos;\n            fragColor.z += 0.001;\n        }\n        else\n        {\n            if (keyDown(KEY_SHIFT))\n            {\n                // turn camera\n                if (iMouse.w < 0. && iMouse.z > 0.)\n                    fragColor.zw -= vec2(2, -2)*(iMouse.xy - oldMouseRes.xy) / iResolution.xy;\n            }\n            else\n            {\n                // move magnifying glass\n                fragColor.xy = iMouse.xy;\n            }\n        }\n        \n        return;\n    }\n    \n    vec4 state = texelFetch(iChannel0, ivec2(1, 0), 0);\n\n    if (ifc == ivec2(2, 0))\n    {\n        if (iFrame == 0)\n        {\n            fragColor = vec4(0, 1, 0, 0);\n            return;\n        }\n        \n        fragColor = texelFetch(iChannel0, ifc, 0);\n        \n        vec3 cameraFwd = spherical(state.zw);\n        cameraFwd.y = -cameraFwd.y;\n        vec3 cameraLeft = -normalize(cross(cameraFwd, vec3(0, 1, 0)));\n        \n        if (keyDown(KEY_UP))\n        {\n            fragColor.xyz -= 0.1 * cameraFwd;\n        }\n        if (keyDown(KEY_DOWN))\n        {\n            fragColor.xyz += 0.1 * cameraFwd;\n        }\n        if (keyDown(KEY_LEFT))\n        {\n            fragColor.xyz -= 0.1 * cameraLeft;\n        }\n        if (keyDown(KEY_RIGHT))\n        {\n            fragColor.xyz += 0.1 * cameraLeft;\n        }\n        fragColor.y = max(0.1, fragColor.y);\n\n        return;\n    }\n    \n    discard;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void fxCalcCamera(in vec3 cameraPos, in vec3 worldUp, in vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraLeft = -normalize(cross(cameraFwd, worldUp));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd)) * 0.5;\n}\n\nvec3 fxCalcRay(in vec2 screenPos, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nfloat linePointDist(in vec2 newPos, in vec2 oldPos, in vec2 fragCoord)\n{\n    vec2 pDelta = (fragCoord - oldPos);\n    vec2 delta = newPos - oldPos;\n    float deltaLen2 = dot(delta, delta);\n\n    // Find the closest point on the line segment from old to new\n    vec2 closest;\n    if (deltaLen2 > 1e-10)\n    {\n        float deltaInvSqrt = inversesqrt(deltaLen2);\n        vec2 deltaNorm = delta * deltaInvSqrt;\n        closest = oldPos + deltaNorm * max(0.0, min(1.0 / deltaInvSqrt, dot(deltaNorm, pDelta)));\n    }\n    else\n    {\n        closest = oldPos;\n    }\n\n    // Distance to closest point on line segment\n    vec2 closestDelta = closest - fragCoord;\n    return length(closestDelta);\n}\n\nfloat boxDist(vec2 a, vec2 b) { return max(abs(a.x - b.x), abs(a.y - b.y)); }\nfloat sum(vec2 x) { return x.x + x.y; }\n\nvoid drawLine(vec2 from, vec2 to, vec2 p, float d1, float d2, inout vec4 fragColor)\n{\n    float dist = linePointDist(from, to, p);\n    fragColor = mix(fragColor, vec4(1,0,0,1), 1. - smoothstep(d1, d2, dist));\n}\n\nvec3 spherical(vec2 angles)\n{\n    vec4 sc = vec4(sin(angles), cos(angles));\n    return vec3(sc.y * sc.z, sc.w, sc.y * sc.x);\n}\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SHIFT 16\n#define KEY_SPACE 32\n#define KEY_LEFT 37\n#define KEY_UP 38\n#define KEY_RIGHT 39\n#define KEY_DOWN 40\n#define KEY_A 65\n#define KEY_S 83\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

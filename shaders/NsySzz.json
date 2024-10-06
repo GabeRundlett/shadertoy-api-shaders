@@ -1,0 +1,56 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1635455003",
+            "description": "creates a height map with a given image, and then displays the height map on a plane\n\nWhile I'm not the first to make something like this, it was a good learning experience.\n\nI'm curious what else I can do with height maps and SDFs now.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NsySzz",
+            "likes": 16,
+            "name": "Height Map with RayMarching",
+            "published": 3,
+            "tags": [
+                "2d",
+                "3d",
+                "postprocess",
+                "height",
+                "image",
+                "sample"
+            ],
+            "usePreview": 1,
+            "username": "Remming_Senegal",
+            "viewed": 1558
+        },
+        "renderpass": [
+            {
+                "code": "#define FOV 90.0\n#define PI 3.1415926535\n\n// Max steps for ray marcher\n#define MAX_STEPS 600\n#define MAX_DISTANCE 15.0\n// Max threshold for error\n#define EPSILON 0.001\n#define NORMAL_EPSILON 0.001\n\n//height factor for heightmap \n#define HEIGHT_FACTOR 0.5\n\n// Uncomment the line below to see just the heightmap\n//#define DEBUG\n\n// Uncomment the line below for free camera control\n//#define FREE_CAMERA\n\nfloat luminance(vec3 col) {\n    return (0.2126*col.r + 0.7152*col.g + 0.0722*col.b);\n}\n\nstruct Ray {\n    vec3 ori;\n    vec3 dir;\n};\n\nmat3 RotationX(float rotation) {\n    mat3 rotateX = mat3(\n        1.0, 0.0, 0.0,\n\t\t0.0, cos(rotation), -sin(rotation),\n\t\t0.0, sin(rotation), cos(rotation)\n    );\n\n    return rotateX;\n}\n\nmat3 RotationY(float rotation) {\n    mat3 rotateY = mat3(\n        cos(rotation), 0.0, sin(rotation),\n\t\t0.0, 1.0, 0.0, \n\t\t-sin(rotation), 0.0, cos(rotation)\n    );\n\n    return rotateY;\n}\n\nmat3 RotationZ(float rotation) {\n    mat3 rotateZ = mat3(\n        cos(rotation), -sin(rotation), 0.0,\n\t\tsin(rotation), cos(rotation), 0.0,\n\t\t0.0, 0.0, 1.0\n    );\n\n    return rotateZ;\n}\n\n/*\n    Applies transformations as we see fit\n    It's in a function like this because we call this twice\n        -Transform the ray that the scene uses\n        -Transform the UV that the tetxure shader uses\n    THIS IS A VERY IMPORTANT FUNCTION! DO NOT LOOSE IT!\n*/\nvoid Transform(inout vec3 p) {\n    p *= RotationY(iTime);\n}\n\n/*\n    Distance estimator for heightmap\n    Took me some time, but I was able to figure out how to get a distance function\n    \n    MATH ON HOW IT WORKS:\n    (there's some notation errors in the image, where I swapped out p.z or b.y with p.x and b.x respectively)\n    (Too lazy to fix it and upload it again, maybe in the future)\n    https://i.imgur.com/0Shiq0g.jpg\n    \n    \n    DESCRIPTION ON HOW IT WORKS:\n    takes distance as if it were a box.\n    The Y distance however, also subtracts the distance of the heightmap\n    Calculating the rest like a box does the trick\n    \n    So many thanks to IQ and specifically this video that he made:\n    https://youtu.be/62-pRVZuS5c\n\n*/\n\nconst float upperBound = 2.0;\nconst float g = sin(atan(1.,upperBound));\n\nfloat sdHeightMap(vec3 p, vec3 b) {\n\n  vec3 q = abs(p) - b;\n  \n  vec2 uv = vec2(min(p.x,b.x),min(p.z,b.z));\n  \n  // iChannel0 can technically be replaced with any black-white image\n  float h = luminance(texture(iChannel0,uv).rgb);\n  h *= HEIGHT_FACTOR;\n  \n  q.y -= h;\n  q.y *= g;\n  \n  q.x = max(0.0,q.x);\n  q.y = max(0.0,q.y);\n  q.z = max(0.0,q.z);\n  \n  float dist = length(q);\n  \n  return dist;\n}\n\nfloat Scene(vec3 ray) {\n    // Transform around the origin\n    Transform(ray);\n    \n    float sd = 1.0;\n    float heightmap = sdHeightMap(ray,vec3(1.0,0.1,1.0));\n   \n    sd = min(sd,heightmap);\n    return sd;\n}\n\n//RayMarching scene\nfloat rayMarch(Ray o, inout int dist) {\n    vec3 ray;\n    float sd,d;\n  \t\n    for(int i = 0; i < MAX_STEPS; i++) {\n        ray = o.ori + (o.dir * d);\n        sd = Scene(ray);\n        \n        if(sd < EPSILON) {\n            dist = i;\n            return d;\n        }\n        d += sd;\n        \n        if(d > MAX_DISTANCE) break;\n    }\n}\n\n// Various shaders for beautifying the scene\nvec3 Normal(vec3 p) {\n    float d0 = Scene(p);\n    \n    float dX = Scene(p - vec3(NORMAL_EPSILON,0.0,0.0));\n    float dY = Scene(p - vec3(0.0,NORMAL_EPSILON,0.0));\n    float dZ = Scene(p - vec3(0.0,0.0,NORMAL_EPSILON));\n    \n    vec3 r = vec3(d0 - dX, d0 - dY, d0 - dZ);\n    \n    return normalize(r);\n}\n\n// This was again, an artifact of old horrible code.\nvec3 AmbientOcclusion(vec3 p, int complexity) {\n\n    return vec3(0.0);\n}\n\nvec3 Sky(Ray light,vec3 skycolor,vec3 basecol) {    \n    float ray = dot(light.ori,light.dir);\n    return (skycolor * ray) + basecol;\n}\n\n#ifndef DEBUG\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // Set (0,0) to the center of the screen\n    uv = (uv * 2.0 - 1.0)/2.0;\n    \n    // Apply aspect ratio\n    float aspect = iResolution.x/iResolution.y;\n    uv.x *= aspect;\n    \n    // Setting up 3D space\n    vec3 xyz = normalize(vec3(uv,1.0));\n    float fovrange = tan(radians(FOV*.5));\n    xyz *= fovrange;\n\n    // Setting up camera\n    Ray camera;\n    \n    camera.ori = vec3(1.5,1.5,0.0);\n    #ifndef FREE_CAMERA\n    camera.dir = vec3(0.9,-1.57,0.0);\n    #else\n    camera.dir = vec3(-radians(iMouse.y)+PI/2.0,-radians(iMouse.x),0.0);\n    #endif\n    \n    // Transforming 3D space to camera space\n    xyz *= RotationX(camera.dir.x) * RotationY(camera.dir.y) * RotationZ(camera.dir.z);\n    \n    // Setting up the raymarch\n    Ray rendered;\n    rendered.ori = camera.ori;\n    rendered.dir = xyz;\n    \n    // Applying raymarch\n    int dist;\n    float ray = rayMarch(rendered,dist);\n    rendered.dir *= ray;\n    rendered.ori += rendered.dir;\n    \n    //Correct UV coords to transform with the image\n    vec3 textuv = rendered.ori;\n    Transform(textuv);\n    \n    // Applying appropriate colors\n    vec3 flatcol = vec3(texture(iChannel0,textuv.xz).r);\n    flatcol *= vec3(1.0,1.0,0.6);\n    \n    // Fog applied to image\n    float fogFactor = clamp(0.0,1.0,ray * 0.1);\n    vec3 fogcol = vec3(0.2);\n    flatcol = mix(flatcol,fogcol,fogFactor);\n    \n    // Set up lights\n    Ray skylight;\n    skylight.ori = xyz;\n    skylight.dir = vec3(-0.5,-1.0,0.0);\n    skylight.dir = normalize(skylight.dir);\n    vec3 lightcol = vec3(0.5,0.6,0.9);\n    vec3 baselight = vec3(0.3,0.3,0.6);\n    \n    // Creating normals of scene for some nice lighting\n    vec3 normal = Normal(rendered.ori);\n    \n    // Apply diffuse lighting\n    float diffuse = dot(-skylight.dir,normal);\n    \n    flatcol *= diffuse;\n    \n    // Apply specular ligting\n    vec3 reflected = reflect(skylight.dir,normal);\n    float specular = dot(-skylight.dir,reflected);\n    float specularpower = 50.0; //the higher the number the less spread out the light is\n    float specularstrength = 0.2;\n    specular = pow(specular,specularpower);\n    specular *= specularstrength;\n    \n    // For some reason if the specular value goes up too high, it turns black.\n    // Could be floating point overflow, but for now this is the work around\n    specular = (specular < 50.0) ? specular : 0.0;\n    \n    flatcol += specular;\n    //flatcol = vec3(specular);\n    \n    // Sky lighting applied\n    if(ray < 1.0) {\n        flatcol = Sky(skylight,lightcol,baselight);\n    }\n    \n    // Output to screen\n    fragColor = vec4(flatcol,1.0);\n}\n#else \nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    vec2 uv = fragCoord/iResolution.xy;\n    vec3 col = texture(iChannel0,uv).rgb;\n    float h = luminance(col);\n    h *= -1.0;\n    h += 0.5;\n    \n    fragColor = vec4(vec3(h),1.0);\n    \n}\n#endif",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1605765292",
+            "description": "A cheaper alternative to Box/Triplanar mapping that performs only two texture fetches instead of three. Useful for texturing 3D geometry when it doesn't have UV coords but can't afford 3D texturing and when triplanar mapping take up too much bandwidth.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ws3Bzf",
+            "likes": 102,
+            "name": "Biplanar mapping",
+            "published": 3,
+            "tags": [
+                "3d",
+                "triplanar",
+                "boxmap",
+                "biplanar"
+            ],
+            "usePreview": 1,
+            "username": "iq",
+            "viewed": 30783
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2020 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n// https://www.youtube.com/c/InigoQuilez\n// https://iquilezles.org\n\n\n// An alternative to box mapping (a.k.a. \"roundcube\" or \n// \"triplanar\" mapping), where some extra ALU computations\n// are performed but one texture fetch is avoided, for a\n// total of just two.\n\n// The idea is that instead of doing the 3 planar projections\n// (in the X, Y and Z directions) and later blend them\n// together based on the alignment of the normal vector to\n// each of those three directions, we can perhaps get away\n// with picking only the two most relevant projection\n// directions out of the three and ignore the third.\n// That introduces in theory some discontinutity but it\n// seems is not noticeable, and it saves a precious\n// texture fetch.\n\n// Note that the texture coord derivatives need to be taken\n// before the projection axis selections are done, to\n// prevent filtering issue. Check the biplanar() function\n// below.\n//\n// More information here:\n//\n// https://iquilezles.org/articles/biplanar\n//\n// For a more complicated example of biplanar texturing:\n//\n// https://www.shadertoy.com/view/3ddfDj\n//\n// Also for comparison, here's traditional boxmapping:\n//\n// https://www.shadertoy.com/view/MtsGWH\n\n\nvec4 biplanar( sampler2D sam, in vec3 p, in vec3 n, in float k )\n{\n    // grab coord derivatives for texturing\n    vec3 dpdx = dFdx(p);\n    vec3 dpdy = dFdy(p);\n    n = abs(n);\n\n    // determine major axis (in x; yz are following axis)\n    ivec3 ma = (n.x>n.y && n.x>n.z) ? ivec3(0,1,2) :\n               (n.y>n.z)            ? ivec3(1,2,0) :\n                                      ivec3(2,0,1) ;\n    // determine minor axis (in x; yz are following axis)\n    ivec3 mi = (n.x<n.y && n.x<n.z) ? ivec3(0,1,2) :\n               (n.y<n.z)            ? ivec3(1,2,0) :\n                                      ivec3(2,0,1) ;\n    // determine median axis (in x;  yz are following axis)\n    ivec3 me = ivec3(3) - mi - ma;\n    \n    // project+fetch\n    vec4 x = textureGrad( sam, vec2(   p[ma.y],   p[ma.z]), \n                               vec2(dpdx[ma.y],dpdx[ma.z]), \n                               vec2(dpdy[ma.y],dpdy[ma.z]) );\n    vec4 y = textureGrad( sam, vec2(   p[me.y],   p[me.z]), \n                               vec2(dpdx[me.y],dpdx[me.z]),\n                               vec2(dpdy[me.y],dpdy[me.z]) );\n    \n    // blend factors\n    vec2 w = vec2(n[ma.x],n[me.x]);\n    // make local support\n    w = clamp( (w-0.5773)/(1.0-0.5773), 0.0, 1.0 );\n    // shape transition\n    w = pow( w, vec2(k/8.0) );\n    // blend and return\n    return (x*w.x + y*w.y) / (w.x + w.y);\n}\n\n\n//===============================================================================================\n\n#if HW_PERFORMANCE==0\n#define AA 1\n#else\n#define AA 2\n#endif\n\nfloat smin( float a, float b, float k )\n{\n\tfloat h = clamp( 0.5 + 0.5*(b-a)/k, 0.0, 1.0 );\n\treturn mix( b, a, h ) - k*h*(1.0-h);\n}\n\nfloat map( in vec3 p )\n{\n\tfloat d = length(p-vec3(0.0,1.0,0.0))-1.0;\n    d = smin( d, p.y, 1.0 );\n    return d;\n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal( in vec3 pos, in float eps )\n{\n    vec2 e = vec2(1.0,-1.0)*0.5773*eps;\n    return normalize( e.xyy*map( pos + e.xyy ) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx ) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy ) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx ) );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 tot = vec3(0.0);\n#if AA>1\n    for( int m=0; m<AA; m++ )\n    for( int n=0; n<AA; n++ )\n    {\n        // pixel coordinates\n        vec2 o = vec2(float(m),float(n)) / float(AA) - 0.5;\n        vec2 p = (2.0*(fragCoord+o)-iResolution.xy)/iResolution.y;\n#else    \n        vec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n#endif\n\n        // camera movement\t\n        float an = 0.2*iTime;\n        vec3 ro = vec3( 2.5*sin(an), 2.0, 2.5*cos(an) );\n        vec3 ta = vec3( 0.0, 1.0, 0.0 );\n        // camera matrix\n        vec3 ww = normalize( ta - ro );\n        vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0) ) );\n        vec3 vv = normalize( cross(uu,ww));\n        // create view ray\n        vec3 rd = normalize( p.x*uu + p.y*vv + 1.5*ww );\n\n        // raymarch\n        const float tmax = 8.0;\n        float t = 1.0;\n        for( int i=0; i<128; i++ )\n        {\n            vec3 pos = ro + rd*t;\n            float h = map(pos);\n            if( h<0.001 ) break;\n            t += h;\n            if( t>tmax ) break;\n        }\n        \n        vec3 col = vec3(0.0);\n        if( t<tmax )\n        {\n            vec3 pos = ro + rd*t;\n            vec3 nor = calcNormal( pos, 0.001 );\n            float occ = clamp(0.4 + 0.6*nor.y, 0.0, 1.0);\n            col = biplanar( iChannel0, 0.5*pos, nor, 8.0 ).xyz;\n            col = col*col;\n            col *= occ;\n            col *= 2.0;\n            col *= 1.0-smoothstep(1.0,6.0,length(pos.xz));\n        }\n        // to gamma space\n        col = sqrt( col );\n        tot += col;\n#if AA>1\n    }\n    tot /= float(AA*AA);\n#endif\n\n\tfragColor = vec4( tot, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

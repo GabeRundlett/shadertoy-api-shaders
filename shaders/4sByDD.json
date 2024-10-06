@@ -1,0 +1,249 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1492036198",
+            "description": "This is a rehash of one of my old shaders, \"Renderbuffer noise\".\nThe most recent change was the addition of a linear interpolation that cut the marches in half and improved quality!\nOf course there are full controls!",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "4sByDD",
+            "likes": 27,
+            "name": "Renderbuffer noise II",
+            "published": 3,
+            "tags": [
+                "noise",
+                "water",
+                "parallax",
+                "rocks",
+                "occlusion",
+                "mapping",
+                "renderbuffer",
+                "ii"
+            ],
+            "usePreview": 0,
+            "username": "KylBlz",
+            "viewed": 1760
+        },
+        "renderpass": [
+            {
+                "code": "//distance blur\n\n#define tex(a,b) textureLod(a,b,0.)\n\n\n// Thanks Paniq\nvec3 linear_srgb(vec3 x) {\n    return mix(1.055*pow(x, vec3(1./2.4)) - 0.055, 12.92*x, step(x,vec3(0.0031308)));\n}\nvec3 srgb_linear(vec3 x) {\n    return mix(pow((x + 0.055)/1.055,vec3(2.4)), x / 12.92, step(x,vec3(0.04045)));\n}\n// Paniq's ACES fitted from https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl\nvec3 ACESFitted(vec3 color) {\n\t// ODT_SAT => XYZ => D60_2_D65 => sRGB\n    color = color * mat3(\n        0.59719, 0.35458, 0.04823,\n        0.07600, 0.90834, 0.01566,\n        0.02840, 0.13383, 0.83777\n    );\n    // Apply RRT and ODT\n    vec3 a = color * (color + 0.0245786) - 0.000090537;\n    vec3 b = color * (0.983729 * color + 0.4329510) + 0.238081;\n    color = a / b;\n\t// Back to color space\n    color = color * mat3(\n         1.60475, -0.53108, -0.07367,\n        -0.10208,  1.10813, -0.00605,\n        -0.00327, -0.07276,  1.07602\n    );\n    // Clamp to [0, 1]\n    return clamp(color, 0.0, 1.0);\n}\n\n//alpha channel is linear depth\nvec4 depthBlur(sampler2D channel, vec2 _uv) {\n    vec4 s = tex(channel, _uv), o = s;\n\tvec3 dst = clamp(s.a*.075-1.25,0.,1.) * 1./iResolution.y * vec3(1.,-1.,0.);\n    if (dst.x < .0001) return s;\n    //free lvl 0\n    vec2 uv = _uv + .5/iResolution.xy;\n    //sample lvl 1\n    o += .5*tex(channel, uv + dst.xz); o += .5*tex(channel, uv + dst.yz);\n\to += .5*tex(channel, uv + dst.zx); o += .5*tex(channel, uv + dst.zy);\n    //sample lvl 2\n    o += .25*tex(channel, uv + dst.xx); o += .25*tex(channel, uv + dst.xy);\n\to += .25*tex(channel, uv + dst.yx); o += .25*tex(channel, uv + dst.yy);\n    return o / 4.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n\tfragColor = depthBlur(iChannel0, uv);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [],
+                "type": "image"
+            },
+            {
+                "code": "\n#define MAX_ACCELERATION      16.\n#define MAX_VELOCITY          4.\n#define FRICTION              8.\n\n#define VALUE_VELOCITY        0\n#define VALUE_POSITION        1\n#define VALUE_ROTATION        2\n#define VALUE_MOUSE           3\n\n//half pi\nconst float pi = 3.1415926,\n    \t\tpi_5 = 1.5707963;\n\nconst vec2 KEY_W \t = vec2(87.5 / 256., 0.),\n    \t   KEY_S \t = vec2(83.5 / 256., 0.),\n    \t   KEY_A \t = vec2(65.5 / 256., 0.),\n    \t   KEY_D \t = vec2(68.5 / 256., 0.),\n\t\t   KEY_LEFT  = vec2(37.5 / 256., 0.),\n\t\t   KEY_UP    = vec2(38.5 / 256., 0.),\n\t\t   KEY_RIGHT = vec2(39.5 / 256., 0.),\n\t\t   KEY_DOWN  = vec2(40.5 / 256., 0.),\n    \t   KEY_SHIFT = vec2(16.0 / 256., 0.),\n    \t   KEY_SPACE = vec2(32.0 / 256., 0.);\n\nconst vec4 INIT_POS = vec4(-3., 3., -3., 0.),\n    \t   INIT_VEL = vec4(9., 0., -9., 0.),\n    \t   INIT_ROT = vec4(-.4, 2.4, 0., 0.),\n    \t   INIT_MOU = vec4(0.);\n\nvec3 vRotateY(vec3 p, float angle) {\n    float c = cos(angle), s = sin(angle);\n    return vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z);\n}\n\nvec3 getAcceleration() {\n    return vec3(\n        texture(iChannel1, KEY_D).x - texture(iChannel1, KEY_A).x + texture(iChannel1, KEY_RIGHT).x - texture(iChannel1, KEY_LEFT).x,\n        texture(iChannel1, KEY_SPACE).x - texture(iChannel1, KEY_SHIFT).x,\n        texture(iChannel1, KEY_W).x - texture(iChannel1, KEY_S).x + texture(iChannel1, KEY_UP).x - texture(iChannel1, KEY_DOWN).x\n    );\n}\n\nvec4 getValue(int a) {\n    vec2 q = vec2(float(a) + 0.5, 0.0) / iResolution.x;\n    return texture(iChannel0, q);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    if (fragCoord.y > 1.) discard;\n    \n    int a = int(fragCoord.x);\n    float q = fragCoord.x / iResolution.x;\n    vec4 value = texture(iChannel0, vec2(q, 0.));\n    \n    //set initial values\n    if (iFrame == 0) {\n        if (a == VALUE_ROTATION) {\n            value = INIT_ROT;\n        } else if (a == VALUE_MOUSE) {\n            value = INIT_MOU;\n        } else if (a == VALUE_VELOCITY) {\n            value = INIT_VEL;\n        } else if (a == VALUE_POSITION) {\n            value = INIT_POS;\n        }    \n    }\n    \n    if (a == VALUE_ROTATION && iMouse.z > 0.) {\n        vec4 mouse = 2.0 * abs(iMouse) / iResolution.y;\n        vec4 rot = getValue(VALUE_MOUSE);\n        value.y = mouse.x - mouse.z + rot.y;\n        value.x = clamp(mouse.y - mouse.w + rot.x, -pi_5, pi_5);\n        \n    } else if (a == VALUE_MOUSE && iMouse.z < 0.) {\n        value = getValue(VALUE_ROTATION);\n        \n    } else if (a == VALUE_VELOCITY) {\n        float rot = getValue(VALUE_ROTATION).y;\n        vec3 acc = vRotateY(getAcceleration(), rot);\n        value.xyz += acc * MAX_ACCELERATION * iTimeDelta;\n        float speed = length(value.xyz);\n        //limit speed\n        if (speed > MAX_VELOCITY) {\n            value.xyz *= MAX_VELOCITY / speed;\n        } else if (speed > FRICTION * iTimeDelta) {\n            value.xyz *= (speed - FRICTION * iTimeDelta) / speed;\n        } else {\n            value.xyz = vec3(0.0, 0.0, 0.0);\n        }\n    } else if (a == VALUE_POSITION) {\n        vec3 velocity = getValue(VALUE_VELOCITY).xyz;\n        value.xyz += velocity * iTimeDelta;\n        //collision detection?\n        if (value.y < -10.99) value.y = -10.99;\n    }\n    \n    fragColor = vec4(value);\n    return;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//height maps\n\n#define tex(a,b) textureLod(a,b,0.)\n\nvec4 mod289(vec4 x)\n{\n  return x - floor(x * (1.0 / 289.0)) * 289.0;\n}\n\nvec4 permute(vec4 x)\n{\n  return mod289(((x*34.0)+1.0)*x);\n}\n\nvec4 taylorInvSqrt(vec4 r)\n{\n  return 1.79284291400159 - 0.85373472095314 * r;\n}\n\nvec2 fade(vec2 t) {\n  return t*t*t*(t*(t*6.0-15.0)+10.0);\n}\n\n// Classic Perlin noise\nfloat cnoise(vec2 P)\n{\n  vec4 Pi = floor(P.xyxy) + vec4(0.0, 0.0, 1.0, 1.0);\n  vec4 Pf = fract(P.xyxy) - vec4(0.0, 0.0, 1.0, 1.0);\n  Pi = mod289(Pi); // To avoid truncation effects in permutation\n  vec4 ix = Pi.xzxz;\n  vec4 iy = Pi.yyww;\n  vec4 fx = Pf.xzxz;\n  vec4 fy = Pf.yyww;\n\n  vec4 i = permute(permute(ix) + iy);\n\n  vec4 gx = fract(i * (1.0 / 41.0)) * 2.0 - 1.0 ;\n  vec4 gy = abs(gx) - 0.5 ;\n  vec4 tx = floor(gx + 0.5);\n  gx = gx - tx;\n\n  vec2 g00 = vec2(gx.x,gy.x);\n  vec2 g10 = vec2(gx.y,gy.y);\n  vec2 g01 = vec2(gx.z,gy.z);\n  vec2 g11 = vec2(gx.w,gy.w);\n\n  vec4 norm = taylorInvSqrt(vec4(dot(g00, g00), dot(g01, g01), dot(g10, g10), dot(g11, g11)));\n  g00 *= norm.x;  \n  g01 *= norm.y;  \n  g10 *= norm.z;  \n  g11 *= norm.w;  \n\n  float n00 = dot(g00, vec2(fx.x, fy.x));\n  float n10 = dot(g10, vec2(fx.y, fy.y));\n  float n01 = dot(g01, vec2(fx.z, fy.z));\n  float n11 = dot(g11, vec2(fx.w, fy.w));\n\n  vec2 fade_xy = fade(Pf.xy);\n  vec2 n_x = mix(vec2(n00, n01), vec2(n10, n11), fade_xy.x);\n  float n_xy = mix(n_x.x, n_x.y, fade_xy.y);\n  return n_xy;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 uv = fragCoord.xy / iResolution.xy,\n         ofs = vec2(0.,iTime);\n    vec3 lastHeight = tex(iChannel0, uv).rgb;\n    float groundHeight = max(0.,cnoise(uv*2.))*2.;\n    //render all on first frame\n    fragColor = vec4(\n        .25+.25*(cnoise(uv*10.+ofs) + cnoise(uv*50.-ofs)*.5 + cnoise(uv*200.-ofs)*.125), //water\n        tex(iChannel1, uv).r, //stones\n        .5*(pow(tex(iChannel2, uv).r,2.)*max(0.,groundHeight-.1) + groundHeight), 1.); //grass\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//rendering\n\n//#define MSAA\t\t4\n#define GAMMA\t\t.9\n#define EXPOSURE\t.9\n\n#define mint(a) (a.y<a.x)? zfar: (a.x<0.)? (a.y<0.)? zfar: a.y: a.x\n#define minT(a,b) (a<b)? zfar: (b<0.)? (a>0.)? a: zfar: b\n#define inRange(a,x,b) step(a,x)*step(x,b)\n#define vec3max(a) max(a.x, max(a.y, a.z))\n#define vec3min(a) min(a.x, min(a.y, a.z))\n\n#define tex(a,b) texture(a,b)\n#define texComp(a,b,c) vec3max((tex(a, b).rgb * c))\n\nconst float zfar = 1000., eps  = .0001, ieps = .9999,\n    \t\tsml  = .001, isml = .999, sc45 = .7071067,\n\t\t    pi_5 = 1.5707963, pi2  = 6.2831853,\n            pi   = 3.1415926, pi_rcp = .3183098;\n\nconst vec2 VEL = vec2(0.5), POS = vec2(1.5,0.5),\n\t\t   ROT = vec2(2.5,0.5), MOU = vec2(3.5,0.5);\n\n//Absorb, Emit rgb wavelengths, Surface scatter, sUbsurface scatter, Refractive index, Emission Uniformity, unique iDentifier\nstruct mat { vec3 a, e; vec2 s, u; float r, eu; int d; };\n//1D line segment with ids for each end point\nstruct seg { vec2 t; ivec2 d; };\n//Location, Normal, Info(distance, thickness, nothing), material\nstruct hit { vec3 l, n; float d; mat m; };\n//Origin, Direction, Color, current material\nstruct ray { vec3 o, d, c; mat m; };\n//center Location, Radius, Material\nstruct sph { vec3 l; float r; mat m; int d; };\n//Location, Normal, Info(size x,y,'depth'), Material\nstruct pln { vec3 l, n, i; mat m; int d; };\n\nconst mat nullMat = mat(vec3(0.), vec3(0.), vec2(0.), vec2(0.), 0., 0., 0);\nconst seg nullSeg = seg(vec2(zfar), ivec2(0));\nconst hit nullHit = hit(vec3(0.), vec3(0.), zfar, nullMat);\nconst vec2 nullT = vec2(zfar, 0.);\n\n////////////////////// Materials\nconst mat\n//conductor\n    _air = mat(vec3(.99), vec3(.99), vec2(.01), vec2(.1), 1.0003, 0., 0),\n//emissive\n\t_wht_e = mat(vec3(2.), vec3(2.), vec2(2.), vec2(.2), -1., -1., 30),\n//dynamic materials\n   \t_cmap = mat(vec3(0.), vec3(0.), vec2(0.), vec2(0.), -1., 0., 40),\n    _water = mat(vec3(0.), vec3(0.), vec2(0.), vec2(0.), 1.33, 0., 41),\n\t_rocks = mat(vec3(0.), vec3(0.), vec2(0.), vec2(0.), -1., 0., 42),\n    _grass = mat(vec3(0.), vec3(0.), vec2(0.), vec2(0.), -1., 0., 43);\n\n////////////////////// Primitives\nsph sph0 = sph(vec3(0., 0., 0.), 30., _cmap, 1),\n//lights\n\tlit0 = sph(vec3(0., 0., 0.), .1, _wht_e, 11);\n//planes\npln pln0 = pln(vec3(0., -1.55, 0.), vec3(0., 1., 0.), vec3(1., 1., .1), _water, 21),\n    pln1 = pln(vec3(0., -1.75, 0.), vec3(0., 1., 0.), vec3(1., 1., .1), _rocks, 22),\n    pln2 = pln(vec3(0., -1.5, 0.), vec3(0., 1., 0.), vec3(1., 1., .1), _grass, 23);\n\n////////////////////// some tools\nvec3 rotateXY(in vec3 p, in vec2 angle) {\n    vec2 c=cos(angle), s=sin(angle); vec3 o = p;\n    o.yz *= mat2(c.x,s.x,-s.x,c.x);  o.xz *= mat2(c.y,s.y,-s.y,c.y);\n    return o;\n}\nvoid basis(in vec3 n, out vec3 f, out vec3 r) {\n    if(n.z < -0.999999) {\n        f = vec3(0 , -1, 0);\n        r = vec3(-1, 0, 0);\n    } else {\n    \tfloat a = 1./(1. + n.z);\n    \tfloat b = -n.x*n.y*a;\n    \tf = vec3(1. - n.x*n.x*a, b, -n.x);\n    \tr = vec3(b, 1. - n.y*n.y*a , -n.y);\n    }\n}\nvec3 slerp(in vec3 start, in vec3 end, in float percent) {\n    float dt = dot(start, end), theta = acos(dt)*percent;\n    return start*cos(theta) + normalize(end - start*dt)*sin(theta);\n}\nfloat schlick(in float r1, in float r2, in float vn) {\n    float r0 = (r1 - r2) / (r1 + r2);\n\treturn mix(r0*r0, 1., pow(1. - vn, 5.));\n}\nvec3 norm3(sampler2D iChannel, in vec3 comp, in vec3 px, in vec2 uv) {\n    float s01 = texComp(iChannel, uv+px.xy, comp), s21 = texComp(iChannel, uv+px.zy, comp),\n    \t  s10 = texComp(iChannel, uv+px.yx, comp), s12 = texComp(iChannel, uv+px.yz, comp);\n    vec3 va = normalize(vec3(px.xy*4., s21-s01)),\n    \t vb = normalize(vec3(px.yx*4., s12-s10));\n    return cross(va,vb);\n}\n\n////////////////////// Dynamic material implementation\nmat water(in ray r, inout hit h) {\n    float scale = .2;\n    //light stuff\n    vec3 hn = slerp(h.n,vec3(0.,1.,0.), .9), dl = lit0.l - h.l, lightCol = vec3(.7,.8,1.),\n         refl = reflect(r.d, hn), ndl = normalize(dl),\n         ambCol = tex(iChannel0, refl).rgb;\n    float lp = 50./(pow(length(dl),2.)+1.), //light power\n          sp = max(.15, dot(ndl, h.n)), //specular\n          as = max(.15, 1.-dot(vec3(0.,1.,0.), refl)); //ambient specular\n    //ambient colored reflection to env map\n    vec3 f = ambCol * pow(as,2.) + ambCol * pow(as+.15,18.)*.5 +\n        \t lp * pow(sp,30.);\n    \n    return mat(\n    \tclamp(1.5-as-f,0.,.5)*pow(vec3(.97,.98,.99), vec3((h.l.y + 2.4) * 200.)), //no real reason just looks cool\n    \tf, //emit reflected light back\n        vec2(0., 1.), //gloss not implemented yet\n        vec2(0.), //subsurface not implemented yet\n        _water.r, 0., _water.d);\n}\nmat cmap(in ray r, in hit h) {\n    vec3 f = tex(iChannel0, r.d).rgb*1.5;\n    return mat(\n    \tvec3(0.),\n        f, //gamma correct\n    \tvec2(0.), //not applicable\n        vec2(0.), //not implemented\n        -1., 0., _cmap.d);\n}\nmat rocks(in ray r, in hit h) {\n    //start ray marching\n    vec3 l = h.l, ro = l + h.n * .0001, rd = normalize(lit0.l - ro);\n    float shadow = 1., d = 0., height = 0., depth = 0., scale = .15,\n    \t  s = max(distance(r.o, h.l)*.02, .01/abs(dot(r.d, h.n))),\n          top = ro.y + (1. - tex(iChannel1, fract(ro.xz*scale)).g);\n    //shadow march\n    for (int i = 0; i < 16; i++) {\n        d += s; l = ro + rd*d;\n        depth = 1.-(top-l.y),\n        height = tex(iChannel1, fract(l.xz*scale)).g;\n        if (depth < height) {\n            shadow = .1;\n            break;\n        } else if (depth > 1.) break;\n    }\n    //light stuff\n    vec3 dl = lit0.l - h.l, ndl = normalize(dl), refl = reflect(r.d, h.n),\n        lightCol = vec3(.6,.8,1.), ambCol = tex(iChannel0, h.n.zyx*vec3(-1.,1.,1.)).rgb * vec3(1.,.8,.6);\n    float lp = 5./(pow(length(dl)*.5,2.)+1.),\n          df = max(.01, dot(ndl, h.n)),\n          sp = max(.01, dot(ndl, refl)),\n          ad = max(.01, dot(normalize(vec3(-1.,1.,0.)), h.n)),\n          ao = clamp(pow(h.l.y+3.4, 8.), .01,.4);\n    //get surface color\n    vec3 f = textureLod(iChannel2, h.n, 0.).rgb;\n             //pow(tex(iChannel2, h.l.xz*scale*10.).rgb, vec3(2.)) +\n             //    tex(iChannel2, h.l.xz*scale*20.).rgb;\n    //two lights, use height map for AO\n    f = f * (shadow * ao * (lp*df + pow(sp, 8.)*lp)) * lightCol +\n        ad * ao * ambCol * 4.;\n    return mat(\n    \tvec3(0.), //no reflection\n        f, //final color\n    \tvec2(0., 1.), //gloss\n        vec2(0.), //subsurface not implemented yet\n        -1., 0., _rocks.d);\n}\n\n////////////////////// SD functions\nfloat sdSphere(in vec3 l, in sph s) {\n    vec3 oc = l - s.l;\n    return dot(oc, oc) - s.r * s.r;\n}\nfloat sdPln(in vec3 l, in pln p) {\n    return dot(p.n, p.l - l);\n}\n\n////////////////////// Normal functions\nvec3 nSphere(in vec3 l, in sph s) {\n    return (l - s.l) / s.r;   \n}\nvec3 nPlane(in pln p) {\n    return p.n;\n}\n\n////////////////////// Segment functions\nvec2 lt(in seg s) {\n    if (s.t.x < s.t.y && s.t.x > 0.) return vec2(s.t.x, float(s.d.x));\n    else if (s.t.y > 0.) return vec2(s.t.y, float(s.d.y));\n    return nullT;\n}\nseg tSphere(in ray r, in sph s) {\n    vec3 oc = r.o - s.l;\n    float c = dot(oc, oc) - s.r * s.r,\n          b = -dot(oc, r.d),\n          h = b*b - c;\n    if (h < 0.) return nullSeg;\n    h = sqrt(h);\n    return seg(vec2(b-h,b+h), ivec2(s.d, -s.d));\n}\nseg tPlane(in ray r, in pln p) {\n    float t = dot(p.n, p.l - r.o) / dot(p.n, r.d);\n    return seg(vec2(t, t+eps), ivec2(p.d, -p.d));\n}\n\n////////////////////// Hit functions\nvoid lt(inout hit o, in hit h) {\n    if (h.d < o.d) o = h;\n}\nhit traceSphere(in ray r, in sph s) {\n    seg g = tSphere(r, s);\n    float d = minT(g.t.y, g.t.x);\n    vec3 l = r.o + r.d * d;\n    return hit(l, nSphere(l, s), d, s.m);   \n}\nhit tracePlane(in ray r, in pln p) {\n    seg s = tPlane(r, p);\n    float d = minT(s.t.y, s.t.x);\n    return hit(r.o + r.d * d, p.n, d, p.m);\n}\nhit tracePlanePOM(in ray r, in pln p, in sampler2D heightMap, in vec3 comp, in float scale, in float heightScale) {\n\t//start with plane\n    hit h = tracePlane(r, p);\n    if (h.d >= zfar) return h;\n    //start ray marching\n    vec3 dl = vec3(p.l.x,0.,p.l.z), l = h.l - dl, ro = l, rd = r.d;\n    float d = 0., depth = 1., height = 0., top = ro.y, ld = 0.,\n          //use a step size based on angle\n          s = .09/abs(dot(r.d, h.n));\n    for (int i = 0; i < 8; i++) {\n        d += s;\n        l = ro + rd*d;\n        depth = 1.-(top-l.y),\n        height = texComp(heightMap, fract(l.xz*scale), comp) * heightScale;\n        if (depth < height) break;\n        ld = depth - height;\n    }\n    //linear interpolate intersection to smooth\n    float cd = height - depth, lerp = 1.-clamp(ld/(ld+cd),0.,1.);\n    //update hit\n    d -= s*lerp;\n    h.l = ro + rd*d + dl;\n    h.d += d;\n    //get normal? we dont need it 'til texturing\n    vec3 px = 1. / iResolution.yyy * vec3(-1.,0.,1.);\n    //wtf\n    h.n = norm3(heightMap, comp, px, fract((h.l.xz)*scale)).rbg * vec3(-1.,1.,-1.);\n    return h;\n}\n\n//updates dynamic materials (ghetto, find better solution)\nvoid updateMaterials(inout hit h, in ray r) {\n    if (h.m.d < 40) return;\n    else if (h.m.d == _water.d) h.m = water(r, h);\n    else if (h.m.d == _cmap.d) h.m = cmap(r, h);\n    else if (h.m.d == _rocks.d) h.m = rocks(r, h);\n}\n\n//calculates where the ray intersects\nhit traceScene(in ray r) {\n    hit ret = traceSphere(r, sph0);\n    lt(ret, traceSphere(r, lit0));\n    lt(ret, tracePlanePOM(r, pln0, iChannel1, vec3(1.,0.,0.), .02, 1.));\n    lt(ret, tracePlanePOM(r, pln1, iChannel1, vec3(0.,1.,0.), .15, 1.));\n\t//lt(ret, tracePlanePOM(r, pln2, iChannel1, vec3(0.,0.,1.), .1, 1.));\n    \n    return ret;\n}\n\n//ray transmit scatter\nvoid btdf(inout ray r, in hit res) {\n    //simply refract\n    float ndotr = dot(res.n, -r.d),\n          sch = schlick(r.m.r, res.m.r, ndotr);\n    r.o = r.o + r.d * res.d;\n    r.d = refract(r.d, res.n, r.m.r / res.m.r);\n    //back out of parallax\n    r.o -= r.d * abs(1./r.d.y);\n    r.c *= res.m.a; // * sch;\n    //changed medium\n    r.m = res.m;\n}\n\n//here we go\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 uv = fragCoord.xy / iResolution.xy * 2. - 1.;\n    uv.y *= iResolution.y / iResolution.x;\n    //get input, update camera\n    vec3 l = tex(iChannel3, POS/iResolution.xy).xyz,\n\t\t o = tex(iChannel3, ROT/iResolution.xy).xyz,\n         d = rotateXY(normalize(vec3(uv, .8)), o.xy);\n    \n    //update objects\n    lit0.l = l - vec3(0.,2.,0.);\n    sph0.l.xz = l.xz;\n    \n    //begin\n    hit res;\n    //final color\n    vec3 final = vec3(0.);\n#ifndef MSAA\n    ray r = ray(l, d, _air.a, _air);\n#else\n    vec3 uu = vec3(0.), vv = vec3(0.);\n    float px = 1./iResolution.y;\n\tbasis(d, uu, vv);\n    uu *= px;\n    vv *= px;\n    vec3[] offsets = vec3[](d+uu, d-uu, d+vv, d-vv);\n    //bounce around a few times\n    for (int i = 0; i < MSAA; i++) {\n        //start the ray at the camera in starting material\n    \tray r = ray(l, normalize(d + offsets[i]), _air.a, _air);\n#endif\n        //trace scene\n        res = traceScene(r);\n        //update dynamic materials\n        updateMaterials(res, r);\n        //add colors\n        final += r.c * res.m.e;\n        //if hit water\n        if (res.m.d == _water.d) {\n            float lastD = res.d;\n            //modify ray properties\n            btdf(r, res);\n            //get water out of way\n            pln0.l.y -= 5.;\n            //trace again\n            res = traceScene(r);\n            //put it back\n            pln0.l.y += 5.;\n            //if collision\n            if (res.d < zfar) {\n                //update dynamic materials\n                updateMaterials(res, r);\n                //add colors\n                final += r.c * res.m.e;\n            }\n            //get surface depth\n            res.d = lastD;\n        }\n#ifdef MSAA\n    }\n    final /= float(MSAA);\n#endif\n    \n    final = pow(final*EXPOSURE, vec3(GAMMA));\n    \n    float fragDepth = res.d;\n    if (res.m.d == _cmap.d) fragDepth = sph0.r*2.;\n    \n    fragColor = vec4(final, fragDepth);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// render diffuse cosine weighted cubemap\n\n// trick by klems\n#define ZERO (min(iFrame,0))\n// IBL settings\nconst float IBL_samples = 10.;\nconst float IBL_smp = 1./IBL_samples;\nconst float IBL_smp2 = 1./(IBL_samples*IBL_samples);\n\n// thanks Reinder\nvec3 cosWeightedHemisphereDirection( const vec3 n, in vec2 r) {\n\tvec3  uu = normalize(cross(n, vec3(0.,1.,0.)));\n\tvec3  vv = cross(uu, n);\n\tfloat ra = sqrt(r.y);\n\tfloat rx = ra*cos(6.2831*r.x); \n\tfloat ry = ra*sin(6.2831*r.x);\n\tfloat rz = sqrt( abs(1.0-r.y) );\n\tvec3  rr = vec3( rx*uu + ry*vv + rz*n );\n    return normalize(rr);\n}\n\n// Thanks Paniq\nvec3 srgb_linear(vec3 x) {\n    return mix(pow((x + 0.055)/1.055,vec3(2.4)), x / 12.92, step(x,vec3(0.04045)));\n}\n\nvoid mainCubemap(out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir) {\n    \n    if (iFrame > 1) {\n        discard;\n        return;\n    }\n    \n    vec3 col = vec3(0.);\n    for (float i = float(ZERO); i < 1.; i += IBL_smp) {\n        for (float j = float(ZERO); j < 1.; j += IBL_smp) {\n            // sample cosine hemisphere weighted colors\n            vec3 smp = cosWeightedHemisphereDirection(rayDir, vec2(i, j * 0.5));\n            col += srgb_linear(textureLod(iChannel0, smp, 5.5).rgb);\n        }\n    }\n    \n    // normalize\n    fragColor = vec4(col * IBL_smp2, 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1689461165",
+            "description": "Implementation of the GGX specular BRDF in a ray tracer. I decided to use structs to keep the code organized.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ddXBRS",
+            "likes": 4,
+            "name": "GGX Ray tracer using Structs",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "pbr",
+                "ggx"
+            ],
+            "usePreview": 0,
+            "username": "SpinningCube",
+            "viewed": 261
+        },
+        "renderpass": [
+            {
+                "code": "const float pi = 3.1415926536;\nconst float maxDist = 1000.0;\nconst float epsilon = 0.001;\n\nstruct Material {\n    vec3 color;\n    bool lit;\n    float roughness;\n};\n\n\n/* List of materials */\n\nMaterial sky = Material(2.5 * vec3(0.1, 0.5, 1.0), false, 0.0);\nMaterial mat0 = Material(vec3(0.3), true, 0.3);\nMaterial matRed = Material(vec3(0.6, 0.05, 0.02), true, 0.1);\n\nstruct SurfacePoint {\n    vec3 pos;\n    vec3 normal;\n    vec3 incidentRayDir;\n    Material material;\n};\n\nstruct Ray {\n    vec3 origin;\n    vec3 dir;\n};\n\nstruct Intersection {\n    float depth;\n    vec3 normal;\n    Material material;\n};\n\nSurfacePoint getSurfacePoint(Ray ray, Intersection hit) {\n    SurfacePoint surface = SurfacePoint(ray.origin + ray.dir * hit.depth, hit.normal, ray.dir, hit.material);\n    \n    // mat0 Checkerboard texture\n    if (surface.material == mat0) {\n       surface.material.color = mix(surface.material.color, vec3(0.05), floor(mod(surface.pos.x + floor(mod(surface.pos.z, 2.0)), 2.0)));\n    }\n    return surface;\n}\n\n/**\n * Returns the closer of two intersections\n */\nIntersection nearest(Intersection current, Intersection new) {\n    if (new.depth < current.depth && new.depth > 0.0) {\n        return new;\n    }\n    return current;\n}\n\n\n/* Intersection Functions */\n\nIntersection sphere(Ray ray, vec3 pos, float radius, Material material) {\n    vec3 offset = pos - ray.origin;\n    float dot1 = dot(offset, ray.dir);\n    if (dot1 < 0.0) {\n        return Intersection(-1.0, vec3(0), material);\n    }\n    float v = radius * radius - (dot(offset, offset) - dot1 * dot1);\n    if (v > 0.0) {\n        float near = sqrt(v);\n        float depth = dot1 - near;\n        vec3 normal = (ray.dir * depth - offset) / radius;\n        return Intersection(depth, normal, material);\n    }\n    return Intersection(-1.0, vec3(0), material);\n}\n\nIntersection plane(Ray ray, vec3 normal, float dist, Material material) {\n    return Intersection(-(dot(ray.origin, normal) + dist)/dot(ray.dir, normal), normal, material);\n}\n\n/*\n * Ray intersection with the scene\n */\nIntersection raycast(Ray ray, float maxDist) {\n    Intersection hit = Intersection(maxDist, vec3(0), sky);\n    hit = nearest(hit, sphere(ray, vec3(0, 1, 5), 1.0, matRed));\n    hit = nearest(hit, plane(ray, vec3(0, 1, 0), 0., mat0));\n    return hit;\n}\n\n/*\n * Schlick's Approximation\n */\nfloat fresnel(float n1, float n2, vec3 normal, vec3 incident) {\n    float r0 = (n1 - n2)/(n1 + n2);\n    r0 *= r0;\n    float a = (1.0 - dot(normal, incident));\n    float b = a * a;\n    b *= b;\n    return r0 + (1.0 - r0) * (a * b);\n}\n\n/* \n * The GGX normal distribution function. This is\n * the D term of the GGX BRDF.\n */\nfloat ggxD(float alpha, float NdotH) {\n    float a2 = alpha * alpha;\n    float k = NdotH * NdotH * (a2 - 1.0) + 1.0;\n    return a2/(pi * k * k);\n}\n\n/*\n * The Smith shadowing/masking function for GGX.\n * This is G1, and is part of the G term of the GGX BRDF.\n */\nfloat ggxG1(float alpha, float VdotN) {\n    float a2 = alpha * alpha;\n    return 2.0 * VdotN/(VdotN + sqrt(a2 + VdotN * VdotN * (1.0 - a2)));\n}\n\n// Bi-directional Reflectance Distribution Function\nvec3 brdf(SurfacePoint surface, vec3 light, float NdotL) {\n    \n    // The microsurface normal, calculated as halfway between the light and incident directions.\n    vec3 halfway = normalize(light - surface.incidentRayDir);\n    \n    float NdotH = dot(halfway, surface.normal);\n    float alpha = surface.material.roughness * surface.material.roughness;\n    \n    // The D and G terms of the BRDF\n    float D = ggxD(alpha, NdotH);\n    float G = ggxG1(alpha, dot(-surface.incidentRayDir, surface.normal)) * ggxG1(alpha, dot(light, surface.normal));\n    \n    // GGX specular BRDF (without fresnel)\n    float specular = (G * D)/(4.0 * abs(dot(surface.normal, -surface.incidentRayDir)) * abs(NdotL));\n    \n    // Final output - mix between refraction and specular with fresnel\n    return mix(surface.material.color / pi, vec3(specular), fresnel(1.0, 1.5, halfway, -surface.incidentRayDir));\n}\n\nvec3 directionalLight(SurfacePoint surface, vec3 light, vec3 intensity, float dist) {\n    light = normalize(light);\n    float NdotL = dot(surface.normal, light);\n    return float(raycast(Ray(surface.pos + epsilon * surface.normal, light), dist).depth >= dist) * intensity * brdf(surface, light, NdotL) * max(0.0, NdotL);\n}\n\nvec3 directionalLight(SurfacePoint surface, vec3 light, vec3 intensity) {\n    return directionalLight(surface, light, intensity, maxDist);\n}\n\nvec3 pointLight(SurfacePoint surface, vec3 lightPos, vec3 intensity) {\n    vec3 light = lightPos - surface.pos;\n    float dist = length(light);\n    return directionalLight(surface, light, intensity/(dist * dist), dist);\n}\n\nvec3 lighting(SurfacePoint surface) {\n\n    Material mat = surface.material;\n    \n    vec3 col = mat.color;\n    if (mat.lit) {\n        col = directionalLight(surface, vec3(sin(iTime - 4.0), 1, cos(iTime - 4.0)), 30.0 * vec3(1));\n        col += mat.color * sky.color; // Ambient lighting, which is probably a little less accurate\n    }\n    \n    if (mat == sky) {\n        col.b += 10.0 * surface.incidentRayDir.y;\n        col.g -= 1.5 * surface.incidentRayDir.y;\n    }\n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy)/iResolution.y;\n\n    // Time varying pixel color\n    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));\n    \n    vec3 camPos = vec3(0, 1.0, 0);\n    \n    Ray ray = Ray(camPos, normalize(vec3(uv, 1.0)));\n    Intersection hit = raycast(ray, 10000.0);\n    \n    SurfacePoint surface = getSurfacePoint(ray, hit);\n    \n    float exposure = 1.0;\n    col = exposure * lighting(surface);\n    \n    // Lazy Tonemapping\n    col = vec3(atan(col.r), atan(col.g), atan(col.b))/(0.5 * pi);\n    \n    // Gamma Correction\n    col = pow(col, vec3(1.0/2.2));\n    \n    //col = hit.normal;\n    //col = vec3(uv, 0.0);\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

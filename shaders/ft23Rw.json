@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1623584693",
+            "description": "A bare-bones implementation of phong shadeing model using ray-marching and SDFs.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ft23Rw",
+            "likes": 2,
+            "name": "Phong Shading Model w/ RayMarch",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "phong",
+                "sdf"
+            ],
+            "usePreview": 0,
+            "username": "muio",
+            "viewed": 174
+        },
+        "renderpass": [
+            {
+                "code": "/// Possible things one could add to this:\n/// * Rays should attenuate the further away they get from the camera.\n/// * \n\n// Colors should be in standard rgb format: 0. < rgb < 1.\n\n#define MAX_MARCH_STEPS (1<<7)\n#define MAX_MARCH_DIST 100.\n#define SURF_DIST_MARCH .01\n#define EULER_APPROX_OFFSET .003\n\nstruct Sphere {\n    vec3 o;\n    float r;\n};\n\nstruct PhongMaterial {\n    vec3 albedo;\n    float ks, kd, ka, alpha;\n};\n\nstruct PointLight {\n    vec3 pos;\n    vec3 col;\n};\n\n\nconst Sphere s = Sphere(vec3(0, 1, 6), 1.);\nconst PointLight light = PointLight(vec3(0, 5, 6),\n                                    vec3(1.000,0.878,0.878));\nconst PhongMaterial sphereMaterial = PhongMaterial(vec3(0.94,1.,0.12), \n                                                   .3, .64, .3, 16.);\nconst PhongMaterial globalMaterial = PhongMaterial(vec3(.4, .9, 1.), \n                                                   .1, .7, .2, 4.);\nconst PhongMaterial mats[2] = PhongMaterial[](globalMaterial, \n                                              sphereMaterial);\n                                                   \nconst vec3 rayOrigin = vec3(0, 1, 1);\n\n\n\nfloat SphereSDF(in vec3 p, in Sphere s) {\n    return length(p - s.o) - s.r;\n}\n\nfloat SceneSDF(out int hitObject, in vec3 p) { // sdf for the scene.\n    float sphereDist = SphereSDF(p, s);\n    float planeDist = p.y; // ground\n    \n    float d = min(planeDist, sphereDist);\n    hitObject = sphereDist == d ? 1 : 0;\n    return d;\n}\n\nfloat RayMarch(out int hitObject, in vec3 ro, in vec3 rd) {\n    float dO = 0.; // Distance I've marched from origin\n\n    for (int i = 0; i < MAX_MARCH_STEPS; i++) {\n        vec3 p = ro + rd * dO;\n        float dS = SceneSDF(hitObject, p);\n        dO += dS;  // Safe distance to march with\n        if (dO > MAX_MARCH_DIST || // Far-plane clipping\n            dS < SURF_DIST_MARCH)  // Did we hit anything?\n            break;\n    }\n\n    return dO;\n}\n\n/*\nvec3 GetNormalEulerTwoSided(in vec3 p) { // get surface normal using euler approx. method\n    vec2 e = vec2(EULER_APPROX_OFFSET, 0);\n    int _;\n    \n    vec3 left = vec3(SceneSDF(_, p),\n                     SceneSDF(_, p - e.yxy),\n                     SceneSDF(_, p - e.yyx)),\n        right = vec3(SceneSDF(_, p + e.xyy),\n                     SceneSDF(_, p + e.yxy),\n                     SceneSDF(_, p + e.yyx));\n        \n    vec3 n = normalize(-left + right);\n    return n;\n}\n*/\n\nvec3 GetNormalEulerOneSided(in vec3 p) { // get surface normal using euler approx. method\n    vec2 e = vec2(EULER_APPROX_OFFSET, 0);\n    int _;\n    vec3 center = vec3(SceneSDF(_, p)),\n          right = vec3(SceneSDF(_, p + e.xyy),\n                       SceneSDF(_, p + e.yxy),\n                       SceneSDF(_, p + e.yyx));\n        \n    vec3 n = normalize(right - center);\n    return n;\n}\n\n#define GetNormal GetNormalEulerOneSided\n//#define GetNormal GetNormalEulerTwoSided\n\n\n/*\n  p  -> position of point to shade\n  ro -> ray origin (position of the camera)\n*/\nvec3 PhongIllumination(in vec3 p, in vec3 ro, in int hitObject) {\n    vec3 lightPosOffset = vec3(sin(2. * iTime), 0, cos(2. * iTime)) * 3.;\n    vec3 lightPos = light.pos + lightPosOffset;\n    // PhongMaterial mat = (hitObject == 1) ? sphereMaterial : globalMaterial; // bugs are great!\n    \n    vec3 l = normalize(lightPos - p); // light vector\n    vec3 n = GetNormal(p); // get normal of p\n    vec3 r = reflect(l, n);\n    vec3 v = normalize(p - ro);\n    \n    float dif  = clamp(dot(l, n), 0., 1.);\n    float spec = clamp(dot(v, r), 0., 1.);\n    \n    // shadow stuff\n    vec3 pOffset = n * SURF_DIST_MARCH * 1.2; // move the point above a little\n    int _;\n    float d = RayMarch(_, p + pOffset, l);\n    if (d < length(lightPos - p)) { // If true then we've shaded a point on some object before, \n                                    // so shade the currnet point as shodow.\n        dif *= .3; // no half-shadow because the light source is a point.    \n        spec = 0.; // shadows don't have specular component, I think.\n    }\n    \n    // Acutal Phong stuff\n    vec3 ambientDiffuse = light.col * mats[hitObject].albedo;\n    vec3 light1DiffuseComponent = dif * light.col;\n    vec3 light1SpecularComponent = vec3(pow(spec, mats[hitObject].alpha));\n    \n    vec3 col = mats[hitObject].ka * ambientDiffuse + \n               mats[hitObject].kd * light1DiffuseComponent + \n               mats[hitObject].ks * light1SpecularComponent;\n    \n    return col;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5 ) / iResolution.y; // center around origin\n    \n    // simplest camera\n    vec3 ro = rayOrigin;\n    vec3 rd = normalize(vec3(uv.xy, 1));\n    \n    // RayMarching stuff\n    int object;\n    float d = RayMarch(object, ro, rd);\n    vec3 p = ro + rd * d;\n    \n    vec3 col = PhongIllumination(p, ro, object);\n    \n    fragColor = vec4(col,1.0);\n}\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

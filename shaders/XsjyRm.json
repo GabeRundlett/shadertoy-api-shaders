@@ -1,0 +1,193 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1491689275",
+            "description": "Rendering thousands of particles by spatially sorting the particle buffer.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XsjyRm",
+            "likes": 77,
+            "name": "Tons of Spatial-Sorted Particles",
+            "published": 3,
+            "tags": [
+                "particles",
+                "sorting",
+                "spatial"
+            ],
+            "usePreview": 0,
+            "username": "cornusammonis",
+            "viewed": 2887
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nThis is a particle rendering method that can render large numbers (hundreds of thousands\nto millions) of particles by continually sorting the particle buffer. The spatial sorting\nmethod moves the buffer location of each particle so that, on average, particles reside \ncloser to the corresponding UV position where they will be rendered on-screen. In general,\nit is not possible to perfectly sort particles to their corresponding UV position, unless \nthe spatial density of particles is perfectly uniform. However, it is generally possible \nto get a substantial portion of the total number of particles close enough to their \noptimal buffer position that they can be rendered by checking a small window of buffer \npositions in the neighborhood of each rendered pixel.\n\nThis implementation uses three spatial sorting passes with a 5x5 strided sorting \nwindow. A final buffer accumulates contributions from nearby particles in a 7x7 window\nand averages those contributions over time in order to reduce the appearance of\nartifacts.\n\nAdvantages of this method:\n\n* The theoretical maximum number of particles on-screen is limited only by \n  buffer resolution.\n* Particles are never \"destroyed\" by occupying the same on-screen location \n  (as in other buffer-based particle methods).\n* The number of reads per pixel limits the probability of rendering a nearby \n  particle rather than limiting the total number of rendered particles.\n\nDisadvantages of this method:\n\n* Spatially sorting particles is relatively expensive.\n* Each particle may or may not be rendered on any given frame.\n* Faster-moving particles are less likely to be rendered. \n* The chosen sorting method may introduce visual artifacts as particles are \n  shifted towards their destination.\n\n*/\n\n\n#define UV 0\n#define DISTANCE 1\n#define PARTICLES 2\n#define RENDER_MODE PARTICLES\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    #if(RENDER_MODE == UV)\n        vec2 pos = texture(iChannel1, uv).xy;\n        fragColor = vec4(pos,0.5, 1.0);\n    #elif(RENDER_MODE == DISTANCE)\n        vec2 pos = texture(iChannel1, uv).xy;\n    \tfloat dist = distance(uv, pos);\n        fragColor = vec4(dist);\n\t#else\n        vec4 v = texture(iChannel0, uv);\n        fragColor = vec4(1.0 - sqrt(12.0*v.z));\n\t#endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define T(d) texelFetch(iChannel0, d, 0).xy\n\n#define FULL 5 // sorting window size (e.g. 5x5)\n#define STRIDE 25 // stride length\n#define SORT_WINDOW (FULL*STRIDE)\n#define DIM (FULL*FULL)\n\n//#define TARGET_EDGE // if defined, use the corners of the buffers (e.g. UVs (0,0) or (1,1)) as sort targets\n#define REVERSE_ORDER // if defined we sort from inner-to-outer, and if undefined we sort from outer-to-inner\n\n// reordering targets reduces artifacts related to the choice \n// of which quadrant of the sorting window we sort first.\n#define REORDER_TARGETS\n#ifdef REORDER_TARGETS\n\t#define REORDER(k) ((iFrame+3+k)%4)\n#else\n\t#define REORDER(k) k\n#endif\n\n#define R(v) (vec2(v) / iResolution.xy)\n\n// Hash from Dave Hoskin's \"Hash without Sine\": https://www.shadertoy.com/view/4djSRW\n#define MOD3 vec3(.1031,.11369,.13787)\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * MOD3);\n    p3 += dot(p3, p3.yxz+19.19);\n    return -1.0 + 2.0 * fract(vec3((p3.x + p3.y)*p3.z, (p3.x+p3.z)*p3.y, (p3.y+p3.z)*p3.x));\n}\n\n// Simplex Noise from candycat's \"Noise Lab (3D)\": https://www.shadertoy.com/view/4sc3z2\nfloat simplex_noise(vec3 p)\n{\n    p *= 4.0;\n    const float K1 = 0.333333333;\n    const float K2 = 0.166666667;\n    \n    vec3 i = floor(p + (p.x + p.y + p.z) * K1);\n    vec3 d0 = p - (i - (i.x + i.y + i.z) * K2);\n    \n    // thx nikita: https://www.shadertoy.com/view/XsX3zB\n    vec3 e = step(vec3(0.0), d0 - d0.yzx);\n\tvec3 i1 = e * (1.0 - e.zxy);\n\tvec3 i2 = 1.0 - e.zxy * (1.0 - e);\n    \n    vec3 d1 = d0 - (i1 - 1.0 * K2);\n    vec3 d2 = d0 - (i2 - 2.0 * K2);\n    vec3 d3 = d0 - (1.0 - 3.0 * K2);\n    \n    vec4 h = max(0.6 - vec4(dot(d0, d0), dot(d1, d1), dot(d2, d2), dot(d3, d3)), 0.0);\n    vec4 n = h * h * h * h * vec4(dot(d0, hash33(i)), dot(d1, hash33(i + i1)), dot(d2, hash33(i + i2)), dot(d3, hash33(i + 1.0)));\n    \n    return dot(vec4(31.316), n);\n}\n\n\n#define TIME iTime / 10.0\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFC  = ivec2(fragCoord);\n    ivec2 iuv = iFC;\n    vec2 tx = 1.0 / iResolution.xy;\n    vec2 pos = T(iuv);\n    vec2 new_pos = pos;\n    \n    ivec2 iRes = ivec2(iResolution.xy);\n    \n    // PRNG for sort offset\n    vec3 hash = hash33(iTime * vec3(-5.17, 14.94, -7.56));\n    ivec2 offs = ivec2(float(SORT_WINDOW) * hash.xy);\n    //ivec2 offs = (SORT_WINDOW/2)*ivec2((iFrame % 3-1), ((iFrame+1)% 3-1));\n\n    ivec2 uvm = iuv + offs;\n    ivec2 shift = (STRIDE + (uvm % STRIDE)) % STRIDE;\n    ivec2 subp = ((SORT_WINDOW + ((uvm - shift) % SORT_WINDOW)) % SORT_WINDOW) / STRIDE;\n    ivec2 subp_stride = STRIDE * subp;\n    ivec2 base_uv = iuv - subp_stride;\n    \n    /* This is the default sorting order generated by the algorithm below for a 5x5 window:\n         0  4  8  12  1\n        15 16 20  17  5\n        11 23 24  21  9\n         7 19 22  18 13\n         3 14 10  6   2\n\t*/\n \n    if (all(greaterThanEqual(base_uv,ivec2(0))) && all(lessThanEqual(base_uv + STRIDE * FULL, iRes))) {\n        bool del[DIM];\n        vec2 sort[DIM];\n        vec2 posv[DIM];\n        ivec2 order[DIM];\n        \n        for (int i = 0; i < DIM; i++) {\n            del[i] = false;\n            sort[i] = vec2(0);\n            posv[i] = vec2(0);\n        }\n        \n        int MAX = DIM/4;\n\n        if (FULL % 2 == 1) {\n            order[DIM-1] = ivec2(FULL/2);\n            MAX = (DIM - 1)/4;\n        }\n\n        int ic = 0;\n        int m  = 0;\n        int id = FULL - 1;\n\n        for (int i = 0; i < MAX; i++) {\n            if (ic == id) {\n                id = id - 2;\n                ic = 0;\n                m++;\n            }\n            order[4*i+REORDER(0)] = ivec2(ic+m,    id+m);\n            order[4*i+REORDER(1)] = ivec2(id+m,    id-ic+m);\n            order[4*i+REORDER(2)] = ivec2(id-ic+m, m);\n            order[4*i+REORDER(3)] = ivec2(m,       ic+m);\n\n            ic++;\n        }\n\n        for (int i = 0; i < FULL; i++) {\n            for (int j = 0; j < FULL; j++) {\n                posv[i + j * FULL] = T(base_uv + STRIDE*ivec2(i,j));\n            }\n        }\n\n        #ifdef REVERSE_ORDER\n        for (int i = DIM - 1; i >= 0; i--) {\n        #else\n        for (int i = 0; i < DIM; i++) {\n        #endif\n            vec2 closest = vec2(1e6);\n            float closest_distance = 1e6;\n            int closest_index = -1;\n\n            #ifdef TARGET_EDGE\n                vec2 tgt = vec2(order[i]) / float(FULL-1);\n            #else\n            \tvec2 tgt = R(base_uv + STRIDE*order[i]);\n            #endif\n\n            int tgt_index = order[i].x + order[i].y * FULL;\n            for (int j = 0; j < DIM; j++) { \n                float dist  = distance(posv[j],tgt);\n                if (dist <= closest_distance && !del[j]) {\n                    closest_index = j; \n                    closest = posv[j];\n                    closest_distance = dist;\n                }\n            }\n            del[closest_index] = true;\n            sort[tgt_index] = closest;\n        }\n\n        new_pos = sort[subp.x + subp.y * FULL];\n    }\n\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec2 aspect = vec2(1, iResolution.y / iResolution.x);\n    float delta = 1.0*tx.x;\n    float noise  = simplex_noise(vec3(aspect * pos, TIME));\n    float noiseY = simplex_noise(vec3(aspect * pos + vec2(0, delta), TIME));\n    float noiseX = simplex_noise(vec3(aspect * pos + vec2(delta, 0), TIME));\n    \n    vec2 noiseV = vec2(noiseX, noiseY) - vec2(noise);\n\n    if (iFrame < 2) {\n        fragColor = 0.5 + vec4(vec2(uv.xy - 0.5).yx * vec2(1,-1),vec2(0));\n    } else {\n        vec2 curl = 0.5 * normalize(vec2(noiseV.y,-noiseV.x));\n    \tfragColor = vec4(mod(new_pos + curl * tx.xx,vec2(1)), vec2(0));    \n    }   \n\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define T(d) texelFetch(iChannel0, d, 0).xy\n\n#define FULL 5 // sorting window size (e.g. 5x5)\n#define STRIDE 1 // stride length\n#define SORT_WINDOW (FULL*STRIDE)\n#define DIM (FULL*FULL)\n\n//#define TARGET_EDGE // if defined, use the corners of the buffers (e.g. UVs (0,0) or (1,1)) as sort targets\n#define REVERSE_ORDER // if defined we sort from inner-to-outer, and if undefined we sort from outer-to-inner\n\n// reordering targets reduces artifacts related to the choice \n// of which quadrant of the sorting window we sort first.\n#define REORDER_TARGETS\n#ifdef REORDER_TARGETS\n\t#define REORDER(k) ((iFrame+1+k)%4)\n#else\n\t#define REORDER(k) k\n#endif\n\n#define R(v) (vec2(v) / iResolution.xy)\n\n// Hash from Dave Hoskin's \"Hash without Sine\": https://www.shadertoy.com/view/4djSRW\n#define MOD3 vec3(.1031,.11369,.13787)\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * MOD3);\n    p3 += dot(p3, p3.yxz+19.19);\n    return -1.0 + 2.0 * fract(vec3((p3.x + p3.y)*p3.z, (p3.x+p3.z)*p3.y, (p3.y+p3.z)*p3.x));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFC  = ivec2(fragCoord);\n    ivec2 uv = iFC;\n    vec2 tx = 1.0 / iResolution.xy;\n    vec2 pos = T(uv);\n    vec2 new_pos = pos;\n    \n    ivec2 iRes = ivec2(iResolution.xy);\n    \n    // PRNG for sort offset\n    vec3 hash = hash33(iTime * vec3(13.93, -17.41, 9.38));\n    ivec2 offs = ivec2(float(SORT_WINDOW) * hash.xy);\n    //ivec2 offs = (SORT_WINDOW/2)*ivec2((iFrame % 3-1), ((iFrame+1)% 3-1));\n\n    ivec2 uvm = uv + offs;\n    ivec2 shift = (STRIDE + (uvm % STRIDE)) % STRIDE;\n    ivec2 subp = ((SORT_WINDOW + ((uvm - shift) % SORT_WINDOW)) % SORT_WINDOW) / STRIDE;\n    ivec2 subp_stride = STRIDE * subp;\n    ivec2 base_uv = uv - subp_stride;\n    \n    /* This is the default sorting order generated by the algorithm below for a 5x5 window:\n         0  4  8  12  1\n        15 16 20  17  5\n        11 23 24  21  9\n         7 19 22  18 13\n         3 14 10  6   2\n\t*/\n\n    if (all(greaterThanEqual(base_uv,ivec2(0))) && all(lessThanEqual(base_uv + STRIDE * FULL, iRes))) {\n        bool del[DIM];\n        vec2 sort[DIM];\n        vec2 posv[DIM];\n        ivec2 order[DIM];\n        \n        for (int i = 0; i < DIM; i++) {\n            del[i] = false;\n            sort[i] = vec2(0);\n            posv[i] = vec2(0);\n        }\n        \n        int MAX = DIM/4;\n\n        if (FULL % 2 == 1) {\n            order[DIM-1] = ivec2(FULL/2);\n            MAX = (DIM - 1)/4;\n        }\n\n        int ic = 0;\n        int m  = 0;\n        int id = FULL - 1;\n\n        for (int i = 0; i < MAX; i++) {\n            if (ic == id) {\n                id = id - 2;\n                ic = 0;\n                m++;\n            }\n            order[4*i+REORDER(0)] = ivec2(ic+m,    id+m);\n            order[4*i+REORDER(1)] = ivec2(id+m,    id-ic+m);\n            order[4*i+REORDER(2)] = ivec2(id-ic+m, m);\n            order[4*i+REORDER(3)] = ivec2(m,       ic+m);\n\n            ic++;\n        }\n\n        for (int i = 0; i < FULL; i++) {\n            for (int j = 0; j < FULL; j++) {\n                posv[i + j * FULL] = T(base_uv + STRIDE*ivec2(i,j));\n            }\n        }\n\n        #ifdef REVERSE_ORDER\n        for (int i = DIM - 1; i >= 0; i--) {\n        #else\n        for (int i = 0; i < DIM; i++) {\n        #endif\n            vec2 closest = vec2(1e6);\n            float closest_distance = 1e6;\n            int closest_index = -1;\n\n            #ifdef TARGET_EDGE\n                vec2 tgt = vec2(order[i]) / float(FULL-1);\n            #else\n            \tvec2 tgt = R(base_uv + STRIDE*order[i]);\n            #endif\n\n            int tgt_index = order[i].x + order[i].y * FULL;\n            for (int j = 0; j < DIM; j++) { \n                float dist  = distance(posv[j],tgt);\n                if (dist <= closest_distance && !del[j]) {\n                    closest_index = j; \n                    closest = posv[j];\n                    closest_distance = dist;\n                }\n            }\n            del[closest_index] = true;\n            sort[tgt_index] = closest;\n        }\n\n        new_pos = sort[subp.x + subp.y * FULL];\n    }\n\n    fragColor = vec4(new_pos, vec2(0));    \n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define T(d) texelFetch(iChannel0, d, 0).xy\n\n#define FULL 5 // sorting window size (e.g. 5x5)\n#define STRIDE 5 // stride length\n#define SORT_WINDOW (FULL*STRIDE)\n#define DIM (FULL*FULL)\n\n//#define TARGET_EDGE // if defined, use the corners of the buffers (e.g. UVs (0,0) or (1,1)) as sort targets\n#define REVERSE_ORDER // if defined we sort from inner-to-outer, and if undefined we sort from outer-to-inner\n\n// reordering targets reduces artifacts related to the choice \n// of which quadrant of the sorting window we sort first.\n#define REORDER_TARGETS\n#ifdef REORDER_TARGETS\n\t#define REORDER(k) ((iFrame+2+k)%4)\n#else\n\t#define REORDER(k) k\n#endif\n\n#define R(v) (vec2(v) / iResolution.xy)\n\n// Hash from Dave Hoskin's \"Hash without Sine\": https://www.shadertoy.com/view/4djSRW\n#define MOD3 vec3(.1031,.11369,.13787)\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * MOD3);\n    p3 += dot(p3, p3.yxz+19.19);\n    return -1.0 + 2.0 * fract(vec3((p3.x + p3.y)*p3.z, (p3.x+p3.z)*p3.y, (p3.y+p3.z)*p3.x));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFC  = ivec2(fragCoord);\n    ivec2 uv = iFC;\n    vec2 tx = 1.0 / iResolution.xy;\n    vec2 pos = T(uv);\n    vec2 new_pos = pos;\n    \n    ivec2 iRes = ivec2(iResolution.xy);\n    \n    // PRNG for sort offset\n    vec3 hash = hash33(iTime * vec3(7.34, 2.14, 12.73));\n    ivec2 offs = ivec2(float(SORT_WINDOW) * hash.xy);\n    //ivec2 offs = (SORT_WINDOW/2)*ivec2((iFrame % 3-1), ((iFrame+1)% 3-1));\n\n    ivec2 uvm = uv + offs;\n    ivec2 shift = (STRIDE + (uvm % STRIDE)) % STRIDE;\n    ivec2 subp = ((SORT_WINDOW + ((uvm - shift) % SORT_WINDOW)) % SORT_WINDOW) / STRIDE;\n    ivec2 subp_stride = STRIDE * subp;\n    ivec2 base_uv = uv - subp_stride;\n    \n    /* This is the default sorting order generated by the algorithm below for a 5x5 window:\n         0  4  8  12  1\n        15 16 20  17  5\n        11 23 24  21  9\n         7 19 22  18 13\n         3 14 10  6   2\n\t*/\n\n    if (all(greaterThanEqual(base_uv,ivec2(0))) && all(lessThanEqual(base_uv + STRIDE * FULL, iRes))) {\n        bool del[DIM];\n        vec2 sort[DIM];\n        vec2 posv[DIM];\n        ivec2 order[DIM];\n        \n        for (int i = 0; i < DIM; i++) {\n            del[i] = false;\n            sort[i] = vec2(0);\n            posv[i] = vec2(0);\n        }\n        \n        int MAX = DIM/4;\n\n        if (FULL % 2 == 1) {\n            order[DIM-1] = ivec2(FULL/2);\n            MAX = (DIM - 1)/4;\n        }\n\n        int ic = 0;\n        int m  = 0;\n        int id = FULL - 1;\n\n        for (int i = 0; i < MAX; i++) {\n            if (ic == id) {\n                id = id - 2;\n                ic = 0;\n                m++;\n            }\n            order[4*i+REORDER(0)] = ivec2(ic+m,    id+m);\n            order[4*i+REORDER(1)] = ivec2(id+m,    id-ic+m);\n            order[4*i+REORDER(2)] = ivec2(id-ic+m, m);\n            order[4*i+REORDER(3)] = ivec2(m,       ic+m);\n\n            ic++;\n        }\n\n        for (int i = 0; i < FULL; i++) {\n            for (int j = 0; j < FULL; j++) {\n                posv[i + j * FULL] = T(base_uv + STRIDE*ivec2(i,j));\n            }\n        }\n\n        #ifdef REVERSE_ORDER\n        for (int i = DIM - 1; i >= 0; i--) {\n        #else\n        for (int i = 0; i < DIM; i++) {\n        #endif\n            vec2 closest = vec2(1e6);\n            float closest_distance = 1e6;\n            int closest_index = -1;\n\n            #ifdef TARGET_EDGE\n                vec2 tgt = vec2(order[i]) / float(FULL-1);\n            #else\n            \tvec2 tgt = R(base_uv + STRIDE*order[i]);\n            #endif\n\n            int tgt_index = order[i].x + order[i].y * FULL;\n            for (int j = 0; j < DIM; j++) { \n                float dist  = distance(posv[j],tgt);\n                if (dist <= closest_distance && !del[j]) {\n                    closest_index = j; \n                    closest = posv[j];\n                    closest_distance = dist;\n                }\n            }\n            del[closest_index] = true;\n            sort[tgt_index] = closest;\n        }\n\n        new_pos = sort[subp.x + subp.y * FULL];\n    }\n\n    fragColor = vec4(new_pos, vec2(0));    \n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define T(d) texelFetch(iChannel0, d, 0).xy\n#define D(d) texelFetch(iChannel1, d, 0)\n#define R(v) (vec2(v) / iResolution.xy)\n\n#define WINDOW 3  // half-width of the square accumulation window\n#define WIDTH (WINDOW * 2 + 1)\n#define DIM (WIDTH * WIDTH)\n\n#define TC 0.95  // time constant of the accumulator\n\n//#define CHECK_CLOSEST_NEIGHBORS // (EXPENSIVE) check the neighborhoods of closest points for neighboring pixels\n\nvoid findClosest(ivec2 iuv, vec2 uv, inout float gravity, inout float minDist, inout vec2 closest) {\n    for (int i = -WINDOW; i <= WINDOW; i++) {\n        for (int j = -WINDOW; j <= WINDOW; j++) {\n            vec2 pos = T(iuv + ivec2(i,j));\n            float dist = distance(uv, pos);\n            \n            gravity += 1.0 / (dist*dist);\n            \n            if (dist < minDist) {\n            \tminDist = dist;\n                closest = pos;\n            }\n        }\n    }    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    ivec2 iuv = ivec2(fragCoord);\n    vec2 tx = 1.0 / iResolution.xy;\n    \n    ivec2 iRes = ivec2(iResolution.xy);\n    \n    float gravity = 0.0;\n    float minDist = 1e6;\n    \n    vec4 prevVec = D(iuv);\n    vec2 prevClosest = prevVec.xy;\n    \n    vec2 closest = vec2(1e6);\n    \n    vec2 closestNeighbors[DIM + 1];\n    \n    closestNeighbors[0] = prevClosest;\n\n    int index = 0;\n    for (int i = -WINDOW; i <= WINDOW; i++) {\n        for (int j = -WINDOW; j <= WINDOW; j++) {\n            vec2 pos = T(iuv + ivec2(i,j));\n            vec2 nClosest = D(iuv + ivec2(i,j)).xy;\n            closestNeighbors[index] = nClosest;\n            float dist = distance(uv, pos);\n            \n            gravity += 1.0 / (dist*dist);\n            \n            if (dist < minDist) {\n            \tminDist = dist;\n                closest = pos;\n            }\n            index++;\n        }\n    }\n\n\t#ifdef CHECK_CLOSEST_NEIGHBORS\n    for (int i = 0; i <= DIM; i++) {\n    \tvec2 pos = closestNeighbors[i];\n        ivec2 ipos = ivec2(iResolution.xy * pos);\n        findClosest(ipos, uv, gravity, minDist, closest);\n    }\n    #endif\n    \n    vec2 ewma;\n    if (prevVec.zw == vec2(0)) {\n        ewma = vec2(0.0, minDist);\n    } else {\n        float gravp = clamp(0.00000001 * gravity,0.0,1.0);\n        ewma = TC * prevVec.zw + (1.0 - TC) * vec2(gravp, minDist);\n    }\n\n    fragColor = vec4(closest, ewma);    \n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

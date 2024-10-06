@@ -1,0 +1,244 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1693319106",
+            "description": "path between the successive values in 64x64 Void And Cluster Bluenoise.\nAlso, illustrates how to use GeneralPurpose MIPmap to reverse a map n=T(uv) into uv=T(n).\n\nUncomment buffD:19 to compare with regular noise",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Dlffzl",
+            "likes": 4,
+            "name": "bluenoise texture graph + revers",
+            "published": 3,
+            "tags": [
+                "noise",
+                "cubemap",
+                "bluenoise",
+                "gpmipmap"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 289
+        },
+        "renderpass": [
+            {
+                "code": "// path between the successive points in 64x64 Void And Cluster Bluenoise = buffA,B,C, using https://shadertoy.com/view/mt2cWR\n//                     ( simplifying \"Void And Cluster Bluenoise\" by krax. https://shadertoy.com/view/cdfSD8\n//                       from ref: https://alister-chowdhury.github.io/posts/20221230-bluenoise-generator/ )\n//   ( prev attempt with shadertoy bluenoise failed bcz ids are not unique https://www.shadertoy.com/view/ctXfzl )\n// Also, illustrates how to inverse n=T(uv) using GeneralPurpose MIPmap:\n//   see CubeA: we output only at matching coordinate * 2^2lod, and MIPmap(lod) will find it.\n//   here we inverse 1+1 value per frame within 64x64, but we could do 6*16²*2 = 3072 ( so the whole 64² map in 2 frames )\n//                                                                  or  ''' *4 = 6144 if we encode UVs in one float\n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    vec2  R = iResolution.xy;\n    float t = fract(float(iFrame)/4096.);   \n    O = texelFetch(iChannel0, ivec2(u), 0);\n    if ( u.y < 5. ) O = vec4(1, u.x/R.x > t, 0,1);               // progress bar = value\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const int S = 64;           // bluenoiseSize = SxS , cycling tile\nfloat s = float(S),         // note that more buffers are needed if S > 64 : clone C , S/8^(i+1)\n      sigma = 2.5;          // NB: krax used 1.9 \n\n#define T(x,y) texelFetch(iChannel0, ivec2(x,y) % S, 0)\n\nfloat H( uvec3 x ) {        // from iq https://www.shadertoy.com/view/XlXcW4\n    uint k = 1103515245U;   // GLIB C\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n // x = ((x>>8U)^x.yzx)*k;  // but this version only return 10⁻¹⁹ amplitude\n    return uintBitsToFloat( ((((x.x>>8U)^x.y)*k )  & 0x1fffffffU) ); // why ?\n // return 1e-19* float(((x.x>>8U)^x.y)*k   )  /float(0xffffffffU);  // Uniform\n}\n\n#define M(S,c)                                                                                  \\\nvoid mainImage( out vec4 O, vec2 U ) {                                                          \\\n    if( U.x > float(S/8) || U.y > float(S/8) ) return; /* we only simulate a small square    */ \\\n    O = vec4( 0,1e35,0,0);                                                                      \\\n    ivec2   start = min( ivec2(U)*8, S - 1 ),          /* to reduce a 8x8 above subtile to 1 */ \\\n              end = min( start + 8, S );                                                        \\\n    for( int y=start.y; y<end.y; ++y)                                                           \\\n      for( int x=start.x; x<end.x; ++x) {                                                       \\\n        vec4 E = T(x,y);                                                                        \\\n        c;                                             /* store result */                       \\\n}   } \n\n\n// CubeMap utils from  https://www.shadertoy.com/view/3tGBDz\nvec3 E;\n#define C(U,n,l) ( E =   vec3( 2.*fract(U) -1., 1 )                                             \\\n                       * vec3( n==0||n==5 ?-1:1 , n!=1 ?-1:1 , n>2 ?-1:1 ),                     \\\n                   E = (n)%3 != 2 ? E.yzx : E.xzy,                                              \\\n                   textureLod( iChannel1, vec3( E[(n+1)%3], E[(n)%3], E[(n+2)%3] ) , float(l) ) \\\n                 )\n                 ",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// This stage deals with updating the blue noise energy.\n// On the first iteration, we simply seed it with background energy.\n// output: .x = bluenoise, .y = energy.   \n// input:  D.yz = location or largest void.\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    if( U.x>s || U.y>s ) return; // we only simulate a small (cyclicling) square\n\n    if(iFrame == 0)              // init: noise = 0, energy = random\n    {   O.xy = vec2( 0, H(uvec3(U, 2111)) );\n        return;\n    }\n    \n    O = T(U.x,U.y);              // previous state\n    if(iFrame > S*S-1) return;   // max iteration reached\n \n \n    // Get the result from downscaling and finding the smallest void center\n    U = abs( floor(U) - texelFetch(iChannel1, ivec2(0), 0).zw ) / s;  // delta to target\n\n    float v = 1. - float(iFrame-1) / (s*s-1.); // noise value = normalized iterations\n\n    // Wrap around logic : max energy around optimal void center modulo s : https://www.desmos.com/calculator/zuopknqihy\n    vec2 d = ( abs( U - .5 ) - .5 )  * s / sigma;\n    O.xy += vec2( U==vec2(0) ? v : 0.,            // we are at the optimum : store noise\n                  v * exp( -dot(d,d) ) );         // energy += gaussian to optimum\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Void and cluster reduce init\n// input:  .xy = SxS state noise,energy.\n// output: .xyz = lowest energy value + position on SxS /8   ( and not already chosen )\n\nM( S , \n   if( E.x == 0. && E.y < O.y ) O = vec4( 0, E.y, x, y )\n )",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Void and cluster reduce iteration\n// input:  .xy = SxS /8 state energy,location\n// output: .xyz = lowest energy value + position on SxS /8²  ( and not already chosen )\n//                note that with S = 64 this is only 1 pixel.\n\nM( S/8 ,                                            \n   if( E.y < O.y ) O = E\n )",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainCubemap( out vec4 O, vec2 u, vec3 o, vec3 D )\n{\n    vec3 A = abs(D);\n    int n = A.x > A.y ? A.x > A.z ? 0 : 2 : A.y > A.z ? 1 : 2;   // faceID\n    if (D[n]<0.) n += 3;\n    \n    O *= 0.;\n    if (n>0) return;                                             // we only use Face 0                                  \n    if (u.x > s || u.y > s ) return; \n    \n    int S2 = S*S; \n    float s2 = float(S2);\n    float t = 1. - float(iFrame)/s2;\n    if (iFrame<2) return;\n   \n    int m = int(s2*texelFetch( iChannel0, ivec2(u), 0 )),        // bluenoise mask\n        T = int(s2*t) % S2;                                      // selected value\n \n    O *= 0.;\n    u *= s*s / s;                                                // so that MIPmap 6 directly read the normalized coordinate\n    m == T ? O.xy = u : m == (T+1) % S2 ? O.zw = u : u;\n}    ",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "// === draw the lines between value t and t+1\n\n\nfloat line(vec2 p, vec2 a,vec2 b) { \n    p -= a, b -= a;\n    return length(p - b * clamp(dot(p, b) / dot(b, b), 0., 1.) ); \n}\n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    O = texelFetch(iChannel0, ivec2(u), 0);                   // previous state\n    vec4 T = C( vec2(32./1024.),0,6 );                        // .xy and .zw = reversed map values iFrame & iFrame+1\n    \n                                                              // populate the texture with the inverse map n = T(uv)\n // ivec2 n = ivec2(u); O = n.x+int(iResolution)*n.y == iFrame ? C( vec2(32./1024.),0,6 ) : O;\n\n                                                              // uncomment the 2 next to compare with pure random hash\n // #define H(i) fract(1e4*sin( ( 1.- float(i+iFrame)/s/s )*vec2(71.3,97.7) ))\n // T = vec4(H(),H(1));\n    \n    T *= iResolution.xyxy;\n    O =  O *.99                                               // fade previous image\n      + smoothstep( 1., 0., line( u, T.xy, T.zw ) );          // and draw line between the 2 last nodes\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

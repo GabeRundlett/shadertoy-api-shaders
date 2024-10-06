@@ -1,0 +1,292 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667461450",
+            "description": "Cloth draping over a movable ball. Shadows are computed by rendering depth from light's perspective.\n\n*mouse to move ball* \n*space to reset and resume attract mode*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "cdjGRR",
+            "likes": 44,
+            "name": "Cloth Draping + Shadows",
+            "published": 3,
+            "tags": [
+                "3d",
+                "simulation",
+                "particles",
+                "physics",
+                "integration",
+                "cloth",
+                "fabric",
+                "tearing",
+                "tear",
+                "fishnet"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 837
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  The cloth sim is essentially the same as my Tearable 3D Fishnet\n//\n//      https://www.shadertoy.com/view/NlKBW3\n//\n//  I did simplify it slightly, removing the pinning and disabling abilities since\n//  I'm not using them here.\n//\n//  Most of my time on this shader has been spent on the rendering. I originally\n//  tried a more analytic approach, trying to compute a quad from the cloth vertices\n//  to render. I couldn't get that to work, so I ended up with a \"splat\" approach\n//  which looks OK, I think.\n//\n//  The shadows are possible because we compute voronoi for particle vertices from\n//  the light source position, and then render depth into buffer D from the light \n//  source direction. We can then consult this buffer during rendering to determine\n//  when the cloth shadows something.\n//\n//  Buffer A computes the positions of cloth vertices\n//  Buffer B computes nearest particles to each screen pixel from the camera's POV\n//  Buffer C computes nearest particles to each screen pixel from the light's POV\n//  Buffer D computes the depth of the cloth from the light's perspective, for shadows\n//\n// ---------------------------------------------------------------------------------------\n\n\nvec3 light(vec3 n, vec3 pointLightDir, bool shadow)\n{\n    return vec3(abs(dot(n, FILL_LIGHT_DIR)) *.25) + float(!shadow) * max(0., dot(n, pointLightDir)) * .9;\n}\n\nfloat sdBox(vec3 p, vec3 s)\n{\n    p = abs(p) - s;\n\treturn length(max(p, 0.)) + min(max(p.x, max(p.y, p.z)), 0.);\n}\n\nfloat sdSphere( vec3 p, float s )\n{\n    return length(p)-s;\n}\n\nfloat scene(vec3 p, vec4 state)\n{\n    float d = sdSphere(p - vec3(state.y, -1, -state.z), 1.); // ball\n    \n    d = min(d, sdBox(p + vec3(0,0,2), vec3(10.,10.,1.))); // wall\n    d = min(d, sdBox(p + vec3(0,1.-FLOOR_Z,0), vec3(10.,1.,10.))); // floor\n    \n    return d;\n}\n\n#define MAX_STEPS 100\n#define MAX_DIST 100.\n#define SURF_DIST .001\n\nfloat rayMarch(vec3 ro, vec3 rd, vec4 state)\n{\n\tfloat d = 0.;\n    \n    for(int i = 0; i < MAX_STEPS; i++)\n    {\n    \tvec3 p = ro + rd * d;\n        float dS = scene(p, state);\n        d += dS;\n        if(d > MAX_DIST || abs(dS) < SURF_DIST) break;\n    }\n    \n    return d;\n}\n\nvec3 getNormal(vec3 p, vec4 state)\n{\n    vec2 e = vec2(.001, 0);\n    vec3 n = scene(p, state) - \n        vec3(scene(p - e.xyy, state), scene(p - e.yxy, state),scene(p - e.yyx, state));\n    \n    return normalize(n);\n}\n\nbool shadowScene(vec3 p, vec3 lightDir, mat4 w2l, vec4 state)\n{\n    float sd = rayMarch(POINT_LIGHT_POS, -lightDir, state);\n    vec3 sp = POINT_LIGHT_POS - lightDir * sd;\n    return dot(p - sp, lightDir) < -0.1;\n}\n\nbool shadowCloth(vec3 p, vec3 lightDir, mat4 w2l, vec4 state)\n{\n    vec3 s = screen(p, w2l);\n    float sz = texture(iChannel2, s.xy * .5 * vec2(iResolution.y / iResolution.x, 1) + .5).w;\n\n    return sz < s.z;\n}\n\nbool renderCloth(int id, mat4 w2c, mat4 w2l, vec2 p, vec4 state, inout vec4 fragColor)\n{\n    fxParticle data = fxGetParticle(id);\n    vec3 s = screen(data.pos, w2c);\n    if (distance(s.xy, p) < 15./iResolution.y && s.z <= fragColor.w + 0.01)\n    {\n        vec3 lightDir = normalize(POINT_LIGHT_POS - data.pos);\n        bool sh = shadowScene(data.pos, lightDir, w2l, state);\n        const vec3 CLOTH_COLOR = vec3(1, 0, 0);\n        fragColor = vec4(CLOTH_COLOR * light(data.norm, lightDir, sh), s.z);\n        return true;\n    }\n    return false;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    initClothExtents(iResolution);\n    \n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n\n    // set up ray for marching\n    vec3 cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(LOOK_AT, CAMERA_POS, cameraFwd, cameraLeft, cameraUp);\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    mat4 w2c = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, CAMERA_POS);\n   \n    fragColor = vec4(0, 0, 0, MAX_DIST);\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n\n    // march\n    float d = rayMarch(CAMERA_POS, rayDir, state);\n\n    // process march results\n    vec3 hit = CAMERA_POS + rayDir * d;\n    vec3 n = getNormal(hit, state);\n    vec3 lightDir = normalize(POINT_LIGHT_POS - hit);\n    \n    // set up light matrix\n    vec3 lightFwd, lightLeft, lightUp;\n    fxCalcCamera(LOOK_AT, POINT_LIGHT_POS, lightFwd, lightLeft, lightUp);\n    mat4 w2l = fxCalcCameraMat(iResolution, lightLeft, lightUp, lightFwd, POINT_LIGHT_POS);\n   \n    // compute shadows\n    bool s = shadowScene(hit, lightDir, w2l, state) || shadowCloth(hit, lightDir, w2l, state);\n\n    // render background color\n    fragColor = vec4(light(n, lightDir, s), d);\n    \n    // render cloth\n    ivec4 old = fxGetClosest(iChannel1, ivec2(fragCoord));      \n    for (int i = 0; i < 4; i++)\n    {\n        int id = old[i];\n        if (id < 0 || id >= g_MaxParticles) continue;\n        if (renderCloth(id, w2c, w2l, p, state, fragColor)) break;\n    }\n    \n    fragColor.xyz = sqrt(fragColor.xyz);\n    fragColor.w = 1.;\n    //fragColor = texelFetch(iChannel2, ivec2(fragCoord), 0); //render shadow buffer\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const vec3 POINT_LIGHT_POS = vec3(5, 5, 5);\nconst vec3 FILL_LIGHT_DIR = normalize(vec3(-1, 0.75, 1));\nconst vec3 CAMERA_POS = vec3(-1, 3, 5);\nconst vec3 LOOK_AT = vec3(0, -1, 0);\nconst float FLOOR_Z = -2.;\n\nuvec4 hash(uvec4 x){\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    return x;\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\n// Integer Hash - II by iq\n// https://www.shadertoy.com/view/XlXcW4\nconst uint k = 1103515245U;  // GLIB C\n\nvec3 hash3( uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\nvoid fxCalcCamera(in vec3 cameraLookAt, in vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft  = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd)) * 0.5;\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return inverse(mat4(vec4(-0.25 * cameraLeft, 0.0),\n        vec4(-0.5*cameraUp, 0.0),\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0)));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord.xy / iResolution.y) * vec2(0.5, 1.) - vec2(0.25 * iResolution.x / iResolution.y, .5);\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nfloat length2(vec2 v) { return dot(v, v); }\n\nfloat fxLinePointDist2(vec2 a, vec2 b, vec2 p)\n{\n    p -= a, b -= a;\n    float h = clamp(dot(p, b) / dot(b, b), 0., 1.);// proj coord on line\n    return length2(p - b * h); // squared dist to segment\n}\n\n//returns the ids of the four closest particles from the input\nivec4 fxGetClosest(sampler2D sampler, ivec2 xy)\n{\n    return ivec4(texelFetch(sampler, xy, 0));\n}\n\n#define POS 0\n#define PREV 1\n#define NORM 2\n#define NUM_PARTICLE_DATA_TYPES 3\n\n//returns the location of the particle within the particle buffer corresponding with the input id \nivec2 fxLocFromIDInternal(int width, int id, int dataType)\n{\n    int index = id * NUM_PARTICLE_DATA_TYPES + dataType;\n    return ivec2( index % width, index / width);\n}\n\n#define fxLocFromID(X, Y) fxLocFromIDInternal(int(iResolution.x), X, Y)\n\nstruct fxParticle\n{\n    vec3 pos;\n    vec3 prev;\n    vec3 norm;\n};\n\n//get the particle corresponding to the input id\nfxParticle fxGetParticleInternal(sampler2D sampler, int resolutionWidth, int id)\n{\n    vec4 particleData0 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, POS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, PREV), 0);\n    vec4 particleData2 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, NORM), 0);\n\n    fxParticle particle;\n    particle.pos = particleData0.xyz;\n    particle.prev = particleData1.xyz;\n    particle.norm = particleData2.xyz;\n    \n    return particle;\n}\n\nvec4 fxSaveParticle(fxParticle p, int dataType)\n{    \n    switch(dataType)\n    {\n    case POS:  \n        return vec4(p.pos, 0);\n    case PREV:  \n        return vec4(p.prev, 0);\n    case NORM:  \n        return vec4(p.norm, 0);\n    }\n}\n\n#define fxGetParticle(X) fxGetParticleInternal(iChannel0, int(iResolution.x), X)\n\nvec4 fxGetParticleDataInternal(sampler2D sampler, int resolutionWidth, int id, int dataType)\n{\n    return texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, dataType), 0);\n}\n\n#define fxGetParticleData(X, Y) fxGetParticleDataInternal(iChannel0, int(iResolution.x), X, Y)\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SPACE 32\n\nconst float SIDE_LEN = 4.;\n\n// global variables, initialized via computeClothSide\nint g_ClothSideLen = 0; // how many particles along each side of the square\nint g_MaxParticles = 0; // how many particles, total\n\n// computes the size of the cloth grid relative to the current resolution\nvoid initClothExtents(vec3 res)\n{\n    float particleUse = 0.1 * (3. - 0.6 * smoothstep(1000., 1200., res.y));\n    g_ClothSideLen = int(sqrt(res.x * res.y / float(NUM_PARTICLE_DATA_TYPES)) * particleUse);\n    g_MaxParticles = g_ClothSideLen * g_ClothSideLen;\n}\n\n// These functions compute the neighbors from each particle, and -1 if there is\n// no neighbor in that direction. Crucially, they must continue to return -1 if\n// -1 is passed in, since we do not terminate the loop right away.\n\nint above(int i)\n{\n    return i >= 0 && i >= g_ClothSideLen ? i - g_ClothSideLen : -1;\n}\n\nint below(int i)\n{\n    return i >= 0 && i < (g_ClothSideLen * (g_ClothSideLen - 1)) ? i + g_ClothSideLen : -1;\n}\n\nint left(int i)\n{\n    return i >= 0 && (i % g_ClothSideLen) != 0 ? i - 1 : -1;\n}\n\nint right(int i)\n{\n    return i >= 0 && (i % g_ClothSideLen) != g_ClothSideLen - 1 ? i + 1 : -1;\n}\n\nvec3 screen(vec3 p, mat4 w2c)\n{\n    vec3 s = (w2c * vec4(p,1.0)).xyz;\n    s.xy = s.xy / s.z;\n    return s;\n}\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_)\n{\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nfloat distance2Particle(sampler2D sampler, int resolutionWidth, int id, float zBias, vec2 fragCoord, mat4 w2cNew)\n{\n    if (id==-1) return 1e20;\n    vec4 worldPos = fxGetParticleDataInternal(sampler, resolutionWidth, id, POS);\n    if (worldPos.w != 0.) return 1e20;\n    vec3 screenPos = (w2cNew * vec4(worldPos.xyz,1.0)).xyz;\n    screenPos.xy = screenPos.xy / screenPos.z;\n    vec2 delta = (screenPos.xy)-fragCoord;\n    return dot(delta, delta) + zBias*screenPos.z;\n}\n\nvoid consider(sampler2D sampler, int resolutionWidth, int nid, float zBias, vec2 p, mat4 w2c, inout ivec4 new, inout vec4 dis)\n{\n    if (nid >= 0)\n    {\n        float dis2 = distance2Particle(sampler, resolutionWidth, nid, zBias, p, w2c);\n        insertion_sort( new, dis, nid, dis2 );\n    }\n}\n\nvoid voronoiInternal(sampler2D particles, vec3 res, int frame, out vec4 fragColor, vec2 fragCoord, vec3 cameraPos, sampler2D self, float zBias, uint searchRange, uint searchCount)\n{\n   \tivec2 iFragCoord = ivec2(fragCoord);\n    initClothExtents(res);\n\n\tvec2 p = (2.*fragCoord - res.xy) / res.y;\n\n    vec3 cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    mat4 w2c = fxCalcCameraMat(res, cameraLeft, cameraUp, cameraFwd, cameraPos);\n\n    ivec4 new = ivec4(-1);\n    vec4 dis = vec4(1e6);\n\n    ivec4 old = fxGetClosest(self, iFragCoord);      \n    for (int j = 0; j < 4; j++)\n    {\n        int id = old[j];\n        consider(particles, int(res.x), id, zBias, p, w2c, new, dis);\n\n        // randomly check one of the neighbors of the particle, it's likely to be of interest\n        int nid;\n        switch((frame + int(j)) % 4)\n        {\n            case 0: nid = above(id); break;\n            case 1: nid = below(id); break;\n            case 2: nid = left(id); break;\n            case 3: nid = right(id); break;\n        }\n        \n        consider(particles, int(res.x), nid, zBias, p, w2c, new, dis);\n    }\n\n    for (uint i = 0u; i < searchCount; ++i)\n    {\n        uvec4 h0 = hash(uvec4(fragCoord, frame, res.x) * i);\n\n        ivec4 old = fxGetClosest(self, iFragCoord + ivec2( h0.xy % searchRange - searchRange / 2u));      \n        consider(particles, int(res.x), old[0], zBias, p, w2c, new, dis);\n    }\n\n    int searchIterations = 1;\n    if (frame < 5)\n    {\n        searchIterations = 10;\n    }\n    for (int k = 0; k < searchIterations; k++)\n    {\n        float h = hash3(uvec3(fragCoord, k)).x;\n\n        int id = int(h*float(g_MaxParticles));\n        consider(particles, int(res.x), id, zBias, p, w2c, new, dis);\n    }\n    \n    fragColor = vec4(new);\n}\n\n#define voronoi(A, B, C, D, E, F, G) voronoiInternal(iChannel0, iResolution, iFrame, A, B, C, D, E, F, G)\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position of each cloth vertex.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(0,-1,0);\nconst float COMPRESSION_RESIST = .0003; // stiffness\n\nvoid constraint(inout int nid, inout fxParticle p, float edgeLen)\n{\n    if (nid < 0) return;\n    \n    fxParticle n = fxGetParticle(nid);\n    \n    vec3 deltaPos = n.pos - p.pos;\n    float len = length(deltaPos);\n    vec3 dir = deltaPos / len;\n    \n    float error = len - edgeLen;\n    \n    if (error < 0.) error *= COMPRESSION_RESIST;\n    \n    float f = .99;\n    p.pos += dir * error * f;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    initClothExtents(iResolution);\n    \n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n    if(id>=g_MaxParticles) return;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n\n    fxParticle p = fxGetParticle(id);\n    \n    if (dataType == NORM)\n    {\n        // compute cloth normals\n        ivec4 ids;\n\n        ids.x = above(id);\n        ids.y = right(id);\n        ids.z = below(id);\n        ids.w = left(id);\n\n        fxParticle ps[4];\n        for (int i = 0; i < 4; ++i) ps[i] = fxGetParticle(ids[i]);\n\n        float count = 0.;\n        vec3 norm = vec3(0);\n        for (int i = 0; i < 4; ++i)\n        {\n            if (ids[i] >= 0 && ids[(i + 1) % 4] >= 0)\n            {\n                norm += normalize(cross(ps[i].pos - p.pos, ps[(i + 1) % 4].pos - p.pos));\n                count += 1.;\n            }\n        }\n\n        fragColor = vec4(normalize(norm / count), 0);\n        return;\n    }\n    \n    p.prev = p.pos;\n    p.pos += p.pos - p.prev + GRAVITY; // verlet\n\n    // edge constraints\n    int a, b, l, r;\n    a = b = l = r = id;\n\n    float EDGE_LEN = SIDE_LEN / float(g_ClothSideLen);\n    float CARDINAL_ITERATIONS = 45.;\n    for (float i = 1.; i < CARDINAL_ITERATIONS; ++i)\n    {\n        a = above(a);\n        b = below(b);\n        r = right(r);\n        l = left(l);\n\n        float sLen = EDGE_LEN * i;\n        constraint(a, p, sLen);\n        constraint(b, p, sLen);\n        constraint(r, p, sLen);\n        constraint(l, p, sLen);\n    }\n\n#define DIAGONAL_CONSTRAINTS 1\n\n#if DIAGONAL_CONSTRAINTS\n    int al, ar, bl, br;\n    al = ar = bl = br = id;\n\n    float DIAGONAL_ITERATIONS = 35.;\n    for (float i = 1.; i < DIAGONAL_ITERATIONS; ++i)\n    {\n        ar = above(right(ar));\n        al = above(left(al));\n        br = below(right(br));\n        bl = below(left(bl));\n\n        float dLen = EDGE_LEN * i * sqrt(2.);\n        constraint(al, p, dLen);\n        constraint(ar, p, dLen);\n        constraint(bl, p, dLen);\n        constraint(br, p, dLen);\n    }\n#endif // DIAGONAL_CONSTRAINTS\n\n    // collision with ball\n    const float BALL_SIZE  = 1.;\n    vec3 ballPos = vec3(state.y, -1.0, -state.z);\n    vec3 ballDelta = p.pos - ballPos;\n    if (length(ballDelta) < BALL_SIZE)\n    {\n        p.pos = ballPos + normalize(ballDelta) * BALL_SIZE;\n    }\n\n    // collision with floor\n    if (p.pos.y < FLOOR_Z)\n    {\n        p.pos.y = FLOOR_Z;\n    }\n    \n    // reset\n    if (iFrame == 0 || state.x < 0.)\n    {   \n        float x = float(id % g_ClothSideLen) / float(g_ClothSideLen) - 0.5;\n        float y = 0.5 - float(id) / float(g_ClothSideLen * g_ClothSideLen);\n        p.pos = vec3(x, 0.2, y) * SIDE_LEN / sqrt(2.);\n        p.prev = p.pos;\n    }\n\n    fragColor = fxSaveParticle(p, dataType);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Manages state, computes voronoi for particle rendering.\n// ---------------------------------------------------------------------------------------\n\nvec4 updateState()\n{\n    // Reset if resolution changes\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n\n    ivec4 topMiddleClosest = fxGetClosest(iChannel1, ivec2(iResolution.x * .5, iResolution.y - 10.));\n    if (topMiddleClosest[0] >= 0)\n    {\n        // Reset if cloth falls on the floor\n        fxParticle test = fxGetParticle(topMiddleClosest[0]);\n        if (test.pos.y <= FLOOR_Z) state.x = 0.;\n    }\n\n    if (iFrame == 0 ||\n        iResolution.x * iResolution.y != abs(state.x) ||\n        keyDown(KEY_SPACE))\n    {\n        state = vec4(-iResolution.x * iResolution.y, 0.0, 0.0, 0.0);\n    }\n    else\n    {\n        state.x = abs(state.x);\n    }\n\n    if (iMouse.z > 0.)\n    {\n        state.yz = (2. * iMouse.xy - iResolution.xy ) / iResolution.y;\n        state.w = -1.;\n    }\n\n    if (state.w >= 0.)\n    {\n        state.w++;\n        state.z = .05 * cos(.06 * state.w);\n        state.y = .3 * sin(.02 * state.w);\n    }\n    \n    return state;\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord )\n{\n    if (ivec2(fragCoord) == ivec2(0))\n    {\n        fragColor = updateState();\n        return;\n    }\n    \n    voronoi(fragColor, fragCoord, CAMERA_POS, iChannel1, 0.0003, 8u, 16u);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes voronoi for shadow buffer.\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord )\n{\n    voronoi(fragColor, fragCoord, POINT_LIGHT_POS, iChannel2, 0.00003, 15u, 8u);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Renders depth into w component from the light source for shadow computation.\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    initClothExtents(iResolution);\n    \n    // pixel\n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n\n    vec3 cameraPos = POINT_LIGHT_POS, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 w2c = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n   \n    fragColor = vec4(0, 0, 0, 1e6);\n    \n    ivec4 old = fxGetClosest(iChannel2, ivec2(fragCoord));      \n\n    for (int j = 0; j < 4; j++)\n    {\n        int id = old[j];\n        if (id < 0 || id >= g_MaxParticles) continue;\n        fxParticle data = fxGetParticle(id);\n        vec3 s = screen(data.pos, w2c);\n        if (distance(s.xy, p) < 10./iResolution.y && s.z <= fragColor.w + 0.01)\n        {\n            fragColor = vec4(1, 1, 1, s.z);\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

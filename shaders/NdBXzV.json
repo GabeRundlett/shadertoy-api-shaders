@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1620550968",
+            "description": "Someday, I'll be able to model the body too.",
+            "flags": 64,
+            "hasliked": 0,
+            "id": "NdBXzV",
+            "likes": 2,
+            "name": "ShyGuy Mask",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "shyguy"
+            ],
+            "usePreview": 0,
+            "username": "IWBTShyGuy",
+            "viewed": 337
+        },
+        "renderpass": [
+            {
+                "code": "// Copyright © 2021 IWBTShyGuy\n// Attribution 4.0 International (CC BY 4.0)\n\n// ----------------------- 3D common ----------------------- //\n\nconst float PI = 3.141592653;\n\nstruct Camera {\n    vec3 position;\n    vec3 direction;\n    vec3 up_direction; // not require dot(direction, up_direction) == 0\n    float fov;\n    float aspect; // x / y\n};\n\nstruct Ray {\n    vec3 origin;\n    vec3 direction;\n};\n\nCamera newCamera(vec3 position, vec3 direction, vec3 up_direction, float fov, float aspect) {\n    Camera camera;\n    camera.position = position;\n    camera.direction = direction;\n    camera.up_direction = up_direction;\n    camera.fov = fov;\n    camera.aspect = aspect;\n    return camera;\n}\n\n// perspective camera ray, uv = fragCoord / iResolution.xy\n// cf: https://qiita.com/aa_debdeb/items/301dfc54788f1219b554\nRay cameraRay(in Camera camera, in vec2 uv) {\n    uv = uv * 2.0 - 1.0;\n    float radian = camera.fov;\n    float h = tan(radian * 0.5);\n    float w = h * camera.aspect;\n    vec3 right = normalize(cross(camera.direction, camera.up_direction));\n    vec3 up = normalize(cross(right, camera.direction));\n    vec3 direction = normalize(right * w * uv.x + up * h * uv.y + camera.direction);\n    Ray ray;\n    ray.origin = camera.position;\n    ray.direction = direction;\n    return ray;\n}\n\n// ------------------- Physically Based Shading ------------------- //\n// reference: https://www.shadertoy.com/view/4sSfzK\n\n// https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile\nvec3 EnvBRDFApprox(vec3 specularColor, float roughness, float ndotv) {\n\tconst vec4 c0 = vec4(-1, -0.0275, -0.572, 0.022);\n\tconst vec4 c1 = vec4(1, 0.0425, 1.04, -0.04);\n\tvec4 r = roughness * c0 + c1;\n\tfloat a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;\n\tvec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;\n\treturn specularColor * AB.x + AB.y;\n}\n\nvec3 EnvRemap(vec3 c) {\n\treturn pow(2. * c, vec3(2.2));\n}\n\nfloat VisibilityTerm(float roughness, float ndotv, float ndotl) {\n\tfloat r2 = roughness * roughness;\n\tfloat gv = ndotl * sqrt(ndotv * (ndotv - ndotv * r2) + r2);\n\tfloat gl = ndotv * sqrt(ndotl * (ndotl - ndotl * r2) + r2);\n\treturn 0.5 / max(gv + gl, 0.00001);\n}\n\nfloat DistributionTerm(float roughness, float ndoth) {\n\tfloat r2 = roughness * roughness;\n\tfloat d = (ndoth * r2 - ndoth) * ndoth + 1.0;\n\treturn r2 / (d * d * PI);\n}\n\nvec3 FresnelTerm(vec3 specularColor, float vdoth) {\n\tvec3 fresnel = specularColor + (1. - specularColor) * pow((1. - vdoth), 5.);\n\treturn fresnel;\n}\n\n// ------------------- persona semi SDF ------------------- //\n\nconst mat3 BASE_MAT = mat3(\n    1.3, 0.0, 0.0,\n    0.0, 1.5, 0.0,\n    0.0, 0.0, 1.2\n);\nconst mat3 BASE_INV = inverse(BASE_MAT);\n\nconst mat3 CONTOUR_MAT = mat3(\n    1, 0, 0,\n    0, 0, -1,\n    0, 1, 0\n);\nconst mat3 CONTOUR_INV = inverse(CONTOUR_MAT);\n\nconst mat3 EYE_MAT = mat3(\n    0.3, 0, 0,\n    0, 0, -1,\n    0, 0.4, 0\n);\nconst mat3 EYE_INV = inverse(EYE_MAT);\n\nconst mat3 MOUTH_MAT = mat3(\n    0.15, 0, 0,\n    0, 0, -1,\n    0, 0.15, 0\n);\nconst mat3 MOUTH_INV = inverse(MOUTH_MAT);\n\nvec3 normalTransform(in mat3 matrix, in vec3 normal) {\n    mat3 trans = inverse(transpose(matrix));\n    return normalize(trans * normal * determinant(matrix));\n}\n\nfloat sphereSDF(in vec3 p, out vec3 normal) {\n    normal = p;\n    return length(p) - 1.0;\n}\n\nfloat cylinderSDF(in vec3 p, out vec3 normal) {\n    normal = vec3(p.x, 0, p.z);\n    return length(p.zx) - 1.0;\n}\n\nfloat shapeSemiSDF(in vec3 p, out mat3 mat, out vec3 normal) {\n    float dist_tmp;\n    vec3 normal_tmp;\n\n    // base\n    float dist = sphereSDF(BASE_INV * (p + vec3(0, 0, 0.9)), normal);\n    mat = BASE_MAT;\n    \n    // contour\n    dist_tmp = cylinderSDF(CONTOUR_INV * p, normal_tmp);\n    dist = max(dist, dist_tmp / 2.0);\n    mat = mat + (1.0 - sign(dist - dist_tmp)) * CONTOUR_MAT;\n    normal = normal + (1.0 - sign(dist - dist_tmp)) * normal_tmp;\n\n    // eye0\n    dist_tmp = -cylinderSDF(EYE_INV * (p - vec3(0.4, 0.3, 0.0)), normal_tmp);\n    dist = max(dist, dist_tmp * 0.3);\n    mat = mat + (1.0 - sign(dist - dist_tmp)) * EYE_MAT;\n    normal = normal - (1.0 - sign(dist - dist_tmp)) * normal_tmp;\n    \n    // eye1\n    dist_tmp = -cylinderSDF(EYE_INV * (p - vec3(-0.4, 0.3, 0.0)), normal_tmp);\n    dist = max(dist, dist_tmp * 0.3);\n    mat = mat + (1.0 - sign(dist - dist_tmp)) * EYE_MAT;\n    normal = normal - (1.0 - sign(dist - dist_tmp)) * normal_tmp;\n\n    // mouth\n    dist_tmp = -cylinderSDF(MOUTH_INV * (p - vec3(0.0, -0.55, 0.0)), normal_tmp);\n    dist = max(dist, dist_tmp * 0.1);\n    mat = mat + (1.0 - sign(dist - dist_tmp)) * MOUTH_MAT;\n    normal = normal - (1.0 - sign(dist - dist_tmp)) * normal_tmp;\n    \n    // face\n    dist_tmp = -sphereSDF(BASE_INV * (p + vec3(0, 0, 0.95)), normal_tmp);\n    dist = max(dist, dist_tmp);\n    mat = mat + (1.0 - sign(dist - dist_tmp)) * BASE_MAT;\n    normal = normal - (1.0 - sign(dist - dist_tmp)) * normal_tmp;\n    \n    return dist;\n}\n\nvoid mainImage0(out vec4 fragColor, in vec2 fragCoord) {\n    vec4 mouse = iMouse / iResolution.xyxy;\n    float onMouse = max(sign(iMouse.z), 0.0);\n    float phase = (1.0 - onMouse) * 0.25 * iTime - onMouse * PI * (2.0 * mouse.x - 1.0);\n    float height = (1.0 - onMouse) * 0.2 - onMouse * (3.0 * mouse.y - 1.5);\n    vec3 r = vec3(sin(phase), height, cos(phase));\n    Camera camera = newCamera(\n        3.5 * r,\n        -r,\n        vec3(0, 1, 0),\n        PI / 5.0,\n        iResolution.x / iResolution.y\n    );\n    Ray ray = cameraRay(camera, fragCoord / iResolution.xy);\n\n    vec3 light_position = 2.0 * r;\n   \n    vec3 p, normal;\n    float dist = 0.0, t = 0.0;\n\n    for (int _i = 0; _i < 256; _i++) {\n        t += dist / 1.3;\n        p = ray.origin + t * ray.direction;\n        mat3 mat;\n        dist = shapeSemiSDF(p, mat, normal);\n        if (dist < 0.0001) {\n            normal = normalTransform(mat, normal);\n            break;\n        };\n    }\n\n    fragColor = vec4(pow(texture(iChannel1, ray.direction).xyz, vec3(2.2)), 1000.0);\n    if (dist < 0.0001) {\n        float is_head = max(sign(normal.z), 0.0);\n        float roughness = 0.75 - 0.5 * is_head;\n\n        vec3 lightDir = ray.direction;\n\t\tvec3 viewDir = -ray.direction;\n\t\tvec3 refl = reflect(ray.direction, normal);\n        float roughnessE = roughness * roughness;\n        float roughnessL = max(0.1, roughnessE);\n        vec3 specularColor = vec3(1);\n\n\t\tvec3 diffuse = vec3(0);\n\t\tvec3 specular = vec3(0);\n\n\t\tvec3 halfVec = normalize(viewDir + lightDir);\n\t\tfloat vdoth = clamp(dot(viewDir, halfVec), 0.0, 1.0);\n\t\tfloat ndoth = clamp(dot(normal, halfVec), 0.0, 1.0);\n\t\tfloat ndotv = clamp(dot(normal, viewDir), 0.0, 1.0);\n\t\tfloat ndotl = clamp(dot(normal, lightDir), 0.0, 1.0);\n\t\tvec3 envSpecularColor = EnvBRDFApprox(vec3(1), roughnessE, ndotv);\n\n\t\tvec3 env1 = EnvRemap(texture(iChannel0, refl).xyz);\n\t\tvec3 env2 = EnvRemap(texture(iChannel1, refl).xyz);\n\t\tvec3 env3 = EnvRemap(vec3(1.0));\n\t\tvec3 env = mix(env1, env2, clamp(roughnessE * 4.0, 0.0, 1.0));\n\t\tenv = mix(env, env3, clamp((roughnessE - 0.25) / 0.75, 0.0, 1.0));\n\n\t\tdiffuse += vec3(1.0);\n\t\tspecular += envSpecularColor * env;\n\n\t\tdiffuse += clamp(dot(normal, lightDir), 0.0, 1.0);\n\n\t\tvec3 lightF = FresnelTerm(specularColor, vdoth);\n\t\tfloat lightD = DistributionTerm(roughnessL, ndoth);\n\t\tfloat lightV = VisibilityTerm(roughnessL, ndotv, ndotl);\n\t\tspecular += lightF * (lightD * lightV * PI * ndotl);\n\n\t\tvec3 color = diffuse * 2.0 + specular;\n        color *= 0.25 + is_head * 0.75;\n\n        fragColor = vec4(color * 0.4, distance(p, ray.origin));\n    }\n}\n\nvoid mainImage(out vec4 O, vec2 U) {\n    mainImage0(O,U);\n    \n// smart anti-aliasing\n// reference: https://shadertoyunofficial.wordpress.com/2021/03/09/advanced-tricks/\n\n// If defined, Activate AA, level: 2 or 3\n#define AA 2\n\n// If defined, visualize anti-aliased pixels.\n//#define VISUALIZE_AA\n#ifdef AA\n    if ( fwidth(length(O.xyz)) > 0.1 && O.w < 50.0 ) {\n        vec4 o;\n#if (AA == 2)\n        for (int k = 0; k < 4; k++) {\n              mainImage0(o,U + (vec2(k % 2, k / 2) - 0.5) / 2.0);\n              O += o;\n        }\n        O /= 5.0;\n#elif (AA == 3)\n        for (int k = 0; k < 9; k += 2 - abs(sign(k - 3)) ) {\n              mainImage0(o, U + vec2(k % 3 - 1, k / 3 - 1) / 3.0);\n              O += o;\n        }\n        O /= 9.0;\n#endif\n#ifdef VISUALIZE_AA\n        O = vec4(1);\n    } else {\n        O = vec4(0,0,0,1);\n#endif\n    }\n#endif\n\n    O = pow(O, vec4(1.0 / 2.2));\n    O.w = 1.0;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "musicstream",
+                        "id": 27117,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/mabovsky/arabian-night-orchestral"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,188 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1611344012",
+            "description": "A kernel that approximates the half-Laplacian operator in 2d using 30 filter tabs and two passes.\nleft: kernel in spatial domain \nright : kernel in frequency domain\ntop : cross sections             \nbottom: 2d top-down view",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wtGyzK",
+            "likes": 2,
+            "name": "half-Laplacian kernel",
+            "published": 3,
+            "tags": [
+                "filter",
+                "kernel",
+                "laplacian",
+                "laplace"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 378
+        },
+        "renderpass": [
+            {
+                "code": "// Lincense: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\n\nA kernel that approximates the half-Laplacian operator in 2d using 30 filter tabs and two passes.\n\nThe half-Laplacian in 2d is not separable due to its cone shaped frequency response.\nThis together with its heavy tailed falloff in the spatial domain make a practical implementation non trivial\n(in contrast to the Laplacian, which can be computed as the *sum* of two 1d filters due its spectrum being a paraboloid).\n\nI use a compact filter bank of 3 separable kernels here to construct a somewhat decent approximation from the weighted sum of their individual results.\nThe used kernels are two flat-band FIR filters ( https://www.shadertoy.com/view/ttfBzj ) for the low and mid ranges and a Laplacian to handle the highs.\n\n\nCommon   - #define settings \nBuffer A - horizontal filter pass\nBuffer B - vertical filter pass + weighted sum\nBuffer C - Fourier transform (used for visualisation purposes only)\n\nImage    - left: kernel in spatial domain | right : kernel in frequency domain\n           top : cross sections           | bottom: 2d top-down view\n           \n           \nMy main motivation for building this approximation is its application in the simulation of water surfaces:\n- http://jtessen.people.clemson.edu/papers_files/Interactive_Water_Surfaces.pdf\n- https://en.wikipedia.org/wiki/Dispersion_(water_waves)\n\nMathematical background and applications of the fractional Laplacian: \n- https://www.researchgate.net/publication/275669247_Nonlocal_Diffusion_and_Applications\n\n*/\n\nvoid mainImage(out vec4 outCol, in vec2 uv0)\n{\n    vec2 tc = uv0/iResolution.xy;\n    \n    vec3 col = vec3(0.0);\n    \n    if (tc.x > 0.5)\n    {\n        // spectrum 2d plot\n        float dc = length(textureLod(iChannel1, (vec2(SIZE*0.5+0.5)/iResolution.xy), 0.).xy);\n        vec2 dft = texelFetch(iChannel1, ivec2(uv0-0.5-vec2(SIZE,0.0)), 0).xy;\n        \n        float amp = length(dft); \n        \n        float s = 1.0/SIZE;\n        \n      #if SOURCE_TYPE == 0\n        s = 0.32;\n      #endif\n        \n        amp *= s;\n        dc *= s;\n        \n        col = vec3(amp);\n\n        if(amp <= exp2(-13.0)) col = vec3(1.0, 0.0, 0.0)*0.25;\n        if(amp <= exp2(-16.0)) col = vec3(1.0, 0.5, 0.0)*0.25;\n        \n      #ifdef SHOW_ERROR_IN_SPECTRUM\n      \n        vec2 xy = ((uv0-0.5-vec2(1.5, 0.5)*SIZE)/SIZE*2.0)*Pi;\n        float ampRef = length(xy);\n      #ifdef USE_LAPLACIAN_INSTEAD\n        ampRef = dot(xy, xy)*0.5;\n      #endif\n        ampRef *= s;\n        \n        col = mix(col, vec3(1.0, 0.0, 0.0), smoothstep(0.0, 0.05, ampRef-amp));\n        col = mix(col, vec3(1.0, 1.0, 0.0), smoothstep(0.0, 0.05, amp-ampRef));\n      \n      #endif\n    }\t\n    else\n    {\n        // kernel 2d plot\n        float n = textureLod(iChannel0, tc, 0.).r;\n\n      #if SOURCE_TYPE == 0\n        col = vec3(abs(n));\n      #else\n        col = vec3(clamp01(n));\n      #endif\n        \n      #if SOURCE_TYPE == 0\n        if(n < 0.0) col *= vec3(1.0, 0., 0.0);\n      #endif\n                \n        col = pow(col, vec3(1.0/2.2));\n    }\n    \n    // kernel 1d plot\n    if (uv0.y > SIZE && uv0.x < SIZE)\n    {\n        vec2 tc = (uv0 - vec2(0.0, SIZE)) / (iResolution.xy - SIZE);\n        \n        float v = 0.0;\n        \n        float f = texelFetch(iChannel0, ivec2(vec2(tc.x*SIZE, SIZE*0.5)), 0).r;\n        \n        col = vec3(0.0);\n        \n        // antialias plot (lazy brute force)\n        float count = 8.0;\n        for(float i = -count; i <= count; ++i)\n        {\n            float h = (tc.y + (i/count*1.) / (iResolution.y - SIZE)) * 2.0 - 1.0;\n            h += 0.25;\n\n            v = f < h ? 0.0 : 1.0;\n\n            col +=  mix(vec3(v), mix(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.02, 0.1), v), bvec3(h <= 0.0));\n        }\n        col /= count*2.0+1.0;\n        \n        col = pow(col, vec3(1.0/2.2));\n        \n    }\n    \n    // spectrum 1d plot\n    if (uv0.y > SIZE && uv0.x > SIZE)\n    {\n        vec2 tc = (uv0 - SIZE) / (iResolution.xy - SIZE);\n        \n     #if 1\n        float f = length(texelFetch(iChannel1, ivec2(vec2(SIZE*0.5 + (tc.x-0.5)*SIZE, SIZE*0.5)), 0).xy);// horizontal cross section\n     #else\n        float f = length(texelFetch(iChannel1, ivec2(vec2(SIZE*0.5 + (tc.x-0.5)*SIZE, SIZE*0.5+ (tc.x-0.5)*SIZE)), 0).xy);// diagonal cross section\n        \n        #ifdef USE_LAPLACIAN_INSTEAD\n        f *= 0.5;\n        #else\n        f *= sqrt(0.5);\n        #endif\n     #endif\n     \n      #ifdef USE_LAPLACIAN_INSTEAD\n        float ref = Pow2((tc.x*2.0-1.0)*Pi)*0.5;\n      #else\n        float ref = abs((tc.x*2.0-1.0)*Pi);\n      #endif\n      \n      #if SOURCE_TYPE == 0\n        f   *= 0.32;\n        ref *= 0.32;\n      #else\n        f   *= 1.0/SIZE;\n        ref *= 1.0/SIZE;\n      #endif\n        \n        float v    = smoothstep(0.0, 1.0, (f - tc.y) * (iResolution.y - SIZE) * 0.5);\n        float vref = smoothstep(0.0, 1.0, (ref - tc.y) * (iResolution.y - SIZE) * 0.5);\n        \n        col = v * vec3(0.125, 1.0, 0.5);\n        \n      #ifdef SHOW_ERROR_IN_SPECTRUM\n        col = mix(col, vec3(1.0, 1.0, .0), clamp01(v-vref));\n        col = mix(col, vec3(1.0, 0.0, .0), clamp01(vref-v));\n      #endif\n      \n        col = pow(col, vec3(1.0/2.2));\n    }\n\n    outCol = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Lincense: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n\n  //#define USE_LAPLACIAN_INSTEAD\n\n  //#define APPLY_AS_LOWPASSFILTER\n\n  //#define DONT_APPLY_FILTER\n\n  //#define SHOW_ERROR_IN_SPECTRUM\n\n    #define SOURCE_TYPE 0\n    /*\n        0 - discrete impulse\n        1 - white noise\n        2 - texture\n    */\n\n  \n  \n  #ifdef APPLY_AS_LOWPASSFILTER \n      #undef SHOW_ERROR_IN_SPECTRUM\n  #endif\n\n  #ifdef DONT_APPLY_FILTER\n      #undef SHOW_ERROR_IN_SPECTRUM\n  #endif\n  \n  #if SOURCE_TYPE != 0\n      #undef SHOW_ERROR_IN_SPECTRUM\n  #endif\n\n\n#define SIZE (floor(iResolution.y/2.25)*2.)\n\n#define rsqrt inversesqrt\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define If(cond, resT, resF) mix(resF, resT, cond)\n\nconst float Pi = 3.14159265359;\nconst float Pi05 = Pi * 0.5;\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\n\n#if SOURCE_TYPE == 0\n\n    #define FETCH(uv) (uv).x == uint(SIZE*0.5) && (uv).y == uint(SIZE*0.5) ? 1.0 : 0.0\n\n#elif SOURCE_TYPE == 1\n\n    #define FETCH(uv) EvalWhiteNoise(uv)\n\n#else\n\n    #define FETCH(uv) pow(texelFetch(iChannel0, ivec2(uvec2(uv)%512u), 0).r, 2.2)\n\n#endif\n\n\nfloat EvalWhiteNoise(uvec2 uv)\n{\n    const uint r  = 2654435761u;\n    const uint r0 = 3242174893u;\n    const uint r1 = 2447445397u;\n    uint h = ((uv.x * r0 + uv.y) ^ (uv.y * r1 + uv.x)) * r;\n    return float(h) * (1.0 / 4294967295.0);\n}\n\nvoid mainImage(out vec4 col, in vec2 uv0)\n{\n    if(uv0.x > SIZE || uv0.y > SIZE) { discard; return; }\n    \n    uvec2 uv = uvec2(uv0 - 0.5);\n    \n    float lowp3[4] = float[4](5.0/16.0, 15.0/64.0, 3.0/32.0, 1.0/64.0);   \n    float lowp7[8] = float[8](429.0/2048.0, 3003.0/16384.0, 1001.0/8192.0, 1001.0/16384.0, 91.0/4096.0, 91.0/16384.0, 7.0/8192.0, 1.0/16384.0);   \n    float lapl7[8] = float[8](3.22, -1.9335988099476562, 0.4384577800334821, -0.1637450351359609, 0.07015324480535713, -0.02963974593026339, 0.010609595665007715, -0.0022370294899667453);   \n\n    float lowpass3  = 0.0;\n    float lowpass7  = 0.0;\n    float laplacian = 0.0;\n    \n    for(int x = -7; x <= 7; ++x)\n    {\n        float f = FETCH(uv + uvec2(x, 0));\n    \n        int i = abs(x);\n\n        lowpass3  += f * (i < 4 ? lowp3[i] : 0.0);\n        lowpass7  += f * lowp7[i];\n        laplacian += f * lapl7[i];\n    }\n\n    float f0 = FETCH(uv);\n    \n    col = vec4(lowpass3, lowpass7, f0, laplacian);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Lincense: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\n*/\n\n#define FETCH(uv) texelFetch(iChannel0, ivec2(uv), 0)\n\nvoid mainImage(out vec4 col, in vec2 uv0)\n{\n    if(uv0.x > SIZE || uv0.y > SIZE) { discard; return; }\n\n    uvec2 uv = uvec2(uv0 - 0.5);\n\n    float lowp3[4] = float[4](5.0/16.0, 15.0/64.0, 3.0/32.0, 1.0/64.0);   \n    float lowp7[8] = float[8](429.0/2048.0, 3003.0/16384.0, 1001.0/8192.0, 1001.0/16384.0, 91.0/4096.0, 91.0/16384.0, 7.0/8192.0, 1.0/16384.0);   \n    float lapl7[8] = float[8](3.22, -1.9335988099476562, 0.4384577800334821, -0.1637450351359609, 0.07015324480535713, -0.02963974593026339, 0.010609595665007715, -0.0022370294899667453);   \n\n    float lowpass3  = 0.0;\n    float lowpass7  = 0.0;\n    float laplacian = 0.0;\n    \n    for(int y = -7; y <= 7; ++y)\n    {\n        vec3 f = FETCH(uv + uvec2(0, y)).xyz;\n    \n        int i = abs(y);\n\n        lowpass3  += f.x * (i < 4 ? lowp3[i] : 0.0);\n        lowpass7  += f.y * lowp7[i];\n        laplacian += f.z * lapl7[i];\n    }\n\n    vec4 f0 = FETCH(uv);\n    \n    laplacian += f0.w;\n    \n    float highpass = f0.z - mix(lowpass3, lowpass7, 0.772);\n    float halfLaplacian =   mix(highpass, laplacian, 0.19)*1.255;\n\n    float v = halfLaplacian;\n\n  #ifdef USE_LAPLACIAN_INSTEAD\n    v = laplacian * 0.5;\n  #endif\n\n  #ifdef APPLY_AS_LOWPASSFILTER\n    #ifdef USE_LAPLACIAN_INSTEAD\n    v = f0.z - 0.22*v;\n    #else\n    v = f0.z - 0.32*v;\n    #endif\n  #endif\n    \n  #ifdef DONT_APPLY_FILTER\n    v = f0.z;\n  #endif\n    \n    col = vec4(v, 0.0, 0.0, 1.0);\n    \n    return;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Horizontal + Vertical Discrete Fourier Transform of the input \n//adapted from FabriceNeyret2's https://www.shadertoy.com/view/XtScWt\n\nvec2 cmul (vec2 a,float b) { return mat2(a,-a.y,a.x) * vec2(cos(b),sin(b)); } \n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord )\n{\n   \tfragColor = vec4(0);\n    \n    vec2 uv = fragCoord.xy - 0.5;\n    \n    if(fragCoord.x >= SIZE || fragCoord.y >= SIZE) {fragColor = vec4(20.0); return;}\n    \n    for(float i = 0.; i < SIZE; i++)  \n\t{\n\t\tvec2 xn = texelFetch(iChannel0, ivec2(i, uv.y), 0).rg;\n        vec2 yn = texelFetch(iChannel1, ivec2(uv.x, i), 0).ba;\n\t\tvec2 ang = - 6.2831853 * (uv -SIZE/2.) * i/SIZE;\n\t\tfragColor.zw += cmul(xn, ang.x);\n\t\tfragColor.xy += cmul(yn, ang.y);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

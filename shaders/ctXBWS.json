@@ -1,0 +1,158 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1693372368",
+            "description": "This combines a few techniques together, some gifted from others, to form a film grain effect. This caps the frame rate of the incoming source to 10 frames per second while adding film lines, specs, and scratches.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ctXBWS",
+            "likes": 4,
+            "name": "Film Grain Projection",
+            "published": 3,
+            "tags": [
+                "retro",
+                "film",
+                "vintage"
+            ],
+            "usePreview": 0,
+            "username": "wilkie",
+            "viewed": 418
+        },
+        "renderpass": [
+            {
+                "code": "// Based loosely on the Godot Shaders version.\n// : https://godotshaders.com/shader/old-movie-shader/ (CC0)\n// My changes remain as CC0.\n\n// These define the intended width of the bezier curves serving as film scratches\nconst float grain_edge_width = 0.01; // 0.005 for a smooth line (but pft, it looks cooler a little too fat)\nconst float grain_smooth = 0.0025;\n\n// from: https://hhoppe.com/ravg.pdf?from=https://research.microsoft.com/en-us/um/people/hoppe/ravg.pdf&type=path\n// and referencing: https://www.shadertoy.com/view/MtS3Dy\n// This calculates the distance vector from the origin to the given curve where:\n// b0: is the start point\n// b1: is the control point\n// b2: is the end point\nvec2 get_distance_vector(vec2 b0, vec2 b1, vec2 b2) {\n    float a = determinant(mat2(b0, b2));\n    float b = 2.0 * determinant(mat2(b1, b0));\n    float d = 2.0 * determinant(mat2(b2, b1)); // 𝛼,𝛽,𝛿(𝑝)\n    float f = (b * d) - (a * a); // 𝑓(𝑝)\n\n    vec2 d21 = b2 - b1;\n    vec2 d10 = b1 - b0;\n    vec2 d20 = b2 - b0;\n\n    vec2 gf = 2.0 * (b * d21 + d * d10 + a * d20);\n\n    gf = vec2(gf.y, -gf.x); // ∇𝑓(𝑝)\n\n    vec2 pp = -f * gf / dot(gf, gf); // 𝑝′\n\n    vec2 d0p = b0 - pp; // 𝑝′ to origin\n\n    float ap = determinant(mat2(d0p, d20)); //  𝛼,𝛽(𝑝′)\n\n    float bp = 2.0 * determinant(mat2(d10, d0p)); // 𝑡̅\n\n    // (note that 2*ap+bp+dp=2*a+b+d=4*area(b0,b1,b2))\n    float t = clamp((ap + bp) / (2.0 * a + b + d), 0.0, 1.0); // 𝑡̅\n\n    return mix(mix(b0, b1, t), mix(b1, b2, t), t); // 𝑣𝑖 = 𝑏(𝑡̅)\n}\n\n// Get the approximate distance from the point 'p' to the curve defined as\n// it is above in 'get_distance_vector'.\nfloat approx_distance(vec2 p, vec2 b0, vec2 b1, vec2 b2) {\n    return length(get_distance_vector(b0 - p, b1 - p, b2 - p));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    // Get our UV coordinate\n    vec2 UV = fragCoord.xy / iResolution.xy;\n    \n\t// Get the film grained and slowed buffer\n\tvec4 frame = texture(iChannel1, UV);\n\t\n\tif (saturation < 1.0) {\n\t\tfloat desat = clamp(frame.r * 0.2126 + frame.g * 0.7152 + frame.b * 0.0722, 0., 1.);\n\t\tframe.rgb = mix(vec3(desat, desat, desat), frame.rgb, saturation);\n\t}\n\n\t// Make 'constrast' go from 0.0 to 2.0 instead of -1.0 to 1.0\n\tfloat contrast_multiplier = (contrast < 0.0) ? (1.0 / (-contrast + 1.0)) : (contrast + 1.0);\n\n\t// Ensure gamma is similarly used\n\tfloat gamma_multiplier = (gamma < 0.0) ? (-gamma + 1.0) : (1.0 / (gamma + 1.0));\n\n    // Determine seed for random film grain location based on frame time\n    float stepped_time = float(int(floor(iTime * 10.0)));\n    \n    // Obscure via noise\n    vec4 grain_color = vec4(0.0, 0.0, 0.0, 0.0);\n    \n    // Compute the aspect ratio and a UV relative to the aspect ratio (relative_uv)\n    float aspectRatio = iResolution.x / iResolution.y;\n    vec2 relative_uv = UV * aspectRatio;\n    \n    // Randomly pick a starting point\n    float RTIME = stepped_time * PI;\n    vec2 A3 = (clamp(vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g\n    ), 0.2, 0.8) - 0.2) * (1.0 / 0.6) * aspectRatio;\n\n    // Randomly pick a control point near the start\n    RTIME *= PI;\n    vec2 B3 = A3 + vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r - 0.5,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g - 0.5\n    ) * 0.1;\n    RTIME *= PI;\n    \n    // Randomly pick an end point near the start\n    vec2 C3 = A3 + vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r - 0.5,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g - 0.5\n    ) * 0.5;\n    \n    // Calculate the distance (smudged a bit for better effect) to this bezier curve\n    float dist = approx_distance(relative_uv, A3, B3, C3);\n    if (dist < grain_edge_width + grain_smooth) {\n        dist = smoothstep(grain_edge_width - grain_smooth, grain_edge_width + grain_smooth, dist);\n        grain_color += 1.0 - dist;\n    }\n    \n    // Randomly pick a new start\n    A3 = (clamp(vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g\n    ), 0.2, 0.8) - 0.2) * (1.0 / 0.6) * aspectRatio;\n\n    // Randomly pick a control point near the start\n    RTIME *= PI;\n    B3 = A3 + vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r - 0.5,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g - 0.5\n    ) * 0.1;\n    RTIME *= PI;\n    \n    // Randomly pick an end point near the start\n    C3 = A3 + vec2(\n        texture(iChannel2, vec2(RTIME, RTIME)).r - 0.5,\n        texture(iChannel2, vec2(RTIME/2.0, RTIME/2.0)).g - 0.5\n    ) * 0.5;\n    \n    // Calculate the distance (smudged a bit for better effect) to this bezier curve\n    dist = approx_distance(relative_uv, A3, B3, C3);\n    if (dist < grain_edge_width + grain_smooth) {\n        dist = smoothstep(grain_edge_width - grain_smooth, grain_edge_width + grain_smooth, dist);\n        grain_color += 1.0 - dist;\n    }\n    \n    // Mix in film grain scratch lines\n    frame.rgb = mix(frame.rgb, grain_color.rgb * 0.2 + frame.rgb, texture(iChannel2, UV).r);\n\n    // Apply gamma\n\tframe = vec4(\n\t\tpow(\n\t\t\tframe.rgb,\n\t\t\tvec3(gamma_multiplier, gamma_multiplier, gamma_multiplier)\n\t\t) * contrast_multiplier + brightness,\n\t\tframe.a\n\t);\n\n\t// Compute the vignette filter 'power'\n    // (not capped by frame rate... this is the projector bulb flicker)\n\tfloat vignette_power = vignette + 0.5 * (\n        texture(iChannel2, vec2(iTime / 60.0, iTime / 59.0)).x\n    );\n    \n    // Compute the amount of light via the distance to the center\n\tfloat vig = -vignette_power * ((UV.x - 0.5) * (UV.x - 0.5) + (UV.y - 0.5) * (UV.y - 0.5));\n    \n    // Essentially an amount of light we will be adding into the frame.\n\tvec4 vignette_value = vec4(vig, vig, vig, 1.0);\n\n\t// Return result through vignette\n\tfragColor = mix(frame, vignette_value, vignette_amount);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// We want to encode how 'close' we are to 10fps interval and which frame in\n// the second we are within. So, we encode the iTime value to a quantized value\n// and encode it in every pixel of our buffer.\n\nfloat encode_time() {\n\t// TIME might be 150402.45 (seconds), so we can get the distance from\n\t// the 10fps range by knowing that a frame is happening every 100ms (0.1).\n\tint current_frame = int(floor((iTime - 0.05) * 10.0)) % 9;\n\t\n\t// Now we can get a frame number between 0 and 8 (as a fraction between\n\t// 0.1 and 0.9).\n\treturn 0.1 + (float(current_frame) * 0.1);\n}\n\n// This really actually computes the current frame information for each\n// step of our 'slowed' down video stream.\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    float encoded = encode_time();\n\n\t// Encode it into 4 floats\n\tfragColor = vec4(encoded, 1.0, 1.0, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// This is the shader that computes the capped frame. This essentially gives you the\n// last frame until buffer A tells us that we should be making a new frame.\n\nfloat encode_time() {\n\t// TIME might be 150402.45 (seconds), so we can get the distance from\n\t// the 10fps range by knowing that a frame is happening every 100ms (0.1).\n\tint current_frame = int(floor(iTime * 10.0)) % 9;\n\t\n\t// Now we can get a frame number between 0 and 8 (as a fraction between\n\t// 0.1 and 0.9).\n\treturn 0.1 + (float(current_frame) * 0.1);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 UV = fragCoord / iResolution.xy;\n   \n\t// Get the encoded time\n    float encoded = encode_time();\n\t\n\t// Get last encoded value\n\tfloat last_encoded = texture(iChannel0, vec2(0.5, 0.5)).r;\n\t\t\n\t// We should slow down the fps?\n\t// We need to truncate the frames per second to 10fps (just output the prior frame)\n\tif ((encoded + 0.05 > last_encoded && encoded - 0.05 < last_encoded) && last_encoded != 0.0) {\n\t\t// Copy over old frame\n\t\tfragColor = texture(iChannel1, UV);\n\t}\n\telse {\n        // Adjust for texture resolution to stretch it\n    \n\t\t// Apply vertical \"flutter\"\n\t\tfloat flutter_max = (1.0 / iResolution.y) * y_flutter_power;\n\t\tfloat flutter = mod(iTime, flutter_max) - (flutter_max / 2.0);\n\t\tfragColor = texture(iChannel3, UV + vec2(0.0, flutter));\n\t\t\n\t\t// Small speckles:\n\t\tfloat RTIME1=iTime;\n\t\tvec4 speckle = vec4(0.0, 0.0, 0.0, 0.0);\n\t\tfloat energy = 1000000.0 * (1.0 + 0.5 * texture(iChannel2, vec2(RTIME1,RTIME1)).r);\n\t\tfor (int i = 0; i < speckle_count; i++) {\n\t\t\tRTIME1 *= PI;\n\t\t\tvec2 position1=(clamp(vec2(\n                texture(iChannel2, vec2(RTIME1, RTIME1)).r,\n                texture(iChannel2, vec2(RTIME1/2.0, RTIME1/2.0)).g\n            ), 0.2, 0.8) - 0.2) * (1.0 / 0.6);\n\t\t\t\n\t\t\tfloat xdev1=(UV.x-position1.x);\n\t\t\tfloat ydev1=(UV.y-position1.y);\n\t\t\t\n\t\t\tenergy = 1000000.0 * (1.0 + 0.5 * texture(iChannel2, vec2(RTIME1,RTIME1)).r);\n\t\t\tfloat spec=energy*(xdev1*xdev1+0.5*ydev1*ydev1)+.1*texture(iChannel2, vec2(UV.x,UV.y)).r;\n\t\t\tspeckle+=vec4(max(0.0,20.0-spec),max(0.0,20.0-spec),max(0.0,20.0-spec),1.0);\n\t\t}\n\t\t\n\t\tspeckle *= speckle_power;\n\t\t\n\t\t// lines:\n\t\tfloat RTIME2=iTime;\n\t\tvec2 positionline = vec2(\n\t\t\ttexture(iChannel2, vec2(RTIME2,RTIME2)).r,\n\t\t\ttexture(iChannel2, vec2(RTIME2,RTIME2)).g\n\t\t);\n\t\t\n\t\t// Distance between us and the line\n\t\tfloat xline=(UV.x-positionline.x);\n\t\tfloat yline=(UV.y-positionline.y);\n\t\t\n\t\tenergy = 1000000.0 * (1.0 + 0.5 * texture(iChannel2, vec2(RTIME2,RTIME2)).r);\n\t\tfloat lin = energy * (xline*xline+0.00001*yline*yline) + 0.1 * texture(iChannel2, vec2(UV.x,UV.y)).r;\n\t\tvec4 line=vec4(max(0.0,8.0-lin),max(0.0,8.0-lin),max(0.0,8.0-lin),1.0);\n\t\tline *= line_power;\n\t\t\n\t\tvec4 dirt=mix(speckle,line,0.5) / 5.0;\n\t\tfragColor += dirt; //, frame, 0.7);\n\t}\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "video",
+                        "id": 11,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/c3a071ecf273428bc72fc72b2dd972671de8da420a2d4f917b75d20e1c24b34c.ogv"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float line_power = 0.1;\nconst int speckle_count = 2;\nconst float speckle_power = 0.1;\nconst float y_flutter_power = 1.2;\n\nconst float PI = 3.14159;\n\nconst float vignette = 0.7;\nconst float vignette_amount = 0.2;\nconst float saturation = 0.0;\nconst float contrast = 0.3;\nconst float brightness = -0.4;\nconst float gamma = 0.7;",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

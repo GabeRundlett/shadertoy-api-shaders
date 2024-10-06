@@ -1,0 +1,77 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1575598477",
+            "description": "Updating an old shader (crudely) to anaglyph stereo",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Wlt3R8",
+            "likes": 1,
+            "name": "anaglyph stereo ufo",
+            "published": 3,
+            "tags": [
+                "raycast",
+                "anaglyph",
+                "old",
+                "rehash",
+                "ufo"
+            ],
+            "usePreview": 0,
+            "username": "mds2",
+            "viewed": 330
+        },
+        "renderpass": [
+            {
+                "code": "//The MIT License\n//Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n#define DAYTIME 0 // set to 0 to make it a dusky night scene\n\n#if DAYTIME\n#define MAX_DIST 8.0\n#define SKY_BRITE 0.6\n#else\n#define MAX_DIST 80.0\n#define SKY_BRITE 0.06\n#endif\n\n#define CRINKLY_SHIP 0 // set to 1 to give the ship some texture\n\n#define MANUALLY_CONTROL_EMISSIONS 0\n\nfloat s_min(in float x, in float y, in float s) {\n\n    float bridge =\n        clamp(abs(x-y)/s, 0.0, 1.0);\n    return min(x,y) - 0.25 * s * (bridge - 1.0) * (bridge - 1.0);\n}\n\nfloat s_max(in float x, in float y, in float s) {\n    float bridge =\n        clamp(abs(x-y)/s, 0.0, 1.0);\n    return max(x,y) + 0.25 * s * (bridge - 1.0) * (bridge - 1.0);\n}\n\nfloat falloff(in float x, in float range) {\n    float h = smoothstep(range, 0.0, 1.0/x);\n    return h * 0.1 * range / s_max(0.1 * range, 1.0/x, 0.05 * range);\n}\n\nvec3 perturb2(in vec3 loc) {\n    // make this something other than the identity to warp space\n    return loc; //  + 0.025 * (0.5 + 0.5 * sin(iTime)) * vec3(0.0, sin(40.0 * length(loc.xz)), 0.0);\n}\n\n/* calculate whether we're on the chunks of the ship that are covered by \"windows\" */\nfloat calc_in_cockpit(in vec3 pt) {\n    float angle = atan(pt.z, pt.x) / 3.141592654;\n    float window1 = abs(mod(2.0 * angle, 0.25) - 0.125);\n    float cockpit = smoothstep(0.2, 0.21, pt.y) * smoothstep(0.235, 0.225, pt.y) *\n            smoothstep(0.09, 0.08, window1);\n    float l = abs(length(pt.xz) - 0.6);\n    cockpit +=\n        smoothstep(0.09, 0.06, length(vec2(l, window1))) * step(pt.y, 0.01);\n    return cockpit;\n}\n\nfloat vehicle_sdf(in vec3 loc) {\n    float ball1 = length(loc - vec3(0.0, -3.09, 0.0)) - 3.27;\n    float ball2 = length(loc - vec3(0.0, 3.2, 0.0)) - 3.27;\n    float disc = s_max(ball1, ball2, 0.05);\n    float ball3 = length(loc - vec3(0.0, 0.07, 0.0)) - 0.3;\n    ball3 = s_max(ball3, loc.y - 0.25, 0.045);\n    float result = s_min(disc, max(ball3, -loc.y), 0.1);\n    float mult = texture(iChannel1, loc).r;\n#if CRINKLY_SHIP    \n    mult = 1.0 + 0.95 * mult;\n#else\n    mult = 1.0 + 0.95 * mult * smoothstep(0.025, 0.05, result);    \n#endif\n    return result * mult;\n}\n\nfloat vehicle_sdf_fine(in vec3 loc) {\n    return vehicle_sdf(loc) + 0.005 * calc_in_cockpit(loc);\n}\n\nvec3 vehicle_sdf_grad(in vec3 loc) {\n    float dist = vehicle_sdf_fine(perturb2(loc));\n    const float del = 0.01;\n    return vec3(vehicle_sdf_fine(perturb2(loc + vec3(del, 0.0, 0.0))) - dist,\n                vehicle_sdf_fine(perturb2(loc + vec3(0.0, del, 0.0))) - dist,\n                vehicle_sdf_fine(perturb2(loc + vec3(0.0, 0.0, del))) - dist) / del;\n}\n\n\nfloat cast_to_vehicle(in vec3 orig, in vec3 dir, out float sumdist) {\n    vec3 p = orig;\n    float accum = 0.0;\n    sumdist = 0.0;\n    for (int i = 0; i < 256; ++i) {\n        float dist = vehicle_sdf_fine(p);\n        // mindist = min(dist, mindist);\n    \tfloat remaining = 0.2 * dist;\n        sumdist += remaining / max(1.0e-3, abs(dist));\n        accum += remaining;\n        p = orig + accum * dir;\n        p = perturb2(p);\n        if (remaining < 1.0e-3) {\n            return accum;\n        }\n        if (accum > MAX_DIST) {\n            return accum;\n        }\n    }\n\treturn max(accum, MAX_DIST + 1.0);\n}\n\nfloat ray_cast_out(in vec3 o, in vec3 dir) {\n    float accum = 0.0;\n    float val = vehicle_sdf_fine(perturb2(o));\n    vec3 pt = o;\n    for (int i = 0; i < 128; ++i) {\n        accum += max(0.95 * abs(val), 5.0e-4);\n        pt = o + accum * dir;\n        val = vehicle_sdf_fine(perturb2(pt));\n        if (accum > 1.0e-3 && val > -1.0e-3) {\n            return accum;\n        }\n    }\n    return MAX_DIST + 1.0;\n}\n\n\nvec3 get_bounce(in vec3 pt, in vec3 dir, out float edge_term) {\n    vec3 norm = normalize(vehicle_sdf_grad(pt));\n    edge_term = smoothstep(0.7, 0.3, abs(dot(normalize(dir), norm)));\n    return normalize(reflect(dir, norm));\n}\n\n\n\n\n\nvec4 castRayUFO(in vec2 fragCoord, in vec3 offset) {\n\tvec2 uv = (2.0 * fragCoord.xy - iResolution.xy) / iResolution.y;\n    vec3 ray_orig = vec3(0.0, 0.5, -5.0) + offset;\n\tvec3 ray_dir = normalize(vec3(uv, 5.0));\n    // ray_dir = normalize(10.0 * ray_dir - offset);\n    \n    float wiggle = abs(mod(0.2 * iTime, 4.0) - 2.0) - 1.0;\n    wiggle = sign(wiggle) * smoothstep(0.0, 1.0, abs(wiggle));\n    float ct = sin(wiggle);\n    float st = cos(wiggle);\n    mat3 twist = mat3(ct, 0.0, st,\n                      0.0, 1.0, 0.0,\n                      -st, 0.0, ct);\n    ray_dir = twist * ray_dir;\n    ray_orig = twist * ray_orig;\n    wiggle = 0.1 * sin(iTime);\n    ct = cos(wiggle);st = sin(wiggle);\n    twist = mat3(ct, st, 0.0,\n                 -st, ct, 0.0,\n                 0.0, 0.0, 1.0);\n    wiggle = 0.1 * sin(0.71 *iTime + 1.3);\n    ct = cos(wiggle);st = sin(wiggle);\n    twist *= mat3(1.0, 0.0, 0.0,\n                  0.0, ct, st,\n                 0.0, -st, ct);\n\n    ray_dir = twist * ray_dir;\n    ray_orig = twist * ray_orig;\n    \n    ray_orig = ray_orig - vec3(0.0, 0.2, 0.0) -\n        sin(vec3(4.2, 1.2, 3.4) * iTime) * vec3(0.5, 0.1, 0.2);\n    float closeness = MAX_DIST;\n    float d = cast_to_vehicle(ray_orig, ray_dir, closeness);\n    \n    vec3 ray_mul = vec3(1.0);\n    vec3 subsurface = vec3(0.0);\n    vec3 thump = vec3(texture(iChannel0, vec2(0.0, 0.0)).r,\n                      texture(iChannel0, vec2(0.5, 0.0)).r,\n                      texture(iChannel0, vec2(1.0, 0.0)).r);\n#if MANUALLY_CONTROL_EMISSIONS    \n    thump = vec3(0.0, 0.0, 0.0);\n    thump.r = iMouse.y  / iResolution.y;\n#endif    \n    float darken = 0.25 * (1.0 + 3.0 * smoothstep(1.5, 0.5, dot(thump, vec3(1.0))));\n    \n\n    if (d < MAX_DIST) {\n        vec3 pt = ray_orig + d * ray_dir;\n        float edginess = 0.0;\n        ray_mul = vec3(1.0) * smoothstep(0.02, 0.0, ray_cast_out(pt, ray_dir));\n        ray_dir = get_bounce(pt, ray_dir, edginess);\n            // mix(vec3(1.0, 0.9, 0.85), ray_mul, edginess);\n        vec3 to_light = get_sun_dir(-0.1);\n        float subsurface_dist = ray_cast_out(pt, to_light);\n        float cockpit = calc_in_cockpit(pt);\n        subsurface = cockpit  * darken *\n            vec3(1.0, 0.8, 0.7) / max(0.1, 1.0 + 2.0 * 222.0 * subsurface_dist);\n        darken *= 1.0 - cockpit;\n        subsurface += 0.5 * cockpit * thump *\n           (1.0 / max(1.0, 1.0 + 100.0 * ray_cast_out(pt, vec3(0.0, -1.0, 0.0))));\n    }\n\n    return vec4(subsurface + \n        SKY_BRITE * darken * ray_mul * sky_color(ray_dir) +\n                (0.25 + 1.75 * smoothstep(0.25, 1.0, thump))\n                * falloff(closeness, 0.5), 1.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float blue = dot(castRayUFO(fragCoord, vec3(-0.05, 0.0, 0.0)).xyz, vec3(0.3));\n    float red = dot(castRayUFO(fragCoord, vec3(0.0)).xyz, vec3(0.3));\n\tfragColor = vec4(red, blue, blue, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "music",
+                        "id": 21,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/ec8a6ea755d34600547a5353f21f0a453f9f55ff95514383b2d80b8d71283eda.mp3"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\nconst float atmos_thick = 30000.0;\nconst float earth_rad = 6310000.0;\n\nfloat atmos_dist(in float dir_y) {\n\t// r^2 * dir_x^2 + (earth_rad + r *dir_y)^2 =\n    // (atmos_thick + earth_rad)^2\n    // r^2 * (dir_x^2 + dir_y^2) + \n    // r * 2.0 * dir_y * earth_rad +\n    // earth_rad^2 -\n    // (atmos_thick + earth_rad)^2 = 0.0\n    // -------------------------------\n    // r^2 * (dir_x^2 + dir_y^2) + \n    // r * 2.0 * dir_y * earth_rad -\n    // atmos_thick^2 -\n    // 2.0 * atmos_thick * earth_rad = 0.0\n    // -------------------------------\n    //r = (-b + sqrt(b^2 - 4ac)) / (2a)\n    // a = 1.0\n    // b = 2.0 * dir_y * earth_rad\n\t// c = -atmos_thick^2 - 2.0 * atmos_thick * earth_rad\n    // r approx \n    // -dir_y*earth_rad + sqrt(dir_y^2+1.005)*earth_rad\n    float b = 2.0 * dir_y * earth_rad;\n    float c = -atmos_thick * atmos_thick - 2.0 * atmos_thick * earth_rad;\n    return 0.5 * (sqrt(b * b - 4.0 * c) - b);\n}\n\nfloat dist_to_sun_visible(in vec3 ray_dir, in vec3 sun_dir) {\n    if (false && ray_dir.y < 0.0) {\n        return earth_rad;\n    }\n    if (sun_dir.y > 0.0) {\n        return 1.0;\n    }\n    // e_z = sun_dir\n    vec3 e_y = normalize(vec3(0.0, 1.0, 0.0) - sun_dir.y * sun_dir);\n    vec3 e_x = normalize(cross(e_y, sun_dir));\n\n    vec2 start_xy = earth_rad * vec2(e_x.y, e_y.y);\n    vec2 ray_xy = vec2(dot(e_x,ray_dir), dot(e_y, ray_dir)); // do not normalize\n    \n    // (start_xy + d * ray_xy) ^2 = earth_rad^2\n    // dot(start_xy, start_xy) - earth_rad^2 +\n    // 2.0 * d * dot(start_xy, ray_xy) +\n    // d^2 * dot(ray_xy, ray_xy) = 0.0\n    \n    float a = dot(ray_xy, ray_xy);\n    float b = 2.0 * dot(start_xy, ray_xy);\n    float c = dot(start_xy, start_xy) - earth_rad * earth_rad;\n    \n    return abs((-b + sqrt(b * b - 4.0 * a * c)) / (2.0 * a));\n    \n}\n\nfloat atmos_weight(in vec3 dir, in vec3 sun_dir) {\n    float d = atmos_dist(dir.y);\n    float ds = max(atmos_thick, dist_to_sun_visible(dir, sun_dir));\n    return max(0.0, atmos_thick/ds - (0.5 * atmos_thick)/d);\n}\n\nvec3 get_sun_dir(in float in_time) {\n    \n    float theta = mod(0.5 * in_time, 31.41592653589793);\n    float ctheta = cos(theta);\n    float stheta = sin(theta);\n    \n    mat3 rot_mat = mat3(ctheta, 0.0, -stheta,\n                        0.0, 1.0, 0.0,\n                        stheta, 0.0, ctheta);\n    const vec3 sun_dir = normalize(vec3(0.0, 0.0, 1.0));\n    \n    const mat3 tilt_mat = mat3(0.8, 0.6, 0.0,\n                               -0.6, 0.8, 0.0,\n                               0.0, 0.0, 1.0);\n    const mat3 inv_tilt_mat = mat3(0.8, -0.6, 0.0,\n                               0.6, 0.8, 0.0,\n                               0.0, 0.0, 1.0);\n    vec3 dir = tilt_mat * sun_dir;\n    dir = rot_mat * dir;\n\treturn inv_tilt_mat * dir;\n}\n\n/**\n * Found some \"Rayleigh scatter\" equations on wikipedia.\n * Mostly copied them, but dropped some terms and simplified others.\n *\n * Vaguely ends up looking like a blue sky.\n */\nvec3 sky_color(in vec3 dir) {\n\tvec3 sun_dir = get_sun_dir(-0.1); // -1.5);\n    const vec3 lambdas = vec3(0.6, 0.5, 0.45);\n    const vec3 sky_color_weights = vec3(0.9, 1.0, 0.8);\n    const vec3 scatter_terms =\n        sky_color_weights * vec3(0.0625) / (lambdas * lambdas * lambdas * lambdas);\n    float cos_theta = max(min(dot(dir, sun_dir), 1.0), -1.0);\n    float dir_factor = (1.0 + cos_theta * cos_theta) * 0.5;\n    float w = atmos_weight(dir, sun_dir);\n    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);\n    vec3 scatter_factor = w * 2.0 * scatter_terms;\n    vec3 passthru = max(1.0 - scatter_factor, vec3(0.0));\n    float direct_intense = smoothstep(0.02, 0.018, sin_theta) * step(0.0, cos_theta);\n    return dir_factor * scatter_factor + direct_intense * passthru;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

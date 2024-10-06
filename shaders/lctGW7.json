@@ -1,0 +1,202 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1711812004",
+            "description": "Visualization of the steps taken in the CCL algorithm I've developed in https://www.shadertoy.com/view/Xct3WH.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "lctGW7",
+            "likes": 5,
+            "name": "CCL 2x2 - jump visualization",
+            "published": 3,
+            "tags": [
+                "labeling",
+                "floodfill",
+                "segmentation",
+                "connectedcomponent"
+            ],
+            "usePreview": 0,
+            "username": "Gegell",
+            "viewed": 168
+        },
+        "renderpass": [
+            {
+                "code": "// MIT License 2024 - Gegell\n//\n// Algorithm for discovering joined regions of pixels in a binary image.\n// Exponential step sizing leads to a really quick convergence time.\n//\n// Buffer A: Generate binary image\n// Buffer B: Actual algorithm\n//\n// -- VISUALIZATION VERSION --\n// If you are interested in the actual algorithm, take a look at:\n//     https://www.shadertoy.com/view/Xct3WH\n//\n// This version is cluttered with more debug variables, and cursed offsets\n// for visualization purposes. Also note that the STEPS taken in each step\n// is set to 1 (see Buffer B) to better visualize the log2 steps needed.\n// When actually using the algorithm, doing more steps per frame is \n// quicker, but fills the history of the visualization tracker here too quick.\n// For more patterns take a look at Buffer A.\n//\n//\n// It shows the following:\n//    1. The first 13 steps taken during the algorithm (equal to 2^13 steps\n//       around the boundary. The iteration in which the step occured is\n//       shown both in color and width of the line.\n//       (blue+wide = early, red+thin=later)\n//    2. The first step taken on each pixel corner, shown via direction + hue.\n//       Only shown when zoomed in to avoid clutter.\n//\n// -- Usage --\n//   Clicking: 1. Shows the bounding box if a cluster is clicked\n//             2. Sets the spawn point for the step tracker visualization\n//   'Z': Toggle zoom\n//   'R': Reset state, runs algorithm again\n//\n\nconst int zoomKey = KEY_Z;        // Key used to toggle zooming\nconst float zoomRadius = 180.0;   // Radius of zoom window (in px).\nconst float zoomStrength = 14.0;  // Factor by which is zoomed when clicked.\n\nconst bool nyanEnable   = false;  // Whether to show the rotating nyan cat.\nconst bool centerEnable = true;   // Whether to show the center dot of each cluster.\n\n\n// Nyancat sampling code adapted from https://www.shadertoy.com/view/fsXGzj\nvec4 nyan( in vec2 uv, in int index) {\n    ivec2 nyan = ivec2(40, 32);\n    ivec2 ruv = ivec2(nyan.x * index, 0.0) + ivec2(clamp(uv, 0., 1.) * vec2(nyan)); \n\treturn texelFetch(iChannel2, ruv, 0);\n}\n\n// Data used for actual rendering (for pixel color & bboxes)\nstruct componentInfo {\n    vec2 bbsize;\n    vec2 bbcenter;\n    vec2 bblocaluv;\n    vec3 color;\n    uint rngSeed;\n};\n\ncomponentInfo getInfo(vec2 pos) {\n    neighborInfo info = loadNeighbor(iChannel1, ivec2(pos));\n    bbox bb = info.bounds;\n    bb.topright += 1;\n    \n    componentInfo comp;\n    comp.bbsize = vec2(bb.topright - bb.botleft+1);\n    comp.bbcenter = vec2(bb.botleft + bb.topright + 1) / 2.;\n    comp.bblocaluv = (pos - vec2(bb.botleft)) / comp.bbsize;\n    \n    comp.rngSeed = murmur3(uint(comp.bbcenter.x) ^ murmur3(uint(comp.bbcenter.y)));\n    comp.color = nextVec3(comp.rngSeed);\n    \n    return comp;\n}\n\n// Make color brighter if dark, otherwise darken\nvec3 highlightColor(vec3 baseCol) {\n    float highlight = dot(baseCol, vec3(0.13, 0.79, 0.08)) > 0.8 ? -0.4 : 0.4;\n    return baseCol + highlight;\n}\n\nmat2 rot(float angle) {\n    return mat2(cos(angle), -sin(angle), sin(angle), cos(angle));\n}\n\n\t\nvec3 hue(float h)\t{\n    h = fract(h);\n    float r = abs(h * 6. - 3.) - 1.;\n    float g = 2. - abs(h * 6. - 2.);\n    float b = 2. - abs(h * 6. - 4.);\n    return clamp(vec3(r, g, b), 0., 1.);\n}\n\nvec4 HSVtoRGB(vec3 hsv) {\n    return vec4(((hue(hsv.x) - 1.) * hsv.y + 1.) * hsv.z, 1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Replace the mouse position with a procedual one when it didn't click anywhere yet\n    float t = iTime * 0.05 + .16;\n    vec2 procMouse = (vec2(sin(t), cos(t*3.71)) * .5 * vec2(0.9, 0.8) + .5) * iResolution.xy;\n    vec2 mouse = iMouse.xy == vec2(0) ? procMouse : iMouse.xy;\n    \n    // Handle zooming\n    float mouseDist = distance(mouse, fragCoord);\n    bool isZooming = !keyToggleState(iChannel3, zoomKey);\n    if (isZooming) {\n        // Zoom in locally around mouse position.\n        fragCoord = vec2((fragCoord - mouse) / (zoomStrength/2.) + mouse);\n    }\n    ivec2 ipos = ivec2(fragCoord);\n    float lineAA = length(fwidth(fragCoord)) / 2.;\n    \n    // Sample the original texture & mask stored in channel0\n    vec4 orig = texelFetch(iChannel0, ipos, 0);\n    vec3 tex = orig.rgb;\n    float mask = orig.a;\n    \n    // Get the information of the component the pixel belongs to\n    componentInfo pxComp = getInfo(fragCoord);\n    \n    // Get the information of the last clicked on component\n    vec2 selPixel = floor(mouse / 2.) * 2.;\n    componentInfo selComp = getInfo(selPixel);\n    bool selValid = all(greaterThan(selComp.bbsize, vec2(1.)));\n    vec4 selOrig = texelFetch(iChannel0, ivec2(selPixel), 0);\n    selValid = selValid && (selOrig.a > 0.);\n\n\n    // Backgrounds\n    vec3 background;\n    background = tex;          // The original texture\n    //background = vec3(mask); // The binary map to label - See Buffer A\n\n\n    // Fill modes of the connected components\n    vec3 fill;\n    //fill = vec3(pxComp.bbcenter / iResolution.xy, 0);    // Show the bounding box global uv coord as RG color\n    fill = pxComp.color;                                   // Show a unique color per component\n    //fill = vec3(pxComp.bblocaluv, 0);                    // Show component bounding box uv\n    //fill = texture(iChannel0, pxComp.bblocaluv).rgb;     // Example: Map image to the local uv coordinates\n    \n    // Add stripes to the selected componenet\n    if (selValid && all(equal(selComp.bbcenter, pxComp.bbcenter))) {\n        float stripeMask = abs(fract((fragCoord.x + fragCoord.y)/40. - iTime) - .5) * 2.;\n        fill = mix(fill, highlightColor(fill), smoothstep(-lineAA/80., lineAA/80., stripeMask - .5));\n    }\n    \n    // Compose both background and component fill color\n    vec3 col = mix(background, fill, mask);\n    \n    \n    // Rotating Nyancat\n    if (nyanEnable) {\n        vec2 nyanuv = (pxComp.bblocaluv - 0.5) * rot((nextFloat(pxComp.rngSeed)*2. + 0.5) * iTime) + 0.5;\n        vec4 nyancol = nyan(nyanuv, (iFrame / 15) % 6);\n        col = mix(col, nyancol.rgb, mask * nyancol.a);\n    }\n    \n    // Show center points\n    if (centerEnable) {\n        float dotMask = smoothstep(0., lineAA, 3. - length(fragCoord - pxComp.bbcenter));\n        col = mix(col, highlightColor(col), mask * dotMask);\n    }\n    \n    // Draw bbox of last clicked on component (if valid component)\n    if (selValid) {\n        float boxDist = sdBox(fragCoord - selComp.bbcenter, selComp.bbsize/2.);\n        float thick = 1. / 2.;\n        col = mix(col, vec3(0),            smoothstep(0., lineAA, lineAA*1.5 - abs(abs(boxDist - thick) - thick)));\n        col = mix(col, selComp.color + .4, smoothstep(0., lineAA, thick - abs(boxDist - thick)));\n    }\n\n    // Show the steps taken by the selected pixel\n    neighborInfo selInfo = loadNeighbor(iChannel1, ivec2(selPixel)+1);\n    for (int i = 12; i >= 0; i--) {\n        vec2 a = vec2(selInfo.history[i])+2.;\n        vec2 b = vec2(selInfo.history[i+1])+2.;\n        if (b == vec2(0)) continue;\n        float lineDist = sdSegment(fragCoord, a, b);\n        vec3 lineCol = mix(vec3(0,0,1), vec3(1,0,0), float(i) / 12.);\n        float thick = (1. - float(i) / 12. * 0.5) * (isZooming ? 1. : 2.5);\n        col = mix(col, lineCol, smoothstep(0., lineAA, thick - lineDist));\n        \n        // Show actual sample positions\n        float nodeDist = length(fragCoord - b);\n        col = mix(col, highlightColor(col), smoothstep(0., lineAA, thick - nodeDist));\n    }\n    \n    // Draw pixel grid when zooming\n    if (isZooming) {\n        vec2 gridPos = abs(fract(fragCoord/2.)*2. - 1.);\n        float gridDist = min(1.-gridPos.x, 1.-gridPos.y);\n        col = mix(col, vec3(0), smoothstep(0., lineAA, 1.*lineAA - gridDist));\n    }\n    \n    // Draw initial direction when zooming\n    if (isZooming) {\n        ivec2 samplePos = (ipos + 1) & ~1;\n        neighborInfo initInfo = initNeighbors(iChannel0, samplePos - 2);\n        vec2 offset = vec2(initInfo.next - samplePos + 2);\n        float lineDist = sdSegment(fragCoord, vec2(samplePos)+lineAA, vec2(samplePos) + offset * .5 + lineAA);\n        vec3 lineCol = hue(atan(offset.x, offset.y));\n        col = mix(col, lineCol, smoothstep(0., lineAA, lineAA*2.5 - lineDist) * .6);\n    }\n    \n    // Draw to output channel\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buffer A handles:\n// 1. Generation of the binary bit mask to segment\n//    -> stored in alpha channel\n// 2. Tracking of texture sizes to trigger reset when resolution changes / shader first loads\n\n\n\n// Threshold the red channel of the image in iChannel0 for the mask.\n// Negative threshold inverts mask\nvec4 imageThreshold( vec2 pos, float threshold ) {\n    vec2 uv = floor(pos/2.)*2. / iResolution.xy;\n    vec3 col = texture(iChannel0, uv).rgb;\n    bool mask = col.r * sign(threshold) > threshold;\n    return vec4(col, mask);\n}\n\n\n// All possible bit pattern connections to test all patterns\nvec4 testPattern( vec2 pos, float size ) {\n    const uint pxPerCell = 8u;\n    \n    pos -= iResolution.xy / 2.;\n    pos /= vec2(size, -size);\n    pos += vec2(16, 8) * float(pxPerCell);\n    \n    if (clamp(pos, vec2(0), vec2(32, 16)*float(pxPerCell)) != pos) {\n        return vec4(0.);\n    }\n    \n    uvec2 ipos = uvec2(pos);\n    uvec2 cellId = (ipos / pxPerCell) % uvec2(32u, 16u);\n    uvec2 pxId = ipos - cellId * pxPerCell;\n    \n    if (any(greaterThan(pxId, uvec2(2)))) {\n        return vec4(0.);\n    }\n    \n    uint pattern = (cellId.y << 5) | cellId.x;\n    uint flatPx = pxId.y * 3u + pxId.x;\n    int bit = int[](\n        0,1,2,3,4,5,6,7,8\n    )[flatPx];\n    return vec4((pattern >> bit) & 1u);\n}\n\n//\n// Some patterns which had worst case performance with other algorithms\n//\nvec4 worstCaseDiagonals( vec2 pos, float size ) {\n    // Worstcase only diagonals - No longer worst case for this variant\n    float mask = float(dot(vec2(1,1), vec2(ivec2(pos / size) & 1)) == 1.);\n    return vec4(mask);\n}\n\nvec4 worstCaseLines( vec2 pos, float size ) {\n    ivec2 ipos = ivec2(pos / size);\n    return vec4(ipos.y & 1);\n}\n\nvec4 worstCaseSnake( vec2 pos, float size ) {\n    // Worst case I can think of for this algorithm, unrolls the texture into a line\n    // -> requires O(log2(width * height)) steps\n    ivec2 ipos = ivec2(pos / size);\n    bool hori = !bool(ipos.y & 1);\n    bool vert =  ( bool(ipos.y & 2) && bool(ipos.x <= 1))\n              || (!bool(ipos.y & 2) && bool(pos.x >= iResolution.x - size));\n    return vec4((hori || vert) && all(greaterThan(pos, vec2(size))));\n}\n\nvec4 worstCaseDonut( vec2 pos, float r ) {\n    float dist = sdBox(pos - iResolution.xy / 2., iResolution.xy / 2. - r/2.-4.);\n    bool mask = abs(dist) < r/2.;\n    return vec4(mask);\n}\n\nvec4 worstCaseCells( vec2 pos, float size ) {\n    // Worst case I can think of for this algorithm, similar to the donut example.\n    // Tries to attack the simple flood fill propagation step\n    ivec2 ipos = ivec2(pos / size);\n    bool hori = !bool(ipos.y & 1);\n    bool vert =  (bool(ipos.x <= 2))\n              || (bool(pos.x >= iResolution.x - size*2.));\n    return vec4((hori || vert) && all(greaterThan(pos, vec2(size*2.))));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    // The mask to be segmented is stored within the alpha channel, rgb is for background color\n    fragColor = imageThreshold(fragCoord, 0.3);\n    //fragColor = testPattern(fragCoord, 2.);\n    //fragColor = worstCaseDiagonals(fragCoord, 2.);\n    //fragColor = worstCaseLines(fragCoord, 2.);\n    //fragColor = worstCaseSnake(fragCoord, 4.);\n    //fragColor = worstCaseDonut(fragCoord, 80.);\n    //fragColor = worstCaseCells(fragCoord, 2.);\n    \n    // Trigger reset when texture in iChannel0 has loaded (when first loading the shader)\n    // or when the resolution changes (entering / exiting fullscreen)\n    if (ivec2(fragCoord) == ivec2(0)) {\n        metaInfo prev = loadMeta(iChannel1);\n        metaInfo next;\n        next.texRes = ivec2(iChannelResolution[0].xy);\n        next.viewRes = ivec2(iResolution.xy);\n        next.shouldReset = prev.texRes != next.texRes || prev.viewRes != next.viewRes || isKeyToggled(iChannel3, KEY_R);\n        fragColor.rgb = encodeMeta(next);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Box + Line SDF from iq - https://iquilezles.org/articles/distfunctions2d/\nfloat sdBox( in vec2 p, in vec2 b ) {\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\nfloat sdSegment( in vec2 p, in vec2 a, in vec2 b ) {\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\n// Bounding box - fit tightly around components\nstruct bbox {\n    ivec2 botleft;\n    ivec2 topright;\n};\n\nbbox mergeBB(bbox a, bbox b) {\n    return bbox(min(a.botleft, b.botleft), max(a.topright, b.topright));\n}\n\n// Neighbor info for sequential merging\nstruct neighborInfo {\n    bbox bounds;\n    ivec2 next;\n    ivec2[13] history;\n};\n\nivec2 unpackCoord(int packed) {\n    return ivec2(packed, packed >> 16) & 0xFFFF;\n}\n\nint packCoord(ivec2 coord) {\n    coord &= 0xFFFF;\n    return coord.x | (coord.y << 16);\n}\n\nneighborInfo decodeNeighbor(vec4 dataBL, vec4 dataBR, vec4 dataTL, vec4 dataTR) {\n    ivec4 idata = floatBitsToInt(dataBL);\n    \n    neighborInfo info;\n    info.bounds.topright = unpackCoord(idata.x);\n    info.bounds.botleft  = unpackCoord(idata.y);\n    info.next            = unpackCoord(idata.z);\n    info.history[0]      = unpackCoord(idata.w);\n    for (int i = 0; i < 4; i++) { info.history[1+i] = unpackCoord(floatBitsToInt(dataBR)[i]);}\n    for (int i = 0; i < 4; i++) { info.history[5+i] = unpackCoord(floatBitsToInt(dataTL)[i]);}\n    for (int i = 0; i < 4; i++) { info.history[9+i] = unpackCoord(floatBitsToInt(dataTR)[i]);}\n    \n    return info;\n}\n\nvec4 encodeNeighbor(neighborInfo info, ivec2 parity) {\n    ivec4 data;\n    if (parity == ivec2(0)) {\n        data.x = packCoord(info.bounds.topright);\n        data.y = packCoord(info.bounds.botleft);\n        data.z = packCoord(info.next);\n        data.w = packCoord(info.history[0]);\n    } else {\n        int offset = (parity.x * 4 + parity.y * 8) - 3;\n        for (int i = 0; i < 4; i++) { data[i] = packCoord(info.history[i + offset]);}\n    }\n    return intBitsToFloat(data);\n}\n\nneighborInfo loadNeighbor(sampler2D dataChannel, ivec2 pos) {\n    pos &= ~1;\n    vec4 dataBL = texelFetch(dataChannel, pos + ivec2(0, 0), 0);\n    vec4 dataBR = texelFetch(dataChannel, pos + ivec2(1, 0), 0);\n    vec4 dataTL = texelFetch(dataChannel, pos + ivec2(0, 1), 0);\n    vec4 dataTR = texelFetch(dataChannel, pos + ivec2(1, 1), 0);\n    return decodeNeighbor(dataBL, dataBR, dataTL, dataTR);\n}\n\n// Meta information - detecting initial load & resizing\nstruct metaInfo {\n    ivec2 texRes;\n    ivec2 viewRes;\n    bool shouldReset;\n};\n\nmetaInfo decodeMeta(vec3 data) {\n    ivec3 idata = floatBitsToInt(data);\n    return metaInfo(unpackCoord(idata.x), unpackCoord(idata.y), idata.z != 0);\n}\n\nvec3 encodeMeta(metaInfo info) {\n    ivec3 data;\n    data.x = packCoord(info.texRes);\n    data.y = packCoord(info.viewRes);\n    data.z = info.shouldReset ? -1 : 0;\n    return intBitsToFloat(data);\n}\n\nmetaInfo loadMeta(sampler2D maskChannel) {\n    return decodeMeta(texelFetch(maskChannel, ivec2(0), 0).rgb);\n}\n\n// Mask readout & initial direction\n\nbool mask(sampler2D maskTexture, ivec2 pos) {\n    pos &= ~1;\n    if (any(lessThanEqual(pos, ivec2(0)))) {\n        return false;  // FIXME: Currently the lower and left edge are not handled properly, hence we ignore them here :)\n    }\n    return texelFetch(maskTexture, pos, 0).a > 0.;\n}\n\nint maskNeighbors(sampler2D maskTexture, ivec2 pos) {\n    pos &= ~1;\n    int val;\n\n    val |= int(mask(maskTexture, pos + ivec2(1, 1)*2)) << 0;\n    val |= int(mask(maskTexture, pos + ivec2(0, 1)*2)) << 1;\n    val |= int(mask(maskTexture, pos + ivec2(0, 0)*2)) << 2;\n    val |= int(mask(maskTexture, pos + ivec2(1, 0)*2)) << 3;\n\n    return val;\n}\n\nneighborInfo initNeighbors(sampler2D maskTexture, ivec2 pos) {\n    // Consider only the top right corner of the pixel.\n    // This turns the problem which edge to follow to 16 different cases\n    // At worst we require 2 directions to be traversed (when we have a diagonal connection only)\n    // Index is created in the following bit order:\n    //     1 | 0\n    //     --X--\n    //     2 | 3\n    ivec3 o = ivec3(0, -1, 1);\n    ivec2[] offsets = ivec2[16](\n        o.xz, // 0000 ~> up\n        o.xz, // 0001 ~> up\n        o.yx, // 0010 ~> left\n        o.yx, // 0011 ~> left\n\n        o.xy, // 0100 ~> down\n        o.xy, // 0101 ~> down\n        o.xy, // 0110 ~> down\n        o.xy, // 0111 ~> down\n\n        o.zx, // 1000 ~> right\n        o.xz, // 1001 ~> up\n        o.zx, // 1010 ~> right\n        o.yx, // 1011 ~> left\n\n        o.zx, // 1100 ~> right\n        o.xz, // 1101 ~> up\n        o.zx, // 1110 ~> right\n        o.xz  // 1111 ~> up\n    );\n    \n    neighborInfo info;\n    int masks = maskNeighbors(maskTexture, pos);\n    \n    // Set the bounds to the union of the active neighbors of the vertex.\n    ivec4 inDir = ((ivec4(masks) >> ivec4(1, 3, 3, 1)) | (ivec4(masks) >> ivec4(2, 2, 0, 0))) & 1;\n    info.bounds.botleft  = pos + (1 - inDir.xy)*2;\n    info.bounds.topright = pos + inDir.zw*2;\n\n    // Initialize with single step.\n    ivec2 offset = offsets[masks] * 2;\n    info.next = pos + offset;\n    \n    // Check special cases which would require 2 different next directions, resolve immediately by doing another step.\n    // These are 0101 and 1010, i.e. where we have a pixel wide corner connection.\n    // Currently this turns into a 8-connected segmentation (i.e. single diagonals are counted as connected)\n    // To turn this into a 4-connected segmentation simply flip the sign of the offset directions below.\n    masks = maskNeighbors(maskTexture, info.next);\n    if (masks == 0x5) {\n        info.next.y += offset.x;\n    } if (masks == 0xA) {\n        info.next.x += -offset.y;\n    }\n    \n    return info;\n}\n\n\n// Keyboard stuff\nconst int KEY_A = 0x41;\nconst int KEY_B = 0x42;\nconst int KEY_C = 0x43;\nconst int KEY_D = 0x44;\nconst int KEY_E = 0x45;\nconst int KEY_F = 0x46;\nconst int KEY_G = 0x47;\nconst int KEY_H = 0x48;\nconst int KEY_I = 0x49;\nconst int KEY_J = 0x4a;\nconst int KEY_K = 0x4b;\nconst int KEY_L = 0x4c;\nconst int KEY_M = 0x4d;\nconst int KEY_N = 0x4e;\nconst int KEY_O = 0x4f;\nconst int KEY_P = 0x50;\nconst int KEY_Q = 0x51;\nconst int KEY_R = 0x52;\nconst int KEY_S = 0x53;\nconst int KEY_T = 0x54;\nconst int KEY_U = 0x55;\nconst int KEY_V = 0x56;\nconst int KEY_W = 0x57;\nconst int KEY_X = 0x58;\nconst int KEY_Y = 0x59;\nconst int KEY_Z = 0x5a;\n\nbool isKeyPressed(sampler2D keyboardTexture, int key) {\n    return texelFetch(keyboardTexture, ivec2(key, 0), 0).x > 0.;\n}\n\nbool isKeyToggled(sampler2D keyboardTexture, int key) {\n    return texelFetch(keyboardTexture, ivec2(key, 1), 0).x > 0.;\n}\n\nbool keyToggleState(sampler2D keyboardTexture, int key) {\n    return texelFetch(keyboardTexture, ivec2(key, 2), 0).x > 0.;\n}\n\n// Randomization and hashes\nuint murmur3( in uint u )\n{\n  u ^= ( u >> 16 ); u *= 0x85EBCA6Bu;\n  u ^= ( u >> 13 ); u *= 0xC2B2AE35u;\n  u ^= ( u >> 16 );\n\n  return u;\n}\n\n// RNG from https://de.wikipedia.org/wiki/Xorshift\nuint xorshift(in uint value) {\n    value ^= value << 13;\n    value ^= value >> 17;\n    value ^= value << 5;\n    return value;\n}\n\nuint nextUint(inout uint seed) {\n    seed = xorshift(seed);\n    return seed;\n}\n\nfloat nextFloat(inout uint seed) {\n    return float(nextUint(seed)) / float(uint(-1));\n}\n\nvec3 nextVec3(inout uint seed) {\n    return vec3(nextFloat(seed), nextFloat(seed), nextFloat(seed));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Buffer B is the actual floodfill implementation\n//\n// Basic idea:\n//   We walk around the border of each component in the clockwise direction.\n//   Each iteration we write the pixel to consider in the next iteration back to the texture.\n//   The next iteration can then skip previously explored pixels along the edge (doubling stepsize each step).\n\nneighborInfo load(ivec2 pos) {\n    return loadNeighbor(iChannel1, pos);\n}\n\nvoid mergeNeighborCell(ivec2 pos, inout bbox bounds) {\n    if (mask(iChannel0, pos)) {\n        neighborInfo info = load(pos);\n        bounds = mergeBB(bounds, info.bounds);\n    }\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Check meta information (whether to reset due to buffer size change)\n    metaInfo meta = loadMeta(iChannel0);\n\n    ivec2 ipos = ivec2(fragCoord);\n    ivec2 parity = ipos & 1;\n    ipos &= ~1;\n\n    neighborInfo cur = load(ipos);\n    neighborInfo new = cur;\n    \n    if (cur.next == ivec2(0) || meta.shouldReset) {\n        new = initNeighbors(iChannel0, ipos);\n        new.history[0] = ipos;\n    } else {\n        // Take multiple steps in along the edge.\n        // Each doubling represents 1 fewer iteration write/read to/from the buffer == should approx half total iteration count.\n        const int STEPS = 1;\n        \n        neighborInfo next;\n        for (int i = 0; i < STEPS; i++) {\n            next = load(new.next);\n            new.bounds = mergeBB(new.bounds, next.bounds);\n            if (new.history[12] == ivec2(0)) {\n                for (int i = 0; i < 13; i++) {\n                    if (new.history[i] == ivec2(0)) {\n                        new.history[i] = new.next;\n                        break;\n                    }\n                }\n            }\n            new.next = next.next;\n        }\n        \n        // Currently the fallback is still necessary for the \"pillars\" occuring when there are holes in the region\n        // This is the one side where we could obtain quite bad performance, but not really relevant for practical examples\n        // according to my testing.\n#define FALLBACK_FLOODFILL\n#ifdef FALLBACK_FLOODFILL\n        if (mask(iChannel0, ipos)) {\n            mergeNeighborCell(ipos + ivec2(-2, 0), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 2, 0), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 0,-2), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 0, 2), new.bounds);\n        }\n#endif\n    }\n    \n    fragColor = encodeNeighbor(new, parity);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

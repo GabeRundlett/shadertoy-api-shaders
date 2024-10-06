@@ -1,0 +1,57 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1622892933",
+            "description": "Trilinear approximation (now much faster thanks to @kastorp).",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Nd23zc",
+            "likes": 12,
+            "name": "Raytraced Implicit Fields",
+            "published": 3,
+            "tags": [
+                "voxels",
+                "approximation",
+                "raytraced",
+                "implicit",
+                "cell",
+                "trilinear",
+                "traversal"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 203
+        },
+        "renderpass": [
+            {
+                "code": "#define USE_DISTANCE_FIELD_NORMAL\n#define CELL_TRAVERSALS 40\n#define VOXEL_SIZE 0.25\n\nfloat implicit(in vec3 p) {\n    p *= VOXEL_SIZE; // Undo scaling in the implicit surface\n    float n = mix(0.5, 6.0, 0.5 + 0.5 * sin(iTime));\n    return pow(abs(p.x), n) + pow(abs(p.y), n) + pow(abs(p.z), n) - pow(1.5, n);\n}\n\nvec3 getNormal(in vec3 p) {\n    vec2 e = vec2(0.001, 0.0);\n    float m = implicit(p);\n    return normalize(vec3(implicit(p + e.xyy) - m,\n                          implicit(p + e.yxy) - m,\n                          implicit(p + e.yyx) - m));\n}\n\n// Cubic solver\nint solveCubic(in float a, in float b, in float c, in float d, out vec3 roots) {\n    float u = b / (3.0 * a);\n\n    float p = (c - b * u) / a;\n    float q = (d - (c - 2.0 * b * b / (9.0 * a)) * u) / a;\n    if (abs(p) < 1e-9) { roots.x = -sign(q) * pow(abs(q), 1.0 / 3.0) - u; return 1; }\n\n    if (4.0 * p * p * p + 27.0 * q * q > 0.0) {\n        float ip = 3.0 / abs(p), sp = sqrt(ip), k = 0.5 * q * ip * sp;\n        if (p > 0.0) roots.x = -2.0 / sp * sinh(asinh(k) / 3.0) - u;\n        else roots.x = -2.0 / sp * cosh(acosh(abs(k)) / 3.0) * sign(q) - u;\n        return 1;\n    }\n\n    float m = sqrt(-p / 3.0);\n    roots.x = -2.0 * m * sin(asin(1.5 * q / (p * m)) / 3.0);\n\n    float h = sqrt(-3.0 * roots.x * roots.x - 4.0 * p);\n    roots.yz = 0.5 * vec2(h - roots.x, -h - roots.x);\n    roots -= u;\n\n    return 3;\n}\n\n// Intersection\nvec4 iTrilinearIsoSurf(in vec3 ro, in vec3 rd, in float a, in float b, in float c, in float d, in float e, in float f, in float g, in float h) {\n    vec4 u = vec4(-a + b + c - d + e - f - g + h, a - b - c + d, a - b - e + f, a - c - e + g);\n    vec3 v = vec3(b, c, e) - a;\n\n    vec3 xxyyzz = ro.xxy * ro.yzz;\n    vec3 uuvvww = rd.xxy * rd.yzz;\n\n    float t3 = u.x * rd.x * rd.y * rd.z;\n    float t2 = dot(ro.zyx, uuvvww) * u.x + dot(u.yzw, uuvvww);\n    float t1 = dot(u, vec4(dot(xxyyzz, rd.zyx), dot(ro.xy, rd.yx), dot(ro.xz, rd.zx), dot(ro.yz, rd.zy))) + dot(v, rd);\n    float t0 = u.x * ro.x * ro.y * ro.z + dot(u.yzw, xxyyzz) + dot(v, ro) + a;\n\n    t3 += 0.000001; // To deal with precision issues that seem to arise with this surface\n\n    vec4 hits;\n    hits.w = float(solveCubic(t3, t2, t1, t0, hits.xyz));\n\n    return hits;\n}\n\n// Normal\nvec3 nTrilinearIsoSurf(in vec3 p, in float a, in float b, in float c, in float d, in float e, in float f, in float g, in float h) {\n    vec4 u = vec4(-a + b + c - d + e - f - g + h, a - b - c + d, a - b - e + f, a - c - e + g);\n    return normalize(u.x * p.yxx * p.zzy + u.yyz * p.yxx + u.zww * p.zzy + vec3(b, c, e) - a);\n}\n\nvec4 gridCell(in vec3 ro, in vec3 rd, in vec3 pos) {\n    ro -= pos;\n\n    // Isovalues\n    float a = implicit(pos);\n    float b = implicit(pos + vec3(1.0, 0.0, 0.0));\n    float c = implicit(pos + vec3(0.0, 1.0, 0.0));\n    float d = implicit(pos + vec3(1.0, 1.0, 0.0));\n    float e = implicit(pos + vec3(0.0, 0.0, 1.0));\n    float f = implicit(pos + vec3(1.0, 0.0, 1.0));\n    float g = implicit(pos + vec3(0.0, 1.0, 1.0));\n    float h = implicit(pos + 1.0);\n\n    float sa = sign(a);\n    if (sa == sign(b) && sa == sign(c) && sa == sign(d) &&\n        sa == sign(e) && sa == sign(f) && sa == sign(g) &&\n        sa == sign(h)) return vec4(-1.0, vec3(0.0));\n\n    // Intersect\n    vec4 hit = iTrilinearIsoSurf(ro, rd, a, b, c, d, e, f, g, h);\n    float t = -1.0;\n    vec3 hitPos;\n\n    // Find closest\n    for (int n=0; n < int(hit[3]); n++) {\n        vec3 hitCandid = ro + rd * hit[n];\n        if (hit[n] > 0.0 && (t < 0.0 ? true : hit[n] < t) && all(lessThan(abs(hitCandid - 0.5), vec3(0.5)))) {\n            t = hit[n];\n            hitPos = hitCandid;\n        }\n    }\n\n    #ifdef USE_DISTANCE_FIELD_NORMAL\n    vec3 nor = getNormal(pos + hitPos);\n    #else\n    vec3 nor = nTrilinearIsoSurf(hitPos, a, b, c, d, e, f, g, h);\n    #endif\n\n    return vec4(t, nor);\n}\n\n// Adapted from https://www.shadertoy.com/view/MdBGRm\n// vec4(dist, normal)\nvec4 traverse(vec3 ro, vec3 rd) {\n    vec3 grid = floor(ro);\n    vec3 gridStep = sign(rd);\n    vec3 corner = max(gridStep, 0.0);\n\n    vec3 ratio = (grid + corner - ro) / rd;\n    vec3 ratioStep = gridStep / rd;\n\n    for (int i=0; i < CELL_TRAVERSALS; i++) {\n        vec4 hit = gridCell(ro, rd, grid);\n        if (hit.x > 0.0) return hit;\n\n        vec3 cp = step(ratio, ratio.yzx);\n        vec3 mask = cp * (1.0 - cp.zxy);\n\n        grid += gridStep * mask;\n        ratio += ratioStep * mask;\n\t}\n\n    return vec4(-1.0, 0.0, 0.0, 0.0);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n    float time = iTime;\n\n    vec2 mouse = ivec2(iMouse) == ivec2(0) ? vec2(0.0) : (iMouse.xy - center) / iResolution.y * 3.14;\n    vec2 uv = (fragCoord - center) / iResolution.y;\n\n    vec3 ro = vec3(0.0, 0.0, 5.0);\n    vec3 rd = normalize(vec3(uv, -1.0));\n\n    // Rotate with mouse\n    float cy = cos(mouse.x), sy = sin(mouse.x);\n    float cp = cos(mouse.y), sp = sin(mouse.y);\n\n    ro.yz *= mat2(cp, -sp, sp, cp);\n    ro.xz *= mat2(cy, -sy, sy, cy);\n    rd.yz *= mat2(cp, -sp, sp, cp);\n    rd.xz *= mat2(cy, -sy, sy, cy);\n\n    // Environment map\n    fragColor = texture(iChannel0, rd);\n\n    // Intersect\n    ro /= VOXEL_SIZE; // Shrink voxels to half size\n    vec4 hit = traverse(ro, rd);\n    vec3 hitPos = ro + rd * hit.x;\n\n    // Render the shape if hitting\n    if (hit.x > 0.0) {\n        float diff = abs(dot(hit.yzw, -rd));\n        fragColor = mix(vec4(hit.yzw, 1.0), texture(iChannel0, reflect(-rd, hit.yzw)), 0.25);\n        fragColor.rgb *= diff;\n    }\n\n    fragColor.rgb = pow(fragColor.rgb, vec3(0.75));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

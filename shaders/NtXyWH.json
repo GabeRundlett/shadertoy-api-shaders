@@ -1,0 +1,110 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1647879456",
+            "description": "Comment on optimizations that can be made.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "NtXyWH",
+            "likes": 20,
+            "name": "Fast path tracer v3.3",
+            "published": 3,
+            "tags": [
+                "3d",
+                "reflection",
+                "ray",
+                "texture",
+                "fast",
+                "cubemap",
+                "tracing",
+                "path",
+                "scatter",
+                "multipass"
+            ],
+            "usePreview": 0,
+            "username": "me_123",
+            "viewed": 686
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    fragColor.xyz/=fragColor.w;\n    fragColor.xyz = 1.0-exp(-5.0*fragColor.xyz); // hand-tuned exposure rate\n    fragColor.xyz = pow(fragColor.xyz, vec3(0.9)); // gamma correction\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "struct ray {\n    vec3 o; //Origin\n    vec3 d; //Direction\n};\nstruct rec {\n    bool hit;\n    vec3 normal;\n    float d; //distance\n    vec3 color;\n    int mat; //materal\n};\nconst rec noHit = rec(false, vec3(0), 10000., vec3(0), 0);\n\n//Ray intersections by iq\nrec hitBox(in ray r, vec3 offset, vec3 boxSize, int mat, vec3 color, in vec3 m) \n{\n    r.o -= offset;\n    vec3 n = m*r.o;\n    vec3 k = abs(m)*boxSize;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n    float tN = max( max( t1.x, t1.y ), t1.z );\n    float tF = min( min( t2.x, t2.y ), t2.z );\n    if( tN>tF || tF<0.0) return noHit;\n    return rec(true, -sign(r.d)*step(t1.yzx,t1.xyz)*step(t1.zxy,t1.xyz), tN, color, mat);\n}\nfloat bbox(in ray r, vec3 A, vec3 B, in vec3 m)\n{\n    vec3 t1 = ((A+A)-r.o)*m;\n    vec3 t2 = ((B+B)-r.o)*m;\n    vec3 F = min(t1, t2);\n    vec3 N = max(t1, t2);\n    float tmin = max(max(F.x, F.y), F.z);\n    float tmax = min(min(N.x, N.y), N.z);\n\n    if (tmax < 0.0 || tmin > tmax)\n    {\n        return 10000.;\n    }\n    return tmin;\n}\nrec sphere(ray r, vec3 offset, float ra, int mat, vec3 color)\n{\n    r.o -= offset;\n    float b = dot( r.o, r.d );\n    float c = dot( r.o, r.o ) - ra*ra;\n    float h = b*b - c;\n    if( h<0.0 ) return noHit;\n    h = sqrt( h );\n    float d = -b-h;\n    if (d < 0.0) return noHit;\n    vec3 p = (r.o+offset)+r.d*d;\n    return rec(true, (p-offset)/ra, d, color, mat);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define samples 10\n\n\n//0: test scene, 1: BVH demo\n#define scene 1\n\n#define BVH true\n\n//hashes\nuint base_hash(uvec2 p) {\n    p = 1103515245U*((p >> 1U)^(p.yx));\n    uint h32 = 1103515245U*((p.x)^(p.y>>3U));\n    return h32^(h32 >> 16);\n}\n\nfloat g_seed = 10.;\n\nfloat hash() {\n    uint n = base_hash(floatBitsToUint(vec2(g_seed+=.1,g_seed+=.1)));\n    return float(n)*(1.0/float(0xffffffffU));\n}\n\nvec3 hash3() {\n    uint n = base_hash(floatBitsToUint(vec2(g_seed+=.1,g_seed+=.1)));\n    uvec3 rz = uvec3(n, n*16807U, n*48271U);\n    return vec3(rz & uvec3(0x7fffffffU))/float(0x7fffffff);\n}\n\nray cam(in vec2 coord) { //camera\n    vec2 ri = 1./iResolution.xy;\n    vec2 uv = ((coord.xy*ri)-0.5);\n    uv.x *= iResolution.x/iResolution.y;\n    vec2 m = iMouse.x == 0. ? vec2(0.5) : ((iMouse.xy*ri)-0.5)*vec2(6.283185307179586, 3.141592653589793);\n    float Y = cos(m.y);\n    vec3 ro = vec3(sin(m.x)*Y, sin(m.y), cos(m.x)*Y)*17.;\n    #if scene\n    ro *= 0.08;\n    #endif\n    vec3 cam_z = normalize(-ro);\n    vec3 cam_x = normalize(cross(vec3(0, 1, 0), cam_z));\n    vec3 cam_y = cross(cam_z, cam_x);\n    ro.y += 1.0;\n    #if scene\n        ro.y -= 1.5;\n    #endif\n    return ray(ro, normalize(uv.x * cam_x + uv.y * cam_y + 1. * cam_z));\n}\n#define BOX(p, s, m, c) tmp = hitBox(r, p, s, m, c, rdINV);if (tmp.d < o.d) {o = rec(true, tmp.normal, tmp.d, tmp.color, tmp.mat);}\n#define SPHERE(p, s, m, c) tmp = sphere(r, p, s, m, c);if (tmp.d < o.d) {o = rec(true, tmp.normal, tmp.d, tmp.color, tmp.mat);}\n#define BOUND(a, b) o.d>bbox(r, a, b, rdINV) || !BVH\nrec hitScene(in ray r) { // EDIT SCENE HEAR\n    vec3 rdINV = 1./r.d;\n    int mat = 0;\n    rec o = noHit;\n    rec tmp;\n    \n    #if scene\n    //38 objects\n    /*\n   BOX(vec3(-1000.), vec3(2000.), 3, vec3(1)); \n   */\n    BOX(vec3(0, -0.8, 0.0), vec3(5.0, 0.01, 5.0),    0     , vec3(0.8));\n    if ( BOUND(vec3(-.3, -0.4, -.3), vec3(.3, 0.0, .3)) ) {\n        if (BOUND(vec3(.15, -.275, -.075), vec3(0.3, -.05, 0.075))) {\n            BOX(vec3(0.45, -0.325, 0.0), vec3(0.15, 0.025, 0.15), 0, vec3(0.8, 0.2, 0.2));\n            BOX(vec3(0.475, -0.45,-0.0), vec3(0.025, 0.1, 0.025), 0, vec3(0.8, 0.2, 0.2));\n            if (BOUND(vec3(.15, -.15, -.075), vec3(0.3, -.05, 0.075))) {\n                BOX(vec3(0.31, -0.29, 0.0), vec3(0.01, 0.01, 0.15), 3, vec3(0.8, 0.2, 0.2));\n                BOX(vec3(0.59, -0.29, 0.0), vec3(0.01, 0.01, 0.15), 3, vec3(0.8, 0.2, 0.2));\n                BOX(vec3(0.45, -0.29, 0.14), vec3(0.15, 0.01, 0.01), 3, vec3(0.8, 0.2, 0.2));\n                BOX(vec3(0.45, -0.29, -0.14), vec3(0.15, 0.01, 0.01), 3, vec3(0.8, 0.2, 0.2));\n                SPHERE(vec3(0.45, -0.2, 0.0), 0.1, 2, vec3(0.8));\n            }\n        }\n        if (BOUND(vec3(-.3, -.275, -.075), vec3(-0.15, -.05, 0.075))) {\n            BOX(vec3(-0.45, -0.325, 0.0), vec3(0.15, 0.025, 0.15), 0, vec3(0.2, 0.8, 0.2));\n            BOX(vec3(-0.475, -0.45,-0.0), vec3(0.025, 0.1, 0.025), 0, vec3(0.2, 0.8, 0.2));\n            \n            if (BOUND(vec3(-.3, -.15, -.075), vec3(-0.15, -.05, 0.075))) {\n                BOX(vec3(-0.31, -0.29, 0.0), vec3(0.01, 0.01, 0.15), 3, vec3(0.2, 0.8, 0.2));\n                BOX(vec3(-0.59, -0.29, 0.0), vec3(0.01, 0.01, 0.15), 3, vec3(0.2, 0.8, 0.2));\n                BOX(vec3(-0.45, -0.29, 0.14), vec3(0.15, 0.01, 0.01), 3, vec3(0.2, 0.8, 0.2));\n                BOX(vec3(-0.45, -0.29, -0.14), vec3(0.15, 0.01, 0.01), 3, vec3(0.2, 0.8, 0.2));\n                SPHERE(vec3(-0.45, -0.2, 0.0), 0.1, 2, vec3(0.8));\n            }\n        }\n        if (BOUND(vec3(-.075, -.275, .15), vec3(0.075, -.05, 0.3))) {\n            BOX(vec3(0.0, -0.325, 0.45), vec3(0.15, 0.025, 0.15), 0, vec3(0.2, 0.2, 0.8));\n            BOX(vec3(0.0, -0.45, 0.475), vec3(0.025, 0.1, 0.025), 0, vec3(0.2, 0.2, 0.8));\n            \n            if (BOUND(vec3(-.075, -.15, .15), vec3(0.075, -.05, 0.3))) {\n                SPHERE(vec3(0, -0.2, 0.45), 0.1, 2, vec3(0.8));\n                BOX(vec3(0.0, -0.29, 0.31), vec3(0.15, 0.01, 0.01), 3, vec3(0.1, 0.2, 0.8));\n                BOX(vec3(0.0, -0.29, 0.59), vec3(0.15, 0.01, 0.01), 3, vec3(0.1, 0.2, 0.8));\n                BOX(vec3(0.14, -0.29, 0.45), vec3(0.01, 0.01, 0.15), 3, vec3(0.1, 0.2, 0.8));\n                BOX(vec3(-0.14, -0.29, 0.45), vec3(0.01, 0.01, 0.15), 3, vec3(0.1, 0.2, 0.8));\n            }\n        }\n        if (BOUND(vec3(-.075, -.275, -.3), vec3(0.075, -.05, -0.15))) {\n            BOX(vec3(0.0, -0.325, -0.45), vec3(0.15, 0.025, 0.15), 0, vec3(0.8, 0.8, 0.1));\n            BOX(vec3(0.0, -0.45, -0.475), vec3(0.025, 0.1, 0.025), 0, vec3(0.8, 0.8, 0.1));\n        \n            if (BOUND(vec3(-.075, -.15, -.3), vec3(0.075, -.05, -0.15))) {\n                BOX(vec3(0.0, -0.29, -0.31), vec3(0.15, 0.01, 0.01), 3, vec3(0.8, 0.8, 0.2));\n                BOX(vec3(0.0, -0.29, -0.59), vec3(0.15, 0.01, 0.01), 3, vec3(0.8, 0.8, 0.2));\n                BOX(vec3(0.14, -0.29, -0.45), vec3(0.01, 0.01, 0.15), 3, vec3(0.8, 0.8, 0.2));\n                BOX(vec3(-0.14, -0.29, -0.45), vec3(0.01, 0.01, 0.15), 3, vec3(0.8, 0.8, 0.2));\n                SPHERE(vec3(0, -0.2, -0.45), 0.1, 2, vec3(0.8));\n            }\n        }\n        if (BOUND(vec3(-.075, -.275, -0.075), vec3(0.075, -.00, 0.075))) {\n            BOX(vec3(0.0, -0.4, 0.0), vec3(0.025, 0.15, 0.025), 0, vec3(0.5));\n            BOX(vec3(0.0, -0.225, 0.0), vec3(0.15, 0.025, 0.15), 0, vec3(0.5));\n            SPHERE(vec3(0.0, -0.1, 0.0), 0.1, 3, vec3(0.8));\n        }\n        if (BOUND(vec3(-.25, -.4, -.25), vec3(0.25, -0.275, 0.25))) {\n            BOX(vec3(0.25, -0.7, 0.25), vec3(0.025, 0.1, 0.025), 0, vec3(0.8));\n            BOX(vec3(0.25, -0.7, -0.25), vec3(0.025, 0.1, 0.025), 0, vec3(0.8));\n            BOX(vec3(-0.25, -0.7, 0.25), vec3(0.025, 0.1, 0.025), 0, vec3(0.8));\n            BOX(vec3(-0.25, -0.7, -0.25), vec3(0.025, 0.1, 0.025), 0, vec3(0.8));\n            BOX(vec3(0.0, -0.575, -0.0), vec3(0.275, 0.025, 0.275), 0, vec3(0.8));\n            BOX(vec3(0.0, -0.575, -0.0), vec3(0.025, 0.025, 0.5), 0, vec3(0.8));\n            BOX(vec3(0.0, -0.575, -0.0), vec3(0.5, 0.025, 0.025), 0, vec3(0.8));\n        }\n    }\n    #else\n    //9 objects\n    BOX(vec3(0, -.6, 0), vec3(20., .1, 20.), 0, vec3(0.8));\n    if (BOUND(vec3(-2.5, -0.25, -2.5), vec3(2.5, 4.0, 2.5))) {\n        BOX(vec3(0, 3.5, 0), vec3(5., .1, 5.), 0, vec3(0.2, 0.6, 0.8));\n        SPHERE(vec3(0.0, 1.5, 0.0), 2.0, 3, vec3(0.8));\n        if (BOUND(vec3(-2.0, 1.8, -2.0), vec3(2.0, 4.0, 2.0))) {\n            BOX(vec3(0, 3.67, 0), vec3(4., .25, 4.), 1, vec3(0.8, 0.8, 0.3));\n            SPHERE(vec3(0.0, 5.9, 0.0), 2.0, 2, vec3(1));\n        }\n        BOX(vec3(-4, 1.5, -4), vec3(0.4, 2., 0.4), 0, vec3(0.8, 0.3, 0.3));\n        BOX(vec3(-4, 1.5, 4), vec3(0.4, 2., 0.4), 0, vec3(0.8, 0.3, 0.3));\n        BOX(vec3(4, 1.5, -4), vec3(0.4, 2., 0.4), 0, vec3(0.8, 0.3, 0.3));\n        BOX(vec3(4, 1.5, 4), vec3(0.4, 2., 0.4), 0, vec3(0.8, 0.3, 0.3));\n    }\n    #endif\n    \n    return o;\n}\n\nvec3 rus() { //random number in sphere\n    vec3 h = hash3() * vec3(2.,6.28318530718,1.)-vec3(1,0,0);\n    float phi = h.y;\n    float r = pow(h.z, 0.3333333333333333);\n\treturn r * vec3(sqrt(1.-h.x*h.x)*vec2(sin(phi),cos(phi)),h.x);\n}\nvec3 sky(vec3 rd) { //background\n    return texture(iChannel1, rd).xyz*0.3;\n}\nvec3 getColor(ray r) {\n    vec3 v = vec3(1);\n    int i;\n    for (i = 0; i < 100; i += 1) {\n        rec hit = hitScene(r);\n        if (hit.hit) v *= hit.color;\n        else return v*sky(r.d);\n        vec3 nd;\n        if (hit.mat == 0) nd = (hit.normal+rus());\n        else if (hit.mat == 1) nd = reflect(r.d, (hit.normal+0.05*rus()));\n        else if (hit.mat == 2) {\n            if (hash() > (1./-dot(r.d, hit.normal))*0.1) nd = hit.normal+rus();\n            else nd = reflect(r.d, hit.normal);\n        }\n        else if (hit.mat == 3) return (v*vec3(2));\n        r = ray(r.o+r.d*(hit.d-0.00001), normalize(nd));\n    }\n    return vec3(v);\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    g_seed = float(iFrame)*151.45137+fragCoord.x*1000.+fragCoord.y;\n    fragColor = vec4(0);\n    //fragColor = vec4(hash(), hash(), hash(), 1);return;\n    for (int i = 0; i < samples; i += 1) {\n        vec2 o = vec2(hash(), hash()-0.5);\n        ray c = cam(fragCoord+o);\n        vec3 col = max(getColor(c), 0.0);\n        fragColor += vec4(col,1.0);\n    }\n    vec4 tf = vec4(0);\n    tf += texelFetch(iChannel0, ivec2(fragCoord), 0);\n    if (iMouse.z < 0.0 || iMouse.x == 0.) fragColor += tf;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

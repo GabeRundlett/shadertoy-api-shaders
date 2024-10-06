@@ -1,0 +1,43 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1561384782",
+            "description": "A shader about Gaussian weights and fake AO. (Set AA to 1. if the shader is running <60fps - line 27)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Wtj3Wc",
+            "likes": 51,
+            "name": "Gaussian Weights and Fake AO",
+            "published": 3,
+            "tags": [
+                "blur",
+                "fake",
+                "ao",
+                "occlusion",
+                "ambient",
+                "gaussian",
+                "error",
+                "weights"
+            ],
+            "usePreview": 0,
+            "username": "reinder",
+            "viewed": 2381
+        },
+        "renderpass": [
+            {
+                "code": "// Gaussian Weights and Fake AO. Created by Reinder Nijhoff 2019\n// Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/Wtj3Wc\n//\n// Sometimes you need to calculate the weights of a Gaussian blur kernel \n// yourself. For example if you want to calculate weights for a kernel where\n// the center of the Gaussian curve is not exactly in the \"center of the\n// kernel\" but has a sub-pixel offset. These \"shifted\" Gaussian kernels can be\n// used if you want to blur-and-upscale an image in a single pass, e.g. if you\n// are adding a low-res raytraced reflection buffer to your high-res\n// rasterized scene. It is also needed for the fake ambient occlusion (AO)\n// term as used in this shader.\n//\n// The Gaussian weights for a blur kernel can be calculated, either by\n// numerical integration, or by directly calculating the value of the Gauss\n// error funtion, as shown below.\n//\n// In this shader I calculate a fake ambient occlusion (AO) term for each\n// sample point. The AO-term is based on the weighted average of fake AO-terms\n// for all cells in a 7x7 grid around the sample point, corresponding with a\n// 7x7 Gaussian kernel with the sample point as its center. The AO-term for\n// a single cell in this weighted average is simply given by the difference in\n// height of the cell and that of the sample point.\n//\n\n#define AA 2.\n#define MAX_DIST 10000.\n\n//\n// Approximation of the Gauss error function (https://en.wikipedia.org/wiki/Error_function)\n// http://people.math.sfu.ca/~cbm/aands/page_299.htm\n//\nfloat erf(float x) {\n    const float p  =  .47047;\n    const float a1 =  .3480242;\n    const float a2 = -.0958798;  \n    const float a3 =  .7478556;\n\n    float t = 1. / (1. + p * x);\n    return 1. - t * (a1 + t * (a2 + t * a3)) * exp(-x*x);\n}\n    \nfloat gaussianWeight(int cell, float center, const float sigma) {\n    float x0 = float(cell) - center;\n    float x1 = abs(x0+1.);\n    x0 = abs(x0);\n    \n    float erfx0 = erf(x0 / sigma);\n    float erfx1 = erf(x1 / sigma);\n    \n    return x0 < 1. && x1 < 1. ? abs(erfx0 + erfx1) : abs(erfx0 - erfx1);\n}\n\nfloat gaussianWeight(ivec2 cell, vec2 center, const float sigma) {\n\tfloat ix = gaussianWeight(cell.x, center.x, sigma);\n\tfloat iy = gaussianWeight(cell.y, center.y, sigma);\n    \n    return ix * iy;\n}\n\n// Hash by Dave_Hoskins: https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p) {\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat curveXOffset(vec2 pos) {\n    return 15.*cos(pos.y*.1);;\n}\n\n// camera path\nvec3 curve(float time) {\n\tvec3 p = vec3(0., 3.5+.8*cos(.95*time), 8.5*sin(.1+.37*time)+12.*time);\n    p.x = curveXOffset(p.xz);\n    return p;\n}\n\nfloat map(vec2 pos) {\n    float x = pos.x - curveXOffset(pos);\n    return (2.*hash12(pos) + 5.) * (.3+min(3.,.002*(x*x)));\n}\n\nfloat fakeAO(vec3 p) {\n    const int gridOffset = 3;\n    float sum =0., accum = 0.;\n    \n    for (int x = -gridOffset; x <= gridOffset; x++) {\n        for (int y = -gridOffset; y <= gridOffset; y++) {\n            ivec2 s = ivec2(x,y) + ivec2(p.xz);\n            float weight = gaussianWeight(s, p.xz, 1.5);\n            \n            sum += max(map(vec2(s))-p.y, 0.) * weight;\n            accum += weight;\n        }\n    }\n    return sum / accum;\n}\n\n// trace cubes in grid\nvec3 trace( in vec3 ro, in vec3 rd, const int steps, inout vec3 normal ) {\n\tvec2 pos = floor(ro.xz);\n    vec3 rdi = 1./rd;\n    vec3 rda = abs(rdi);\n\tvec3 rds = sign(rd);\n\tvec2 dis = (pos - ro.xz + .5 + rds.xz*.5) * rdi.xz;\n\tvec3 roi = rdi*(ro-vec3(.5,0,.5));\n    \n\tvec2 mm = vec2(0.0);\n\tfor( int i=0; i<steps; i++ ) {        \n        vec3 n = roi - rdi * vec3(pos.x, 0, pos.y);\n        vec3 k = rda*vec3(.5, map(pos), .5);\n\n        vec3 t1 = -n - k;\n        vec3 t2 = -n + k;\n\n        float tN = max( max( t1.x, t1.y ), t1.z );\n        float tF = min( min( t2.x, t2.y ), t2.z );\n\n        if (tN < tF && tN >= 0.) {\n            normal = -rds*step(t1.yzx,t1.xyz)*step(t1.zxy,t1.xyz);\n            return vec3(tN, pos);\n        }\n        \n\t\tmm = step( dis.xy, dis.yx ); \n\t\tdis += mm*rda.xz;\n        pos += mm*rds.xz;\n\t}\n\n\treturn vec3(MAX_DIST);\n}\n\nvec3 render( in vec3 ro, in vec3 rd, bool full ) {\n    vec3 normal, col = vec3(0);\n\tfloat ref = 1.;\n    \n    for (int i=1; i>=0; i--) {\n        vec3 d = trace(ro, rd, i*64+64, normal);\n        if (d.x < MAX_DIST) { // cube hit\n            ro += d.x * rd;\n            \n            float fresnel = full ? pow(1.-max(0.,-dot(normal,rd)),5.) : 0.;\n            float mat = full ? hash12(d.zy) : 1.;\n            mat *= exp(-1.5*fakeAO(ro)) * ref * (1.-fresnel) \n                * (.8 + .2 * dot(normal, vec3(-.25916,.8639,-.4319)));\n\t       \tcol += mat;\n            \n            ref *= fresnel;\n            rd = reflect(rd, normal);\n        } else { // background \n            col +=vec3(.5,.8,1) * (ref*(5.-2.5*rd.y));\n            return col;\n        }\n        if (ref <= .001) return col;\n    }    \n    return col;\n}\n\nmat3 setLookAt( in vec3 ro, in vec3 ta, float cr ) {\n\tvec3  cw = normalize(ta-ro);\n\tvec3  cp = vec3(sin(cr), cos(cr), 0.);\n\tvec3  cu = normalize(cross(cw,cp));\n\tvec3  cv = normalize(cross(cu,cw));\n    return mat3(cu, cv, cw);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    float time = .2*iTime + 20.*iMouse.x/iResolution.x;    \n    vec2 p = (-iResolution.xy+2.*(fragCoord)) / iResolution.y;\n\tbool full = fract(.5*time + .015*(p.x + p.y)) < .5;\n    \n    vec3 ro = curve(time);\n    vec3 ta = curve(time+.1);\n    ta.y -= .3 + .1*sin(time);\n    float roll = .2*sin(.1*ro.z-1.6);\n\n    mat3 ca = setLookAt( ro, ta, roll );\n    \n    vec3 tot = vec3(0);    \n    for (float x=0.; x<AA; x+=1.) {     \n        for (float y=0.; y<AA; y+=1.) {\n            vec3 rd = normalize(ca * vec3(p + vec2(x,y)*(2./(AA*iResolution.y)), 2.));\n            vec3 col = render(ro, rd, full);\n            col = pow(col, vec3(.4545));\n            tot += min(col, vec3(1));\n        }\n\t}\n    tot /= (AA*AA);\n    \n    fragColor = vec4(tot, 1);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

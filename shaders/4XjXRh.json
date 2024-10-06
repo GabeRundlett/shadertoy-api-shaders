@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1710292131",
+            "description": "Realistic Oscilloscope in XY mode. See Buffer B for explanations. The mushroom is animation is quite bad.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4XjXRh",
+            "likes": 10,
+            "name": "XY Oscilloscope",
+            "published": 3,
+            "tags": [
+                "oscilloscope",
+                "music",
+                "vector",
+                "xy"
+            ],
+            "usePreview": 0,
+            "username": "jcarrano",
+            "viewed": 237
+        },
+        "renderpass": [
+            {
+                "code": "\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 L = texelFetch(iChannel0, ivec2(fragCoord), 0).xy;\n    \n    fragColor = vec4(sqrt(L.x*0.2),sqrt(L.x*2.0 + L.y*0.4),sqrt(L.x),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define M_PI_2 6.283185307\n\nfloat cen(float x)\n{\n    return x*2.0 - 1.0;\n}\n\nfloat sawtooth( float x )\n{\n    return fract(x);\n}\n\nfloat square(float x, float dc)\n{\n    return step(dc, sawtooth(x));\n}\n\nbool squareB(float x, float dc)\n{\n    return dc > sawtooth(x);\n}\n\nfloat c(float x)\n{\n    return cos(x*M_PI_2);\n}\n\nfloat s(float x)\n{\n    return sin(x*M_PI_2);\n}\n\nvec2 mushroom(float t)\n{\n    float x = 0.1*c(t*60.05)*\n        (squareB(t, 0.5)? 1.0 : 2.0*(c(t)-1.1));\n    float y = 0.1*s(t*60.05)\n        + 1.5*cen(sawtooth(t));\n            \n    return 0.15*vec2( x, y );\n}\n\nvec2 wobbulate(float tx, float ty, vec2 x)\n{\n    vec2 wobble = vec2(s(tx),s(ty));\n    \n    return x*(1.0+0.2*wobble) + 0.01*wobble;\n}\n\nvec2 multi(float t, float dfreq, vec2 x)\n{\n    return x + vec2((c(t*dfreq/2.0) - 1.0 + 2.0*square(t*dfreq/2.0, 0.5))*0.05, 0.0);\n}\n\nfloat soundresolution()\n{\n    float maxResolution = MAXRES/FRAME_RATE;\n    return min(iResolution.x, maxResolution);\n}\n\nvec2 signal(float t)\n{\n    return wobbulate(t/4.0, t/4.0, multi(t, 33.0, mushroom(t*33.0)));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float t0 = (float(iFrame%LOOP_FRAMES) + fragCoord.x/soundresolution())* FRAME_TIME;\n    float t1 = (float(iFrame%LOOP_FRAMES) + (fragCoord.x+1.0)/soundresolution())* FRAME_TIME;\n\n    vec2 v0 = signal(t0);\n    vec2 v1 = signal(t1);\n    vec2 dvdt = v1 - v0;\n\n    fragColor = vec4(v0,dvdt);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Integration of beam intensity (to draw line instead of points)\n//\n// Assume that the beam generates a spot with shape i(d) where\n// d is the distance from the cente of the spot.\n// The beam is a curve s(t) = [sx(t), sy(t)]. The beam speed is\n// ||s'(t)||.\n// The total intensity at a point p is the integral:\n//  I(p) = integrate from t=t0 to t1  I(||s(t) - p ||)//||s'(t)||\n// Let's take a single line segment s0..s1 as our s(t):\n// s(t) = s0 + st * t  where st = s1-s0\n// s'(t) = ||st||\n// ut is the tangent unit vector st/||st|| and un the normal vector\n// Then p can projected into the ut,un base with components pt, pn\n// p = m0 + dot(p - m0, ut)*ut + dot(p - m0, nt)*nt.\n// p = m0 + pt * ut + pn * un\n// || s(t) - p || = sqrt((pt - t*||st||)^2, pn^2))\n// Let's take i(d) = a/(a + d^2) (a is the decay factor)\n// I(p) = integrate t=0 to a/(a + pn^2 + (pt - t *||st||)^2) / ||st||\n// According to wolfram alpha, the indefinite integral is:\n// - a * atan((S - L^2*t)/z)/Lz\n// where L=||st||, S=dot(p - m0, ut), N=dot(p - m0, nt), z = sqrt(a * L^2 + N^2)\n// it is expressed that way to neutralize the error when ||st||=0\n\n#define sqA 0.0008\n\nfloat soundresolution()\n{\n    float maxResolution = MAXRES/FRAME_RATE;\n    return min(iResolution.x, maxResolution);\n}\n\nfloat partSamples()\n{\n    return soundresolution() / float(SPLIT_WORK*SPLIT_WORK);\n}\n\n// We split the \"electrons\" into a low-intensity and a high intensity\n// bin so we can make the phosphor react differently.\n\nvec2 partImage(vec2 uv, int i0)\n{\n    vec2 I = vec2(0.0);\n    float vel_factor = soundresolution()/8.0;\n\n    int imax = int(partSamples())-1;\n    for (int ix = 0; ix < imax; ix++)\n    {\n        int i = i0 + ix;\n        //vec2 beam_pos1 = texelFetch(iChannel0, ivec2(i, 0), 0).xy;\n        //vec2 beam_pos2 = texelFetch(iChannel0, ivec2(i+1, 0), 0).xy;\n        //vec2 velocity = beam_pos2 - beam_pos1;\n        vec4 x = texelFetch(iChannel0, ivec2(i, 0), 0);\n        vec2 beam_pos1 = x.xy;\n        vec2 velocity = x.zw;\n        \n        vec2 velocityNormal = vec2(-velocity.y, velocity.x);\n        vec2 pRel = uv-beam_pos1;\n        float S = dot(pRel, velocity);\n        float N = dot(pRel, velocityNormal);\n        \n        float L = length(velocity);\n        float z = sqrt(sqA*sqA*L*L + N*N);\n        float intensity = (sqA*sqA/(vel_factor*L*z))*(atan(S/z) - atan((S - L*L)/z));\n        \n        I.x += (intensity > ICUTOFF)? intensity : 0.0;\n        I.y += (intensity < ICUTOFF)? intensity : 0.0;\n        \n    }\n\n    return I ;\n}\n\n// Making it run fast\n//\n// The simplest implementation processes all audio samples for each fragment and\n// struggles to render in fullscreen.\n// We split the work by splitting the audio in segments and the screen in an equal\n// number of tiles. Each tile renders a part of the audio and the shader in buffer\n// C combines the results.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 iResSplit = iResolution.xy/float(SPLIT_WORK);\n    ivec2 workIdx2 = ivec2(trunc(fragCoord/iResSplit));\n    int workidx = workIdx2.x + SPLIT_WORK*workIdx2.y;\n    \n    vec2 uv0 = fract(fragCoord/iResSplit)*0.5 - 0.25;\n\n    fragColor.xy = partImage(uv0, workidx*int(partSamples()));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define MAXRES 20000.0\n\n#define FRAME_RATE 60.0\n#define FRAME_TIME (1.0/FRAME_RATE)\n\n#define LOOP_FRAMES (int(FRAME_RATE)*4)\n\n#define SPLIT_WORK 2\n\n#define ICUTOFF 0.1\n#define ALPHA_HI 0.85\n#define ALPHA_LO 0.45",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy/iResolution.xy;\n\n    vec2 I = vec2(0.0);\n    for (int ix = 0; ix < SPLIT_WORK; ix++) {\n        for (int iy = 0; iy < SPLIT_WORK; iy++) {\n            vec2 offset = vec2(ix, iy)/float(SPLIT_WORK);\n            I += texture(iChannel0, offset + uv/float(SPLIT_WORK)).xy;\n        }\n    }\n    \n    vec2 prevI = texelFetch(iChannel1, ivec2(fragCoord), 0).xy;\n    \n    fragColor.xy = prevI*vec2(ALPHA_HI, ALPHA_LO) + I*vec2(1.0-ALPHA_HI, 1.0-ALPHA_LO) + vec2(prevI.y*0.1, 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

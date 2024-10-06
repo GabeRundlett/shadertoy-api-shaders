@@ -1,0 +1,271 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1679331677",
+            "description": "Stylizing an image via a 1d blur along the direction perpendicular to its gradient.\nDifferent styles can be achieved depending on how the direction itself is filtered beforehand.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "msdXRn",
+            "likes": 7,
+            "name": "Image Stylization via Line Blur",
+            "published": 3,
+            "tags": [
+                "filtering",
+                "toon",
+                "stylization"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 251
+        },
+        "renderpass": [
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n// by https://twitter.com/Mirko_Salm\n\n/*\n    Stylizing an image via a 1d blur along the direction perpendicular to its gradient.\n    Different styles can be achieved depending on how the direction itself is filtered beforehand:\n\n    - left:  2x flip-agnostic blur\n    - right: 1x standard blur + 1x flip-agnostic blur\n    - bottom/top: original texture                    \n    \n    Buffer A: compute line blur directions\n    Buffer B: blur the directions (1st pass)\n    Buffer C: blur the directions (2nd pass)\n    Buffer D: apply line blur\n    Image:    sharpen\n    \n    The first step is to compute the gradient of the image and rotate it by 90°. \n    The resulting vector field serves as our per-pixel blur direction.\n    Next we want to increase the spatial coherency of the blur directions.\n    Otherwise the line blur result tends to end up looking somewhat uninspiring.\n    \n    The rigorous approach to do this is by turning the gradients into structure tensors, blurring those, \n    extracting the eigenvectors pointing in the directions of smallest change, and using those as the blur directions.\n    What this effectively does is that it finds a single direction that best represents the whole set of directions\n    under the assumption that any of the directions can be flipped without changing its meaning, i.e.: dir == -dir.\n    This assumption is desirable for our use case since we perform the line blur uni-directionally, \n    i.e. symmetrically backwards and forwards.\n    \n    However, there is a much simpler approach that gives similar results.\n    The trick is to directly blur the directions but in a manner that considers the flip assumption.\n    We can do this by negating a given direction before adding it to the intermediate blur result \n    if doing so reduces the angle between said direction and the intermediate blur result:\n    \n    vec2 GetBlurredDir(vec2 uv, float rad, bool isBlurFlipAgnostic)\n    {\n        vec2 d = vec2(0.0);\n\n        for(float y = -rad; y <= rad; ++y)\n        for(float x = -rad; x <= rad; ++x)\n        {\n            vec2 d0 = ReadDir(uv + vec2(x, y));\n\n            if(isBlurFlipAgnostic)\n            if(dot(d, d0) < 0.0) d0 = -d0;// the magic\n\n            d += d0;\n        }\n\n        d *= 1.0 / pow(rad * 2.0 + 1.0, 2.0);\n        \n        return d;\n    }\n\n    The main advantages of this approach over the structure tensor approach are numeric stability and performance.\n    The filtering result of the flip-agnostic blur is not independent of the accumulation order, though.\n    But from what I can tell the differences resulting from changing the order are usually not that big.\n    \n    The left half of the image shows the result we get after applying two passes of a flip-agnostic blur to the directions.\n    On the right-hand side, only the second pass is flip-agnostic. As a result it removes some of the finer details.\n    \n    Pressing Tab switches to direction blur mode B:\n    now the left side of the image shows the line blur result one gets without applying any filtering to the blur directions beforehand.\n    The right side shows the result one gets by simply blurring the directions without applying direction flips in any of the two passes.\n    \n\n    Controls:\n    \n        Tab: toggle direction blur mode A/B (left circular indicator)\n\n                - mode A (default):\n                    - left:  2x flip-agnostic blur\n                    - right: 1x standard blur + 1x flip-agnostic blur\n\n                - mode B:\n                    - left:  no direction blur\n                    - right: 2x standard blur\n\n        Space: toggle line blur style quality/cheap (right circular indicator)\n\n                - quality (default): blur via line integral\n                - cheap: blur along straight line\n\n        Enter: hold to overlay unfiltered texture\n\n        Mouse.x: change line blur width (square shaped indicators)\n*/\n\n\n/*\n    sharpen\n*/\n\nfloat ReadKey(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 0), 0).x;}\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 2), 0).x;}\n\nvec4 ReadCol(vec2 uv)\n{\n    return textureLod(iChannel0, uv / iResolution.xy, 0.0);\n}\n\nvoid mainImage( out vec4 outCol, in vec2 uv )\n{\n    uv = floor(uv) + 0.5;\n\n    vec3 col = vec3(0.0);\n        \n    col = ReadCol(uv).rgb;\n\n    //////////////////////////////////////////////////////////////////////////////////////\n    // sharpen by boosting high frequencies ------------------------------------------- //\n\n    // low pass\n    vec3 lp = vec3(0.0);\n    for(float x = -1.0; x <= 1.0; ++x)\n    for(float y = -1.0; y <= 1.0; ++y)\n    {\n       #if 1\n        // full 3x3 neighborhood\n        vec2 w2 = 0.5 - 0.25 * abs(vec2(x, y));\n        float w = w2.x * w2.y;\n       #else\n        // only center sample + 4 direct neighbors\n        if(abs(x) == 1.0 && abs(y) == 1.0) continue;\n        float w = 0.5 - 0.375 * max(abs(x), abs(y));\n       #endif\n        \n        vec3 c0 = ReadCol(uv + vec2(x, y)).rgb;\n        \n        lp += c0 * w;\n    }\n\n    // high pass\n    vec3 hp = col - lp;\n\n#if 1\n    // sharpen selectively (boost hp only if abs(hp) is below soft threshold)\n    float sharpenAmount = 4.0;\n    float sharpenRcpRange = 128.0;\n    col = lp + hp * (1.0 + sharpenAmount * exp2(-abs(hp) * sharpenRcpRange));\n#else\n    // sharpen uniformly\n    float sharpenAmount = 2.0;\n    col = lp + hp * (1.0 + sharpenAmount);\n#endif\n\n    // -------------------------------------------------------------------------------- //\n    //////////////////////////////////////////////////////////////////////////////////////\n\n    // overlay unfiltered texture\n    if(ReadKey(KEY_ENTER) != 0.0)\n    {\n        col = pow(ReadTexture(iChannel2, uv - iResolution.xy * 0.5).rgb, vec3(1.0/2.2));\n    }\n    \n    // vertical black line\n    if(abs(uv.x - iResolution.x * 0.5) < 2.0) col *= 0.0;\n\n    // show unfiltered texture at bottom and top\n    if(abs(uv.y / iResolution.y - 0.5) > 0.4)\n    {\n        col = pow(ReadTexture(iChannel2, uv - iResolution.xy * 0.5).rgb, vec3(1.0/2.2));\n    }\n\n    // horizontal black lines\n    if(abs(abs(uv.y - iResolution.y * 0.5) - iResolution.y * 0.4) < 2.0) col *= 0.0;\n\n    // square shaped indicators line blur width indicator\n    {\n        vec2 uv2 = (uv - vec2(52.0, 8.0)) / 16.0;\n        \n        vec2 uvI = floor(uv2);\n        vec2 uvF = uv2 - uvI;\n        \n        float width = 8.0;\n\n        if(iMouse.x > 0.0 || iMouse.y > 0.0)\n        width = floor((iMouse.x / iResolution.x) * 16.0);\n        \n        if(uvI.x >= 0.0 && uvI.x < width && uvI.y == 0.0)\n        {\n            vec2 foo = abs(uvF - 0.5);\n            float moo = max(foo.x, foo.y);\n\n            if(moo < 0.25) col *= 0.0;\n        }\n    }\n\n    // circular toggle indicators\n    uv -= 16.0;    \n    float l = length(uv);\n    col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), ReadKeyToggle(KEY_TAB) == 0.0 ? clamp01(l - 4.0) : 1.0);\n    uv.x -= 24.0;\n    l = length(uv);\n    col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), ReadKeyToggle(KEY_SPACE) == 0.0 ? clamp01(l - 4.0) : 1.0);\n    \n    \n    //outCol = vec4(pow(col, vec3(1.0/2.2)), 1.0);\n    outCol = vec4(col, 1.0);\n}\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n\nvec4 ReadTexture(sampler2D channel, vec2 uv)\n{\n    //uv += vec2(sin(iTime * 0.5), sin(iTime * 0.4 + 0.)) * 8.0;\n\n    vec4 col = textureLod(channel, uv / 512.0, 0.0);\n\n    col.rgb = pow(col.rgb, vec3(2.2));\n    \n    return col;\n}\n\n#define rsqrt inversesqrt\n#define clamp01(x) clamp(x, 0.0, 1.0)\n\n/* http://keycode.info/ */\n#define KEY_LEFT  37\n#define KEY_UP    38\n#define KEY_RIGHT 39\n#define KEY_DOWN  40\n\n#define KEY_TAB 9\n#define KEY_CTRL 17\n#define KEY_SHIFT 16\n#define KEY_SPACE 32\n#define KEY_ENTER 13\n#define KEY_A 0x41\n#define KEY_D 0x44\n#define KEY_S 0x53\n#define KEY_W 0x57\n\n#define KEY_N0 48\n#define KEY_N1 49\n#define KEY_N2 50\n#define KEY_N3 51\n#define KEY_N4 52\n#define KEY_N5 53\n#define KEY_N6 54\n#define KEY_N7 55\n#define KEY_N8 56\n#define KEY_N9 57\n\n\nconst float Pi = 3.14159265359;\nconst float Pi2 = Pi * 2.0;\nconst float Pi05 = Pi * 0.5;\n\nconst float RcpPi  = 1.0 / (1.0 * Pi);\nconst float RcpPi2 = 1.0 / (2.0 * Pi);\nconst float RcpPi4 = 1.0 / (4.0 * Pi);\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\nfloat Pow5(float x) {return Pow4(x)*x;}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n\n/*\n    compute directions\n*/\n\nfloat ReadLum(vec2 uv)\n{\n    vec3 col = ReadTexture(iChannel0, uv - iResolution.xy * 0.5).rgb;\n    \n    float lum = dot(col, vec3(0.21, 0.71, 0.08));\n    \n    return sqrt(lum);// using OkLab.L here might be better but sqrt(lum) is usually good enough\n}\n\n\nvec2 Gradient(vec2 uv)\n{\n    float l00 = ReadLum(uv + vec2(-1.0, -1.0));\n    float l10 = ReadLum(uv + vec2( 0.0, -1.0));\n    float l20 = ReadLum(uv + vec2( 1.0, -1.0));\n    \n    float l01 = ReadLum(uv + vec2(-1.0,  0.0));\n    float l11 = ReadLum(uv + vec2( 0.0,  0.0));\n    float l21 = ReadLum(uv + vec2( 1.0,  0.0));\n    \n    float l02 = ReadLum(uv + vec2(-1.0,  1.0));\n    float l12 = ReadLum(uv + vec2( 0.0,  1.0));\n    float l22 = ReadLum(uv + vec2( 1.0,  1.0));\n    \n    // Sobel kernel:\n    vec2 g = vec2(((l20 + l22) * 0.5 + l21) - ((l00 + l02) * 0.5 + l01), \n                  ((l02 + l22) * 0.5 + l12) - ((l00 + l20) * 0.5 + l10)) * 0.25;\n   \n    return g;\n}\n\n\nvoid mainImage( out vec4 outCol, in vec2 uv )\n{\n    vec2 g = Gradient(uv);\n    \n    vec2 dir = vec2(-g.y, g.x);\n    \n    outCol = vec4(dir, 0.0, 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n\n/*\n    blur directions (1st pass)\n*/\n\nfloat ReadKey(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 0), 0).x;}\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 2), 0).x;}\n\n\nvec2 ReadDir(vec2 uv)\n{\n    return textureLod(iChannel0, uv / iResolution.xy, 0.0).xy;\n}\n\nvoid mainImage( out vec4 outCol, in vec2 uv )\n{\n    bool isLeft = uv.x < iResolution.x * 0.5;\n    bool isModeA = ReadKeyToggle(KEY_TAB) == 0.0;\n    \n    if(isLeft && !isModeA)\n    {\n        // do not filter left side in blur mode B\n        outCol = vec4(ReadDir(uv), 0.0, 0.0);\n        \n        return;\n    }\n\n    bool isBlurFlipAgnostic = isLeft;\n\n    vec2 d = vec2(0.0);\n    \n    float rad = 2.0;\n    for(float y = -rad; y <= rad; ++y)\n    for(float x = -rad; x <= rad; ++x)\n    {\n        vec2 d0 = ReadDir(uv + vec2(x, y));\n        \n        if(isBlurFlipAgnostic)\n        if(dot(d, d0) < 0.0) d0 = -d0;\n        \n        d += d0;\n    }\n    \n    outCol = vec4(d, 0.0, 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n\n/*\n    blur directions (2nd pass)\n*/\n\nfloat ReadKey(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 0), 0).x;}\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 2), 0).x;}\n\n\nvec2 ReadDir(vec2 uv)\n{\n    return textureLod(iChannel0, uv / iResolution.xy, 0.0).xy;\n}\n\nvoid mainImage( out vec4 outCol, in vec2 uv )\n{\n    bool isLeft = uv.x < iResolution.x * 0.5;\n    bool isModeA = ReadKeyToggle(KEY_TAB) == 0.0;\n    \n    if(isLeft && !isModeA)\n    {\n        // do not filter left side in blur mode B\n        outCol = vec4(ReadDir(uv), 0.0, 0.0);\n        \n        return;\n    }\n\n    bool isBlurFlipAgnostic = isModeA;\n\n    vec2 d = vec2(0.0);\n    \n    float rad = 2.0;\n    for(float y = -rad; y <= rad; ++y)\n    for(float x = -rad; x <= rad; ++x)\n    {\n        vec2 d0 = ReadDir(uv + vec2(x, y));\n        \n        if(isBlurFlipAgnostic)\n        if(dot(d, d0) < 0.0) d0 = -d0;\n        \n        d += d0;\n    }\n    \n    outCol = vec4(d, 0.0, 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// License: CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n\n/*\n    line blur\n*/\n\nfloat ReadKey(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 0), 0).x;}\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel2, ivec2(keyCode, 2), 0).x;}\n\n\nvec4 ReadCol(vec2 uv)\n{\n    return ReadTexture(iChannel1, uv - iResolution.xy * 0.5);\n}\n\nvec2 ReadDir(vec2 uv)\n{\n    return textureLod(iChannel0, uv / iResolution.xy, 0.0).xy;\n}\n\n// blur along straight line\nvec3 LineBlurSimple(vec2 uv, float width)\n{\n    vec3 col = vec3(0.0);\n    vec2 dir = normalize(vec3(ReadDir(uv), exp2(-30.0))).xy;\n\n    uv -= dir * width;\n    \n    float count = width * 2.0 + 1.0;\n    \n    for(float i = 0.0; i < count; ++i)\n    {\n        vec4 c = ReadCol(uv + dir * i);\n\n        col += c.rgb;        \n    }\n    \n    col /= count;\n    \n    return col;\n}\n\n// flip-agnostic trilinear direction sampling (not really worth it if blur width is small)\nvec2 ReadDir2(vec2 uv)\n{\n    // return ReadDir(uv);\n\n    uv -= 0.5;\n\n    vec2 uvf = fract(uv);\n    vec2 uvi = floor(uv);\n    \n    vec2 d = vec2(0.0);\n    for(float x = 0.0; x < 2.0; ++x)\n    for(float y = 0.0; y < 2.0; ++y)\n    {\n        vec2 w2 = 1.0 - abs(vec2(x, y) - uvf);\n        \n        vec2 d0 = ReadDir(uvi + vec2(x, y) + 0.5);\n        \n        if(dot(d, d0) < 0.0) d0 = -d0;\n        \n        d += d0 * (w2.x * w2.y);\n    }\n    \n    return d;\n}\n\n// blur via line integral\nvec3 LineBlur(vec2 uv0, float width)\n{\n    vec3 col = ReadCol(uv0).rgb;\n    vec2 dir0 = ReadDir2(uv0);\n    \n    // backwards / forwards\n    for(float s = -1.0; s <= 1.0; s += 2.0)\n    {\n        vec2 uv = uv0;\n        vec2 dir = dir0;\n        vec2 dir_last = vec2(0.0);\n        \n        for(float i = 1.0; i <= width; ++i)\n        {\n            dir = normalize(vec3(dir, exp2(-30.0))).xy;\n         \n            if(dot(dir, dir_last) < 0.0) dir = -dir;\n         \n            uv += dir * s;\n            \n            vec4 c = ReadCol(uv);\n\n            col += c.rgb;\n\n            dir_last = dir;\n\n            dir = ReadDir2(uv);            \n        }\n    }\n    \n    col /= width * 2.0 + 1.0;\n    \n    return col;\n}\n\n\nvoid mainImage( out vec4 outCol, in vec2 uv )\n{\n    uv = floor(uv) + 0.5;\n\n    vec3 col = vec3(0.0);\n    \n    float width = 8.0;\n    \n    if(iMouse.x > 0.0 || iMouse.y > 0.0)\n    width = floor((iMouse.x / iResolution.x) * 16.0);\n    \n    if(ReadKeyToggle(KEY_SPACE) == 0.0)\n    {\n        // blur via line integral\n        col = LineBlur(uv, width);\n    }\n    else\n    {\n        // blur along straight line\n        col = LineBlurSimple(uv, width);\n    }\n\n    outCol = vec4(pow(col, vec3(1.0/2.2)), 1.0);\n    //outCol = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

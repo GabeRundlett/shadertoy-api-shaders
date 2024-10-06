@@ -1,0 +1,81 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1578835043",
+            "description": "First attempt at GPU path tracing. Super happy with the results! ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3tKGW1",
+            "likes": 10,
+            "name": "Cornell Box ",
+            "published": 3,
+            "tags": [
+                "pathtracing",
+                "cornell",
+                "indirect"
+            ],
+            "usePreview": 0,
+            "username": "angelo12",
+            "viewed": 692
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\tShader Sundays! (2/52) \n\t\"Cornell Box\"\n\t\n\tThis week I was\tinspired by watching Luna break down Brutal Knowledge (https://www.shadertoy.com/view/3dyXzD)\n\tin this stream( https://www.youtube.com/watch?v=xAVLCoDc7qo&feature=youtu.be ). Honestly could not be happier\n\twith the results. GPU path tracing turned out to be much simpler than I expected and it looks great! \n\tI got to reuse most of my raymarching knowledge from other SDF experiments so that really simplified things.\n\tThe only real \"new\" stuff is the GI_BOUNCES loop in the render function.  \n\t\n\tFor the future I want to dig into how the rayOnHemisphere function works and see if I can get some blue noise\n\tin here :D. \n\t\n\tOther sources and references from IQ:\n\thttps://www.shadertoy.com/view/3dyXzD //Basic Montecarlo \n\thttps://www.shadertoy.com/view/Xds3zN //SDF Primitives\n*/\n\n#define INV_GAMMA 0.454545\n\nvoid\nmainImage(out vec4 fragColor, in vec2 fragPos)\n{\n    //Camera setup\n    vec2 uv = fragPos / iResolution.xy;\n    vec3 col = vec3(0.0);\n\n    //Time averaging previous frames\n    if(iFrame > 0)\n    {\n        col = texture(iChannel0, uv).xyz;\n        col /= float(iFrame);\n    }\n\n    //Postprocessing\n    col *= 2.0;                                     // Exposure\n    col = pow(col, vec3(INV_GAMMA));                // Gamma correction\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec2 \nrotate(vec2 a, float b)\n{\n    float c = cos(b);\n    float s = sin(b);\n    return vec2(\n        a.x * c - a.y * s,\n        a.x * s + a.y * c\n    );\n}\n\nvec2 \nuop(vec2 a, vec2 b)\n{\n    return (a.x < b.x) ? a : b;\n}\n\nfloat\nsdSphere(vec3 p, float r)\n{\n    return length(p) - r;\n}\n\nfloat \nsdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat \nhash(float seed)\n{\n    return fract(sin(seed)*43758.5453 );\n}\n\nmat3\nSetCamera(vec3 eye, vec3 tar, float roll)\n{\n    vec3 f, r, u;\n    f = normalize(tar - eye);\n    vec3 upRoll = normalize(vec3(sin(roll), cos(roll), 0.0));\n    r = normalize(cross(upRoll, f));\n    u = normalize(cross(f, r));\n\n    return mat3(r, u, f);\n}\n\n#define UOP(DIST, ID) res = uop(res, vec2(DIST, ID)); \n\n#define WALL_ID 0.0\n#define LEFT_WALL_ID 1.0\n#define RIGHT_WALL_ID 2.0\n#define SPHERE_ID 3.0\n#define BOX_ID 4.0\n#define LIGHT_ID 5.0\n#define EPS 0.01\n\nvec2\nMap(vec3 p)\n{\n    vec2 res = vec2(1e10, -1.0);\n\n    //Interior\n    UOP(sdSphere(p - vec3(0.2, 0.0, -0.5), 0.1), SPHERE_ID);\n    vec3 q = p;\n    q.xz = rotate(q.xz, -0.4);\n    UOP(sdBox(q - vec3(-0.2, 0.0, -0.2), vec3(0.1, 0.3, 0.1)), BOX_ID);\n\n    //Exterior box\n    UOP(sdBox(p - vec3(0.0, -0.1, 0.0), vec3(0.5, EPS, 1.0)), WALL_ID);\n    UOP(sdBox(p - vec3(-0.5, 0.2, 0.0), vec3(EPS, 0.5, 1.0)), LEFT_WALL_ID);\n    UOP(sdBox(p - vec3(0.5, 0.2, 0.0), vec3(EPS, 0.5, 1.0)), RIGHT_WALL_ID);\n    UOP(sdBox(p - vec3(0.0, 0.7, 0.0), vec3(0.5, EPS, 1.0)), LIGHT_ID);\n    UOP(sdBox(p - vec3(0.0, 0.0, 0.3), vec3(1.0, 1.0, EPS)), WALL_ID);\n    \n    return res;\n}\n\n#define MAX_DIST 20.0\n#define MAX_STEPS 200\n#define MIN_DIST 0.0001 \n\nvec2\nRayMarch(vec3 ro, vec3 rd)\n{\n    vec2 res = vec2(-1.0, -1.0);\n    float t = 0.00;\n    vec2 hit;\n\n    for(int i =0 ; i < MAX_STEPS && t < MAX_DIST; ++i)\n    {\n        hit = Map(ro + t *rd);\n        if(abs((hit.x)) < t * MIN_DIST)\n        {\n            res = vec2(t, hit.y);\n            break;\n        }\n\n        t += hit.x;\n    }\n    \n    return res;\n}\n\nvec3\nCalcNormal(vec3 p)\n{\n    vec2 e = vec2(0.0001, 0.0);\n    return normalize(vec3(Map(p + e.xyy).x - Map(p - e.xyy).x,\n                          Map(p + e.yxy).x - Map(p - e.yxy).x,\n                          Map(p + e.yyx).x - Map(p - e.yyx).x\n    ));\n}\n\nvec3\nrayOnHemisphere(float seed, vec3 nor)\n{\n    float u = hash( 78.233 + seed);\n    float v = hash( 10.873 + seed);\n\n    float a = 6.2831853 * v;\n    u = 2.0*u - 1.0;\n    return normalize( nor + vec3(sqrt(1.0-u*u) * vec2(cos(a), sin(a)), u) );   \n}\n\nvec4\nGetMaterial(float id)\n{\n    vec4 col = vec4(vec3(1.0), 00.0);\n\n    if(id == RIGHT_WALL_ID)  col  = vec4(1.0, 0.0, 1.0, 00.0);\n    if(id == LEFT_WALL_ID)   col  = vec4(0.0, 1.0, 1.0, 00.0);\n    if(id == LIGHT_ID)       col  = vec4(vec3(1.0), 0.6);\n    if(id ==  SPHERE_ID)     col  = vec4(vec3(1.0), 0.0);\n\n    return col;\n}\n\n#define GI_BOUNCES 6\nvec3\nRender(vec3 ro, vec3 rd, float randfloat)\n{\n    vec3 tot = vec3(0.0);\n\n    vec3 rayColor = vec3(1.0);\n\n    //GI bounces\n    for(int bounce = 0; bounce < GI_BOUNCES; ++bounce)\n    {\n        //Ray traversal\n        vec2 res = RayMarch(ro, rd);\n        float t = res.x;\n        float id = res.y;\n\n        //Geometry \n        vec3 P = ro + t * rd;\n        vec3 N = CalcNormal(P);\n\n        //Material\n        vec4 material = GetMaterial(id);\n        float emissivity = material.w; \n\n        //Lighting\n        vec3 iLight = vec3(0.0);\n        rayColor *= material.xyz;\n        vec3 indirectLight = rayColor * emissivity;\n\n        //Shading\n        iLight += 1.00 * indirectLight;\n        tot += iLight  * rayColor;\n\n        //Next Bounce Ray Setup\n        rd = rayOnHemisphere(76.2 + 73.1*float(bounce) + randfloat + 17.7*float(iFrame), N);\n        ro  = P;\n    }\n\n    return tot;\n}\n\nvoid\nmainImage(out vec4 fragColor, in vec2 fragPos)\n{\n    //RNG \n    float seed = hash(dot(fragPos, vec2(12.9898, 78.233)) + 1131.1*float(iFrame));\n\n    //Supersample antialiasing thru random jittering  \n    vec2 offset = - 0.5  + vec2(hash(seed + 13.271), hash( seed + 63.216));\n    vec2 uv = ((fragPos + offset) - 0.5*iResolution.xy) / iResolution.y;\n\n    //Ray setup\n    float roll = 0.0;\n    float nearP = 0.75;\n    vec3 ta = vec3(0.0, 0.18, 0.0);\n    vec3 ro = ta + vec3(0.0, 0.0, -1.0);\n    mat3 cam = SetCamera(ro, ta, roll);\n    vec3 rd = cam * normalize(vec3(uv, nearP));\n\n    //Color setup\n    vec2 screen = fragPos / iResolution.xy;\n    vec3 col = texture(iChannel0, screen).xyz;\n\n    //First frame init to zero \n    if (iFrame == 0) col = vec3(0.0);\n\n    //Trace path of single ray across multiple bounces\n    col += Render(ro, rd, seed);\n\n    fragColor = vec4(col,  1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

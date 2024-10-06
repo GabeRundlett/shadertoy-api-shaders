@@ -1,0 +1,155 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1498670124",
+            "description": "Generates Poisson-disc field via Fourier.  Ring DSP + contrast renormalization.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4dXBDl",
+            "likes": 9,
+            "name": "Spectral Poisson-disc",
+            "published": 3,
+            "tags": [
+                "fft",
+                "poisson",
+                "sampling",
+                "fourier",
+                "bluenoise",
+                "dft",
+                "poissondisc"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 1425
+        },
+        "renderpass": [
+            {
+                "code": "// example application of https://www.shadertoy.com/view/4dGGz1\n\n// set you module and phase in Buf A\n\n#define SIZE (2.*floor(iResolution.x/4.)) // 256. //Size must be changed in each tab.\n\n\nvoid mainImage( out vec4 O,  vec2 U )\n{    \n    vec2 R = iResolution.xy;\n    U = fract(mod(U,SIZE)/R);\n    float t = .32*iTime, tt = mod(.2*t+1.,2.);tt=min(tt,2.-tt);\n        \n    O =  vec4 ( texture(iChannel2, U).x -.5 );   // display real signal\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// do your operation in spectral domain here\n\n#define SIZE (2.*floor(iResolution.x/4.)) // 256. //Size must be changed in each tab.\n\n\nfloat rand(vec2 uv) { return fract(1e5*sin(dot(uv,vec2(17.4,123.7)))); }     // point -> rnd [0,1[\n#define srnd(x) (2.*rand(x)-1.)\nfloat gauss(float x) { return exp(-.5*x*x); }\n#define ang(a)  vec2(cos(a), sin(a))                         // used to set the complex exp(i.a)\nvec2 cmul (vec2 a,float b) { return mat2(a,-a.y,a.x) * vec2(cos(b),sin(b)); } // complex a*exp(i.b)\n\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy;\n    if ( U==vec2(.5)) {\n        if (iFrame==0) O.zw = vec2(0,0);\n        else           O.zw = texture(iChannel1, U/R).zw;  \n        return;\n    }\n    \n    U -= .5;  // freq 0 must exist\n    \n    U = 2.*U-SIZE;\n    vec2 X = U/SIZE, T,\n         M = 2.*iMouse.xy/R-1.;\n    float I=1.,a,f, t = .32*iTime, tt,\n        l = length(X), F, s = sign(-X.x); // s to help making a symmetric spectrum (phases included !)\n    \n    \n    // --- your custom Fourier-space function here ------------\n    \n#if 0 // 0:  scale shape at zoom    1: scale fourier at zoom\n    X *= SIZE/256.;  l *= SIZE/256., I *= SIZE/256.; \n#endif    \n    \n                                     // --- modulus profile here\n    //f=.25;  a=4.;\n    //f=.5;  a=2.;                     // 1/2 thinnest blue noise\n    //f=.95; a=1.;                     // thinnest blue noise\n    //tt = mod(.2*t,2.);tt=min(tt,2.-tt); f = mix(.5,.95,tt); a = mix(2.,1.,tt); // explore\n    tt = mod(.2*t+1.,2.);tt=min(tt,2.-tt);\n    tt = .5;\n    f = mix(.25,.95,tt); a = mix(4.,1.,tt); // explore\n    F = gauss(abs(l-f)/(.01*a*a))*4./a;\n\n                                     // --- phases here ( 0 for direct Fourier transform)\n  //T = ang(6.2832*rand(X*s)*s);\n    a = fract(t);    // phase shift with time (morph)\n    T = ang(6.2832*mix(srnd(X*s+floor(t)),\n                       srnd(X*s+ceil (t)),\n                       a)  *s / sqrt(a*a+(1.-a)*(1.-a))); // preserve variance along time\n    \n    \n    O = vec4(T*F,0,0)*sqrt(I); //  *SIZE;  \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// invFourier transform \n\n// Horizontal + Vertical Discrete Fourier Transform of the input \n// 2 passes pipelined : in -> buf.zw -> buf.xy -> out\n// ( adapted from  Flyguy's https://www.shadertoy.com/view/MscGWS# )\n\n\n#define SIZE (2.*floor(iResolution.x/4.)) // 256. //Size must be changed in each tab.\n\n\n//#define tex(ch,x,y) texture(ch, vec2(x,y)/iResolution.xy )\n#define tex(ch,x,y)  texelFetch(ch, ivec2(x,y), 0)\n\nvec2 cmul (vec2 a,float b) { return mat2(a,-a.y,a.x)*vec2(cos(b), sin(b)); } // complex a*exp(i.b)\n#define W(uv)   mod(uv+SIZE/2.,SIZE)                    // wrap [-1/2,1/2] to [0,1]\n\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    O-=O; \n    \n    if(U.x > SIZE || U.y > SIZE) return;\n\n    for(float n = 0.; n < 1000.; n++)  {\n        if (n>=SIZE) break;\n        float m = W(n);       // W to warp 0,0 to mid-window.\n        vec2 xn = tex(iChannel0, m+.5, U.y).xy,\n             yn = tex(iChannel1, U.x, m+.5).zw,\n             a =  6.2831853 *  W(U-.5) * n/SIZE;\n        \n        O.zw += cmul(xn, a.x);\n        O.xy += cmul(yn, a.y);\n    }\n    \n    O.zw /= SIZE;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// normalization of the contrast ( assuming 0 average )\n#define R 2\n\n#define T(i,j) texture(iChannel0, fract( ( U + vec2(i,j) ) / iResolution.xy ) ).xxxx\n\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    float t = 0., l; vec4 v;\n    O -= O;\n    \n    for (int j = -R; j <= R; j++)\n        for (int i = -R; i <= R; i++) {\n            l = length(vec2(i,j)) * 2./float(R);\n            t += l = exp(-.5*l*l);\n            v = T(i,j);   // should be T - Tmean.  here  Tmean=0\n            O += l* v*v; \n        }\n    \n    v = sqrt(O/t);        // std-dev, aka contrast\n    O = T(0,0) / v;       // Tmean assumed = 0\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

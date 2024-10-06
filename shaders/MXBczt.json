@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1727568497",
+            "description": "zoom",
+            "flags": 4,
+            "hasliked": 0,
+            "id": "MXBczt",
+            "likes": 0,
+            "name": "Sep272024v2[audio reactive]",
+            "published": 3,
+            "tags": [
+                "popart"
+            ],
+            "usePreview": 0,
+            "username": "brendanluu",
+            "viewed": 49
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_STEPS 60\n#define MAX_DIST 100.0\n#define SURF_DIST 0.01\n#define NUM_RECTANGLES 20\n#define PI 3.14159265359\n\n\nfloat getLowFreq() {\n    return texture(iChannel0, vec2(0.1, 0.0)).x;\n}\n\nfloat getMidFreq() {\n    return texture(iChannel0, vec2(0.5, 0.0)).x;\n}\n\nfloat getHighFreq() {\n    return texture(iChannel0, vec2(0.9, 0.0)).x;\n}\n\nfloat getAudioIntensity() {\n    return (getLowFreq() + getMidFreq() + getHighFreq()) / 3.0;\n}\n\nvec3 palette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nfloat hash(float n) {\n    return fract(sin(n) * 43758.5453);\n}\n\nfloat sdBox(vec3 p, vec3 b) {\n    vec3 q = abs(p) - b;\n    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);\n}\n\nfloat map(vec3 p, out int id) {\n    float tunnel = -length(p.xy) + 3.0 + sin(p.z * 0.2 + iTime) * 0.1;\n    \n    float audioIntensity = getAudioIntensity();\n    float boxWidth = 0.8 + audioIntensity * 0.2;\n    float boxHeight = 1.2 + audioIntensity * 0.3;\n    float boxDepth = 0.1 + getHighFreq() * 0.1;\n    float boxSpacing = 2.5 - audioIntensity * 0.5;\n    \n    float boxes = MAX_DIST;\n    id = -1;\n    \n    float zSection = floor(p.z / boxSpacing);\n    for (int i = 0; i < 8; i++) {\n        float zi = zSection + float(i);\n        float zOffset = mod(p.z - zi * boxSpacing, -10.0) - 2.0;\n        float xOffset = sin(zi * 0.1 + iTime * 0.5) * 1.5;\n        float yOffset = cos(zi * 0.1 + iTime * 0.5) * 1.5;\n        vec3 q = vec3(p.x - xOffset, p.y - yOffset, zOffset);\n        float box = sdBox(q, vec3(boxWidth, boxHeight, boxDepth));\n        if (box < boxes) {\n            boxes = box;\n            id = int(zi);\n        }\n    }\n    \n    return max(tunnel, -boxes);\n}\n\nfloat rayMarch(vec3 ro, vec3 rd, out int id) {\n    float dO = 0.0;\n    id = -10;\n    \n    for(int i = 0; i < MAX_STEPS; i++) {\n        vec3 p = ro + rd * dO;\n        int tempId;\n        float dS = map(p, tempId);\n        if (tempId != -1) id = tempId;\n        dO += dS;\n        if(dO > MAX_DIST || abs(dS) < SURF_DIST) break;\n    }\n    \n    return dO;\n}\n\nvec3 getNormal(vec3 p) {\n    int id;\n    vec2 e = vec2(0.01, 0);\n    return normalize(vec3(\n        map(p + e.xyy, id) - map(p - e.xyy, id),\n        map(p + e.yxy, id) - map(p - e.yxy, id),\n        map(p + e.yyx, id) - map(p - e.yyx, id)\n    ));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;\n    \n    // Adjust camera position and field of view\n    float fov = radians(180.0); // 180-degree field of view\n    vec3 ro = vec3(0, 0, iTime * 10.0 - 3.0); // Move camera back slightly\n    vec3 rd = normalize(vec3(sin(fov/2.0)*uv.x, sin(fov/2.0)*uv.y, -cos(fov/2.0)));\n    \n    // Rotate the ray direction to look forward\n    float cosTheta = cos(PI/2.0);\n    float sinTheta = sin(PI/2.0);\n    rd = vec3(rd.x, cosTheta * rd.y + sinTheta * rd.z, -sinTheta * rd.y + cosTheta * rd.z);\n    \n    int id;\n    float d = rayMarch(ro, rd, id);\n    vec3 p = ro + rd * d;\n    \n    vec3 n = getNormal(p);\n    \n    vec3 a = vec3(0.784,0.000,1.000);\n    vec3 b = vec3(1.000,1.000,1.000);\n    vec3 c = vec3(0.114,0.325,0.604);\n    vec3 d_color = vec3(0.000,0.482,1.000);\n    \n    float t = iTime * 0.1 + getAudioIntensity() * 0.5;\n    vec3 baseColor = palette(t + p.z * 0.05, a, b, c, d_color);\n    \n    if (id != -1) {\n        float rectT = t + float(id) * 0.1 + hash(float(id)) * 10.0;\n        baseColor = palette(rectT, a, b, c, d_color);\n    }\n    \n    vec3 l = normalize(vec3(0.0, 0.0, -1.0));\n    float dif = clamp(dot(n, l), 0., 1.);\n    float amb = 0.5 + 0.5 * n.y;\n    \n    float fresnel = pow(1.0 + dot(rd, n), 5.0);\n    \n    vec3 color = baseColor * (dif * 0.1 + amb * 0.1) + fresnel * vec3(0.2, 0.4, 0.6);\n    \n    color = mix(color, vec3(0.0), 1.0 - exp(-0.01 * d * d));\n    \n    color *= 10.3 + getAudioIntensity() * 0.5;\n    \n    // Add a circular mask\n    float radius = length(uv);\n    float circleMask = smoothstep(0.2, 1.0, radius);\n    color = mix(color, vec3(0.0), circleMask);\n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "mic",
+                        "id": 32,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/mic.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1483980521",
+            "description": "rainbow caused by glass-air interface, accounting for non-constant non-linear refractive index and perceived colors. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "llVSDz",
+            "likes": 36,
+            "name": "refraction (physical+perceptual)",
+            "published": 3,
+            "tags": [
+                "refraction",
+                "prism",
+                "rainbow",
+                "dispersion",
+                "wavelength",
+                "cie",
+                "xyzcolorspace"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 2214
+        },
+        "renderpass": [
+            {
+                "code": "// glass refraction: ref: http://www.koppglass.com/blog/optical-properties-of-glass-how-light-and-glass-interact/\n//                        https://en.wikipedia.org/wiki/Cauchy's_equation\n\n#define sqr(x) ( (x)*(x) )\n\n// perceived colors: from https://www.shadertoy.com/view/llKSDz\n//                   based on h3r2tic's https://www.shadertoy.com/view/4dVSDy\n\n\n// Spectrum to xyz approx function from Sloan\n// Inputs:  Wavelength in nanometers\nfloat xFit_1931( float wave )\n{\n    float t1 = (wave-442.0)*((wave<442.0)?0.0624:0.0374),\n          t2 = (wave-599.8)*((wave<599.8)?0.0264:0.0323),\n          t3 = (wave-501.1)*((wave<501.1)?0.0490:0.0382);\n    return 0.362*exp(-0.5*t1*t1) + 1.056*exp(-0.5*t2*t2)- 0.065*exp(-0.5*t3*t3);\n}\nfloat yFit_1931( float wave )\n{\n    float t1 = (wave-568.8)*((wave<568.8)?0.0213:0.0247),\n          t2 = (wave-530.9)*((wave<530.9)?0.0613:0.0322);\n    return 0.821*exp(-0.5*t1*t1) + 0.286*exp(-0.5*t2*t2);\n}\nfloat zFit_1931( float wave )\n{\n    float t1 = (wave-437.0)*((wave<437.0)?0.0845:0.0278),\n          t2 = (wave-459.0)*((wave<459.0)?0.0385:0.0725);\n    return 1.217*exp(-0.5*t1*t1) + 0.681*exp(-0.5*t2*t2);\n}\n\n#define xyzFit_1931(w) vec3( xFit_1931(w), yFit_1931(w), zFit_1931(w) ) \n    \nvec3 xyzToRgb(vec3 XYZ)\n{\n\treturn XYZ * mat3( 3.240479, -1.537150, -0.498535,\n\t                  -0.969256 , 1.875991,  0.041556,\n\t                   0.055648, -0.204043,  1.057311 );\n}\n\n#define SPECTRUM_START 360\n#define SPECTRUM_BIN   43\n#define SPECTRUM_STEP  10\n\nfloat cross2(vec2 a, vec2 b) { return a.x*b.y - a.y*b.x; } \n\n// Returns 1 if the lines intersect, otherwise 0. In addition, if the lines \n// intersect the intersection point may be stored in the floats i_x and i_y.\n\nvec2 intersectSegment(vec2 p0, vec2 p1, vec2 p2, vec2 p3)\n{\n    vec2 s1 = p1-p0, s2 = p3-p2;\n\n    float d = cross2(s1,s2),\n          s = cross2(s1, p0-p2) / d,\n          t = cross2(s2, p0-p2) / d;\n\n    return s >= 0. && s <= 1. && t >= 0. && t <= 1.\n         ? p0 + t*s1    // Collision detected\n         : p0;\n}\n\nvec3 constrainXYZToSRGBGamut(vec3 col)\n{\n    vec2 xy = col.xy / (col.x + col.y + col.z);\n    \n    vec2 red   = vec2(0.64,   0.33  ),\n         green = vec2(0.3,    0.6   ),\n         blue  = vec2(0.15,   0.06  ),\n         white = vec2(0.3127, 0.3290);\n    \n    const float desaturationAmount = 0.1;\n    xy = mix(xy, white, desaturationAmount);\n    \n    xy = intersectSegment(xy, white, red,   green);\n    xy = intersectSegment(xy, white, green, blue );\n    xy = intersectSegment(xy, white, blue,  red  );\n    \n    return col.y * vec3( xy, 1. - xy.x - xy.y ) / xy.y;\n}\n\n\n\nvoid mainImage( out vec4 O,  vec2 U )\n{\n   vec2 R = iResolution.xy;\n\tU /= R.x;\n                                      // various kind of glass coefficients\n\tfloat //B = 1.458, C = 0.00354;   //  n ~ B + C/lambda^2  https://en.wikipedia.org/wiki/Cauchy's_equation\n            B = 1.5046,C = 0.00420;\n          //B = 1.522, C = 0.00459;\n          //B = 1.569, C = 0.00531;\n          //B = 1.670, C = 0.00743;\n          //B = 1.728, C = 0.01342;\n    \n#if 0  // test: refraction index curve(lambda)   \n    O = vec4( ( B+C/sqr(0.4 +.35*U.x) -1.5 )/.05  < U.y );\n    O.r += .01/fract(100.*(U.y*.05+1.5));\n    return;\n#endif\n    \n#if 0  // test: perceived range of colors\n    l = 400. + 350.*U.x; // in nm\n    O = vec4( pow (.35* xyzToRgb(constrainXYZToSRGBGamut(xyzFit_1931(l))), vec3(1./2.2) ), 1);\n    return;\n#endif\n\n    U -= .2;\n    float     a = atan(U.x,U.y), n,l,\n        a_glass = .72 - .05*(.5-.5*cos(.3*(iTime+2.5)));\n\n    if (U.y<0.) // glass part\n        { O = vec4(.5 + smoothstep(1./length(U)/R.x,.0,abs(3.1416+a-a_glass))); return; }\n\n    O -= O;\n    \n #define N 1.\n    for (float x = 0.; x<N; x++) { // optional loop to integrate on a thick source\n         a = atan(U.x+ .1*x/N,U.y);\n         n = sin(a)/sin(a_glass); // Snell-Descartes: 1.sin(a_air) = n_glass.sin(a_glass),\n         l = sqrt(C/(n-B));       // in micron\n\n         O += vec4( .35* xyzToRgb(constrainXYZToSRGBGamut(xyzFit_1931(1e3*l))), 1);\n    }\n    O = vec4( pow (O/N, vec4(1./2.2) ) ); // gamma correction\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

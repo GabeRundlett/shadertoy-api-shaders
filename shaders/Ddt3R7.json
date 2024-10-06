@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1677088668",
+            "description": "The point-wise spectrum looks wrong (washed out yellow and blue). To make the spectrum look “correct”, smear it with the normal distribution.\n\nPublic domain, except for xyz_from_wavelength() which is from an article (© 2013 Chris Wyman et al.).",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Ddt3R7",
+            "likes": 19,
+            "name": "Light spectrum ∗ Gaussian",
+            "published": 3,
+            "tags": [
+                "spectrum",
+                "rainbow",
+                "graph",
+                "wavelength"
+            ],
+            "usePreview": 0,
+            "username": "rrrola",
+            "viewed": 365
+        },
+        "renderpass": [
+            {
+                "code": "// The light spectrum smeared with a Gaussian.\n\n// Public domain, except for the approximate xyz_from_wavelength() function\n// which is © 2013 Chris Wyman, Peter-Pike Sloan, and Peter Shirley.\n\n// RGB from wavelength is usually computed point-wise, but it looks wrong (washed out yellow and blue)\n// because in reality you almost never see the pure spectrum.\n// To make the spectrum look \"correct\", you can smear it a little with the normal distribution.\n\nfloat nm_min = 300., nm_max = 750.; // X axis range in nanometers\nfloat sd_nm = 30.;  // standard deviation (smear amount) in nanometers\n\n// Scale and add a little gray to get the most vivid colors without underflow/overflow.\nfloat scale = 0.46;\nfloat add_gray = 0.22;\n\n// Convert light wavelength to CIE 1931 XYZ.\n// Approximate multi-lobe fit from http://jcgt.org/published/0002/02/01\n// [C. Wyman, P. Sloan, P. Shirley: Simple Analytic Approximations to the CIE XYZ Color Matching Functions].\n// NOTE(rrrola): \n//  It would be useful if the spectrum would integrate to white (r=g=b).\n//  This approximation makes the red channel too strong.\nvec3 xyz_from_wavelength(float nm) {\n    float x1 = (nm - 442.0) * (nm<442.0? .0624 : .0374);\n    float x2 = (nm - 599.8) * (nm<599.8? .0264 : .0323);\n    float x3 = (nm - 501.1) * (nm<501.1? .0490 : .0382);\n    float y1 = (nm - 568.8) * (nm<568.8? .0213 : .0247);\n    float y2 = (nm - 530.9) * (nm<530.9? .0613 : .0322);\n    float z1 = (nm - 437.0) * (nm<437.0? .0845 : .0278);\n    float z2 = (nm - 459.0) * (nm<459.0? .0385 : .0725);\n    return vec3(0.362*exp(-.5*x1*x1) + 1.056*exp(-.5*x2*x2) - 0.065*exp(-.5*x3*x3),\n                0.821*exp(-.5*y1*y1) + 0.286*exp(-.5*y2*y2),\n                1.217*exp(-.5*z1*z1) + 0.681*exp(-.5*z2*z2));\n}\n\n// Convert CIE 1931 XYZ to linear sRGB.\nvec3 rgb_from_xyz(vec3 xyz) {\n    return mat3(vec3(3.2404542, -0.9692660, 0.0556434),\n                vec3(-1.5371385, 1.8760108, -0.2040259),\n                vec3(-0.4985314, 0.0415560, 1.0572252)) * xyz;\n}\n\n// Evaluate the probability density function of the normal distribution.\nfloat normal_pdf(float mean, float sd, float x) {\n    float z = (x - mean) / sd;\n    return exp(-0.5*z*z) / (sd * sqrt(2.0 * 3.14159265358979323846));\n}\n\n// Convolve the spectrum with the normal pdf and normalize.\nvec3 convolve_spectrum_with_normal_pdf(float mean, float sd) {\n    float sum_w = 0.;\n    vec3 sum = vec3(0);\n    for (float i=-5.; i<=5.; i+=0.0625) {  // just accumulate samples, ±5*sd is enough\n        float nm = mean + i*sd;\n        float w = normal_pdf(mean, sd, nm);\n        sum_w += w;\n        sum += w * rgb_from_xyz(xyz_from_wavelength(nm));\n    }\n    return sum / sum_w;\n}\n\n// Scale and add a little gray to get the most vivid colors without underflow/overflow.\nvec3 color(float mean, float sd) {\n    return add_gray + scale * convolve_spectrum_with_normal_pdf(mean, sd);\n}\n\nfloat unmix(float a, float b, float x) { return (x-a)/(b-a); }  // undo lerp\nfloat aa(float r, float x) { return clamp(r-x,0.,1.); }  // clamped triangle filter with radius r\nfloat seg_dist(vec2 p, vec2 a, vec2 b) { p-=a; b-=a; return length(p - b*clamp(dot(p,b)/dot(b,b),0.,1.)); }\nfloat line_dist(vec2 p, vec2 a, vec2 b) { p-=a; b-=a; return length(p - b*(dot(p,b)/dot(b,b))); }\nfloat aa_seg(float width, vec2 p, vec2 a, vec2 b) { return aa(width, seg_dist(p,a,b)); }\nfloat aa_line(float width, vec2 p, vec2 a, vec2 b) { return aa(width, line_dist(p,a,b)); }\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    // graph space: x(nm_min..nm_max), y(0..1).\n    float nm = mix(nm_min, nm_max, fragCoord.x/iResolution.x);\n\n    float x0 = nm;      vec3 y0 = color(x0, sd_nm);\n    float x1 = nm+.001; vec3 y1 = color(x1, sd_nm);  // for slope\n\n    // Convert from graph space to screen space.\n    #define SCR(X,Y) (iResolution.xy * vec2(unmix(nm_min, nm_max, X), Y))\n    \n    // Add an antialiased segment or line into col.\n    #define SEG(X0,Y0,X1,Y1,Width,Color) col = mix(col,Color,aa_seg(Width,fragCoord,SCR(X0,Y0),SCR(X1,Y1)))\n    #define LINE(X0,Y0,X1,Y1,Width,Color) col = mix(col,Color,aa_line(Width,fragCoord,SCR(X0,Y0),SCR(X1,Y1)))\n\n    // background\n    vec3 col = y0;\n\n    // horizontal axis\n    LINE(0.,add_gray, 1.,add_gray, 1., vec3(0));\n\n    // ticks\n    float tick = round(nm/10.) * 10.; // closest tick\n    float tick_mod_100 = mod(tick, 100.);\n    float tick_size = tick_mod_100==0.||tick_mod_100==100.? 0.03 : tick_mod_100==50.? 0.02 : 0.01;\n    SEG(tick,add_gray-tick_size, tick,add_gray+tick_size, 1., vec3(0));\n\n    // RGB color graphs\n    LINE(x0,y0.r, x1,y1.r, 2.5, vec3(0,0,0)); // outline\n    LINE(x0,y0.r, x1,y1.r, 1.5, vec3(.87,.14,.09)); // interior\n    LINE(x0,y0.g, x1,y1.g, 2.5, vec3(0,0,0));\n    LINE(x0,y0.g, x1,y1.g, 1.5, vec3(.07,.47,.06));\n    LINE(x0,y0.b, x1,y1.b, 2.5, vec3(0,0,0));\n    LINE(x0,y0.b, x1,y1.b, 1.5, vec3(.13,.31,1));\n    \n    // approximate linear -> gamma sRGB\n    fragColor = vec4(pow(col,vec3(1.0/2.2)), 1);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

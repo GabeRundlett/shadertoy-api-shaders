@@ -1,0 +1,102 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1631837691",
+            "description": "An artifact-filled 3D grapher.\n\nControls: Arrow keys to move. 'A' and 'Z' control pitch.\nGraphs f(v, t). Currently uses a low-quality approximation of the sdf of a height-map of the given function.\n\nA small sphere has been placed at the origin.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "NdG3z3",
+            "likes": 1,
+            "name": "Distorted 3D Grapher",
+            "published": 3,
+            "tags": [
+                "keyboard",
+                "graphing"
+            ],
+            "usePreview": 0,
+            "username": "personalizedrefrigerator",
+            "viewed": 243
+        },
+        "renderpass": [
+            {
+                "code": "/// MIT Licensed\n\n\n// Change these to adjust quality/performance.\n#define RAYMARCH_STEPS 50\n#define MAX_DIST 46.0\n//#define ANTI_ALIAS\n\n#define MIN_DIST 0.1\n#define SMALL 0.001\n#define GRAD_DESC_STEPS 3\n#define GRAD_DESC_RATE 0.8\n#define NUM_LIGHTS 2\n\n\n/** The function we're graphing! */\nfloat f(vec2 v, float t)\n{\n    return v.x * v.y / dot(v, v) * 6.0 + sin(t - v.x);\n}\n\n/** Gets the distance from the height map at [map_p] to [p] */\nfloat distance_map_to_p(vec2 map_p, in vec3 p)\n{\n    const float plane_y = -6.0;\n    \n    float vert_height = plane_y + f(map_p, iTime);\n    vec3 h_map_p = vec3(map_p.x, vert_height, map_p.y);\n    \n    return length(p - h_map_p) * sign(p.y - vert_height);\n}\n\nvec2 grad_distance_map_to_p(in vec2 map_p, in vec3 p)\n{\n    float dist_at = abs(distance_map_to_p(map_p, p));\n    \n    return vec2\n    (\n        abs(distance_map_to_p(map_p + vec2(SMALL, 0.0), p)) - dist_at,\n        abs(distance_map_to_p(map_p + vec2(0.0, SMALL), p)) - dist_at\n    ) / SMALL;\n}\n\nfloat map(in vec3 p)\n{\n    vec2 input_pt = p.xz;\n    float dist_to_fn = distance_map_to_p(input_pt, p);\n    float sgn = sign(dist_to_fn);\n    float rate = GRAD_DESC_RATE;\n    \n    // Approximate the distance to the function.\n    for (int k = 0; k < GRAD_DESC_STEPS; k++)\n    {\n        vec2 grad = grad_distance_map_to_p(input_pt, p);\n        \n        // Descend the gradient to minimize absolute value of distance.\n        input_pt -= rate * normalize(grad);\n        \n        float dist = distance_map_to_p(input_pt, p);\n        \n        if (abs(dist) <= abs(dist_to_fn))\n        {\n            dist_to_fn = dist;\n            \n            if (abs(dist) < MIN_DIST)\n            {\n                break;\n            }\n        }\n        else\n        {\n            rate *= 0.4;\n        }\n    }\n    \n    \n    return min\n    (\n        dist_to_fn,\n        \n        // Mark the origin.\n        length(p - vec3(0.0, 0.0, 0.0)) - 0.2\n    );\n}\n\n/// Approximate the normal to the scene at [p].\nvec3 scene_normal(in vec3 p)\n{\n    float dist_from_p = map(p);\n    \n    // Approx gradient of the sdf.\n    return normalize(vec3\n    (\n        map(p + vec3(SMALL, 0.0, 0.0)) - dist_from_p,\n        map(p + vec3(0.0, SMALL, 0.0)) - dist_from_p,\n        map(p + vec3(0.0, 0.0, SMALL)) - dist_from_p\n    ));\n}\n\nfloat march(in Ray r, int steps)\n{\n    float dist = MIN_DIST;\n    \n    for (int i = 0; i < steps; i++)\n    {\n        float current_dist = map(Ray_at(r, dist));\n        dist += current_dist;\n        \n        if (dist > MAX_DIST)\n        {\n            return MAX_DIST;\n        }\n        else if (abs(current_dist) < MIN_DIST)\n        {\n            return dist;\n        }\n    }\n    \n    return dist;\n}\n\nvec3 cast_ray(in Ray ray, in Light[NUM_LIGHTS] lights)\n{\n    float dist = march(ray, RAYMARCH_STEPS);\n    \n    if (dist >= MAX_DIST - SMALL || dist < 0.0)\n    {\n        return vec3(0.0);\n    }\n    \n    vec3 hit_pos = Ray_at(ray, dist);\n    vec3 normal = scene_normal(hit_pos);\n    vec3 color = vec3(0.0);\n    \n    for (int i = 0; i < NUM_LIGHTS; i++)\n    {\n        vec3 current_color = vec3(0.0);\n        \n        Light_colorDueTo(lights[i], hit_pos, normal, ray, march, current_color);\n        color += current_color;\n    }\n    \n    // Checkerboard pattern.\n    color *= (mod(abs(floor(hit_pos.x) + floor(hit_pos.z)), 2.0) + 1.0) / 2.0;\n    \n    // Fade out near edge of view.\n    float fog = 1.0 - dist / MAX_DIST;\n    return color * fog;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    \n    vec3 cam = get_camera_pos(iChannel0);\n    vec3 cam_rotation = get_camera_rotation(iChannel0);\n    \n    Light[NUM_LIGHTS] lights = Light[]\n    (\n        Light_new(cam + vec3(0.0, 5.0 + 3.0 * sin(iTime / 4.0), 0.0),\n                        vec3(1.0, 0.5 + 0.5*sin(iTime / 8.0), 0.2), 0.5),\n        Light_new(20.0 * vec3(cos(iTime / 2.0), 1.0, sin(iTime / 2.0)), vec3(1.0), 10.4)\n    );\n    \n    vec3 col = vec3(0.0);\n    int count = 0;\n    \n    // Anti-aliasing\n    #ifdef ANTI_ALIAS\n    for (int dx = 0; dx <= 1; dx++)\n    {\n        for (int dy = -1; dy <= 1; dy++)\n        {\n    #else\n    {\n        int dx = 0;\n        int dy = 0;\n        \n        {\n    #endif\n            vec2 delta = vec2(float(dx), float(dy)) / 2.0;\n            \n            // Normalized pixel coordinates\n            vec2 uv = get_tex_coords(fragCoord + delta, iResolution.xy);\n            \n            Ray r = Ray_new(vec3(0.0), vec3(uv, 1.0));\n            rotate_ray(cam_rotation, r);\n            r.origin = cam + vec3(0.0, 3.0, 0.0);\n            \n            col += cast_ray(r, lights);\n            count ++;\n        }\n    }\n    \n    col /= float(count);\n    \n    // Output to screen\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/// MIT Licensed\n\n\n#define CAMERA_POS_IDX vec2(0.0, 0.0)\n#define CAMERA_ROT_IDX vec2(5.0, 5.0)\n\n//// Ray\n\n/// Represents a ray.\n/// [direction] must have unit length.\nstruct Ray\n{\n    vec3 origin;\n    vec3 direction;\n};\n\n/// Constructor\nRay Ray_new(vec3 origin, vec3 direction)\n{\n    return Ray(origin, normalize(direction));\n}\n\n/// Get [r] extended [t] units from its origin.\nvec3 Ray_at(Ray r, float t)\n{\n    return r.origin + r.direction * t;\n}\n\n//// Light\n\nstruct Light\n{\n    vec3 position;\n    vec3 color;\n    float intensity;\n};\n\n/// Constructor\nLight Light_new(vec3 position, vec3 color, float intensity)\n{\n    return Light(position, normalize(color), intensity);\n}\n\nLight Light_new(vec3 position)\n{\n    return Light(position, vec3(1.0), 1.0);\n}\n\n/// Get [light]'s contribution to the color at [p] (where\n/// the normal to the scene is [normal]).\n/// [Light light]\n/// [Ray camera]\n/// [fn(Ray, int) march]\n/// Outputs color via [vec3 color]\n#define Light_colorDueTo(light, p, normal, camera, march, out_color) \\\n{ \\\n    vec3 to_camera = normalize(camera.origin - p); \\\n    vec3 to_light = normalize(light.position - p); \\\n    float brightness = dot(to_light, normal); \\\n    \\\n    vec3 half_vec = (to_camera + to_light) / 2.0;\\\n    float specular = pow(max(dot(to_light, half_vec), 0.0), 100.0);\\\n    \\\n    float dist_to_light = length(light.position - p);\\\n    float through_scene_to_light = march(Ray(p + to_light * 0.5, to_light), 5);\\\n    \\\n    if (through_scene_to_light < dist_to_light * 0.4 && through_scene_to_light > 0.0)\\\n    {\\\n        brightness *= 0.6;\\\n        specular = 0.0;\\\n    }\\\n    \\\n    brightness += specular;\\\n    \\\n    out_color = light.color * brightness \\\n            * sigmoid(1.0/pow(length(light.position - p) / light.intensity / 10.0, 2.0));\\\n}\\\n\n//// Math utils\n\n/// Atan-like shape that tends towards 0 at -inf\n/// and 1 at +inf.\nfloat sigmoid(float t)\n{\n    return 1.0 / (1.0 + exp(-t));\n}\n\n/// Get the \"smooth\" minimum of [a] and [b]. Smaller [k] -> smoother.\nfloat smin(float k, float a, float b)\n{\n    // First part tends towards 1 as (a-b) -> inf. In this case, a >> b, so we want to return b.\n    // Similarly, the second part tends towards 0 as (b - a) -> inf.\n    return b * sigmoid(k * (a - b)) + a * sigmoid(k * (b - a));\n}\n\n\n/**\n * Creates and applies a rotation matrix to a ray,\n * [ray]\n *\n * From https://www.shadertoy.com/view/fsK3zG\n */\nvoid rotate_ray(vec3 rotate, inout Ray ray)\n{\n    // x' = |r| cos(atan(y/x) + Δϑ)\n    //    = |r| (cos (atan y/x))(cos Δϑ) - |r| (sin (atan y/x))(sin Δϑ)\n    //    = (|r|·x/|r|)(cos Δϑ) - (|r|·y/|r|)(sin Δϑ)\n    //    = x cos Δϑ - y sin Δϑ for non-zero |r|.\n    // Similar process for y', where (x', y') are the transformed coordinates\n    // in the PLANE THAT WE'RE ROTATING IN.\n    \n    // Rotation in the XY plane\n    mat3 transform_z = mat3\n    (\n        cos(rotate.z), -sin(rotate.z), 0.0,\n        sin(rotate.z), cos(rotate.z), 0.0,\n        0.0, 0.0, 1.0\n    );\n    \n    // Rotation in the XZ plane\n    mat3 transform_y = mat3\n    (\n        cos(rotate.y), 0.0, -sin(rotate.y),\n        0.0, 1.0, 0.0,\n        sin(rotate.y), 0.0, cos(rotate.y)\n    );\n    \n    // Rotation in the YZ plane\n    mat3 transform_x = mat3\n    (\n        1.0, 0.0, 0.0,\n        0.0, cos(rotate.x), -sin(rotate.x),\n        0.0, sin(rotate.x), cos(rotate.x)\n    );\n    \n    mat3 transform = transform_x * transform_y * transform_z;\n    \n    ray.origin *= transform;\n    ray.direction *= transform;\n    \n    ray.direction = normalize(ray.direction);\n}\n\n/// Get normalized, but not stretched, frag_coord, such that\n/// the x or y axis ranges from -0.5 to 0.5, the other with a range\n/// at least as large.\nvec2 get_tex_coords(vec2 frag_coord, vec2 resolution)\n{\n    // -> (-0.5, 0.5)\n    vec2 normalized = frag_coord / resolution.xy - vec2(0.5);\n    \n    // Re-expand to (-res.x/2, res.x/2) x (-res.y/2, res.y/2)\n    normalized = vec2(normalized.x * resolution.x, normalized.y * resolution.y);\n    normalized /= max(resolution.x, resolution.y);\n    \n    return normalized;\n}\n\n/// Get the camera position as stored in a buffer.\nvec3 get_camera_pos(sampler2D tex)\n{\n    return texture(tex, CAMERA_POS_IDX).xyz;\n}\n\nvec3 get_camera_rotation(sampler2D tex)\n{\n    return texture(tex, CAMERA_ROT_IDX).xyz;\n}\n\nfloat get_key(sampler2D keyboard, int key)\n{\n    // Reference: https://www.shadertoy.com/view/lsXGzf\n    \n    return texelFetch(keyboard, ivec2(key, 0), 0).x;\n}\n\nvec2 get_arrow_keys(sampler2D keyboard)\n{\n    const int LEFT = 37;\n    const int UP = 38;\n    const int RIGHT = 39;\n    const int DOWN = 40;\n    \n    return vec2(get_key(keyboard, RIGHT), get_key(keyboard, UP)) \n         - vec2(get_key(keyboard, LEFT), get_key(keyboard, DOWN));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/// MIT Licensed\n\n// This buffer handles keyboard input and is currently **VERY**\n// inefficient.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 arrow_keys = get_arrow_keys(iChannel0) / 5.0;\n    \n    vec3 cam_pos = get_camera_pos(iChannel2);\n    vec3 cam_rot = get_camera_rotation(iChannel2);\n    \n    // Direction in which we're moving the camera\n    vec3 cam_move = vec3(0.0, 0.0, arrow_keys.y);\n    cam_rot.y -= arrow_keys.x / 6.0;\n    cam_rot.x += (get_key(iChannel0, 65) - get_key(iChannel0, 65 + 25)) / 24.0;\n    \n    // Only if we're moving the camera at all...\n    if (length(cam_move) > 0.1)\n    {\n        Ray move_direction = Ray_new(vec3(0.0), cam_move);\n        rotate_ray(cam_rot, move_direction);\n\n        cam_pos += move_direction.direction / 2.0;\n    }\n    \n    // If we're in the general area of the position output...\n    if (fragCoord.x < 25.0)\n    {\n        fragColor = vec4(cam_pos, 1.0);\n    }\n    else\n    {\n        // Otherwise, we'll output rotation.\n        \n        fragColor = vec4(cam_rot, 1.0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,125 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1668733009",
+            "description": "Please read the comments on the Image tab for explanation.\nThis lets you view each SDF w/ diff. thresholds.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "cdlXWr",
+            "likes": 5,
+            "name": "1D Fuzzy SDF Visualization 2",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "visualizer",
+                "1d",
+                "graph",
+                "fuzzy"
+            ],
+            "usePreview": 0,
+            "username": "Hatchling",
+            "viewed": 233
+        },
+        "renderpass": [
+            {
+                "code": "// NOTICE:\n// _________________________\n//\n// - The shader is intended to be used mostly while paused.\n//   Each frame the shader plays, the test function will evolve.\n//   (1-D perlin noise).\n//\n// - This isn't optimized, the search function is brute force,\n//   but it is 1D so this should be fine.\n\n// How to use:\n// _________________________\n//\n// 1. Pause the shader.\n// 2. Click and drag your mouse to view the SDF produced at different boundary\n//    thresholds. Top = 1, Bottom = 0.\n\n// Legend:\n// _________________________\n//\n//    Orange curve : Arbitrary function to turn into an SDF.\n//      Blue curve : The resulting SDF.\n//  Red background : The SDF has a positive gradient at this X coordinate.\n// Blue background : The SDF has a negative gradient at this X coordinate.\n//   Light/dark bg : The SDF is poitive/negative at this X coordinate.\n// Horizontal Line : The boundary threshold delininating inside from outside.\n\n// Controls:\n// _________________________\n//\n//              Pause : Prevent the orange function from changing.\n//               Play : Generate new orange functions.\n// Mouse Click + Drag : Change the SDF's boundary level from 0 to 1:\n//                      Top = 1, Bottom = 0.\n\n\n// Explanation:\n// _________________________\n\n// --- \"Problem\" with SDFs ---\n\n// An SDF generated from an occupancy field of varying value, like a heightmap,\n// requires that a boundary be defined that determines whether\n// a given point in the field should be considered \"inside\" the surface\n// or \"outside\" the surface. (This is called an isocontour.)\n\n// However, this definition has a \"problem\":\n// Most of the cells in the occupancy field are simply \"thrown out\",\n// and only the very few cells that have neighbors which cross\n// the isocontour have any influcence on the resulting SDF.\n\n// Many things in nature have \"fuzzy\" edges, and ideally we'd like to\n// model these kinds of things with SDFs as well.\n// For training Neural Implicit Fields for example,\n// most of the latent space has no influence on the resulting shape, \n// even if a region is extremely close but is still just shy of an iso crossing.\n// These points in the latent space thus have no gradients for training\n// and thus training progress is only produced by the tiny regions with crossings.\n// If useful gradients could come from anywhere, new solid structures\n// could emerge without needing to extend them from existing surfaces.\n\n// --- Reinterpreting SDFs as Probabilistic ---\n\n// When you generate an SDF, you can start with a field\n// of values (could be a texture, a function, etc.), then you \n// interpret the field as occupancy; either \"solid stuff\" exists at\n// this point or it does not.\n\n// This poses a problem; even if a point in the field has 0.1% occupancy,\n// there is still stuff at that point, and it could be the closest\n// bit of stuff.\n// Thus, unless your field contains a lot of 0% occupied (empty) space, \n// most of your field will be considered completely solid \n// and inside the occupied surface.\n\n// Instead, suppose we were to think of it like this:\n// When we generate an SDF, we want to find \n// the distance to the closest point in the field \n// where the probability that it is occupied is at least X%.\n\n// Then, integrate the SDF over X from 0% to 100%.\n//\n//     In other words, create N SDFs,\n//     with X linearly increasing from 0% to 100% \n//     (X for SDF[n] is n / (N-1))\n//     then average all of the SDFs together.\n//     Ideally N would be infinity, but we can't compute this,\n//     so instead we can try to caclulate the\n//     the limit, or what the result trends towards,\n//     as N approaches infinity.\n//\n// From this we'll have a \"fuzzy\" signed distance field (FSDF),\n// where its value at position P is the distance in which\n// there is exactly a 50% chance that an isocontour crossing\n// will occur.\n\n// --- Application to terrain ---\n\n// Signed distance fields (SDFs) in 2-D can be used to generate \n// fairly natural erosion patterns in heightmaps very quickly.\n\n// However, a normal single SDF doesn't alone produce nice looking terrain,\n// but you'll see erosion-like patterns of branching\n// peaks and valleys where the gradient direction,\n// or in other words, the direction to the nearest isocontour,\n// changes suddenly.\n\n// Using an FSDF, however, somehow, does produce fairly convincing results.\n// I'm guessing this is just due to the fact that each individual SDF[n]\n// has erosion-like qualities, and averaging out multiple of them\n// both creates natural variations and lets erosion-like features \n// that are more consistent across all of the SDFs \n// have a stronger influence on the result.\n\n// --- Purpose for THIS shader ---\n\n// This shader lets you visualize individual slices that compose the\n// final FSDF.\n\n// You'll see that FSDFs are composed of, basically, many\n// connected diagonal lines with constant absolute slope.\n\n// Visualizing the concept this way should hopefully\n// build an intuition for the parts that sum together to\n// make an FSDF.\n\n// --- How to Interpret the Visualization ---\n \n// Orange line:\n//     - The probability of occupancy at a given X coordinate.\n//     - Any points of the orange line that are above the white line\n//       have a greater probabilty than the probability threshold.\n//     - Where the orange line crosses the white line,\n//       we have an isocontour.\n\n// Blue line:\n//     - The signed distance from X coordiante\n//       to the closest point on the orange line\n//       that crosses the probability threshold.\n//     - Where the blue line crosses the white line,\n//       the signed distance is 0.\n\n// Horizontal white line:\n//     - Shows the probability threshold for the orange line.\n//     - Can be controlled with the mouse.\n//     - Top: 100%, Bottom: 0%\n//     - Also represents the X axis for the blue line graph,\n//       in which all blue points along the line are 0.\n\n// Red/Cyan tinted regions:\n//     - Shows the gradient of the SDF.\n//     - Notice that the gradient changes in the center\n//       between two points where the orange line\n//       and the horizontal white line intersect.\n\n#define decl_getGraphOpacity(type) \\\ntype getGraphOpacity(type graphHeight, type graphGradient, type fragHeight) \\\n{\\\n    type range = (type(1.0) + abs(graphGradient)) * type(2.0);\\\n    type upper = graphHeight + range;\\\n    type lower = graphHeight - range;\\\n    type value = (fragHeight - lower) / (upper - lower);\\\n    value = type(1.0) - (abs(value - type(0.5)) * type(2.0));\\\n    return smoothstep(type(0.0), type(1.0), value);\\\n}    \n    \ndecl_getGraphOpacity(float)\ndecl_getGraphOpacity(vec4)\n\nfloat sampleGraph( in float graphHeight, in vec2 fragCoord )\n{\n    return getGraphOpacity(graphHeight, dFdx(graphHeight), fragCoord.y);\n}\n\nvec4 sampleGraphEx(in float graphHeight, in float zeroLineHeight, in vec2 fragCoord  )\n{\n    vec4 result;\n    // x = line opacity;\n    // y = height relative to zero line;\n    // z = gradient\n\n    float graphGradient = dFdx(graphHeight);\n    result.x = getGraphOpacity(graphHeight, graphGradient, fragCoord.y);\n    result.y = graphHeight - zeroLineHeight;\n    result.z = graphGradient;\n    result.w = 1.0;\n    \n    return result;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    fragColor = vec4(0,0,0,1);\n    \n    float mouseY = iMouse.y < 0.5 ? iResolution.y * 0.5 : iMouse.y; \n    \n    float horizontalLine = sampleGraph(mouseY, fragCoord);\n\n    float orangeLine;\n    {\n        orangeLine = texelFetch(iChannel1, ivec2(fragCoord.x, 0), 0).r; \n        orangeLine *= iResolution.y;\n        orangeLine = sampleGraph(orangeLine, fragCoord);\n    }\n    \n    vec4 data;\n    {\n        \n        float blueLineHeight = texture(iChannel0, vec2(fragCoord.x / iResolution.x, 0)).x;\n        blueLineHeight -= 0.5;\n        blueLineHeight *= iResolution.y;\n        blueLineHeight += mouseY;\n        data = sampleGraphEx(blueLineHeight, mouseY, fragCoord); \n    }\n\n    fragColor.rgb = mix\n    (\n        fragColor.rgb, \n        data.y > 0. ? vec3(1) : vec3(0), \n        0.05\n    );\n    fragColor.rgb = mix\n    (\n        fragColor.rgb, \n        data.z > 0. ? vec3(1, 0, 0) : vec3(0, 1, 1), \n        0.2\n    );\n    \n    fragColor.rgb = mix(fragColor.rgb, vec3(1.0, 1.0, 1.0), horizontalLine);\n    fragColor.rgb = mix(fragColor.rgb, vec3(1.0, 0.7, 0.3), orangeLine);\n    fragColor.rgb = mix(fragColor.rgb, vec3(0.3, 0.7, 1.0), data.x);\n    \n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Contains the function to display.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0);\n    \n    // Only process the first row of pixels.\n    if(fragCoord.y > 0.5)\n    {\n        return;\n    }\n    \n    // 1-D perlin noise.\n    const int maxLayer = 5;\n    for(int i = 2; i < maxLayer; i++)\n    {\n        vec2 uv = fragCoord  / iChannelResolution[1].xy;\n\n        // Randomize offset per layer.\n        float uvOffset = float(i) * 1.618;\n        uvOffset -= floor(uvOffset);\n\n        // Get weighted sample with varying scale.\n        float weightScale = float(1 << i);\n        float uvScale = 1.0 / weightScale;\n        uv.y += iTime * 0.05;\n        uv *= uvScale;\n        uv += vec2(uvOffset);\n        vec4 t = texture(iChannel1, uv * uvScale);\n        t.a = 1.0;\n        t *= weightScale;\n\n        fragColor += t;\n    }\n\n    fragColor.rgb /= fragColor.a;\n\n    // Add contrast.\n    fragColor -= vec4(0.5);\n    fragColor *= fragColor.a / float(1 << (maxLayer-1));\n    //fragColor = tanh(fragColor);\n    //fragColor *= 0.5;\n    fragColor += 0.5;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Contains the function to display.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 intFragCoord = ivec2(fragCoord);\n    \n    if(fragCoord.y > 0.5)\n    {\n        fragColor = vec4(0);\n        return;\n    }\n    \n    float mouseY = iMouse.y < 0.5 ? iResolution.y * 0.5 : iMouse.y; \n    \n    // The X center of \"my\" pixel (the current one being drawn).\n    float myCenter = float(intFragCoord.x) + 0.5;\n    float myHeight = texelFetch(iChannel0, ivec2(fragCoord.x, 0), 0).r;\n    \n    float dither = mouseY / iResolution.y;\n    vec4 thresh = (vec4(dither));\n    float maxDist = iResolution.x;\n    vec4 dist = vec4(maxDist);\n    bvec4 mySign = greaterThan(vec4(myHeight), thresh);\n\n    ivec2 intResolution = ivec2(iResolution.xy);\n    for(int iNeighbor = 0; iNeighbor < intResolution.x; iNeighbor++)\n    {\n        // This doesn't work for some reasosn.\n        /*int neighborX = (iNeighbor / 2) + 1;\n        if((iNeighbor % 2) == 0)\n            neighborX = -neighborX;\n            \n        neighborX += intFragCoord.x;\n        \n        if(neighborX > intResolution.x-1) neighborX = intResolution.x-1;\n        if(neighborX < 0) neighborX = 0;*/\n        \n        // Can't break early, I guess. Brute force it is. -shrug-\n        int neighborX = iNeighbor;\n            \n        // The X center of the neighbor pixel.\n        float neighborCenter = float(neighborX) + 0.5;\n        float neighborNearestEdge = neighborCenter + sign(myCenter - neighborCenter) * 0.5;\n\n        float distMeToNeighbor = abs(myCenter - neighborNearestEdge);\n\n        float neighborHeight = texelFetch(iChannel0, ivec2(neighborX, 0), 0).r;\n\n\n        bvec4 neighborSign = greaterThan(vec4(neighborHeight), thresh);\n\n        bvec4 signEquals = equal(mySign, neighborSign);\n        bvec4 neighborFurther = greaterThanEqual(vec4(distMeToNeighbor), dist);\n        \n        dist.x = signEquals.x || neighborFurther.x ? dist.x : distMeToNeighbor;\n        dist.y = signEquals.y || neighborFurther.y ? dist.y : distMeToNeighbor;\n        dist.z = signEquals.z || neighborFurther.z ? dist.z : distMeToNeighbor;\n        dist.w = signEquals.w || neighborFurther.w ? dist.w : distMeToNeighbor;\n    }\n\n    dist *= vec4(mySign) * 2.0 - vec4(1.0);\n    dist /= vec4(maxDist);\n    dist = dist * 0.5 + 0.5;\n    \n    fragColor = vec4(dist);\n    \n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

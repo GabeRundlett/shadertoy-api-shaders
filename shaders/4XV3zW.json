@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1717387255",
+            "description": "Move the scene with the mouse and check the anti aliasing.\n\nToday I learned about sampling and a simple anti aliasing algorithm.\n\nI learned about hash functions too.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4XV3zW",
+            "likes": 0,
+            "name": "018 - Anti aliasing study",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "mouse",
+                "raytracer",
+                "ray",
+                "beginner"
+            ],
+            "usePreview": 0,
+            "username": "PiGIon",
+            "viewed": 105
+        },
+        "renderpass": [
+            {
+                "code": "// 2024.06.03 rev 1\n\n#define ray_tmin 0.1\n#define ray_tmax 100.0\n#define samples 50\n#define sample_offset 0.003\n\nbool anti_alias = true;\n\n// returns a back and forth 0.0 to 1.0 per second\nfloat cycle(float perSecond) {\n    float d = fract((iTime + iTimeDelta) * perSecond);\n    \n    // step 0.5 is used to reverse the keyframe, to get a coming and going effect\n    // since the cut point is 0.5, we need to get original place (e.g. 1 again) if d is exactly to 0.5\n    // this means that it cycles from 0...1...0 every second\n    return 2. * ( d>.5 ? 1.-d : d );\n}\n\n// true / false per second\nbool blink(float perSecond) {\n    return cycle(perSecond / 2.) > 0.5;\n}\n\n// from https://www.reedbeta.com/blog/hash-functions-for-gpu-rendering/\nuint global_hash = 0u;\nfloat pcg_hash_float(uint x)\n{\n    uint state = x * 747796405u + 2891336453u + global_hash;\n    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;\n    uint hashed_value = (word >> 22u) ^ word;\n    global_hash = hashed_value;\n    return float(hashed_value) / 4294967295.0; // 4294967295 is 2^32 - 1\n}\n\nfloat pcg_hash_float(float x)\n{\n    return pcg_hash_float(floatBitsToUint(x));\n}\n\n// returns x value of a noise texture\nfloat rand(int idx) {\n    return texelFetch(iChannel0, ivec2(idx, 0), 0).x - 0.5;\n}\n\n// normal relative to ray direction\n// e.g. if inside a sphere it returns -normal\nbool front_face(vec3 d, vec3 out_n, out vec3 n) {\n    bool outside = dot(d, out_n) < 0.;\n    n = outside ? n : -n;\n    return outside;\n}\n\n// returns t for a vector\n// o - origin of the vector\n// dir - direction of the vector\n// t - can be read as \"time\"\nvec3 at(vec3 o, vec3 dir, float t) {\n    return o + t * dir;\n}\n\n// length squared\n// optimized function for dot(v, v)\nfloat length_squared(vec3 v) {\n    return v.x * v.x + v.y * v.y + v.z * v.z;\n}\n\n// from Ray Tracing in One Weekend\n// coord - sphere coord\n// radius - sphere radius\n// o - ray origin\n// d - ray direction\n// t - distance from o to sphere collision\n// p - point of the collision\n// n - normal of the collision (not normalized)\n// outside - whether the hit was inside or outside the sphere\nbool hit_sphere(\n    vec3 coord,\n    float radius,\n    vec3 o,\n    vec3 d,\n    out float t,\n    out vec3 p,\n    out vec3 n,\n    out bool outside\n    ) {\n    vec3 oc = coord - o;\n    float a = length_squared(d);\n    float b = dot(d, oc);\n    float c = length_squared(oc) - radius * radius;\n    float discriminant = b * b - a * c;\n    if (discriminant < 0.) {\n        t = -1.0;\n        return false;\n    }\n    float sqrtd = sqrt(discriminant);\n    \n    float root = (b - sqrtd) / a;\n    if (root <= ray_tmin || ray_tmax <= root) {\n        root = (b + sqrtd) / a;\n        if (root <= ray_tmin || ray_tmax <= root) {\n            return false;\n        }\n    }\n    \n    t = root;\n    p = at(o, d, t);\n    n = (p - coord) / radius;\n    outside = front_face(d, n, n);\n    return true;\n}\n\n// returns a range of vec2(-1) to vec2(1) based on mouse and screen size\n// deals with first frame and returns vec2(0) if so\nvec2 uv_mouse() {\n    if (length(iMouse.xy) == 0.) {\n        return vec2(0, 0);\n    }\n    return ((iMouse.xy / iResolution.xy) - 0.5) * 2.;\n}\n\nvec3 get_ray(vec2 uv) {\n    if (!anti_alias) {\n        return vec3(uv, -1.);\n    }\n    float seed = uv.y * uv.x;\n    vec2 offset = vec2(\n                        pcg_hash_float(seed) - 0.5,\n                        pcg_hash_float(seed) - 0.5\n                        );\n    return vec3(uv + offset * sample_offset, -1.);\n}\n\n// function that returns the color of a sphere\nbool sphere(vec3 cam, vec3 dir, vec3 pos, float radius, out vec4 hit) {\n    float t;\n    vec3 p;\n    vec3 n;\n    bool outside;\n    bool is_hit = hit_sphere(pos, radius, cam, dir, t, p, n, outside);\n    if (!is_hit) {\n        return is_hit;\n    }\n\n    vec3 c = vec3(0.865, 0.13, 0.32);\n    vec3 N = normalize(n);\n    if (!outside) {\n        c = vec3(0., 0., 1.);\n    }\n\n    hit = vec4(mix(c, vec3(0.), min(1., t / 2.)), t);\n    return is_hit;\n}\n\nvoid mainImage(out vec4 frag_color, in vec2 frag_coord) {\n    anti_alias = blink(0.5);\n    vec2 uv = (2. * frag_coord - iResolution.xy) / iResolution.y;\n    vec3 origin = vec3(0.);\n    vec4 O = vec4(0., 0., 0., 1.);\n    vec2 mouse = uv_mouse();\n\n    // world space, x=horizontal, y=vertical, z=depth\n    vec3 cam_w = vec3(-mouse, 0.);\n    \n    // move everything to camera/view space\n    vec3 cam_c = origin;\n    // camera always points \n    vec3 cam_dir = vec3(0., 0., -1.);\n\n    // we already have the NDC, which is uv from -1 to 1 at xy\n    // we just place a plane at the front of the camera here\n    // get the direction from camera to the uv plane\n    vec3 dir = normalize(vec3(uv, -1.));\n\n    // from Ray Tracing in One Weekend\n    // blue background\n    float t = 0.5 * (dir.y + 1.0);\n    t = 0.5 * (dir.y + 1.0);\n    vec4 bg_color = vec4((1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0), 1.);\n    \n    int to_sample = anti_alias ? samples:1;\n    float sample_scale = anti_alias ? 1.0/float(samples):1.;\n    for (int cur_sample = 0; cur_sample < to_sample; cur_sample++) {\n        // get random sample direction\n        dir = get_ray(uv);\n        \n        vec4 hit = vec4(0., 0., 0., ray_tmax);\n        bool sphere_hit = false;\n        for (int i = 0; i < 20; i++) {\n            // randomize the sphere position\n            float radius = abs(rand(i + 3)) * 1. + 0.2;\n            float sphere_y = mod((rand(i + 1) * 1.), 8.);\n            vec3 pos_w = vec3(rand(i) * 10., sphere_y, -0.75 -rand(i + 2));\n\n            // move sphere to camera space\n            vec3 pos_c = pos_w - cam_w;\n            \n            // calculate a sphere hit with the current sample\n            // get the closes sphere possible\n            vec4 new_hit;\n            bool is_hit = sphere(cam_c, dir, pos_c, radius, new_hit);\n            sphere_hit = sphere_hit || is_hit;\n            hit = is_hit && new_hit.w < hit.w ? new_hit : hit;\n        }\n\n        if (sphere_hit) {\n            O += vec4(hit.xyz, 0.);\n        } else {\n            O += vec4(bg_color.xyz, 0.);\n        }\n    }\n\n    frag_color = vec4(O.xyz*sample_scale, 1.);\n    \n    //frag_color = vec4(vec3(pcg_hash_float(floatBitsToUint(iTime + uv.y * uv.x))), 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1670488401",
+            "description": "Apply a spherical / hyperbolic swirl distortion to the camera feed at the last mouse click position. Adjustable swirl amount, radius, distortion falloff, and inflation dampening. Optional distorted rectangular checkerboard or polar checkerboard grid.",
+            "flags": 2,
+            "hasliked": 0,
+            "id": "dd2XRy",
+            "likes": 1,
+            "name": "hyperbolic swirl distortion",
+            "published": 3,
+            "tags": [
+                "grid",
+                "swirl",
+                "distortion",
+                "camera",
+                "polar"
+            ],
+            "usePreview": 0,
+            "username": "andywolff",
+            "viewed": 458
+        },
+        "renderpass": [
+            {
+                "code": "// Radius of the sphere distortion (normalized to 0-1 range across the screen size)\nconst float RADIUS = 0.15;\n// Exponent applied to the falloff which dampens the distortion outside the radius of the sphere\nconst float FALLOFF_EXPONENT = 3.0;\n// How many degrees the swirl distortion should rotate back and forth\nconst float SWIRL_DEGREES = 120.0;\n// The normal sphere inflation is a bit strong for faces, increase this to dampen it\nconst float CENTER_DISTORTION_DAMPENING = 0.2;\n\n// Size of the checkerboard grid (only drawn if DRAW_GRID is true)\nconst vec2 GRID_SIZE = vec2(0.03, 0.03);\n// Draw a white and black checkerboard grid when true, else distort iChannel0\n#define DRAW_GRID 0\n// If drawing a grid, draw it with polar coordinates instead of distorting rectangular coordinates\n#define GRID_IS_POLAR 0\n\n\n// return polar coordinates (distance, angle in radians)\nvec2 to_polar(vec2 from_rectangular) {\n  return vec2(length(from_rectangular), atan(from_rectangular.y, from_rectangular.x));\n}\n\n// transform polar coordinates (distance, angle in radians) to rectangular coordinates\nvec2 to_rectangular(vec2 from_polar) {\n  return vec2(cos(from_polar.y)*from_polar.x, sin(from_polar.y)*from_polar.x);\n}\n\n// checkerboard grid\nbool grid(vec2 coords, vec2 grid_size) {\n\n  return (\n      // (x mod grid size * 2.0) is less than grid size exactly half the time\n      mod(coords.x, grid_size.x * 2.0) < grid_size.x\n      // (XOR to achieve alternating squares)\n      ^^\n      // similar condition for y\n      mod(coords.y, grid_size.y * 2.0) < grid_size.y\n      );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // normalize frag coordinates to range 0-1\n    vec2 uv = fragCoord/iResolution.xy;\n\n    // initialize center variable to center of screen as a fallback, otherwise normalized mouse position\n    vec2 center = vec2(0.5);\n    center = iMouse.xy / iResolution.xy;\n    \n    // normalize to center\n    uv -= center;\n    \n    // Transform to polar coordinates (before applying rotation)\n    vec2 polar_uv = to_polar(uv);\n       \n    // falloff to apply to rotation and sphere inflation outside the radius of the sphere\n    //   We want to multiply other operands by this amount,\n    //   so we want it to go from 1.0 to near 0.0 as it gets further away from the sphere\n    //\n    //   `max(1.0, polar_uv.x / RADIUS)` will be 1.0 everywhere in the sphere, then >1 outside the sphere\n    //   to make that trend toward 0.0 while still starting at 1.0, we subtract it from 2.0\n    //   we don't want to apply negative rotation or distortion due to this falloff, so max it with 0.0\n    //   finally, we want the falloff to happen quickly outside of the sphere, so apply exponent FALLOFF_EXPONENT\n    float falloff_amount = pow(max(0.0, 2.0 - max(1.0, polar_uv.x / RADIUS)), FALLOFF_EXPONENT);\n    \n    // radians by which to rotate the current coordinate around the center\n    //   Swirl it back and forth by SWIRL_DEGREES\n    //   \n    //   `polar_uv.x / RADIUS * 2.0 - 1.0` gives us 0.0 near the center of the radius of the sphere, 1.0 at the outside edge, and -1.0 at the inside edge\n    //   `cos(iTime)` causes the value to swing between -1.0 and 1.0 periodically\n    //   multiplying by `radians(SWIRL_DEGREES)` gives us the desired range\n    float rot_amount = (polar_uv.x / RADIUS * 2.0 - 1.0)*cos(iTime)*radians(SWIRL_DEGREES);\n    // Apply falloff to rotation amount\n    rot_amount *= falloff_amount;\n    // Apply rotation by multiplying by a 2x2 rotation matrix\n    mat2 rot = mat2(cos(rot_amount), -sin(rot_amount), sin(rot_amount), cos(rot_amount));\n    uv *= rot;\n    \n    // undo normalization to center\n    uv += center;\n    \n    // Transform to polar coordinates (again after applying rotation)\n    polar_uv = to_polar(uv - center);\n\n    // Determine how much we want to inflate the sphere based on the distance of this coordinate from the center:\n    //   `cosh(polar_uv.x / RADIUS * radians(90.0))` would give us 1.0 at the center of the sphere, \n    //       then follow a nearly circular hyperbolic path towards infinity at the edge of the sphere (90 degrees)\n    //   However, this distortion would be a bit much, so we stretch it forward a little by adding \n    //       CENTER_DISTORTION_DAMPENING to the numerator and denominator both.\n    //   Finally, we subtract 1.0 because we want to do no inflation near the center of the sphere.\n    float sphere_inflation_amount = \n      cosh((polar_uv.x+CENTER_DISTORTION_DAMPENING) / (RADIUS+CENTER_DISTORTION_DAMPENING) * radians(90.0)) - 1.0;\n    // Apply the spherical inflation:\n    //  `polar_uv.x *= sphere_inflation_amount` would apply the sphere inflation everywhere,\n    //    but we want to fall off outside the sphere. So we perform a linear interpolation\n    //    so that when falloff_amount is 1.0, it fully applies the inflation,\n    //    and as falloff_amount trends toward 0.0, it applies none of the inflation.\n    polar_uv.x = mix(polar_uv.x, polar_uv.x * sphere_inflation_amount, falloff_amount);\n\n\n    fragColor = texture(iChannel0, to_rectangular(polar_uv)+center);\n\n# if DRAW_GRID\n  # if GRID_IS_POLAR\n    fragColor = grid(polar_uv, GRID_SIZE)\n      ? vec4(1.0,1.0,1.0,1.0)\n      : vec4(0.0,0.0,0.0,1.0);\n  # else\n    fragColor = grid(to_rectangular(polar_uv)+center, GRID_SIZE)\n      ? vec4(1.0,1.0,1.0,1.0)\n      : vec4(0.0,0.0,0.0,1.0);\n  # endif\n# endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "webcam",
+                        "id": 31,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/webcam.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

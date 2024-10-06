@@ -1,0 +1,213 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1529923386",
+            "description": "A modified 1-sample-per-pixel version of yuletian's \"Path Tracer Denoise\" shader",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ldKBRV",
+            "likes": 97,
+            "name": "Path Tracer Denoise 1SPP",
+            "published": 3,
+            "tags": [
+                "pathtracing",
+                "pathtracer",
+                "denoise"
+            ],
+            "usePreview": 0,
+            "username": "cornusammonis",
+            "viewed": 4827
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\tThis is a slightly modified version of yuletian's \"Path Tracer Denoise\" shader.\n\tThis version uses a denoising feedback loop to improve the result of the original\n\tat 1 sample per pixel, as configured here. This version also randomizes the wavelet \n    kernel stride and rotation to minimize artifacting, and improves on the \n    hash functions somewhat.\n\n\tPros:\n\tLess noisy result with fewer samples\n\tCons:\n\tSignificantly blurrier shadows, reflections, and caustics\n\tSomewhat more expensive denoising (more reads)\n\tIntroduces some ghosting\n*/\n\n\n// Fork of \"Path Tracer Denoise\" by yuletian. https://shadertoy.com/view/ldKBzG\n// 2018-06-22 00:25:40\n\n#define SHOWSPLITLINE\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0);\n    float splitCoord = (iMouse.x == 0.0) ? iResolution.x/2. + iResolution.x*cos(iTime*.55) : iMouse.x;\n    #ifdef SHOWSPLITLINE\n\tif (abs(fragCoord.x - splitCoord) < 1.0) {\n\t\tfragColor = vec4(1);\n\t}\n\t#endif\n    if(fragCoord.x>splitCoord)\n    {\n        fragColor += texelFetch(iChannel1, ivec2(fragCoord), 0);\n        return;\n    }\n\tfragColor += texelFetch(iChannel0, ivec2(fragCoord), 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Simple path tracer. Created by Reinder Nijhoff 2014\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/4tl3z4\n//\n\n// do path tracing.\n\n#define eps 0.0001\n#define EYEPATHLENGTH 8\n#define SAMPLES 1\n\n#define FULLBOX\n\n#define DOF\n#define ANIMATENOISE\n#define MOTIONBLUR\n\n#define MOTIONBLURFPS 40.\n\n#define LIGHTCOLOR vec3(16.86, 10.76, 8.2)*1.3*3.\n#define WHITECOLOR vec3(.7295, .7355, .729)*0.7\n#define GREENCOLOR vec3(.117, .5125, .115)*0.7\n#define REDCOLOR vec3(.711, .0555, .062)*0.7\n\nfloat hash1(inout float seed) {\n    float hash = fract(sin(seed)*43758.5453123);\n    seed += hash;\n    return hash;\n}\n\nvec2 hash2(inout float seed) {\n    vec2 hash = fract(sin(vec2(seed))*vec2(43758.5453123,22578.1459123));\n    seed += hash.x + hash.y;\n    return hash;\n}\n\nvec3 hash3(inout float seed) {\n    vec3 hash = fract(sin(vec3(seed))*vec3(43758.5453123,22578.1459123,19642.3490423));\n    seed += hash.x + hash.y + hash.z;\n    return hash;\n}\n\n//-----------------------------------------------------\n// Intersection functions (by iq)\n//-----------------------------------------------------\n\nvec3 nSphere( in vec3 pos, in vec4 sph ) {\n    return (pos-sph.xyz)/sph.w;\n}\n\nfloat iSphere( in vec3 ro, in vec3 rd, in vec4 sph ) {\n    vec3 oc = ro - sph.xyz;\n    float b = dot(oc, rd);\n    float c = dot(oc, oc) - sph.w * sph.w;\n    float h = b * b - c;\n    if (h < 0.0) return -1.0;\n\n\tfloat s = sqrt(h);\n\tfloat t1 = -b - s;\n\tfloat t2 = -b + s;\n\t\n\treturn t1 < 0.0 ? t2 : t1;\n}\n\nvec3 nPlane( in vec3 ro, in vec4 obj ) {\n    return obj.xyz;\n}\n\nfloat iPlane( in vec3 ro, in vec3 rd, in vec4 pla ) {\n    return (-pla.w - dot(pla.xyz,ro)) / dot( pla.xyz, rd );\n}\n\n//-----------------------------------------------------\n// scene\n//-----------------------------------------------------\n\nvec3 cosWeightedRandomHemisphereDirection( const vec3 n, inout float seed ) {\n  \tvec2 r = hash2(seed);\n    \n\tvec3  uu = normalize( cross( n, vec3(0.0,1.0,1.0) ) );\n\tvec3  vv = cross( uu, n );\n\t\n\tfloat ra = sqrt(r.y);\n\tfloat rx = ra*cos(6.2831*r.x); \n\tfloat ry = ra*sin(6.2831*r.x);\n\tfloat rz = sqrt( 1.0-r.y );\n\tvec3  rr = vec3( rx*uu + ry*vv + rz*n );\n    \n    return normalize( rr );\n}\n\nvec3 randomSphereDirection(inout float seed) {\n    vec2 r = hash2(seed)*6.2831;\n\tvec3 dr=vec3(sin(r.x)*vec2(sin(r.y),cos(r.y)),cos(r.x));\n\treturn dr;\n}\n\nvec3 randomHemisphereDirection( const vec3 n, inout float seed ) {\n\tvec3 dr = randomSphereDirection(seed);\n\treturn dot(dr,n) * dr;\n}\n\n//-----------------------------------------------------\n// light\n//-----------------------------------------------------\n\nvec4 lightSphere;\n\nvoid initLightSphere( float time ) {\n\tlightSphere = vec4( 3.0+2.*sin(time),2.8+2.*sin(time*0.9),3.0+4.*cos(time*0.7), .5);\n}\n\nvec3 sampleLight( const in vec3 ro, inout float seed ) {\n    vec3 n = randomSphereDirection( seed ) * lightSphere.w;\n    return lightSphere.xyz + n;\n}\n\n//-----------------------------------------------------\n// scene\n//-----------------------------------------------------\n\nvec2 intersect( in vec3 ro, in vec3 rd, inout vec3 normal ) {\n\tvec2 res = vec2( 1e20, -1.0 );\n    float t;\n\t\n\tt = iPlane( ro, rd, vec4( 0.0, 1.0, 0.0,0.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., 1., 0.); }\n\tt = iPlane( ro, rd, vec4( 0.0, 0.0,-1.0,8.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., 0.,-1.); }\n    t = iPlane( ro, rd, vec4( 1.0, 0.0, 0.0,0.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 2. ); normal = vec3( 1., 0., 0.); }\n#ifdef FULLBOX\n    t = iPlane( ro, rd, vec4( 0.0,-1.0, 0.0,5.49) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., -1., 0.); }\n    t = iPlane( ro, rd, vec4(-1.0, 0.0, 0.0,5.59) ); if( t>eps && t<res.x ) { res = vec2( t, 3. ); normal = vec3(-1., 0., 0.); }\n#endif\n\n\tt = iSphere( ro, rd, vec4( 1.5,1.0, 2.7, 1.0) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = nSphere( ro+t*rd, vec4( 1.5,1.0, 2.7,1.0) ); }\n    t = iSphere( ro, rd, vec4( 4.0,1.0, 4.0, 1.0) ); if( t>eps && t<res.x ) { res = vec2( t, 6. ); normal = nSphere( ro+t*rd, vec4( 4.0,1.0, 4.0,1.0) ); }\n    t = iSphere( ro, rd, vec4( 3.3,0.3, 1.3, 0.3) ); if( t>eps && t<res.x ) { res = vec2( t, 3. ); normal = nSphere( ro+t*rd, vec4( 3.3,0.3, 1.3, 0.3) ); }\n    t = iSphere( ro, rd, lightSphere ); if( t>eps && t<res.x ) { res = vec2( t, 0.0 );  normal = nSphere( ro+t*rd, lightSphere ); }\n\t\t\t\t\t  \n    return res;\t\t\t\t\t  \n}\n\nbool intersectShadow( in vec3 ro, in vec3 rd, in float dist ) {\n    float t;\n\t\n\tt = iSphere( ro, rd, vec4( 1.5,1.0, 2.7,1.0) );  if( t>eps && t<dist ) { return true; }\n    t = iSphere( ro, rd, vec4( 4.0,1.0, 4.0,1.0) );  if( t>eps && t<dist ) { return true; }\n\tt = iSphere( ro, rd, vec4( 3.3,0.3, 1.3, 0.3) );  if( t>eps && t<dist ) { return true; }\n    return false; // optimisation: planes don't cast shadows in this scene\n}\n\n//-----------------------------------------------------\n// materials\n//-----------------------------------------------------\n\nvec3 matColor( const in float mat ) {\n\tvec3 nor = vec3(0., 0.95, 0.);\n\t\n\tif( mat<3.5 ) nor = REDCOLOR;\n    if( mat<2.5 ) nor = GREENCOLOR;\n\tif( mat<1.5 ) nor = WHITECOLOR;\n\tif( mat<0.5 ) nor = LIGHTCOLOR;\n\t\t\t\t\t  \n    return nor;\t\t\t\t\t  \n}\n\nbool matIsSpecular( const in float mat ) {\n    return mat > 4.5;\n}\n\nbool matIsLight( const in float mat ) {\n    return mat < 0.5;\n}\n\n//-----------------------------------------------------\n// brdf\n//-----------------------------------------------------\n\nvec3 getBRDFRay( in vec3 n, const in vec3 rd, const in float m, inout bool specularBounce, inout float seed ) {\n    specularBounce = false;\n    \n    vec3 r = cosWeightedRandomHemisphereDirection( n, seed );\n    if(  !matIsSpecular( m ) ) {\n        return r;\n    } else {\n        specularBounce = true;\n        \n        float n1, n2, ndotr = dot(rd,n);\n        \n        if( ndotr > 0. ) {\n            n1 = 1.0; \n            n2 = 1.5;\n            n = -n;\n        } else {\n            n1 = 1.5;\n            n2 = 1.0; \n        }\n                \n        float r0 = (n1-n2)/(n1+n2); r0 *= r0;\n\t\tfloat fresnel = r0 + (1.-r0) * pow(1.0-abs(ndotr),5.);\n        \n        vec3 ref;\n        \n        if( hash1(seed) < fresnel ) {\n            ref = reflect( rd, n );\n        } else {\n            ref = refract( rd, n, n2/n1 );\n        }\n        \n        return ref; // normalize( ref + 0.1 * r );\n\t}\n}\n\n//-----------------------------------------------------\n// eyepath\n//-----------------------------------------------------\n\nvec3 traceEyePath( in vec3 ro, in vec3 rd, const in bool directLightSampling, inout float seed ) {\n    vec3 tcol = vec3(0.);\n    vec3 fcol  = vec3(1.);\n    \n    bool specularBounce = true;\n    \n    for( int j=0; j<EYEPATHLENGTH; ++j ) {\n        vec3 normal;\n        \n        vec2 res = intersect( ro, rd, normal );\n        if( res.y < -0.5 ) {\n            return tcol;\n        }\n        \n        if( matIsLight( res.y ) ) {\n            if( directLightSampling ) {\n            \tif( specularBounce ) tcol += fcol*LIGHTCOLOR;\n            } else {\n                tcol += fcol*LIGHTCOLOR;\n            }\n         //   basecol = vec3(0.);\t// the light has no diffuse component, therefore we can return col\n            return tcol;\n        }\n        \n        ro = ro + res.x * rd;\n        rd = getBRDFRay( normal, rd, res.y, specularBounce, seed );\n        \n        fcol *= matColor( res.y );\n\n        vec3 ld = sampleLight( ro, seed ) - ro;\n        \n        if( directLightSampling ) {\n\t\t\tvec3 nld = normalize(ld);\n            if( !specularBounce && j < EYEPATHLENGTH-1 && !intersectShadow( ro, nld, length(ld)) ) {\n\n                float cos_a_max = sqrt(1. - clamp(lightSphere.w * lightSphere.w / dot(lightSphere.xyz-ro, lightSphere.xyz-ro), 0., 1.));\n                float weight = 2. * (1. - cos_a_max);\n\n                tcol += (fcol * LIGHTCOLOR) * (weight * clamp(dot( nld, normal ), 0., 1.));\n            }\n        }\n    }    \n    return tcol;\n}\n\n//-----------------------------------------------------\n// main\n//-----------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 q = fragCoord.xy / iResolution.xy;\n    \n    bool directLightSampling = true;\n\n    //-----------------------------------------------------\n    // camera\n    //-----------------------------------------------------\n\n    vec2 p = -1.0 + 2.0 * (fragCoord.xy) / iResolution.xy;\n    p.x *= iResolution.x/iResolution.y;\n\n#ifdef ANIMATENOISE\n    float seed = p.x + p.y * 3.43121412313 + fract(1.12345314312*iTime);\n#else\n    float seed = p.x + p.y * 3.43121412313;\n#endif\n    \n    vec3 ro = vec3(2.78, 2.73, -8.00);\n    vec3 ta = vec3(2.78, 2.73,  0.00);\n    vec3 ww = normalize( ta - ro );\n    vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0) ) );\n    vec3 vv = normalize( cross(uu,ww));\n\n    //-----------------------------------------------------\n    // render\n    //-----------------------------------------------------\n\n    vec3 col = vec3(0.0);\n    vec3 tot = vec3(0.0);\n    vec3 uvw = vec3(0.0);\n    \n    for( int a=0; a<SAMPLES; a++ ) {\n\n        vec2 rpof = 4.*(hash2(seed)-vec2(0.5)) / iResolution.xy;\n\t    vec3 rd = normalize( (p.x+rpof.x)*uu + (p.y+rpof.y)*vv + 3.0*ww );\n        \n#ifdef DOF\n\t    vec3 fp = ro + rd * 12.0;\n   \t\tvec3 rof = ro + (uu*(hash1(seed)-0.5) + vv*(hash1(seed)-0.5))*0.125;\n    \trd = normalize( fp - rof );\n#else\n        vec3 rof = ro;\n#endif        \n        \n#ifdef MOTIONBLUR\n        initLightSphere( TIME + hash1(seed) / MOTIONBLURFPS );\n#else\n        initLightSphere( TIME );        \n#endif\n        \n        col = traceEyePath( rof, rd, directLightSampling, seed );\n\n        tot += col;\n        \n        seed = mod( seed*1.1234567893490423, 13. );\n    }\n    \n    tot /= float(SAMPLES);\n\n    tot = pow( clamp(tot,0.0,1.0), vec3(0.45) );\n\n    fragColor = vec4( tot, 0.0 );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Simple path tracer. Created by Reinder Nijhoff 2014\n// @reindernijhoff\n//\n// https://www.shadertoy.com/view/4tl3z4\n//\n\n// calculate normal for denoise\n\n#define eps 0.0001\n#define EYEPATHLENGTH 1\n#define SAMPLES 1\n\n\n#define FULLBOX\n\n#define DOF\n#define ANIMATENOISE\n#define MOTIONBLUR\n\n#define MOTIONBLURFPS 40.\n\n#define LIGHTCOLOR vec3(16.86, 10.76, 8.2)*1.3*3.\n#define WHITECOLOR vec3(.7295, .7355, .729)*0.7\n#define GREENCOLOR vec3(.117, .5125, .115)*0.7\n#define REDCOLOR vec3(.711, .0555, .062)*0.7\n\nfloat hash1(inout float seed) {\n    float hash = fract(sin(seed)*43758.5453123);\n    seed += hash;\n    return hash;\n}\n\nvec2 hash2(inout float seed) {\n    vec2 hash = fract(sin(vec2(seed))*vec2(43758.5453123,22578.1459123));\n    seed += hash.x + hash.y;\n    return hash;\n}\n\nvec3 hash3(inout float seed) {\n    vec3 hash = fract(sin(vec3(seed))*vec3(43758.5453123,22578.1459123,19642.3490423));\n    seed += hash.x + hash.y + hash.z;\n    return hash;\n}\n\n//-----------------------------------------------------\n// Intersection functions (by iq)\n//-----------------------------------------------------\n\nvec3 nSphere( in vec3 pos, in vec4 sph ) {\n    return (pos-sph.xyz)/sph.w;\n}\n\nfloat iSphere( in vec3 ro, in vec3 rd, in vec4 sph ) {\n    vec3 oc = ro - sph.xyz;\n    float b = dot(oc, rd);\n    float c = dot(oc, oc) - sph.w * sph.w;\n    float h = b * b - c;\n    if (h < 0.0) return -1.0;\n\n\tfloat s = sqrt(h);\n\tfloat t1 = -b - s;\n\tfloat t2 = -b + s;\n\t\n\treturn t1 < 0.0 ? t2 : t1;\n}\n\nvec3 nPlane( in vec3 ro, in vec4 obj ) {\n    return obj.xyz;\n}\n\nfloat iPlane( in vec3 ro, in vec3 rd, in vec4 pla ) {\n    return (-pla.w - dot(pla.xyz,ro)) / dot( pla.xyz, rd );\n}\n\n//-----------------------------------------------------\n// scene\n//-----------------------------------------------------\n\nvec3 cosWeightedRandomHemisphereDirection( const vec3 n, inout float seed ) {\n  \tvec2 r = hash2(seed);\n    \n\tvec3  uu = normalize( cross( n, vec3(0.0,1.0,1.0) ) );\n\tvec3  vv = cross( uu, n );\n\t\n\tfloat ra = sqrt(r.y);\n\tfloat rx = ra*cos(6.2831*r.x); \n\tfloat ry = ra*sin(6.2831*r.x);\n\tfloat rz = sqrt( 1.0-r.y );\n\tvec3  rr = vec3( rx*uu + ry*vv + rz*n );\n    \n    return normalize( rr );\n}\n\nvec3 randomSphereDirection(inout float seed) {\n    vec2 r = hash2(seed)*6.2831;\n\tvec3 dr=vec3(sin(r.x)*vec2(sin(r.y),cos(r.y)),cos(r.x));\n\treturn dr;\n}\n\nvec3 randomHemisphereDirection( const vec3 n, inout float seed ) {\n\tvec3 dr = randomSphereDirection(seed);\n\treturn dot(dr,n) * dr;\n}\n\n//-----------------------------------------------------\n// light\n//-----------------------------------------------------\n\nvec4 lightSphere;\n\nvoid initLightSphere( float time ) {\n\tlightSphere = vec4( 3.0+2.*sin(time),2.8+2.*sin(time*0.9),3.0+4.*cos(time*0.7), .5 );\n}\n\nvec3 sampleLight( const in vec3 ro, inout float seed ) {\n    vec3 n = randomSphereDirection( seed ) * lightSphere.w;\n    return lightSphere.xyz + n;\n}\n\n//-----------------------------------------------------\n// scene\n//-----------------------------------------------------\n\nvec2 intersect( in vec3 ro, in vec3 rd, inout vec3 normal ) {\n\tvec2 res = vec2( 1e20, -1.0 );\n    float t;\n\t\n\tt = iPlane( ro, rd, vec4( 0.0, 1.0, 0.0,0.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., 1., 0.); }\n\tt = iPlane( ro, rd, vec4( 0.0, 0.0,-1.0,8.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., 0.,-1.); }\n    t = iPlane( ro, rd, vec4( 1.0, 0.0, 0.0,0.0 ) ); if( t>eps && t<res.x ) { res = vec2( t, 2. ); normal = vec3( 1., 0., 0.); }\n#ifdef FULLBOX\n    t = iPlane( ro, rd, vec4( 0.0,-1.0, 0.0,5.49) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = vec3( 0., -1., 0.); }\n    t = iPlane( ro, rd, vec4(-1.0, 0.0, 0.0,5.59) ); if( t>eps && t<res.x ) { res = vec2( t, 3. ); normal = vec3(-1., 0., 0.); }\n#endif\n\n\tt = iSphere( ro, rd, vec4( 1.5,1.0, 2.7, 1.0) ); if( t>eps && t<res.x ) { res = vec2( t, 1. ); normal = nSphere( ro+t*rd, vec4( 1.5,1.0, 2.7,1.0) ); }\n    t = iSphere( ro, rd, vec4( 4.0,1.0, 4.0, 1.0) ); if( t>eps && t<res.x ) { res = vec2( t, 6. ); normal = nSphere( ro+t*rd, vec4( 4.0,1.0, 4.0,1.0) ); }\n    t = iSphere( ro, rd, vec4( 3.3,0.3, 1.3, 0.3) ); if( t>eps && t<res.x ) { res = vec2( t, 3. ); normal = nSphere( ro+t*rd, vec4( 3.3,0.3, 1.3, 0.3) ); }\n    t = iSphere( ro, rd, lightSphere ); if( t>eps && t<res.x ) { res = vec2( t, 0.0 );  normal = nSphere( ro+t*rd, lightSphere ); }\n\t\t\t\t\t  \n    return res;\t\t\t\t\t  \n}\n\nbool intersectShadow( in vec3 ro, in vec3 rd, in float dist ) {\n    float t;\n\t\n\tt = iSphere( ro, rd, vec4( 1.5,1.0, 2.7,1.0) );  if( t>eps && t<dist ) { return true; }\n    t = iSphere( ro, rd, vec4( 4.0,1.0, 4.0,1.0) );  if( t>eps && t<dist ) { return true; }\n\tt = iSphere( ro, rd, vec4( 3.3,0.3, 1.3, 0.3) );  if( t>eps && t<dist ) { return true; }\n    return false; // optimisation: planes don't cast shadows in this scene\n}\n\n//-----------------------------------------------------\n// materials\n//-----------------------------------------------------\n\nvec3 matColor( const in float mat ) {\n\tvec3 nor = vec3(0., 0.95, 0.);\n\t\n\tif( mat<3.5 ) nor = REDCOLOR;\n    if( mat<2.5 ) nor = GREENCOLOR;\n\tif( mat<1.5 ) nor = WHITECOLOR;\n\tif( mat<0.5 ) nor = LIGHTCOLOR;\n\t\t\t\t\t  \n    return nor;\t\t\t\t\t  \n}\n\nbool matIsSpecular( const in float mat ) {\n    return mat > 4.5;\n}\n\nbool matIsLight( const in float mat ) {\n    return mat < 0.5;\n}\n\n//-----------------------------------------------------\n// brdf\n//-----------------------------------------------------\n\nvec3 getBRDFRay( in vec3 n, const in vec3 rd, const in float m, inout bool specularBounce, inout float seed ) {\n    specularBounce = false;\n    \n    vec3 r = cosWeightedRandomHemisphereDirection( n, seed );\n    if(  !matIsSpecular( m ) ) {\n        return r;\n    } else {\n        specularBounce = true;\n        \n        float n1, n2, ndotr = dot(rd,n);\n        \n        if( ndotr > 0. ) {\n            n1 = 1.0; \n            n2 = 1.5;\n            n = -n;\n        } else {\n            n1 = 1.5;\n            n2 = 1.0; \n        }\n                \n        float r0 = (n1-n2)/(n1+n2); r0 *= r0;\n\t\tfloat fresnel = r0 + (1.-r0) * pow(1.0-abs(ndotr),5.);\n        \n        vec3 ref;\n        \n        if( hash1(seed) < fresnel ) {\n            ref = reflect( rd, n );\n        } else {\n            ref = refract( rd, n, n2/n1 );\n        }\n        \n        return ref; // normalize( ref + 0.1 * r );\n\t}\n}\n\n//-----------------------------------------------------\n// eyepath\n//-----------------------------------------------------\n\nvec3 traceEyePath( in vec3 ro, in vec3 rd, const in bool directLightSampling, inout float seed ) {\n    vec3 tcol = vec3(0.);\n    vec3 fcol  = vec3(1.);\n    \n    bool specularBounce = true;\n    \n    vec3 normal;\n    intersect( ro, rd, normal );\n    return normal;//(normal+vec3(1.,1.,1.))/2.;\n}\n\n//-----------------------------------------------------\n// main\n//-----------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 q = fragCoord.xy / iResolution.xy;\n\n    bool directLightSampling = true;\n    \n    //-----------------------------------------------------\n    // camera\n    //-----------------------------------------------------\n\n    vec2 p = -1.0 + 2.0 * (fragCoord.xy) / iResolution.xy;\n    p.x *= iResolution.x/iResolution.y;\n\n#ifdef ANIMATENOISE\n    float seed = p.x + p.y * 3.43121412313 + fract(1.12345314312*iTime);\n#else\n    float seed = p.x + p.y * 3.43121412313;\n#endif\n    \n    vec3 ro = vec3(2.78, 2.73, -8.00);\n    vec3 ta = vec3(2.78, 2.73,  0.00);\n    vec3 ww = normalize( ta - ro );\n    vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0) ) );\n    vec3 vv = normalize( cross(uu,ww));\n\n    //-----------------------------------------------------\n    // render\n    //-----------------------------------------------------\n\n    vec3 col = vec3(0.0);\n    vec3 tot = vec3(0.0);\n    vec3 uvw = vec3(0.0);\n    \n    for( int a=0; a<SAMPLES; a++ ) {\n\n        vec2 rpof = 4.*(hash2(seed)-vec2(0.5)) / iResolution.xy;\n\t    vec3 rd = normalize( (p.x+rpof.x)*uu + (p.y+rpof.y)*vv + 3.0*ww );\n        \n#ifdef DOF\n\t    vec3 fp = ro + rd * 12.0;\n   \t\tvec3 rof = ro + (uu*(hash1(seed)-0.5) + vv*(hash1(seed)-0.5))*0.125;\n    \trd = normalize( fp - rof );\n#else\n        vec3 rof = ro;\n#endif        \n        \n#ifdef MOTIONBLUR\n        initLightSphere( TIME + hash1(seed) / MOTIONBLURFPS );\n#else\n        initLightSphere( TIME );        \n#endif\n        \n        col = traceEyePath( rof, rd, directLightSampling, seed );\n\n        tot += col;\n        \n        seed = mod( seed*1.1234567893490423, 13. );\n    }\n    \n    tot /= float(SAMPLES);\n\n    fragColor = vec4( tot, 0.0 );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Edge-Avoiding À-TrousWavelet Transform for denoising\n// implemented on https://www.shadertoy.com/view/ldKBzG\n// feel free to use it\n\n// here, the denoising kernel stride ranges from 1.0 to 4.0\n#define DENOISE_RANGE vec2(1, 4)\n\nfloat hash1(float seed) {\n    return fract(sin(seed)*43758.5453123);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) \n{\n    \n    vec2 offset[25];\n    offset[0] = vec2(-2,-2);\n    offset[1] = vec2(-1,-2);\n    offset[2] = vec2(0,-2);\n    offset[3] = vec2(1,-2);\n    offset[4] = vec2(2,-2);\n    \n    offset[5] = vec2(-2,-1);\n    offset[6] = vec2(-1,-1);\n    offset[7] = vec2(0,-1);\n    offset[8] = vec2(1,-1);\n    offset[9] = vec2(2,-1);\n    \n    offset[10] = vec2(-2,0);\n    offset[11] = vec2(-1,0);\n    offset[12] = vec2(0,0);\n    offset[13] = vec2(1,0);\n    offset[14] = vec2(2,0);\n    \n    offset[15] = vec2(-2,1);\n    offset[16] = vec2(-1,1);\n    offset[17] = vec2(0,1);\n    offset[18] = vec2(1,1);\n    offset[19] = vec2(2,1);\n    \n    offset[20] = vec2(-2,2);\n    offset[21] = vec2(-1,2);\n    offset[22] = vec2(0,2);\n    offset[23] = vec2(1,2);\n    offset[24] = vec2(2,2);\n    \n    \n    float kernel[25];\n    kernel[0] = 1.0f/256.0f;\n    kernel[1] = 1.0f/64.0f;\n    kernel[2] = 3.0f/128.0f;\n    kernel[3] = 1.0f/64.0f;\n    kernel[4] = 1.0f/256.0f;\n    \n    kernel[5] = 1.0f/64.0f;\n    kernel[6] = 1.0f/16.0f;\n    kernel[7] = 3.0f/32.0f;\n    kernel[8] = 1.0f/16.0f;\n    kernel[9] = 1.0f/64.0f;\n    \n    kernel[10] = 3.0f/128.0f;\n    kernel[11] = 3.0f/32.0f;\n    kernel[12] = 9.0f/64.0f;\n    kernel[13] = 3.0f/32.0f;\n    kernel[14] = 3.0f/128.0f;\n    \n    kernel[15] = 1.0f/64.0f;\n    kernel[16] = 1.0f/16.0f;\n    kernel[17] = 3.0f/32.0f;\n    kernel[18] = 1.0f/16.0f;\n    kernel[19] = 1.0f/64.0f;\n    \n    kernel[20] = 1.0f/256.0f;\n    kernel[21] = 1.0f/64.0f;\n    kernel[22] = 3.0f/128.0f;\n    kernel[23] = 1.0f/64.0f;\n    kernel[24] = 1.0f/256.0f;\n    \n    vec3 sum = vec3(0.0);\n    vec3 sum_f = vec3(0.0);\n    float c_phi = 1.0;\n    float r_phi = 1.0;\n    float n_phi = 0.5;\n    float p_phi = 0.25;\n    \n\tvec3 cval = texelFetch(iChannel0, ivec2(fragCoord), 0).xyz;\n    vec3 rval = texelFetch(iChannel2, ivec2(fragCoord), 0).xyz;\n\tvec3 nval = texelFetch(iChannel1, ivec2(fragCoord), 0).xyz;\n\n    float ang = 2.0*3.1415926535*hash1(251.12860182*fragCoord.x + 729.9126812*fragCoord.y+5.1839513*iTime);\n\tmat2 m = mat2(cos(ang),sin(ang),-sin(ang),cos(ang));\n    \n    float cum_w = 0.0;\n    float cum_fw = 0.0;\n    \n    float denoiseStrength = (DENOISE_RANGE.x + (DENOISE_RANGE.y-DENOISE_RANGE.x)*hash1(641.128752*fragCoord.x + 312.321374*fragCoord.y+1.92357812*iTime));\n    \n    for(int i=0; i<25; i++)\n    {\n        vec2 uv = (fragCoord+m*(offset[i]* denoiseStrength))/iResolution.xy;\n        \n        vec3 ctmp = texture(iChannel0, uv).xyz;\n        vec3 t = cval - ctmp;\n        float dist2 = dot(t,t);\n        float c_w = min(exp(-(dist2)/c_phi), 1.0);\n        \n        vec3 ntmp = texture(iChannel1, uv).xyz;\n        t = nval - ntmp;\n        dist2 = max(dot(t,t), 0.0);\n        float n_w = min(exp(-(dist2)/n_phi), 1.0);\n        \n        vec3 rtmp = texture(iChannel2, uv).xyz;\n        t = rval - rtmp;\n        dist2 = dot(t,t);\n        float r_w = min(exp(-(dist2)/r_phi), 1.0);\n        \n        // new denoised frame\n        float weight0 = c_w*n_w;\n        sum += ctmp*weight0*kernel[i];\n        cum_w += weight0*kernel[i];\n        \n        // denoise the previous denoised frame again\n        float weight1 = r_w*n_w;\n        sum_f += rtmp*weight1*kernel[i];\n        cum_fw += weight1*kernel[i];\n    }\n    \n    // mix in more of the just-denoised frame if it differs significantly from the\n    // frame from feedback\n    vec3 ptmp = texture(iChannel2, fragCoord/iResolution.xy).xyz;\n    vec3 t = sum/cum_w - ptmp;\n    float dist2 = dot(t,t);\n    float p_w = min(exp(-(dist2)/p_phi), 1.0);\n    \n    fragColor = clamp(vec4(mix(sum/cum_w,sum_f/cum_fw,p_w),0.0),0.0,1.0);\n\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Temporal AA based on Epic Games' implementation:\n// https://de45xmedrsdbp.cloudfront.net/Resources/files/TemporalAA_small-59732822.pdf\n// \n// Originally written by yvt for https://www.shadertoy.com/view/4tcXD2\n// Feel free to use this in your shader!\n\n// YUV-RGB conversion routine from Hyper3D\nvec3 encodePalYuv(vec3 rgb)\n{\n    rgb = pow(rgb, vec3(2.0)); // gamma correction\n    return vec3(\n        dot(rgb, vec3(0.299, 0.587, 0.114)),\n        dot(rgb, vec3(-0.14713, -0.28886, 0.436)),\n        dot(rgb, vec3(0.615, -0.51499, -0.10001))\n    );\n}\n\nvec3 decodePalYuv(vec3 yuv)\n{\n    vec3 rgb = vec3(\n        dot(yuv, vec3(1., 0., 1.13983)),\n        dot(yuv, vec3(1., -0.39465, -0.58060)),\n        dot(yuv, vec3(1., 2.03211, 0.))\n    );\n    return pow(rgb, vec3(1.0 / 2.0)); // gamma correction\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    \n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 lastColor = texture(iChannel1, uv);\n    \n    vec3 antialiased = lastColor.xyz;\n    float mixRate = min(lastColor.w, 0.5);\n    \n    vec2 off = 1.0 / iResolution.xy;\n    vec3 in0 = texture(iChannel0, uv).xyz;\n    \n    antialiased = mix(antialiased * antialiased, in0 * in0, mixRate);\n    antialiased = sqrt(antialiased);\n    \n    vec3 in1 = texture(iChannel0, uv + vec2(+off.x, 0.0)).xyz;\n    vec3 in2 = texture(iChannel0, uv + vec2(-off.x, 0.0)).xyz;\n    vec3 in3 = texture(iChannel0, uv + vec2(0.0, +off.y)).xyz;\n    vec3 in4 = texture(iChannel0, uv + vec2(0.0, -off.y)).xyz;\n    vec3 in5 = texture(iChannel0, uv + vec2(+off.x, +off.y)).xyz;\n    vec3 in6 = texture(iChannel0, uv + vec2(-off.x, +off.y)).xyz;\n    vec3 in7 = texture(iChannel0, uv + vec2(+off.x, -off.y)).xyz;\n    vec3 in8 = texture(iChannel0, uv + vec2(-off.x, -off.y)).xyz;\n    \n    antialiased = encodePalYuv(antialiased);\n    in0 = encodePalYuv(in0);\n    in1 = encodePalYuv(in1);\n    in2 = encodePalYuv(in2);\n    in3 = encodePalYuv(in3);\n    in4 = encodePalYuv(in4);\n    in5 = encodePalYuv(in5);\n    in6 = encodePalYuv(in6);\n    in7 = encodePalYuv(in7);\n    in8 = encodePalYuv(in8);\n    \n    vec3 minColor = min(min(min(in0, in1), min(in2, in3)), in4);\n    vec3 maxColor = max(max(max(in0, in1), max(in2, in3)), in4);\n    minColor = mix(minColor,\n       min(min(min(in5, in6), min(in7, in8)), minColor), 0.5);\n    maxColor = mix(maxColor,\n       max(max(max(in5, in6), max(in7, in8)), maxColor), 0.5);\n    \n   \tvec3 preclamping = antialiased;\n    antialiased = clamp(antialiased, minColor, maxColor);\n    \n    mixRate = 1.0 / (1.0 / mixRate + 1.0);\n    \n    vec3 diff = antialiased - preclamping;\n    float clampAmount = dot(diff, diff);\n    \n    mixRate += clampAmount * 4.0;\n    mixRate = clamp(mixRate, 0.05, 0.5);\n    \n    antialiased = decodePalYuv(antialiased);\n        \n    fragColor = vec4(antialiased, mixRate);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//#define TIME 235.20+1.0*sin(0.3*iTime)\n#define TIME iTime\n//#define TIME 1778.9+0.5*sin(1.0*iTime)\n//#define TIME 528.07\n//#define TIME 759.39\n//#define TIME 800.54",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

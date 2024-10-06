@@ -1,0 +1,75 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1592081042",
+            "description": "Metal Fuzion, kind of proud of the use of inverse distance weighting.",
+            "flags": 64,
+            "hasliked": 0,
+            "id": "tlXcWN",
+            "likes": 4,
+            "name": "MX Metal Fuzion",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "meta",
+                "audioreactive"
+            ],
+            "usePreview": 0,
+            "username": "xjorma",
+            "viewed": 428
+        },
+        "renderpass": [
+            {
+                "code": "// Created by David Gallardo - xjorma/2020\n\n#define COLOR_X\t\tvec3(255, 215,   0) / 255.;\n#define COLOR_1 \tvec3(184, 115,  51) / 255.;\n#define COLOR_SURF\tvec3(200, 200, 200) / 255.;\n\n\n#define\tAA 0\n#define BIASED_NORMAL 1\n#define EXTRUDE 0\n#define CUBEMAP 1\n#define GAMMA\t1\n\nmat3 m1;\nmat3 mX;\nvec3 p1;\nvec3 pX;\n\nfloat low;\nfloat mid;\n\n\nfloat sdWaterSurface(in vec3 p )\n{\n    float h = 0.;\n    h += cos( iTime * 5.0 - distance( vec2( -25, -10) , p.xz) * 3.0 )  * 0.15 * low;\n    h += cos( iTime * 5.0 - distance( vec2( 25, -10) , p.xz) * 3.8 ) * 0.06 * mid;\n    \n    return  p.y + 1. + h * max( 0.0, 1.0 -  length( p.xz) / 33. );\n}\n\nfloat opExtrussion( in vec3 p, in float sdf, in float h )\n{\n    vec2 w = vec2( sdf, abs(p.z) - h );\n  \treturn min(max(w.x,w.y),0.0) + length(max(w,0.0));\n}\n\nfloat sdfX(in vec3 p)\n{\n    p = mX * (p + pX);\n    return opExtrussion(p, sd2dM(p.xy + vec2(-0.6415, 0.0000)), 0.5);\n\n}\n\nfloat sdf1(in vec3 p)\n{\n    p = m1 * (p + p1);\n    return opExtrussion(p, sd2dX(p.xy + vec2(1.4875, 0.0000)), 0.5);\n\n}\n\nconst float k = 8.;\n\nfloat sminAcc(in float v)\n{\n    return exp2(-k * v);\n}\n\nfloat sminFinal(in float v)\n{\n    return -log2(v) / k;\n}\n\n\n//---------------------------------\n\nfloat map(in vec3 pos)\n{\n    float d = 0.; \n    d += sminAcc(sdfX(pos));\n    d += sminAcc(sdf1(pos));\n    d += sminAcc(sdWaterSurface(pos));\n    return sminFinal(d);\n}\n\n\nconst float IDWMin = 0.01;\n// https://en.wikipedia.org/wiki/Inverse_distance_weighting\nvec3 color(in vec3 pos)\n{\n    vec3 c0 = COLOR_X;\n    vec3 c1 = COLOR_1;\n    vec3 c2 = COLOR_SURF;\n    float d0 = 1. / max(sdfX(pos), IDWMin);\n    float d1 = 1. / max(sdf1(pos), IDWMin);\n    float d2 = 1. / max(sdWaterSurface(pos), IDWMin);    \n    return (c0 * d0 + c1 * d1  + c2 * d2) / ( d0 + d1 + d2);\n}\n\n\n#define EPS  0.01\n\n\n#if BIASED_NORMAL\nvec3 calcNormal(vec3 pos)\n{\n    vec2 eps = vec2(EPS, 0);\n\tfloat d = map(pos);\n\treturn normalize(vec3(map(pos + eps.xyy) - d, map(pos + eps.yxy) - d, map(pos + eps.yyx) - d));\n}\n#else\nvec3 calcNormal( in vec3 pos )\n{\n    const float ep = EPS;\n    vec2 e = vec2(1.0,-1.0)*0.5773;\n    return normalize( e.xyy*map( pos + e.xyy*ep ) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx*ep ) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy*ep ) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx*ep ) );\n}\n#endif\n\nfloat ambientOcclusion(in vec3 pos, in vec3 normal, in float scale )\n{\n    float d = map( pos + normal * scale );\n    return d / scale;\n    \n}\n\nvec3 desaturate(in vec3 c, in float a)\n{\n    float l = dot(c, vec3(1. / 3.));\n    return mix(c, vec3(l), a);\n}\n\nvec3 Render(vec3 ro,vec3 rd,vec3 cd,float dist)\n{\n    float t = 0.5;\n    float d;\n    float noise = 0.;\n    for( int i=0; i<1024; i++ )\n    {\n        vec3\tp = ro + t*rd;\n        float\th = map(p);\n        d = dot(t*rd,cd);\n        if( abs(h)<0.0001 || d>dist ) break;\n        t += 0.8 * h;\n    }\n\n    vec3 col = vec3(0.5);\n\n    if( d<dist )\n    {\n        vec3 p = ro + t*rd;\n        vec3 n = calcNormal(p);\n        vec3 dir = reflect( rd, n );\n        #if CUBEMAP\n        col = texture(iChannel0, dir).xyz;\n        #else\n        col = texture(iChannel0, (dir.xy / 2.) + 0.5).xyz;\n        #endif\n        #if GAMMA\n        \tcol = pow(col, vec3(2.2));\n       \t#endif\n        col = desaturate(col, 0.7);\n        col *= color(p); \n        //col *= ambientOcclusion(p, n, 0.1);\n    }\n    return col;\n}\n\n\nmat3 setCamera( in vec3 ro, in vec3 ta )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 up = vec3(0, 1, 0);\n\tvec3 cu = normalize( cross(cw,up) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\n\nmat3 fromEuler(vec3 ang)\n{\n    mat3 mx = mat3(\n\t\t\t1.0,\t\t0.0,\t\t0.0,\n\t\t\t0.0,\t\tcos(ang.x),\t-sin(ang.x),\n\t\t\t0.0,\t\tsin(ang.x),\tcos(ang.x));\n    mat3 my = mat3(\n\t\t\tcos(ang.y), 0.0,\t\tsin(ang.y),\n\t\t\t0.0,\t\t1.0,\t\t0.0,\n\t\t\t-sin(ang.y),0.0,\t\tcos(ang.y));\n    mat3 mz = mat3(\n\t\t\tcos(ang.z), -sin(ang.z),0.0,\n\t\t\tsin(ang.z),\tcos(ang.z),\t0.0,\n\t\t\t0.0,\t\t0.0,\t\t1.0);\n        \n    return mx*my*mz;\n}\n\nvec3 contrast( in vec3 color, in float c)\n{\n    float t = 0.5 - c * 0.5; \n    return color * c + t;\n}\n\nvec3 vignette(vec3 color, vec2 q, float v)\n{\n    color *= 0.3 + 0.8 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), v);\n    return color;\n}\n\nvec3 postProcess(in vec3 col, in vec2 q)\n{\n    #if GAMMA\n\t\tcol = pow(col, vec3(1. / 2.2));\n    #endif\n    col = desaturate(col, -0.4);\n    col = vignette(col, q, 0.8);\n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // set translation and rotation\n\n    m1 = fromEuler(vec3(sin(iTime * 1.2) * radians(20.), -0.2 * iTime, sin(iTime * 1.3) * radians(20.)));\n    mX = fromEuler(vec3(sin(iTime * 0.9) * radians(20.),  0.1 * iTime, sin(iTime * 0.8) * radians(20.)));\n    \n    float cx = cos(0.4 * iTime) * 2.5;\n    float cyX = cos(0.23 * iTime) * 0.8;\n    float cy1 = cos(0.29 * iTime) * 0.8;\n    pX = vec3(-cx,cyX,0);\n    p1 = vec3(cx,cy1,0);\n    \n    // Audio reactive\n    \n    mid = texture(iChannel1, vec2(0.5,0.25)).x;\n    low = texture(iChannel1, vec2(0.9,0.25)).x;\n    \n    float theta\t= radians(90.) + sin(iTime / 3.) * radians(20.);\n\tfloat phi\t= radians(50.) + sin(iTime / 4.) * radians(5.);\n\tvec3 ro = 4.*vec3( sin(phi)*cos(theta),cos(phi),sin(phi)*sin(theta));\n     \n\tvec3 tot = vec3(0.0);    \n#if AA\n\tvec2 rook[4];\n    rook[0] = vec2( 1./8., 3./8.);\n    rook[1] = vec2( 3./8.,-1./8.);\n    rook[2] = vec2(-1./8.,-3./8.);\n    rook[3] = vec2(-3./8., 1./8.);\n    for( int n=0; n<4; ++n )\n    {\n        // pixel coordinates\n        vec2 o = rook[n];\n        vec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n#else //AA\n        vec2 p = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;\n#endif //AA\n        vec3 ta = vec3( 0 );\n        // camera-to-world transformation\n        mat3 ca = setCamera( ro, ta );\n        //vec3 cd = ca[2];    \n        \n        vec3 rd =  ca*normalize(vec3(p,1.5));        \n        \n        vec3 col = Render(ro ,rd ,ca[2],100.);\n        \n\n        tot += col;\n            \n#if AA\n    }\n    tot /= 4.;\n#endif\n        \n    tot = postProcess(tot,fragCoord / iResolution.xy);\n    \n\tfragColor = vec4( sqrt(tot), 1.0 );\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "musicstream",
+                        "id": 23125,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/babelian/rob-hubbard-goldrunner-khatchadour-remix"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float opUnion( float d1, float d2 )\n{\n    return min(d1,d2);\n}\n\nfloat opSubtraction( float d1, float d2 )\n{\n    return max(-d1,d2);\n}\n\nfloat opIntersection( float d1, float d2 )\n{\n    return max(d1,d2);\n}\n\n// Oriented Box\nfloat sdOBox(vec2 p, vec2 c, vec2 b, vec2 d)\n{\n    mat2\tr;\n    r[0]\t= d;\n   \tr[1]\t= vec2(-d.y, d.x);\n    vec2\tlp = (p - c) * r;\n    vec2\tq = abs(lp) - b;\n    return\tlength(max(q, 0.0)) + min(max(q.x, q.y), 0.0);  \n}\n\n// Axis Aligned Box\nfloat sdAABox(vec2 p, vec2 c, vec2 b)\n{ \n    vec2\tq = abs(p - c) - b;\n    return\tlength(max(q, 0.0)) + min(max(q.x, q.y), 0.0);\n}\n\n// Circle\nfloat sdCircle(vec2 p, vec2 c, float r)\n{\n    return\tlength(p - c) - r;\n}\n\nfloat sd2dM(vec2 p)\n{\n    float d0 = sdAABox(p, vec2(-1.5990, -0.2965), vec2(0.2900, 0.7035));\n    float d1 = sdAABox(p, vec2(-0.8555, -0.2965), vec2(0.2905, 0.7035));\n    float d2 = sdAABox(p, vec2(-0.1135, -0.2965), vec2(0.2905, 0.7035));\n    float cl = sdCircle(p, vec2(-1.3349, 0.4478), 0.5545);\n    float cr = sdCircle(p, vec2(-0.3787, 0.4478), 0.5565);\n    float cb = opUnion(cl, cr);\n    float dl = opUnion(d0, opUnion(d1, d2));\n    cb = opIntersection(cb, 0.2 - p.y);\n    float hl = sdCircle(p, vec2(-1.2275, 0.2000), 0.0815);\n    float hr = sdCircle(p, vec2(-0.4845, 0.2000), 0.0815);\n    float hb = opUnion(hl, hr);\n    return opSubtraction(hb, opUnion(dl, cb));    \n}\n\nfloat sd2dX(vec2 p)\n{\n    float dd = sdOBox(p, vec2(1.0765, -0.0245), vec2(1.2410, 0.2679), vec2(-0.4634, 0.8861));\n    float du = sdOBox(p, vec2(1.0535, -0.0245), vec2(1.2480, 0.2532), vec2(0.4776, 0.8786));\n    float dx = opUnion(dd, du);\n    return opIntersection(sdAABox(p, vec2(1.0620, -0.0245), vec2(0.8270, 0.9755)), dx);\n}\n\nfloat sd2dMX(vec2 p)\n{\n    return opUnion(sd2dM(p), sd2dX(p));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

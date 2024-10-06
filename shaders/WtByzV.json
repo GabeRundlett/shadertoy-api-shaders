@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1594786725",
+            "description": "line integral for a volume whose density is defined by a gaussian curve centred at the origin. shown here as a glowy blob",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WtByzV",
+            "likes": 21,
+            "name": "Gaussian Distributed Fog",
+            "published": 3,
+            "tags": [
+                "fog",
+                "integral",
+                "lineintegral"
+            ],
+            "usePreview": 0,
+            "username": "blackle",
+            "viewed": 641
+        },
+        "renderpass": [
+            {
+                "code": "//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\n//silly approximation for error function\nfloat erf(float x) {\n    return smoothstep(0.,1.,smoothstep(-2.25,2.25,x))*2.-1.;\n}\n\nfloat antiderivative(float x, vec3 origin, vec3 dir) {\n    //antiderivative for exp(-dot(origin+dir*x, origin+dir*x))\n    float od = dot(origin,dir);\n    return sqrt(acos(-1.)) * exp(od*od - dot(origin,origin)) * erf(od + x);\n}\n\nfloat lineintegral(vec3 a, vec3 b) {\n    float len = distance(a, b);\n    vec3 dir = (b-a)/len;\n    return antiderivative(len,a,dir) - antiderivative(0.,a,dir);\n}\n\nfloat pillar;\nfloat ground;\nfloat scene(vec3 p) {\n    p = asin(sin(p+1.));\n    pillar = length(p.xy)-.25;\n    ground = p.z;\n    return min(pillar, ground);\n}\n\nvec3 erot(vec3 p, vec3 ax, float ro) {\n    return mix(dot(ax,p)*ax,p,cos(ro))+sin(ro)*cross(ax,p);\n}\n\n#define FK(k) floatBitsToInt(k*k/7.)^floatBitsToInt(k)\nfloat hash(float a, float b) {\n    int x = FK(a), y = FK(b);\n    return float((x*x-y)*(y*y+x)-x)/2.14e9;\n}\n\nvec3 hash3(float a, float b) {\n    float s1 = hash(a, b);\n    float s2 = hash(s1, b);\n    float s3 = hash(s2, b);\n    return vec3(s1,s2,s3);\n}\n\nvec3 norm(vec3 p) {\n    mat3 k = mat3(p,p,p)-mat3(0.01);\n    return normalize(scene(p)-vec3( scene(k[0]),scene(k[1]),scene(k[2]) ) );\n}\n\nfloat bayer(vec2 fragCoord) {\n    return texelFetch(iChannel0, ivec2(fragCoord) % 8, 0).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n    float b = bayer(fragCoord);\n\n    vec3 cam = normalize(vec3(.8,uv));\n\tvec3 init = vec3(-4,0,0);\n    cam = erot(cam, vec3(0,1,0), .2);\n    init = erot(init, vec3(0,1,0), .2);\n    cam = erot(cam, vec3(0,0,1), iTime/5.);\n    init = erot(init, vec3(0,0,1), iTime/5.);\n    vec3 p = init;\n    bool hit = false;\n    float dist;\n    for (int i = 0; i < 150 && !hit; i++) {\n        dist = scene(p);\n        hit = dist*dist < 1e-6;\n        p += dist * cam;\n        if (distance(p,init)>500.) break;\n    }\n    float lpillar = pillar;\n    bool is_pillar = dist == pillar;\n    \n    //this is the part were we use the line integral to get the glowing ball\n    float glow = lineintegral(p*.8,init*.8)*.8;\n    \n    \n    float fog = smoothstep(20.,0.,distance(p,init)); fog *= fog;\n\tvec3 n = norm(p);\n\tvec3 r = reflect(cam,n);\n    \n    float tex = texture(iChannel1, p).x;\n    tex = texture(iChannel1, p/2.+tex/10.).x;\n    float ss = smoothstep(-.01,.01,scene(p-normalize(p)*.01));\n    float ao = smoothstep(-.1,.1,scene(p+n*.1));\n    float diffdot = dot(n,-normalize(p));\n    float diff = max(diffdot,0.) + diffdot*.1+.1;\n    float spec = max(dot(r,-normalize(p)),0.);\n    float fres = 1.-abs(dot(cam,n))*.98;\n    vec3 matcol = is_pillar ? vec3(0.9,.3,.05) : vec3(0.4,.4,.45);\n    if (is_pillar) matcol = erot(matcol, normalize(sin(-p)), .4)*.7+.3;\n    vec3 col = matcol*mix(diff,ss,.5)*ao*(tex*.1+.9);\n    if (is_pillar) col += fres*pow(spec,20.-tex*tex*15.)*.5;\n    \n    //reflection\n    bool hit2;\n    vec3 p2 = p + n*.1;\n    for (int i = 0; i < 20 && !hit2; i++) {\n        dist = scene(p2);\n        hit2 = dist*dist < 1e-6;\n        p2 += dist * r;\n        if (distance(p2,p)>50.) break;\n    }\n\n    float factor = 1./(1.+distance(p2,p)+dist);\n    vec3 n2 = norm(p2);\n    float refdiff = 1.-max(dot(n2,-normalize(p2)),0.)*.4;\n   \tglow += lineintegral(p2*.8,p*.8)*.1*fres*(tex*.4+.6);\n    col *= 1.-factor*fres*refdiff*(tex*.5+.5);\n    \n    //cast shadows\n    float mindist = 1000.;\n    vec3 minpoint;\n    bool lighthit = false;\n    for (int i = 0; i < 25; i++) {\n        vec3 point = mix(p+n*.05,vec3(0),(float(i+1)+b)/26.);\n        float dist = scene(point);\n        if (dist < mindist) {\n            mindist = dist;\n            minpoint = point;\n        }\n    }\n    float sharpness = distance(p,minpoint);\n    float shadow = smoothstep(-.05-sharpness/20.,.1,mindist)*.8;\n    shadow += smoothstep(-.1-sharpness/10.,.2,mindist)*.2;\n    \n    fragColor.xyz = (hit ? col : vec3(.1))*fog*shadow;\n    fragColor += glow;\n    fragColor = smoothstep(vec4(-.3),vec4(1.3),sqrt(fragColor)) + b/128.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,71 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1682087193",
+            "description": "A shader adaptation of Thomas Knoll's Pattern Dithering algorithm, as seen in Adobe Photoshop. It is a type of threshold-based dither that can accommodate arbitrary palettes. It works by selecting the output pixel colour from a set of weighted candidates.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dlcGzN",
+            "likes": 10,
+            "name": "Thomas Knoll's Pattern Dithering",
+            "published": 3,
+            "tags": [
+                "threshold",
+                "dither",
+                "palette",
+                "pattern",
+                "bayer",
+                "ordered",
+                "knoll"
+            ],
+            "usePreview": 0,
+            "username": "matejloub",
+            "viewed": 634
+        },
+        "renderpass": [
+            {
+                "code": "// Algorithm configuration. Feel free to tinker with some of the values to explore the algorithm!\n#define N 32                   // Number of iterations per fragment (higher N = more samples)\n#define PALETTE_SIZE 16        // Number of colours in the palette\n#define ERROR_FACTOR 0.8       // Quantisation error coefficient (0 = no dithering)\n#define PIXEL_SIZE 2.0         // Size of pixels in the shader output\n#define ENABLE_SORT            // Choose whether to enable the sorting procedures\n#define OPTIMISED_KNOLL        // Run an optimised version of the algorithm\n\n#define INFINITY 3.4e38        // 'Infinity'\n\n// Helper macro to convert an RGB hex code to a vec3\n#define RGB8(h) (vec3(h >> 16 & 0xFF, h >> 8 & 0xFF, h & 0xFF) / 255.0) \n\n    /*\n    Thomas Knoll's Pattern Dithering algorithm[1]. For every iteration, we find the closest palette \n    colour to the 'goal' colour, which is first set to the current fragment colour. When the closest\n    colour is found, we record it as the candidate for this iteration and calculate the quantisation\n    error (the difference between it and our fragment colour). The sum of the quantisation error\n    and the current fragment is then used as the goal colour for the next iteration. Every time \n    we find a new candidate, we accumulate the total quantisation error. At the end, the frequency\n    of each candidate represents the proportion of its contribution to the input colour. An error\n    coefficient controls the intensity of the dither.\n    \n    The original algorithm maintains an array of candidates of size N, where N is the number of\n    iterations. The colour of the final pixel is selected by randomly (or psuedo-randomly) indexing\n    into the array of candidates - in this case, we use a texture, although any noise function will \n    also do. An intermediate step involves sorting the candidate array by luminance before we select \n    the final colour. This is done to ensure that candidate colours are in a consistent relative position \n    in the array, and it also ensures that colours with similar luminance values appear further apart \n    in the final image, minimising the appearance of 'clumps'.\n    \n    Included is an optimised version of the algorithm which forgoes the candidate array in favour of an \n    array representing the frequency of each palette colour by index. Selecting from the frequency array \n    is done by obtaining a random value from 0 to N-1 and summing the cumulative frequency until the sum \n    is greater than the value. Instead of sorting the entire array of candidates each time, we simply\n    pre-sort the palette. For large values of N, the performance difference is quite noticeable.\n    \n    [1] https://patents.google.com/patent/US6606166B1/en\n    */\n\n// Using the PICO-8 palette. Optimised version uses a pre-sorted palette.\n#if defined OPTIMISED_KNOLL\nconst vec3 palette[PALETTE_SIZE] = vec3[](\n    RGB8(0x000000), RGB8(0x1D2B53), RGB8(0x7E2553), RGB8(0xFF004D),\n    RGB8(0x5F574F), RGB8(0xAB5236), RGB8(0x008751), RGB8(0x83769C),\n    RGB8(0xFF77A8), RGB8(0xFFA300), RGB8(0x29ADFF), RGB8(0xC2C3C7),\n    RGB8(0x00E436), RGB8(0xFFCCAA), RGB8(0xFFEC27), RGB8(0xFFF1E8));\n#else\nconst vec3 palette[PALETTE_SIZE] = vec3[](\n    RGB8(0x000000), RGB8(0x1D2B53), RGB8(0x7E2553), RGB8(0x008751),\n    RGB8(0xAB5236), RGB8(0x5F574F), RGB8(0xC2C3C7), RGB8(0xFFF1E8),\n    RGB8(0xFF004D), RGB8(0xFFA300), RGB8(0xFFEC27), RGB8(0x00E436),\n    RGB8(0x29ADFF), RGB8(0x83769C), RGB8(0xFF77A8), RGB8(0xFFCCAA));\n#endif\n\n// Convert a gamma-encoded sRGB value to linear RGB\n// https://chilliant.blogspot.com/2012/08/srgb-approximations-for-hlsl.html\nvec3 sRGBtoLinear(vec3 colour)\n{\n    return colour * (colour * (colour * 0.305306011 + 0.682171111) + 0.012522878);\n}\n\n// Get the luminance value of a given colour\nfloat getLuminance(vec3 colour)\n{\n    return colour.r * 0.299 + colour.g * 0.587 + colour.b * 0.114;\n}\n\n// Find the closest palette colour to the input colour via brute force\nint getClosestColour(vec3 inputColour)\n{\n    float closestDistance = INFINITY;\n    int closestColour = 0;\n    \n    for (int i = 0; i < PALETTE_SIZE; i++)\n    {\n        vec3 difference = inputColour - sRGBtoLinear(palette[i]);\n        float distance = dot(difference, difference);\n        \n        if (distance < closestDistance)\n        {\n            closestDistance = distance;\n            closestColour = i;\n        }\n    }\n    \n    return closestColour;\n}\n\n// Sample the value in the threshold matrix for the current pixel\nfloat sampleThreshold(vec2 coord)\n{\n    // Sample the centre of the texel\n    ivec2 pixel = ivec2(coord / PIXEL_SIZE) % ivec2(iChannelResolution[1]);\n    vec2 uv = vec2(pixel) / iChannelResolution[1].xy;\n    vec2 offset = 0.5 / iChannelResolution[1].xy;\n    return texture(iChannel1, uv + offset).x * float(N - 1);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Get the colour for this fragment\n    vec2 pixelSizeNormalised = PIXEL_SIZE * (1.0 / iResolution.xy);\n    vec2 uv = pixelSizeNormalised * floor(fragCoord / iResolution.xy / pixelSizeNormalised);\n    vec3 colour = texture(iChannel0, uv).rgb;\n\n    // Screen wipe effect\n    if (fragCoord.x < iMouse.x) \n    {\n        fragColor = vec4(colour, 1.0);\n        return;\n    }\n  \n    // ====================================== //\n    // Actual dithering algorithm starts here //\n    // ====================================== //\n     \n#if defined OPTIMISED_KNOLL\n    \n    // Accumulate the frequencies for each palette colour\n    int frequency[PALETTE_SIZE];\n    vec3 quantError = vec3(0, 0, 0);\n    vec3 colourLinear = sRGBtoLinear(colour);\n\n    for (int i = 0; i < N; i++)\n    {\n        vec3 goalColour = colourLinear + quantError * ERROR_FACTOR;\n        int closestColour = getClosestColour(goalColour);\n        \n        frequency[closestColour] += 1;\n        quantError += colourLinear - sRGBtoLinear(palette[closestColour]);\n    }\n\n    // Select the output colour by accumulating the frequencies until the candidate is found\n    int randomValue = int(sampleThreshold(fragCoord));\n    int cumulativeSum = 0;\n \n    for (int i = 0; i < PALETTE_SIZE; i++)\n    {\n        cumulativeSum += frequency[i];\n        \n        if (randomValue < cumulativeSum)\n        {\n             fragColor = vec4(palette[i], 1.0);\n             return;\n        }\n    }\n    return;\n    \n#else // !OPTIMISED KNOLL\n\n    // Fill the candidate array\n    int candidates[N];\n    vec3 quantError = vec3(0, 0, 0);\n    vec3 colourLinear = sRGBtoLinear(colour);\n\n    for (int i = 0; i < N; i++)\n    {\n        vec3 goalColour = colourLinear + quantError * ERROR_FACTOR;\n        int closestColour = getClosestColour(goalColour);\n        \n        candidates[i] = closestColour;\n        quantError += colourLinear - sRGBtoLinear(palette[closestColour]);\n    }\n      \n#if defined ENABLE_SORT\n\n    // Sort the candidate array by luminance (bubble sort)\n    for (int i = N - 1; i > 0; i--) \n    {\n      for (int j = 0; j < i; j++) \n      {\n          if (getLuminance(palette[candidates[j]]) > getLuminance(palette[candidates[j+1]])) \n          { \n              // Swap the candidates\n              int t = candidates[j]; \n              candidates[j] = candidates[j+1]; \n              candidates[j+1] = t; \n          }\n      }\n    }\n    \n#endif // ENABLE_SORT\n\n    // Select from the candidate array, using the value in the threshold matrix\n    int index = int(sampleThreshold(fragCoord));\n    fragColor = vec4(palette[candidates[index]], 1.0);\n    \n#endif // OPTIMISED KNOLL\n} \n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 12,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/e81e818ac76a8983d746784b423178ee9f6cdcdf7f8e8d719341a6fe2d2ab303.webm"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

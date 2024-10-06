@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1589253215",
+            "description": "Showing blue noise being used for soft shadows. Drag mouse to move camera.\nLeft = white noise, Right = blue noise\nTop = Raw, Bottom = TAA with alpha 0.1, 3x3 neighborhood color clamp, halton sub pixel jitter.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3sfBWs",
+            "likes": 26,
+            "name": "Blue Noise RT Shadows TAA: Dir",
+            "published": 3,
+            "tags": [
+                "arealight",
+                "bluenoise",
+                "stochastic"
+            ],
+            "usePreview": 0,
+            "username": "demofox",
+            "viewed": 3285
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec3 pixelColor = texture(iChannel0, uv).rgb;\n\n    // tone map the color to bring it from unbound HDR levels to SDR levels\n    pixelColor = ACESFilm(pixelColor);\n    \n    // make a dividing line between the panels\n    vec2 dist2d = abs(fragCoord - iResolution.xy * 0.5f);\n    float dist = min(dist2d.x, dist2d.y);\n    dist = smoothstep(2.0f, 1.0f, dist);\n    pixelColor = mix(pixelColor, vec3(1.0f, 1.0f, 0.0f), dist);\n    \n    // convert to sRGB, then output\n    pixelColor = LinearToSRGB(pixelColor);\n    fragColor = vec4(pixelColor, 1.0f);        \n    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n// white noise, from https://www.shadertoy.com/view/4djSRW\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\n// halton low discrepancy sequence, from https://www.shadertoy.com/view/wdXSW8\nvec2 halton (int index)\n{\n    const vec2 coprimes = vec2(2.0f, 3.0f);\n    vec2 s = vec2(index, index);\n\tvec4 a = vec4(1,1,0,0);\n    while (s.x > 0. && s.y > 0.)\n    {\n        a.xy = a.xy/coprimes;\n        a.zw += a.xy*mod(s, coprimes);\n        s = floor(s/coprimes);\n    }\n    return a.zw;\n}\n\n// analytically mipmapped checkerboard pattern from inigo quilez\n// https://iquilezles.org/articles/morecheckerfiltering\nvec2 p( in vec2 x )\n{\n    vec2 h = fract(x/2.0)-0.5;\n    return x*0.5 + h*(1.0-2.0*abs(h));\n}\n\n// return a filtered checkers pattern\nfloat checkersGradTriangle( in vec2 uv )\n{\n    vec2 ddx = dFdx(uv);\n    vec2 ddy = dFdy(uv);\n    vec2 w = max(abs(ddx), abs(ddy)) + 0.01;    // filter kernel\n    vec2 i = (p(uv+w)-2.0*p(uv)+p(uv-w))/(w*w); // analytical integral (triangle filter)\n    return 0.5 - 0.5*i.x*i.y;                   // xor pattern\n}\n\nvoid GetCameraVectors(out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraUp, out vec3 cameraRight)\n{   \n    vec2 mouse = iMouse.xy;\n    if (dot(mouse, vec2(1.0f, 1.0f)) == 0.0f)\n        mouse = c_defaultMousePos * iResolution.xy;    \n    \n    float angleX = -mouse.x * 16.0f / float(iResolution.x);\n    float angleY = mix(c_minCameraAngle, c_maxCameraAngle, mouse.y / float(iResolution.y));\n    \n    cameraPos.x = sin(angleX) * sin(angleY) * c_cameraDistance;\n    cameraPos.y = -cos(angleY) * c_cameraDistance;\n    cameraPos.z = cos(angleX) * sin(angleY) * c_cameraDistance;\n    \n    cameraPos += c_cameraAt;\n    \n    cameraFwd = normalize(c_cameraAt - cameraPos);\n    cameraRight = normalize(cross(cameraFwd, vec3(0.0f, 1.0f, 0.0f)));\n    cameraUp = normalize(cross(cameraRight, cameraFwd));   \n}\n\nstruct SRayHitInfo\n{\n    float dist;\n    vec3 normal;\n    vec3 diffuse;\n};\n    \nbool RayVsSphere(in vec3 rayPos, in vec3 rayDir, inout SRayHitInfo info, in vec4 sphere, in vec3 diffuse)\n{\n\t//get the vector from the center of this sphere to where the ray begins.\n\tvec3 m = rayPos - sphere.xyz;\n\n    //get the dot product of the above vector and the ray's vector\n\tfloat b = dot(m, rayDir);\n\n\tfloat c = dot(m, m) - sphere.w * sphere.w;\n\n\t//exit if r's origin outside s (c > 0) and r pointing away from s (b > 0)\n\tif(c > 0.0 && b > 0.0)\n\t\treturn false;\n\n\t//calculate discriminant\n\tfloat discr = b * b - c;\n\n\t//a negative discriminant corresponds to ray missing sphere\n\tif(discr < 0.0)\n\t\treturn false;\n    \n\t//ray now found to intersect sphere, compute smallest t value of intersection\n    bool fromInside = false;\n\tfloat dist = -b - sqrt(discr);\n    if (dist < 0.0f)\n    {\n        fromInside = true;\n        dist = -b + sqrt(discr);\n    }\n    \n\tif (dist > 0.0f && dist < info.dist)\n    {\n        info.dist = dist;        \n        info.normal = normalize((rayPos+rayDir*dist) - sphere.xyz) * (fromInside ? -1.0f : 1.0f);\n\t\tinfo.diffuse = diffuse;        \n        return true;\n    }\n    \n    return false;\n}\n    \nbool RayVsPlane(in vec3 rayPos, in vec3 rayDir, inout SRayHitInfo info, in vec4 plane, in vec3 diffuse)\n{\n    float dist = -1.0f;\n    float denom = dot(plane.xyz, rayDir);\n    if (abs(denom) > 0.001f)\n    {\n        dist = (plane.w - dot(plane.xyz, rayPos)) / denom;\n    \n        if (dist > 0.0f && dist < info.dist)\n        {\n            info.dist = dist;        \n            info.normal = plane.xyz;\n            info.diffuse = diffuse;\n            return true;\n        }\n    }\n    return false;\n}\n\nfloat ScalarTriple(vec3 u, vec3 v, vec3 w)\n{\n    return dot(cross(u, v), w);\n}\n\nbool RayVsQuad(in vec3 rayPos, in vec3 rayDir, inout SRayHitInfo info, in vec3 a, in vec3 b, in vec3 c, in vec3 d, in vec3 diffuse, bool doubleSided)\n{\n    // calculate normal and flip vertices order if needed\n    vec3 normal = normalize(cross(c-a, c-b));\n    if (doubleSided && dot(normal, rayDir) > 0.0f)\n    {\n        normal *= -1.0f;\n        \n\t\tvec3 temp = d;\n        d = a;\n        a = temp;\n        \n        temp = b;\n        b = c;\n        c = temp;\n    }\n    \n    vec3 p = rayPos;\n    vec3 q = rayPos + rayDir;\n    vec3 pq = q - p;\n    vec3 pa = a - p;\n    vec3 pb = b - p;\n    vec3 pc = c - p;\n    \n    // determine which triangle to test against by testing against diagonal first\n    vec3 m = cross(pc, pq);\n    float v = dot(pa, m);\n    vec3 intersectPos;\n    if (v >= 0.0f)\n    {\n        // test against triangle a,b,c\n        float u = -dot(pb, m);\n        if (u < 0.0f) return false;\n        float w = ScalarTriple(pq, pb, pa);\n        if (w < 0.0f) return false;\n        float denom = 1.0f / (u+v+w);\n        u*=denom;\n        v*=denom;\n        w*=denom;\n        intersectPos = u*a+v*b+w*c;\n    }\n    else\n    {\n        vec3 pd = d - p;\n        float u = dot(pd, m);\n        if (u < 0.0f) return false;\n        float w = ScalarTriple(pq, pa, pd);\n        if (w < 0.0f) return false;\n        v = -v;\n        float denom = 1.0f / (u+v+w);\n        u*=denom;\n        v*=denom;\n        w*=denom;\n        intersectPos = u*a+v*d+w*c;\n    }\n    \n    float dist;\n    if (abs(rayDir.x) > 0.1f)\n    {\n        dist = (intersectPos.x - rayPos.x) / rayDir.x;\n    }\n    else if (abs(rayDir.y) > 0.1f)\n    {\n        dist = (intersectPos.y - rayPos.y) / rayDir.y;\n    }\n    else\n    {\n        dist = (intersectPos.z - rayPos.z) / rayDir.z;\n    }\n    \n\tif (dist > 0.0f && dist < info.dist)\n    {\n        info.dist = dist;        \n        info.normal = normal;\n\t\tinfo.diffuse = diffuse;        \n        return true;\n    }    \n    \n    return false;\n}\n\nSRayHitInfo RayVsScene(in vec3 rayPos, in vec3 rayDir)\n{\n    SRayHitInfo hitInfo;\n    hitInfo.dist = c_rayMaxDist;\n\n    // the floor\n    if(RayVsPlane(rayPos, rayDir, hitInfo, vec4(0.0f, 1.0f, 0.0f, 0.0f), vec3(0.2f, 0.2f, 0.2f)))\n    {\n        vec3 hitPos = rayPos + rayDir * hitInfo.dist;\n        vec2 uv = hitPos.xz / 100.0f;\n        float shade = mix(0.8f, 0.4f, checkersGradTriangle(uv));\n        hitInfo.diffuse = vec3(shade, shade, shade);\n    }\n    \n    // some floating spheres to cast shadows\n    RayVsSphere(rayPos, rayDir, hitInfo, vec4(-60.0f, 10.0f, 0.0f, 10.0f), vec3(1.0f, 0.0f, 1.0f));\n    RayVsSphere(rayPos, rayDir, hitInfo, vec4(-30.0f, 20.0f, 0.0f, 10.0f), vec3(1.0f, 0.0f, 0.0f));\n    RayVsSphere(rayPos, rayDir, hitInfo, vec4(0.0f, 30.0f, 0.0f, 10.0f), vec3(0.0f, 1.0f, 0.0f));\n    RayVsSphere(rayPos, rayDir, hitInfo, vec4(30.0f, 40.0f, 0.0f, 10.0f), vec3(0.0f, 0.0f, 1.0f));\n    RayVsSphere(rayPos, rayDir, hitInfo, vec4(60.0f, 50.0f, 0.0f, 10.0f), vec3(1.0f, 1.0f, 0.0f));\n    \n    return hitInfo;\n}\n\nvec3 GetColorForRay(in vec3 rayPos, in vec3 rayDir, out float hitDistance, int panel, in vec2 pixelPos)\n{\n    // trace primary ray\n\tSRayHitInfo hitInfo = RayVsScene(rayPos, rayDir);\n    \n    // set the hitDistance out parameter\n    hitDistance = hitInfo.dist;\n    \n    if (hitInfo.dist == c_rayMaxDist)\n        return texture(iChannel0, rayDir).rgb;\n    \n    // calculate where the pixel is in world space\n\tvec3 hitPos = rayPos + rayDir * hitInfo.dist;\n    hitPos += hitInfo.normal * c_hitNormalNudge;\n    \n    int frame = 0;\n    #if ANIMATE_NOISE\n    \tframe = iFrame % 64;\n    #endif\n    \n    // use the screen space blue noise texture and golden ratio * frame number to\n    // get a \"random number\" to convert to an angle for how much to rotate\n    // the blue noise sample positions for this pixel\n    float blueNoise = texture(iChannel1, pixelPos / 1024.0f).r;\n    blueNoise = fract(blueNoise + c_goldenRatioConjugate * float(frame));\n    float theta = blueNoise * 2.0f * c_pi;\n    float cosTheta = cos(theta);\n    float sinTheta = sin(theta);\n    \n    // shoot some shadow rays\n    float shadowTerm = 0.0f;\n    vec3 lightTangent = normalize(cross(c_lightDir, vec3(0.0f, 1.0f, 0.0f)));\n    vec3 lightBitangent = normalize(cross(lightTangent, c_lightDir));\n    for (int shadowRayIndex = 0; shadowRayIndex < c_numShadowRays; ++shadowRayIndex)\n    {\n        // calculate a ray direction to a random point on a disk in the direction of the light.\n        // AKA pick a random point on the sun and shoot a ray at it.\n        vec3 shadowRayDir;\n        {\n            vec2 diskPoint;\n            if ((panel%2) == 0)\n            {\n                // get white noise\n                vec2 rng = hash23(vec3(pixelPos, float(frame * c_numShadowRays + shadowRayIndex)));\n\n                // calculate disk point\n                float pointRadius = c_lightRadius * sqrt(rng.x);\n                float pointAngle = rng.y * 2.0f * c_pi;\n                diskPoint = vec2(pointRadius*cos(pointAngle), pointRadius*sin(pointAngle));\n\n            }\n            else //if ((panel%2) == 1)\n            {\n                // we only have 64 blue noise samples\n                // We could make more blue noise samples, but gotta set the limit somewhere since it's a constant array of vec2s.\n                if (shadowRayIndex >= 64)\n                    break;\n                \n                // get a blue noise sample position\n                vec2 samplePos = BlueNoiseInDisk[shadowRayIndex];\n\n                // rotate it\n                diskPoint.x = samplePos.x * cosTheta - samplePos.y * sinTheta;\n                diskPoint.y = samplePos.x * sinTheta + samplePos.y * cosTheta;\n\n                // scale it by the disk size\n                diskPoint *= c_lightRadius;\n            }\n\n            // calculate the normalized vector to the random point on the disk\n            shadowRayDir = normalize(c_lightDir + diskPoint.x * lightTangent + diskPoint.y * lightBitangent);\n        }\n\n        // trace shadow ray\n        SRayHitInfo shadowHitInfo = RayVsScene(hitPos, shadowRayDir);\n        shadowTerm = mix(shadowTerm, ((shadowHitInfo.dist == c_rayMaxDist) ? 1.0f : 0.0f), 1.0f / float(shadowRayIndex+1));\n    }\n    \n    // do diffuse lighting\n    float dp = clamp(dot(hitInfo.normal, c_lightDir), 0.0f, 1.0f);\n\treturn c_lightAmbient * hitInfo.diffuse + dp * hitInfo.diffuse * c_lightColor * shadowTerm;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // get the camera vectors\n    vec3 cameraPos, cameraFwd, cameraUp, cameraRight;\n    GetCameraVectors(cameraPos, cameraFwd, cameraUp, cameraRight);    \n    \n    // calculate sub pixel jitter for anti aliasing\n    vec2 subPixelJitter = (fragCoord.y < iResolution.y * 0.5f) ? halton(iFrame % 16 + 1) - 0.5f : vec2(0.0f, 0.0f);\n    \n    // calculate the ray direction for this pixel\n    vec2 uv = (fragCoord + subPixelJitter)/iResolution.xy;\n\tfloat aspectRatio = iResolution.x / iResolution.y;\n    int panel = 0;\n    vec3 rayDir;\n    {   \n        panel = int(dot(floor(uv*2.0f), vec2(1.0f, 2.0f)));\n        \n\t\tvec2 screen = fract(uv*2.0f) * 2.0f - 1.0f;\n        screen.y /= aspectRatio;\n                \n        float cameraDistance = tan(c_FOV * 0.5f * c_pi / 180.0f);       \n        rayDir = vec3(screen, cameraDistance);\n        rayDir = normalize(mat3(cameraRight, cameraUp, cameraFwd) * rayDir);\n    }\n    \n    // do rendering for this pixel\n    float rayHitTime;\n    vec3 pixelColor = GetColorForRay(cameraPos, rayDir, rayHitTime, panel, fragCoord);\n    fragColor = vec4(pixelColor, 1.0f);    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n\n    // get the neighborhood min / max from this frame's render\n    vec3 center = texture(iChannel0, uv).rgb;\n    vec3 minColor = center;\n    vec3 maxColor = center;\n    for (int iy = -1; iy <= 1; ++iy)\n    {\n        for (int ix = -1; ix <= 1; ++ix)\n        {\n            if (ix == 0 && iy == 0)\n                continue;\n            \n           \n            vec2 offsetUV = ((fragCoord + vec2(ix, iy)) / iResolution.xy);\n            vec3 color = texture(iChannel0, offsetUV).rgb;\n            minColor = min(minColor, color);\n            maxColor = max(maxColor, color);\n        }\n    }\n    \n    // get last frame's pixel and clamp it to the neighborhood of this frame\n    vec3 old = texture(iChannel1, uv).rgb;    \n    old = max(minColor, old);\n    old = min(maxColor, old);\n    \n    // interpolate from the clamped old color to the new color.\n    // Reject all history when the mouse moves.\n    float lerpAmount = (iMouse.z > 0.0 || uv.y > 0.5f) ? 1.0f : 0.1f;\n    vec3 pixelColor = mix(old, center, lerpAmount);        \n    fragColor = vec4(pixelColor, 1.0f);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define ANIMATE_NOISE 1\n\nconst int c_numShadowRays = 16;  // blue noise will use 64 samples max. white noise will use however many you specify here.\n#define c_lightDir normalize(vec3(0.3f, 1.0f, -0.5f))\nconst vec3 c_lightColor = vec3(1.0f, 0.8f, 0.5f);\nconst vec3 c_lightAmbient = vec3(0.05f, 0.05f, 0.05f);\nconst float c_lightRadius = 0.1f; // radius of light disk at 1 unit away\n\n\n\n\nconst float c_pi = 3.14159265359f;\nconst float c_goldenRatioConjugate = 0.61803398875f; // also just fract(goldenRatio)\n\nconst float c_FOV = 90.0f; // in degrees\nconst float c_cameraDistance = 100.0f;\nconst float c_minCameraAngle = c_pi / 2.0f;\nconst float c_maxCameraAngle = c_pi;\nconst vec3 c_cameraAt = vec3(0.0f, 20.0f, 0.0f);\nconst float c_rayMaxDist = 10000.0f;\n\nconst vec2 c_defaultMousePos = vec2(0.0f / 800.0f, 250.0f / 450.0f);\n\nconst float c_hitNormalNudge = 0.1f;\n\n// This \"blue noise in disk\" array is blue noise in a circle and is used for sampling the\n// sun disk for the blue noise.\n// these were generated using a modified mitchell's best candidate algorithm.\n// 1) It was not calculated on a torus (no wrap around distance for points)\n// 2) Candidates were forced to be in the unit circle (through rejection sampling)\nconst vec2 BlueNoiseInDisk[64] = vec2[64](\n    vec2(0.478712,0.875764),\n    vec2(-0.337956,-0.793959),\n    vec2(-0.955259,-0.028164),\n    vec2(0.864527,0.325689),\n    vec2(0.209342,-0.395657),\n    vec2(-0.106779,0.672585),\n    vec2(0.156213,0.235113),\n    vec2(-0.413644,-0.082856),\n    vec2(-0.415667,0.323909),\n    vec2(0.141896,-0.939980),\n    vec2(0.954932,-0.182516),\n    vec2(-0.766184,0.410799),\n    vec2(-0.434912,-0.458845),\n    vec2(0.415242,-0.078724),\n    vec2(0.728335,-0.491777),\n    vec2(-0.058086,-0.066401),\n    vec2(0.202990,0.686837),\n    vec2(-0.808362,-0.556402),\n    vec2(0.507386,-0.640839),\n    vec2(-0.723494,-0.229240),\n    vec2(0.489740,0.317826),\n    vec2(-0.622663,0.765301),\n    vec2(-0.010640,0.929347),\n    vec2(0.663146,0.647618),\n    vec2(-0.096674,-0.413835),\n    vec2(0.525945,-0.321063),\n    vec2(-0.122533,0.366019),\n    vec2(0.195235,-0.687983),\n    vec2(-0.563203,0.098748),\n    vec2(0.418563,0.561335),\n    vec2(-0.378595,0.800367),\n    vec2(0.826922,0.001024),\n    vec2(-0.085372,-0.766651),\n    vec2(-0.921920,0.183673),\n    vec2(-0.590008,-0.721799),\n    vec2(0.167751,-0.164393),\n    vec2(0.032961,-0.562530),\n    vec2(0.632900,-0.107059),\n    vec2(-0.464080,0.569669),\n    vec2(-0.173676,-0.958758),\n    vec2(-0.242648,-0.234303),\n    vec2(-0.275362,0.157163),\n    vec2(0.382295,-0.795131),\n    vec2(0.562955,0.115562),\n    vec2(0.190586,0.470121),\n    vec2(0.770764,-0.297576),\n    vec2(0.237281,0.931050),\n    vec2(-0.666642,-0.455871),\n    vec2(-0.905649,-0.298379),\n    vec2(0.339520,0.157829),\n    vec2(0.701438,-0.704100),\n    vec2(-0.062758,0.160346),\n    vec2(-0.220674,0.957141),\n    vec2(0.642692,0.432706),\n    vec2(-0.773390,-0.015272),\n    vec2(-0.671467,0.246880),\n    vec2(0.158051,0.062859),\n    vec2(0.806009,0.527232),\n    vec2(-0.057620,-0.247071),\n    vec2(0.333436,-0.516710),\n    vec2(-0.550658,-0.315773),\n    vec2(-0.652078,0.589846),\n    vec2(0.008818,0.530556),\n    vec2(-0.210004,0.519896) \n);\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n\nvec3 LessThan(vec3 f, float value)\n{\n    return vec3(\n        (f.x < value) ? 1.0f : 0.0f,\n        (f.y < value) ? 1.0f : 0.0f,\n        (f.z < value) ? 1.0f : 0.0f);\n}\n\nvec3 LinearToSRGB(vec3 rgb)\n{\n    rgb = clamp(rgb, 0.0f, 1.0f);\n    \n    return mix(\n        pow(rgb * 1.055f, vec3(1.f / 2.4f)) - 0.055f,\n        rgb * 12.92f,\n        LessThan(rgb, 0.0031308f)\n    );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,83 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665484639",
+            "description": "This is a 4D mandelbrot set of sorts, but not the quaternion version.\nThis maps the four dimensions of the iterated function zₙ₊₁ = zₙ² + c .\nSee https://www.shadertoy.com/view/stVBWt for an alternative rendering.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "7tVBWt",
+            "likes": 0,
+            "name": "Juliabrot 4D: Internal structure",
+            "published": 3,
+            "tags": [
+                "fractal",
+                "julia",
+                "mandelbrot",
+                "sdf",
+                "4d"
+            ],
+            "usePreview": 0,
+            "username": "mmnz",
+            "viewed": 250
+        },
+        "renderpass": [
+            {
+                "code": "// This is a 4D mandelbrot set of sorts, but not the quaternion version.\n// Each point on the mandelbrot set corresponds to some julia set.\n// Both sets map the places where zₙ₊₁ = zₙ² + c converges,\n// but the mandelbrot set varies the real and imaginary components of c,\n// and the julia sets vary the real and imaginary components of z₀.\n// Over all, there are four varying dimensions,\n// and the mandelbrot set and the julia sets are 2D slices of this 4D shape.\n// To view the whole 4D shape, I map one dimension to time and take 3D slices of the rest.\n// Even though julia sets with c outside the mandelbrot set are disconnected,\n// I would be pretty confident that the entirety of this 4D shape is connected.\n\n// A lot of this code was thrown together over the last couple of years\n// and I had to massage it quite a bit to get it to run in Shadertoy.\n// I don't quite understand the subtle differences between this version and\n// https://www.shadertoy.com/view/stVBWt\n// which allow this version to render the 'internal' distance estimate\n// that looks so much more obviously like the mandelbrot and julia sets.\n// In fact, there is plenty of code here that I only understand when I squint.\n\n// Slice can be 0, 1, 2, 3. Controls which plane varies over time.\n#define SLICE 0\n\n// Slice 0 and 1 plot Re(c) and Im(c) over x and y, so the z=0 plane at t=0 is the mandelbrot set.\n// Slice 2 and 3 plot Re(z₀) and Im(z₀) over x and y, so they are always stacks of julia sets.\n// Slice 2 plots Re(c) over z, so at t=0 it is a stack of all purely real julia sets.\n// Slice 3 plots Im(c) over z, so at t=0 it is a stack of all purely imaginary julia sets.\n\n// Pause the script when the fractal is most voluminous to see t=0.\n// Dragging with the mouse seems to work even when paused.\n\n\n// SDF of the fractal\nfloat juliabrot(in vec3 p) {\n\n    vec4 pp = vec4(4.0 * p - 2.0, 2.25 * cos(iTime / 2.0) * abs(cos(iTime / 2.0)));\n\n    vec2 c = pp.xy;\n    vec2 z = pp.zw;\n    \n    // The piecewise derivative\n    // d.xy represents dzₙ/dc, used in the mandelbrot SDF\n    // d.zw represents dzₙ/dz, used in the julia SDF\n    vec4 d = vec4(0, 0, 1, 0);\n    \n    // Swap all the dimensions based on slice\n    #if SLICE == 1\n        z = pp.wz;\n    #elif SLICE == 2\n        c = pp.zw;\n        z = pp.xy;\n    #elif SLICE == 3\n        c = pp.wz;\n        z = pp.xy;\n    #endif\n    \n    int i = 0;\n    int maxi = 128;\n    for (i = 0; length(z) < 16.0 && i < maxi; i++) {\n        // New derivative based on previous (dzₙ/dc = 2zₙ₋₁dzₙ₋₁/dc + 1, dzₙ/dz = 2zₙ₋₁dzₙ₋₁/dz)\n        d = 2.0 * vec4(\n            (z.x * d.x - z.y * d.y) + 1.0,\n            (z.x * d.y + z.y * d.x),\n            (z.x * d.z - z.y * d.w),\n            (z.x * d.w + z.y * d.z)\n        );\n        // New z based on previous (zₙ = zₙ₋₁² + c)\n        z = vec2(z.x * z.x - z.y * z.y + c.x, (z.x + z.x) * z.y + c.y);\n    }\n    // Distance from p to fractal\n    float distance = 0.5 * length(z) * log(length(z)) / length(d);\n    \n    // SDF seems to be broken for some internal distances (?), so internal distances are set to 0\n    return (i == maxi) ? 0.0 : distance;\n}\n\n// Seems so similar to the other calcNormal, but quality is different somehow\nvec3 calcNormal(in vec3 coord) {\n    vec3 e = vec3(1, -1, 0) * 0.01;\n    return normalize(vec3(\n        juliabrot(coord + e.xzz) - juliabrot(coord + e.yzz),\n        juliabrot(coord + e.zxz) - juliabrot(coord + e.zyz),\n        juliabrot(coord + e.zzx) - juliabrot(coord + e.zzy)\n    ));\n}\n\n// Gets the front and back of a box that the ray goes through\nvec2 hitBox(vec3 rayOrigin, vec3 rayDirection) {\n    // Box was from -0.5 to +0.5, but the positions all needed + 0.5\n    vec3 tmin_tmp = (vec3(-0.5) - rayOrigin) / rayDirection;\n    vec3 tmax_tmp = (vec3(0.5) - rayOrigin) / rayDirection;\n    vec3 tmin = min(tmin_tmp, tmax_tmp);\n    vec3 tmax = max(tmin_tmp, tmax_tmp);\n    float t0 = max(tmin.x, max(tmin.y, tmin.z));\n    float t1 = min(tmax.x, min(tmax.y, tmax.z));\n    return vec2(t0, t1);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n\n    vec2 p = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    p.y -= 1.0; // Shape wasn't centred?\n    \n    float pi = acos(-1.0);\n    // Customisable\n    float thetaOffset = 0.0; // 0.1 * iTime; // Extra rotation\n    float ymin = 0.1; // 0.0 = 0deg, facing the horizon\n    float ymax = 0.9; // 1.0 = 90deg, facing the ground\n    float orbitRadius = 2.0; // Distance from center\n    // Always the same\n    vec2 storedMouse = texelFetch(iChannel0, ivec2(0, 0), 0).xy;\n    float theta = -2.0 * pi * storedMouse.x + thetaOffset;\n    float phi = 0.5 * pi * (1.0 - storedMouse.y) * (ymax - ymin) + ymin;\n    vec3 rayOrigin = orbitRadius * vec3(sin(theta)*cos(phi), sin(phi), cos(theta)*cos(phi));\n    // Standard camera stuff\n    vec3 target = vec3(0, 1, 0);\n    float focalLength = 2.0;\n    vec3 ww = normalize(target - rayOrigin);\n    vec3 uu = normalize(cross(ww, vec3(0, 1, 0)));\n    vec3 vv = normalize(cross(uu, ww));\n    vec3 rayDirection = normalize(p.x * uu + p.y * vv + focalLength * ww);\n\n    // Only does the calculation inside this box\n    vec2 bounds = hitBox(rayOrigin, rayDirection);\n    // Finds the minimum amount to increment by,\n    // which is evidently a waste of time since it then divides this by 512.\n    vec3 inc = 1.0 / abs(rayDirection);\n    float delta = min(inc.x, min(inc.y, inc.z)) / 512.0;\n    \n    vec3 position = vec3(0);\n    vec4 color = vec4(0);\n    \n    // t is only interpolated inside the box, by a constant delta\n    for (float t = bounds.x; t < bounds.y; t += delta) {\n        float d = juliabrot(position);\n        position = rayOrigin + t * rayDirection + 0.5;\n        // 'internal' estimate, blue\n        if (d <= 0.0) {\n            float lighting = dot(calcNormal(position), normalize(rayOrigin));\n            // Blue to black based on light direction\n            vec4 innercolor = vec4(vec3(0.2, 0.2, 1) * lighting, 1);\n            // Mix with existing amount of yellow\n            color = mix(color, innercolor, 0.7);\n            break;\n        }\n        // 'external' estimate, yellow. Distance is arbitrary small amount.\n        if (d < 0.005 && color.a == 0.0) {\n            float lighting = dot(calcNormal(position), normalize(rayOrigin));\n            // Two different yellow colours based on light direction\n            color = mix(vec4(0.5, 0.3, 0, 1), vec4(1, 1, 0.2, 1), lighting);\n        }\n    }\n    // Background colour\n    if (color.a == 0.0) {\n        // discard; // transparency\n        color = vec4(0.8, 0.9, 1.0, 1.0);\n    };\n\n    fragColor = color;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Save mouse position.\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    // Initialise buffer to white (buffer is unused if alpha is empty).\n    if (texelFetch(iChannel0, ivec2(0,0), 0).a < 1.0) {\n        fragColor = vec4(1);\n        return;\n    }\n    // Fetch old values\n    vec2 current = texelFetch(iChannel0, ivec2(0, 0), 0).xy;\n    vec2 previous = texelFetch(iChannel0, ivec2(1, 0), 0).xy;\n    vec4 mouse = iMouse / iResolution.xyxy;\n    // Fix for Shadertoy ignoring mouseup outside canvas. Reset previous on click.\n    // Fix removed because it breaks things on iOS (where iMouse.w is positive until mouseup).\n    // if (mouse.w > 0.0) {\n    //     previous = current;\n    // }\n    // When mouse down, add the mouse position to the previous position minus starting offset.\n    // Otherwise, save the current position to be used for the next time the mouse is dragged.\n    if (mouse.z > 0.0) {\n        vec2 next = previous + mouse.xy - abs(mouse.zw);\n        current = vec2(fract(next.x), clamp(next.y, 0.0, 1.0)); // wrap x, clamp y\n    } else {\n        previous = current;\n    }\n    // Save current to (0,0) and previous to (1,0)\n    fragColor = vec4(fragCoord.x < 1.0 ? current : previous, 0.0, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

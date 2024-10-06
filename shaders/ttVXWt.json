@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1584417759",
+            "description": "- A volumetric visualization of the Hopf fibration.\n- Use mouse drag to change some parameters.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ttVXWt",
+            "likes": 61,
+            "name": "Hopf fibers",
+            "published": 3,
+            "tags": [
+                "volumetric",
+                "hopf",
+                "fibration"
+            ],
+            "usePreview": 0,
+            "username": "tmst",
+            "viewed": 1301
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.14159\n\n#define FIXED_UP vec3(0.,1.,0.)\n#define TAN_HFOVY .5773502691896257\n\n#define GE1 vec3(.04,0.,0.)\n#define GE2 vec3(0.,.04,0.)\n#define GE3 vec3(0.,0.,.04)\n#define STEP_D .04\n\n#define RES iResolution\n#define MS iMouse\n#define PHASE smoothstep(.2, .8, MS.z > 0. ? MS.y/RES.y : .5+.5*cos(.4*iTime))\n#define ANG (MS.z > 0. ? 2.*PI*MS.x/RES.x : PI + 1.5*iTime)\n\n// ================\n// Generic helpers\n// ================\n\nfloat square(float x) { return x*x; }\n\nfloat rand(vec2 p) {\n    return fract(sin(dot(p,vec2(12.9898,78.233))) * 43758.5453);\n}\n\nvec3 nvCamDirFromClip(vec3 nvFw, vec2 c) {\n    vec3 nvRt = normalize(cross(nvFw, FIXED_UP));\n    vec3 nvUp = cross(nvRt, nvFw);\n    return normalize(TAN_HFOVY*(c.x*(RES.x/RES.y)*nvRt + c.y*nvUp) + nvFw);\n}\n\n// Rodrigues' formula: v -> (v.n)n + (v-(v.n)n)c - (vxn)s\nmat3 oProd(vec3 n) {\n    float xy = n.x*n.y, xz = n.x*n.z, yz = n.y*n.z;\n    return mat3(n.x*n.x,xy,xz,  xy,n.y*n.y,yz,  xz,yz,n.z*n.z);\n}\nmat3 glRotate(vec3 axis, float angle) {\n    float c = cos(angle), s = sin(angle);\n    vec3 n = normalize(axis);\n    return (\n        (1.-c)*oProd(n) +\n        mat3(c,s*n.z,-s*n.y,  -s*n.z,c,s*n.x,  s*n.y,-s*n.x,c)\n\t);\n}\n\n// Colormap adapted from: iq - Palettes (https://www.shadertoy.com/view/ll2GD3)\nvec3 colormap(float t) {\n    return .5 + .5*cos(2.*PI*( t + vec3(0.,.1,.2) ));\n}\n\n// ==================\n// Volume definition\n// ==================\n\nvec3 hopf(vec3 p) {\n\t// inverse stereographic R^3 -> S^3\n    float psq = dot(p, p);\n    vec4 q = vec4(2.*p.xyz, -1. + psq) / (1. + psq);\n\n    // hopf map S^3 -> S^2 (map versor q -> qjq*, i.e., rotate j using q)\n    return vec3(\n        2.*(q.y*q.z - q.x*q.w),\n        1. - 2.*(q.y*q.y + q.w*q.w), // == q.x^2 - q.y^2 + q.z^2 - q.w^2\n        2.*(q.x*q.y + q.z*q.w)\n    );\n}\n\nvec4 getV(vec3 p, mat3 m) {\n    // Get point on S^2, and rotate it for visual effect\n    vec3 rp = m * hopf(p);\n\n    // Fixed y == union of linked circles of same radii (interp. by theta)\n\tfloat theta = atan(-rp.z, rp.x);\n    float sdy = square(.5 + .5*cos(rp.y*5.*PI));\n    float sdt = .5 + .5*sin(theta*20.);\n    float d1 = max(sdt*sdy, .55*sdy);\n    d1 = mix(d1, .8*sdy, PHASE); // Sampling from a cubemap here is interesting\n\n    return vec4(.5 + .5*rp.y, 0., 0., d1);\n}\n\nvec4 getC(vec3 p, vec3 camPos, mat3 m) {\n    // Quick exit if volume has low alpha\n    vec4 data0 = getV(p, m);\n    if (data0.a < .4) { return vec4(0.); }\n\n    // Normal\n    vec3 gradA = vec3(\n        getV(p + GE1, m).a - getV(p - GE1, m).a,\n        getV(p + GE2, m).a - getV(p - GE2, m).a,\n        getV(p + GE3, m).a - getV(p - GE3, m).a\n    );\n    vec3 normal = (-gradA/(length(gradA) + 1e-5));\n\n    // Material color with lighting\n    vec3 matColor = mix(colormap(data0.r), .5+.5*normal.xyz, .25);\n    vec3 lightPos = camPos + vec3(0., 1., 0.);\n    vec3 nvFragToLight = normalize(lightPos - p);\n    vec3 nvFragToCam = normalize(camPos - p);\n\n\tvec3 diffuse = clamp(dot(normal, nvFragToLight), 0., 1.) * matColor;\n    vec3 blinnH = normalize(nvFragToLight + nvFragToCam);\n    vec3 specular = pow(clamp(dot(normal, blinnH), 0., 1.), 60.) * vec3(1.);\n\n    return vec4(.4*matColor+.6*(diffuse+specular), pow(data0.w, 3.));\n}\n\n// =============\n// Render scene\n// =============\n\nvoid march(in vec3 p, in vec3 nv, out vec4 color) {\n    color = vec4(0.);\n    vec2 tRange = vec2(mix(1., 2.75, PHASE), 6.);\n\n\tmat3 m = glRotate( normalize(vec3(1.,sin(iTime),1.)), -ANG );\n\n    float t = tRange.s;\n    for (int i=0; i<250; i++) {\n        vec4 cHit = getC(p + t*nv, p, m);\n\n        vec4 ci = vec4(cHit.rgb, 1.)*( (STEP_D/.08)*cHit.a ); // Premul alpha\n        color += (1.-color.a)*ci;\n\n        t += STEP_D;\n        if (t > tRange.t || color.a > .95) { return; }\n    }\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord/RES.xy;\n    vec3 camPos = vec3(0., 1., 3.5);\n    vec3 nvCamDir = nvCamDirFromClip(normalize(-camPos), uv*2. - 1.);\n\n    vec4 objColor;\n    march(camPos + rand(fragCoord)*nvCamDir*STEP_D, nvCamDir, objColor);\n    vec3 finalColor = objColor.rgb + (1. - objColor.a)*vec3(.2);\n\n    fragColor = vec4(finalColor, 1.);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

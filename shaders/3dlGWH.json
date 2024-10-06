@@ -1,0 +1,137 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1546118970",
+            "description": "Experimenting with triplanar displacement mapping.\n\nDerived, with extensive changes, from [url]https://www.shadertoy.com/view/tdXGD8[/url] by slimyfrog.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "3dlGWH",
+            "likes": 8,
+            "name": "Triplanar Displacement Mapping",
+            "published": 3,
+            "tags": [
+                "texture",
+                "triplanar",
+                "displacementmapping"
+            ],
+            "usePreview": 1,
+            "username": "mla",
+            "viewed": 1239
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Created by Matthew Arcus, 2018.\n//\n// Triplanar texture displacement mapping. Raymarch a sphere with displacement\n// texture computed using triplanar mapping. Choice of two different textures,\n// use 't' to select. If you change the textures and are on Linux, you might\n// need to change filtering in the texture settings to \"linear\".\n//\n// This make raymarching harder and we have to introduce some serious\n// fudge factors when getting close to the surface (see marchRay).\n//\n// Borrows some framework code from slimyfrog's recent shaders, eg:\n// https://www.shadertoy.com/view/WslGDH\n//\n// <mouse>,<up>,<down>: change view\n// <left>,<right>: change texture mapping scale\n// <pageup>,<pagedown>: change displacement scale\n// 't': choose texture\n// 'r': disable rotation\n// for other keys, mostly for experimentation, see code.\n//\n////////////////////////////////////////////////////////////////////////////////\n\n// Texture mapping parameters\nint sampler = 0;\nvec2 toffset = vec2(0); // texture offset\nfloat tscale = 0.1;     // texture coords scale\nfloat dscale = 1.0;     // displacement scale\n\nbool doweightcorrection = true;\nbool dovariabledisplacement = true;\nbool dorescale = true;\nbool do3d = false;\nbool doadjust3d = false;\nbool dolengthdisplacement = false;\nbool doflipz = false;\n\n// Lighting parameters\nvec3 light = vec3(1,10,-4);\nfloat ambient = 0.6;\nfloat diffuse = 0.4;\nfloat specular = 0.4;\nfloat specularpow = 4.0;\nvec3 specularcolor = vec3(1);\n\n// Raymarching parameters\nfloat MAX_DISTANCE = 8.0;\nfloat MIN_DISTANCE = 0.01;\nint MAXSTEPS = 500;\nfloat limit = 2.5;\nfloat slow = 0.1;\n\n// Debugging\nbool alert = false; void assert(bool t) { if (!t) alert = true; }\n\n// Keyboard\nconst int CHAR_A = 65; // show axes\nconst int CHAR_B = 66; // don't rescale texture\nconst int CHAR_C = 67; // 3d displacement\nconst int CHAR_D = 68; // do diffuse\nconst int CHAR_E = 69; // 3d adjustment\nconst int CHAR_F = 70; // dscale = 1\nconst int CHAR_G = 71; // gamma\nconst int CHAR_H = 72; // high gloss\nconst int CHAR_I = 73; // inverse displacement\nconst int CHAR_J = 74; // tscale = 1\nconst int CHAR_K = 75; // show keys\nconst int CHAR_L = 76; // use texture length as displacement\nconst int CHAR_M = 77; \nconst int CHAR_N = 78; // correct normals\nconst int CHAR_O = 79; // variable offset\nconst int CHAR_P = 80; // polar view\nconst int CHAR_Q = 81; // show high step counts (> 200)\nconst int CHAR_R = 82; // do rotation\nconst int CHAR_S = 83; // do specular\nconst int CHAR_T = 84; // select texture\nconst int CHAR_U = 85; // uncolored\nconst int CHAR_V = 86; // variable displacement\nconst int CHAR_W = 87; // don't weight triplanar normal\nconst int CHAR_X = 88; // show assertions\nconst int CHAR_Y = 89; // just use y texture in triplanar\nconst int CHAR_Z = 90; // flip z coord\n\nconst int CHAR_0 = 48;\n\nconst int KEY_PAGE_UP = 33;\nconst int KEY_PAGE_DOWN = 34;\nconst int KEY_LEFT = 37;\nconst int KEY_UP = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN = 40;\n\nbool keypress(int code) {\n  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;\n}\n\nvec4 store(int i,int j) {\n  return texelFetch(iChannel1, ivec2(i,j),0);\n}\nint keycount(int key) {\n  return int(store(0,key).x);\n}\n\n// Geometry\n\nfloat PI = 3.14159;\n\nvec2 rotate(vec2 p, float t) {\n  return p * cos(t) + vec2(p.y, -p.x) * sin(t);\n}\n\nbool justtexy = false;\n\n// Adapted from: https://www.shadertoy.com/view/MlXcRl but somewhat modified.\n// Uses global tscale and toffset variables.\nvec4 triplanar(vec3 n, sampler2D samp, bool adjust3d, bool rescale) {\n  if (doflipz) n.z = -n.z;\n  vec4 texx = texture(samp, tscale*(0.5*n.yz+0.5+toffset));\n  vec4 texy = texture(samp, tscale*(0.5*n.zx+0.5+toffset));\n  vec4 texz = texture(samp, tscale*(0.5*n.xy+0.5+toffset));\n  if (rescale) {\n    // Without this, the texture is repeated in the upper\n    // and lower hemispheres.\n    texx = 2.0*texx - 1.0;\n    texy = 2.0*texy - 1.0;\n    texz = 2.0*texz - 1.0;\n  }\n  if (adjust3d) {\n    // Mirror direction of displacement in opposite hemispheres.\n    texx.x *= sign(n.x);\n    texy.y *= sign(n.y);\n    texz.z *= sign(n.z);\n  }\n  if (justtexy) return texy;\n  vec3 weights = abs(n);\n  if (doweightcorrection) weights /= dot(weights,vec3(1)); // Keep spherical!\n  // Matrix multiplication as weighted sum of columns\n  return mat4(texx,texy,texz,vec4(0))*vec4(weights,0);\n}\n\nvec4 triplanar(vec3 n, int i, bool adjust3d, bool rescale) {\n  if (i == 0) return triplanar(n,iChannel2, adjust3d, rescale);\n  else return triplanar(n,iChannel3, adjust3d, rescale);\n}\n\nvec4 triplanar(vec3 n, int i) {\n  return triplanar(n,i,false,false);\n}\n\nfloat sphereDf(vec3 p, vec3 centre, float radius) {\n  vec3 n = normalize(p-centre);\n  vec3 tex = triplanar(n,sampler,doadjust3d,dorescale).xyz;\n  float k = !dovariabledisplacement? 1.0: sin(0.25*PI*(iTime-9.5));\n  if (do3d) {\n    vec3 displacement = tex;\n    displacement *= k*dscale;\n    float dist = length(p-centre-displacement) - radius;\n    return dist;\n  } else {\n    float displacement = dolengthdisplacement? length(tex): tex.x;\n    displacement *= k*dscale;\n    float dist = length(p-centre) - radius - displacement;\n    return dist;\n  }\n}\n\nfloat sceneDf(vec3 p) {\n  // Sphere parameters\n  vec3 centre = vec3(0);\n  float radius = 1.0;\n  return sphereDf(p,centre,radius);\n}\n\nvec3 calcNormal(vec3 p)\n{\n  float e = 0.01;\n  vec3 normal = vec3(sceneDf(vec3(p.x+e,p.y,p.z)) - sceneDf(vec3(p.x-e,p.y,p.z)),\n                     sceneDf(vec3(p.x,p.y+e,p.z)) - sceneDf(vec3(p.x,p.y-e,p.z)),\n                     sceneDf(vec3(p.x,p.y,p.z+e)) - sceneDf(vec3(p.x,p.y,p.z-e)));\n  return normalize(normal);\n}\n\nvec3 processLighting(vec3 baseColor, vec3 dir, vec3 surfacePoint) {\n  vec3 normal = calcNormal(surfacePoint);\n  if (keypress(CHAR_N) && dot(normal,dir) > 0.0) normal = -normal; // Not a good idea\n  vec3 color = baseColor*ambient;\n  if (dot(light,normal) > 1e-4) {\n    if (!keypress(CHAR_D)) color += baseColor*diffuse*dot(light,normal);\n    if (!keypress(CHAR_S)) {\n      float s = pow(max(0.0,dot(reflect(light,normal),vec3(dir))),specularpow);\n      color += specular*s*specularcolor;\n    }\n  }\n  return color;\n}\n\nbool marchRay(vec3 startPos, vec3 dir, out vec3 color) {\n  vec3 p = startPos;\n  bool checksteps = keypress(CHAR_Q);\n  for (int i = 0; i < MAXSTEPS; i++) {\n    assert(i < MAXSTEPS-1);\n    if (checksteps) assert(i < 200);\n    if (length(p) > MAX_DISTANCE) return false;\n    float dist = sceneDf(p);\n    if (dist <= MIN_DISTANCE) break;\n    // Proceed cautiously when \"close\" to surface\n    if (dist > limit) dist = dist-limit+slow;\n    else dist = slow*dist;\n    p += dist*dir;\n  }\n  vec3 baseColor = vec3(0.8);\n  if (!keypress(CHAR_U)) baseColor = triplanar(normalize(p),sampler).xyz;\n  if (keypress(CHAR_A)) {\n    // Show axes\n    float d = min(abs(p.x),min(abs(p.y),abs(p.z)));\n    if (d < 0.02) baseColor = vec3(0.5,0,0);\n  }\n  color = processLighting(baseColor,dir,p);\n  return true;\n}\n\nvec3 transform(vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = 2.0*(2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = 2.0*(2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  if (!keypress(CHAR_R)) {\n    p.yz = rotate(p.yz,iTime * 0.125);\n    p.zx = rotate(p.zx,-iTime * 0.2);\n  }\n  return p;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  if (keypress(CHAR_T)) {\n    sampler = 1; dscale = 0.25; tscale = 0.5;\n  }\n  if (keypress(CHAR_H)) {\n    specular = 0.8;\n    specularpow = 10.0;\n  }\n  if (keypress(CHAR_F)) dscale = 1.0;\n  if (keypress(CHAR_J)) tscale = 1.0;\n  toffset = keypress(CHAR_O)? vec2(0): 0.02*iTime*vec2(1,1.1);\n  tscale *= max(0.0,0.1*float(10+keycount(KEY_RIGHT)-keycount(KEY_LEFT)));\n  dscale *= max(0.0,0.1*float(10+keycount(KEY_PAGE_DOWN)-keycount(KEY_PAGE_UP)));\n  if (keypress(CHAR_I)) dscale = -dscale;\n  dovariabledisplacement = !keypress(CHAR_V);\n  dorescale = !keypress(CHAR_B);\n  do3d = keypress(CHAR_C);\n  doadjust3d = do3d && !keypress(CHAR_E);\n  doweightcorrection = !keypress(CHAR_W);\n  dolengthdisplacement = keypress(CHAR_L);\n  doflipz = keypress(CHAR_Z);\n  justtexy = keypress(CHAR_Y);\n    \n  vec3 eye = vec3(0,0,-3);\n  if (keypress(CHAR_P)) eye = vec3(0,1,-0.5);\n  eye.z *= 0.1*float(10+keycount(KEY_DOWN)-keycount(KEY_UP));\n  vec2 uv = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n  vec3 dir = vec3(uv,2);\n  light = normalize(light);\n  eye = transform(eye);\n  dir = transform(dir);\n  dir = normalize(dir);\n  light = transform(light);\n    \n  vec3 color;\n  if (!marchRay(eye,dir,color)) {\n    color = (1.0-fragCoord.y/iResolution.y)*vec3(0.3,0,0.3);\n  }\n    \n  if (keypress(CHAR_G)) color = sqrt(color);\n  if (alert && keypress(CHAR_X)) color.x = 1.0;\n  if (fragCoord.y < 20.0 && keypress(CHAR_K)) {\n    int key = int(fragCoord.x*26.0/iResolution.x);\n    if (keypress(CHAR_A+key)) color = vec3(1,1,0);\n  }\n  fragColor = vec4(color,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "  // Second parameter:\n  // 0: key is currently pressed\n  // 1: edge trigger\n  // 2: key toggle\n\n#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\n// Handy keys:\n// 16: Shift\n// 33: Page up\n// 34: Page down\n// 17: Control\n// 18: Alt\n\nvoid mainImage(out vec4 t, vec2 uv) {\n#if __VERSION__ < 300\n    t = vec4(0);\n#else\n    \n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0 ) {\n        t = vec4(0);\n    } else {\n        t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n        \n#endif           \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1585016526",
+            "description": "Simple demo of some analytically raytraced spheres.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tdXyzB",
+            "likes": 2,
+            "name": "Analytical spheres",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "phong"
+            ],
+            "usePreview": 0,
+            "username": "CensoredUsername",
+            "viewed": 398
+        },
+        "renderpass": [
+            {
+                "code": "// analytical raytracing speres with phong shading and reflections\n// this is written for clarity, not for performance.\n\nconst float INFINITY = 1e20;\nconst float PI = 3.1415;\n\n// sphere locations. radius is equal to z\nconst uint SPHERE_COUNT = 10u;\nvec4 spheres[SPHERE_COUNT] = vec4[](\n    vec4(0.0, 0.0, -100.0, 100.0),\n    vec4(0.0, 0.0, 0.8, 0.8),\n    vec4(1.0, 1.0, 0.4, 0.4),\n    vec4(1.0, -1.0, 0.4, 0.4),\n    vec4(-1.0, 1.0, 0.4, 0.4),\n    vec4(-1.0, -1.0, 0.4, 0.4),\n    vec4(1.5, 0.0, 0.1, 0.1),\n    vec4(0.0, 1.5, 0.1, 0.1),\n    vec4(-1.5, 0.0, 0.1, 0.1),\n    vec4(0.0, -1.5, 0.1, 0.1)\n);\n\n// ambient, diffuse, specular, RGB\nvec3 AMBIENT = vec3(0.001);\nvec3 DIFFUSE = vec3(0.95, 0.95, 0.8) * 0.5;\nvec3 SPECULAR = vec3(0.95, 0.95, 0.8);\nfloat SHININESS = 500.;\nvec3 REFLECT = vec3(0.5);\n\n// light, RGB. light is an isentropic light as I'm lazy.\nvec3 LIGHT = vec3(1.0);\nvec3 LIGHT_DIR = normalize(vec3(0.0, -1.0, -0.5)); \n\n// random function\nfloat rand(float seed){\n    return fract(sin(seed * 12.9898) * 43758.5453);\n}\n\n// testing stuff: slightly, randomly distrubs a direction vector\nvec3 disturb(vec3 dir) {\n    vec3 noise = vec3(rand(dir.x), rand(dir.y), rand(dir.z));\n    return normalize(dir + 0.1 * noise);\n}\n\n// calculate analytic collision with the geometry.\nvec3 collide(vec3 origin, vec3 dir, out float depth) {\n    depth = INFINITY;\n    uint match;\n\n    // try colliding with the spheres, keeping the lowest depth entry\n    for (uint i = 0u; i < SPHERE_COUNT; i++) {\n        // early-z, just by projected center distance\n        vec3 s = spheres[i].xyz - origin;\n        float t = dot(dir, s);\n        if (t > depth || t < 0.0) {\n            continue;\n        }\n\n        // collision test\n        vec3 d = (dir * t - s);\n        if (length(d) > spheres[i].w) {\n            continue;\n        }\n        \n        // store any useful data for the actual collision calc\n        depth = t;\n        match = i;\n    }\n    if (depth == INFINITY) {\n        return vec3(0.);\n    }\n\n    // math\n    vec3 s = spheres[match].xyz - origin;\n    float t = depth;\n    vec3 d = (dir * t - s);\n    // this line is numerically a bit unstable due to the subtraction of two large numgers which can be close together\n    vec3 r = d - dir * sqrt(spheres[match].w * spheres[match].w - dot(d, d));\n\n    // surface normal and final depth\n    depth = length(s + r);\n    return normalize(r);\n}\n\nvec3 light_ray(vec3 orig, vec3 dir, out vec3 hit, out vec3 hit_norm) {\n    // hit something\n    float depth;\n    hit_norm = collide(orig, dir, depth);\n    hit = orig + depth * dir;\n\n    // shadow\n    float shadow_depth;\n    collide(hit, -LIGHT_DIR, shadow_depth);\n    \n    // lighting\n    vec3 light = vec3(0.0);\n    if (depth < 1e9) {\n        light += AMBIENT;\n        if (shadow_depth > 1e9) {\n            light += DIFFUSE * dot(-LIGHT_DIR, hit_norm);\n            light += SPECULAR * pow(max(0.0, dot(reflect(-LIGHT_DIR, hit_norm), dir)), SHININESS);\n        }\n    }\n    return light * LIGHT;\n}\n\nvec3 camera;\nvec3 camera_dir;\nvec3 camera_up;\nconst float AR = 1.4;\n\n// this part is identical for every pixel\nvoid setup() {\n    camera = vec3(5.0 * cos(iTime * 0.1), 5.0 * sin(iTime * 0.1), 2.);\n    camera_dir = normalize(vec3(0., 0., 1.) - camera);\n    camera_up = vec3(0., 0., 1.);\n    \n    \n    LIGHT_DIR = normalize(vec3(cos(iTime), -sin(iTime), -0.5)); \n    \n    for (uint i = 1u; i < SPHERE_COUNT; i++) {\n        spheres[i].z += 0.5 * cos(float(i) * 456.0 + iTime) + 0.5;\n    }\n}\n\nvec3 calcpixel(vec2 uv) {\n    // setup ray dir, norm vector >\n    vec3 camera_x = normalize(cross(camera_dir, camera_up));\n    // setup ray dir, norm vector ^\n    vec3 camera_y = normalize(cross(camera_x, camera_dir));\n    // final ray dir\n    vec3 ray_dir = normalize(camera_dir * AR + camera_x * uv.x + camera_y * uv.y);\n    \n    // cast ray\n    vec3 hit, hit_norm;\n    vec3 light = light_ray(camera, ray_dir, hit, hit_norm);\n    \n    // cast reflection ray\n    vec3 reflect_dir = reflect(ray_dir, hit_norm);\n    disturb(reflect_dir);\n    vec3 reflect_hit, reflect_norm;\n    vec3 reflection = light_ray(hit, reflect_dir, reflect_hit, reflect_norm);\n    \n    // cast reflection reflection ray\n    vec3 rreflect_dir = reflect(reflect_dir, reflect_norm);\n    disturb(rreflect_dir);\n    vec3 rreflect_hit, rreflect_norm;\n    vec3 rreflection = light_ray(reflect_hit, rreflect_dir, rreflect_hit, rreflect_norm);\n    \n    // I'm bored and my fps is still too high\n    vec3 rrreflect_dir = reflect(rreflect_dir, rreflect_norm);\n    disturb(rrreflect_dir);\n    vec3 rrreflect_hit, rrreflect_norm;\n    vec3 rrreflection = light_ray(rreflect_hit, rrreflect_dir, rrreflect_hit, rrreflect_norm);\n    \n\n    // assemble\n    return light + (reflection + (rreflection + rrreflection * REFLECT) * REFLECT) * REFLECT;\n}\n\nconst uint AA = 2u;\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // setup scene parameters\n    setup();\n    \n    \n    vec3 color = vec3(0.);\n    for (uint i = 0u; i < AA; i++) {\n        for (uint j = 0u; j < AA; j++) {\n            // setup screen coord system. up = (0, 1), down = (0, -1), right = (AR, 0), left = (-AR, 0)\n            vec2 coord = fragCoord + vec2(i, j) / float(AA);\n            vec2 uv = (coord - iResolution.xy * 0.5) / iResolution.y;\n\n            color += calcpixel(uv);\n        }\n    }\n    color /= float(AA * AA);\n    \n    // gamma correct and write to output\n    fragColor = vec4(pow(color, vec3(1. / 2.2)), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

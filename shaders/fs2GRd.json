@@ -1,0 +1,159 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1617902872",
+            "description": "Made for the willstall challenge - 1 shader a week keeps the depression meek\n\nSpectral 2D path-tracer for circles and AABBs - press space to reset the progressive rendering\n\nThank you again to Nameless#1608 on discord for all his help, IOU",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "fs2GRd",
+            "likes": 18,
+            "name": "Spectral 2D path-tracing test",
+            "published": 3,
+            "tags": [
+                "2d",
+                "pathtracing",
+                "spectral"
+            ],
+            "usePreview": 0,
+            "username": "clepirelli",
+            "viewed": 861
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy/iResolution.xy;\n    vec3 textureColor = texture(iChannel0, uv).xyz;\n    \n    //from: http://filmicworlds.com/blog/filmic-tonemapping-operators/\n    textureColor *= 12.0;\n    vec3 x = max(vec3(.0), textureColor-.004);\n    vec3 retColor = (x*(6.2*x+.5))/(x*(6.2*x+1.7)+0.06);\n    fragColor = vec4(min(retColor, 1.0), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ---- structs ----\nstruct Ray\n{\n    vec2 origin;\n    vec2 direction;\n};\n\nconst int lambertian = 0; //color is attenuation\nconst int light = 1; //color is emission\nconst int dielectric = 2; //color is attenuation\n\nstruct Material\n{\n    int type;\n    vec3 color;\n};\n\nstruct Circle\n{\n    vec2 origin;\n    float radius;\n    Material material;\n};\n\nstruct AABB\n{\n    vec2 minimum;\n    vec2 maximum;\n    Material material;\n};\n\nstruct IntersectionQuery\n{\n    bool result;\n    bool inside;\n    float nearest;\n    vec2 normal;\n    vec2 hit;\n    Material material;\n};\n\n// ---- materials ----\nvec3 saturate(vec3 a){ return clamp(a, .0, 1.0); }\nvec3 hsb2rgb( in vec3 c )\n{\n    vec3 rgb = saturate(abs(mod(c.x*6.0+vec3(0.0,4.0,2.0), 6.0)-3.0)-1.0);\n    rgb = rgb*rgb*(3.0-2.0*rgb);\n    return c.z * mix( vec3(1.0), rgb, c.y);\n}\n\nvec3 applyMaterial(vec3 color, Material material)\n{\n    switch(material.type)\n    {\n        case dielectric:\n        case lambertian:\n            return color * material.color;\n        case light:\n            return material.color;   \n    }\n    return vec3(.0);\n}\n\n\n// ---- intersection queries ----\n\nvec2 pointOnRay(Ray ray, float dist)\n{\n    return ray.origin + ray.direction * dist;\n}\n\nconst IntersectionQuery miss = IntersectionQuery(false, false, -1000.0, vec2(.0), vec2(.0), Material(200, vec3(.0)));\n\nIntersectionQuery circleIntersection(Ray ray, Circle circle)\n{\n    float radius2 = circle.radius*circle.radius;\n    vec2 L = circle.origin - ray.origin; \n    float tca = dot(L, ray.direction); \n    float d2 = dot(L,L) - tca * tca; \n    if (d2 > radius2) return miss;\n    float thc = sqrt(radius2 - d2);\n    float t0 = tca - thc;\n    float t1 = tca + thc;\n    float nearest = min(t0, t1);\n    float nextNearest = max(t0, t1);\n    \n    bool inside = nearest < .0 && nextNearest > .0;\n    if(nearest < .0) \n    {\n        nearest = nextNearest;\n    }\n    \n    vec2 hit = pointOnRay(ray, nearest);\n    vec2 normal = (circle.origin - hit)/circle.radius;\n    return IntersectionQuery(nextNearest > .0, inside, nearest, inside ? -normal : normal, hit, circle.material);\n}\n\nIntersectionQuery aabbIntersection(Ray ray, AABB aabb)\n{\n    //from: https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-box-intersection\n    bool xSign = ray.direction.x >= 0.;\n    bool ySign = ray.direction.y >= 0.;\n    vec2 inverseDir = 1.0/ray.direction;\n    \n    float nearest = ((xSign ? aabb.minimum : aabb.maximum).x - ray.origin.x) * inverseDir.x; \n    float nextNearest = ((xSign ? aabb.maximum : aabb.minimum).x - ray.origin.x) * inverseDir.x; \n    float nearestY = ((ySign ? aabb.minimum : aabb.maximum).y - ray.origin.y) * inverseDir.y; \n    float nextNearestY = ((ySign ? aabb.maximum : aabb.minimum).y - ray.origin.y) * inverseDir.y; \n \n    if (nearest > nextNearestY || nearestY > nextNearest) \n        return miss;\n    \n    nearest = max(nearestY, nearest);\n    nextNearest = min(nextNearestY, nextNearest);\n    \n    bool inside = nearest < .0 && nextNearest > .0;\n    if(nearest < .0) \n    {\n        nearest = nextNearest;\n    }\n    vec2 hit = pointOnRay(ray, nearest);\n    \n    //from: https://blog.johnnovak.net/2016/10/22/the-nim-raytracer-project-part-4-calculating-box-normals/\n    vec2 c = .5*(aabb.minimum + aabb.maximum);\n    vec2 p = hit - c;\n    vec2 d = .5*(aabb.minimum - aabb.maximum);\n    float bias = 1.0001;\n    vec2 normal = normalize(vec2(ivec2(p/abs(d)*bias)));\n    \n    return IntersectionQuery(nextNearest > .0, inside, nearest, inside ? normal : -normal, hit, aabb.material); \n}\n\n// ---- randomness and ray generation ----\n\nvec2 angleToDirection(float angle)\n{\n    return vec2(sin(angle), cos(angle));\n}\n\nfloat pseudorandScalar(vec2 randseed, vec2 uv,  sampler2D tex, int channel)\n{\n    //blue noise with toroidal shifting\n\treturn fract(texture(tex, uv)[channel] + fract(sin(dot(randseed, vec2(1.0,113.0)))*43758.5453123));\n}\n\nfloat randomRadians(vec2 randseed, vec2 uv,  sampler2D tex)\n{\n    return (pseudorandScalar(randseed, uv, tex, 0)-.5)*2.0*3.14;\n}\n\nvec2 randomDirectionInHemicircle(vec2 direction, vec2 randseed , vec2 uv,  sampler2D tex, int channel) \n{\n    float randomOffset = (pseudorandScalar(randseed, uv, tex, channel))*2.0*3.14;\n    vec2 randomDirection = vec2(sin(randomOffset), cos(randomOffset));\n    return normalize(randomDirection+direction);\n}\n\n//---- boilerplate ----\n\n#define spacePressed(sampler) texelFetch(sampler,ivec2(32, 0), 0).x > 0.0\n\n#define MAIN_FUNCTION(function) \\\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\\\n{\\\n    vec3 total = vec3(.0);\\\n    /*MSAA*/\\\n    for(int i = 0; i <aa;i++)\\\n    for(int j = 0; j <aa;j++)\\\n    {\\\n    \t/*offset the uv for MSAA*/\\\n    \tvec2 uv = (fragCoord+vec2(float(i),float(j))/float(aa)-.5)/iResolution.xy - vec2(.5);\\\n    \tuv.x *= iResolution.x/iResolution.y;\\\n    \tvec2 tempUV = uv;\\\n        total += function(tempUV, fragCoord);\\\n    }\\\n    total /= float(aa*aa);\\\n    /*Output to screen*/\\\n    fragColor = vec4(total,1.0);\\\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //from: https://www.shadertoy.com/view/wlGcD1\n    uint frameCount = floatBitsToUint(texelFetch(iChannel0, ivec2(0,0), 0).x);\n    if(iFrame == 0 || spacePressed(iChannel1))\n    {\n        frameCount = 0u;\n    } else \n    {\n        frameCount = frameCount + 1u;\n    }\n\n    fragColor = vec4(uintBitsToFloat(frameCount));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const int aa = 3;\nconst int maxBounces = 10;\n\nconst int circleAmount = 5;\nCircle circles[circleAmount] = Circle[circleAmount]\n(\n\tCircle(vec2(-.6,  .25),  .2, Material(light, vec3(.2)))\n    ,Circle(vec2( .1,  .1),  .05, Material(dielectric, vec3(1.0, .4, .4)))\n\t,Circle(vec2( .4,  .1),  .10, Material(dielectric, vec3(1.0, 1.0, 1.0)))\n    ,Circle(vec2( .5, -.2),  .05, Material(light, vec3(1.0, .9, .7)*.2))\n    ,Circle(vec2(-.3, .0),  .08, Material(dielectric, vec3(1.0, .7, 1.0)))\n);\n\nconst int aabbAmount = 2;\nAABB aabbs[aabbAmount] = AABB[aabbAmount]\n(\n    AABB(vec2(-.5, -.3), vec2(.0, -.1), Material(dielectric, vec3(1.0, .9, .4)))\n    ,AABB(vec2(-.11, .2), vec2(.0, .3), Material(dielectric, vec3(.7, 1.0, .7)))\n    //,AABB(vec2(-.3, -.3), vec2(.1, .0), Material(dielectric, vec3(1.0, 1.0, 1.0)))\n);\n\nIntersectionQuery traceScene(Ray currentRay)\n{\n    IntersectionQuery finalQuery = miss;\n    for(int i = 0; i < circleAmount; i++)\n    {\n        IntersectionQuery currentQuery = circleIntersection(currentRay, circles[i]);\n        if(!finalQuery.result || (currentQuery.result && currentQuery.nearest < finalQuery.nearest))\n        {\n            finalQuery = currentQuery;\n        }\n    }\n    \n    for(int i = 0; i < aabbAmount; i++)\n    {\n        IntersectionQuery currentQuery = aabbIntersection(currentRay, aabbs[i]);\n        if(!finalQuery.result || (currentQuery.result && currentQuery.nearest < finalQuery.nearest))\n        {\n            finalQuery = currentQuery;\n        }\n    }\n\n    return finalQuery;\n}\n\nRay scatter(IntersectionQuery query, Ray ray, vec2 uv, vec2 seed, int channel, float hue)\n{\n    vec2 direction;\n    vec2 normal = query.normal;\n    switch(query.material.type)\n    {\n        case dielectric:\n            float refractiveIndex = .1+hue;//mix(.0, query.material.other, hue);\n            direction = refract(ray.direction, -normal, refractiveIndex);\n            break;\n        case lambertian:\n            direction = randomDirectionInHemicircle(query.normal, seed, uv, iChannel1, channel);\n            break;\n    }\n    vec2 origin = query.hit+normal*.001;\n    return Ray(origin, direction);\n}\n\nvec3 trace(vec2 uv, float hue)\n{\n    float currentRayAngle = randomRadians(uv+(1.+iTime*.001), uv, iChannel1);\n    Ray currentRay = Ray(uv, angleToDirection(currentRayAngle));\n    \n    IntersectionQuery queries[maxBounces];\n    int queryCount = 0;\n        \n    for(int i = 0; i < maxBounces; i++)\n    {\n        IntersectionQuery query = traceScene(currentRay);\n        queries[queryCount] = query;\n        queryCount++;\n        \n        if(query.result && query.material.type != light)\n        {\n            vec2 seed = uv+cos(iTime)+float(i)*4.1323; //this kinda works, pretty wonky though\n            int channel = int(mod(float(i+1), 3.0));\n            currentRay = scatter(query, currentRay, uv, seed, channel, hue);\n        } else break;\n    }\n    \n    vec3 col = vec3(.0); \n    for(int i = queryCount; i >= 0; i--)\n    {     \n        if(!queries[i].result)\n        {\n            col = vec3(.98, .48, .58)*.005; //ambient color, dawn-ish\n        } else\n        {\n            col = applyMaterial(col, queries[i].material);\n        }\n    }\n    return col;\n}\n\nvec3 outputCol(vec3 thisCol, vec2 fragCoord)\n{\n    uint frame = floatBitsToUint(texelFetch(iChannel2, ivec2(0,0), 0).x);\n    vec3 previousCol = texture(iChannel0, fragCoord/iResolution.xy).xyz;\n    return float(frame)/float(frame+1u)*previousCol + 1.0/float(frame+1u)*thisCol;\n}\n\nvec3 BufferB(vec2 uv, vec2 fragCoord)\n{\n    if(iFrame == 0)\n    {\n        return vec3(.0);\n    }\n    float hue = pseudorandScalar(uv+sin(iTime*.01), uv, iChannel1, 0);\n    vec3 hsbCol = trace(uv, hue);\n    \n    return outputCol(hsbCol * hsb2rgb(vec3(hue, .9,.8)), fragCoord);\n}\n\nMAIN_FUNCTION(BufferB)",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

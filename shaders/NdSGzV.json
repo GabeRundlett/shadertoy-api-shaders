@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1617630809",
+            "description": "Try to compute shadow using iq's function, weird things happened though..............",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "NdSGzV",
+            "likes": 1,
+            "name": "What's going on?",
+            "published": 3,
+            "tags": [
+                "error"
+            ],
+            "usePreview": 0,
+            "username": "EricClapton",
+            "viewed": 268
+        },
+        "renderpass": [
+            {
+                "code": "\n\nconst int MAX_MARCHING_STEPS = 255;\nconst float MIN_DIST = 0.0;\nconst float MAX_DIST = 100.0;\nconst float EPSILON = 0.0001;\n\nfloat dot2( in vec3 v ) { return dot(v,v); }\n\nfloat sphereSDF1(vec3 samplePoint) {\n    vec3 sft = vec3(0.6, 0.0, 0.0);\n    return length(samplePoint+sft) - 0.5;\n}\n\n\nfloat sdRoundBox( vec3 p, vec3 b, float r )\n{\n  vec3 sft = vec3(-1.5, 0.0, 0.0);\n  vec3 q = abs(p+sft) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;\n}\n\nfloat sdBoxFrame( vec3 p, vec3 b, float e )\n{\n  vec3 sft = vec3(0.8, 0.0, -1.5);\n  p = abs(p+sft)-b;\n  vec3 q = abs(p+e)-e;\n  return min(min(\n      length(max(vec3(p.x,q.y,q.z),0.0))+min(max(p.x,max(q.y,q.z)),0.0),\n      length(max(vec3(q.x,p.y,q.z),0.0))+min(max(q.x,max(p.y,q.z)),0.0)),\n      length(max(vec3(q.x,q.y,p.z),0.0))+min(max(q.x,max(q.y,p.z)),0.0));\n}\n\nfloat sdTorus( vec3 p, vec2 t )\n{\n  vec3 sft = vec3(-1.25, 0.0, -1.5);\n  p = p+sft;\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  return length(q)-t.y;\n}\n\n\n\nfloat sceneSDF(vec3 samplePoint) {\n    float res = sphereSDF1(samplePoint);\n    \n    vec3 b = vec3(0.4, 0.2, 0.2);\n    float tmp = sdRoundBox( samplePoint, b, 0.1);\n    if(tmp < res)res = tmp;\n    \n    tmp = sdBoxFrame( samplePoint, vec3(0.5, 0.5, 0.5), 0.05);\n    if(tmp < res)res = tmp;\n    \n    tmp = sdTorus( samplePoint, vec2(0.5, 0.1));\n    if(tmp < res)res = tmp;\n    \n    float ground = samplePoint.z + 1.5;\n    float ground2 = samplePoint.y + 0.5;\n    if(ground2 < res)res = ground2;\n    return min(res, ground);\n}\n\nfloat calcSoftshadow(vec3 samplePoint)\n{\n    float mint = 0.01;\n    float tmax = 3.0;\n\tfloat res = 1.0;\n    float t = mint;\n    float ph = 1e10; // big, such that y = 0 on the first iteration\n    \n    for( int i=0; i<32; i++ )\n    {\n\t\tfloat h = sceneSDF(samplePoint);\n\n        // traditional technique\n        \tres = min( res, 10.0*h/t );        \n        \n        t += h;\n        \n        if( res<0.0001 || t>tmax ) break;\n        \n    }\n    res = clamp( res, 0.0, 1.0 );\n    return res*res*(3.0-2.0*res);\n}\n\nfloat CastRay(vec3 eye, vec3 marchingDirection, float start, float end) {\n    float depth = start;\n    for (int i = 0; i < MAX_MARCHING_STEPS; i++) {\n        float dist = calcSoftshadow(eye + depth * marchingDirection);\n        if (dist < EPSILON) {\n\t\t\treturn depth;\n        }\n        depth += dist;\n        if (depth >= end) {\n            return end;\n        }\n    }\n    return end;\n}\n            \n\n\nvec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(fieldOfView) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\n\nvec3 estimateNormal(vec3 p) {\n    return normalize(vec3(\n        sceneSDF(vec3(p.x + EPSILON, p.y, p.z)) - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)),\n        sceneSDF(vec3(p.x, p.y + EPSILON, p.z)) - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)),\n        sceneSDF(vec3(p.x, p.y, p.z  + EPSILON)) - sceneSDF(vec3(p.x, p.y, p.z - EPSILON))\n    ));\n}\n\n\nvec3 phongContribForLight(vec3 k_d, vec3 k_s, float alpha, vec3 p, vec3 eye,\n                          vec3 lightPos, vec3 lightIntensity) {\n    vec3 N = estimateNormal(p);\n    vec3 L = normalize(lightPos - p);\n    vec3 V = normalize(eye - p);\n    vec3 R = normalize(reflect(-L, N));\n    \n    float dotLN = dot(L, N);\n    float dotRV = dot(R, V);\n    \n    if (dotLN < 0.0) {\n       \n        return vec3(0.0, 0.0, 0.0);\n    } \n    \n    if (dotRV < 0.0) {\n        \n        return lightIntensity * (k_d * dotLN);\n    }\n    return lightIntensity * (k_d * dotLN + k_s * pow(dotRV, alpha));\n}\n\n\nvec3 phongIllumination(vec3 k_a, vec3 k_d, vec3 k_s, float alpha, vec3 p, vec3 eye) {\n    const vec3 ambientLight = 0.8 * vec3(0.8, 0.8, 0.8);\n    vec3 color = ambientLight * k_a;\n    \n    vec3 light1Pos = vec3(4.0 * sin(iTime),\n                          2.0,\n                          4.0 * cos(iTime));\n    vec3 light1Intensity = vec3(0.2, 0.5, 0.8);\n    \n    color += phongContribForLight(k_d, k_s, alpha, p, eye,\n                                  light1Pos,\n                                  light1Intensity);\n    \n    vec3 light2Pos = vec3(2.0 * sin(0.37 * iTime),\n                          2.0 * cos(0.37 * iTime),\n                          2.0);\n    vec3 light2Intensity = vec3(0.9, 0.8, 0.5);\n    \n    color += phongContribForLight(k_d, k_s, alpha, p, eye,\n                                  light2Pos,\n                                  light2Intensity);    \n    return color;\n}\n\nmat4 viewMatrix(vec3 eye, vec3 center, vec3 up) {\n    // Based on gluLookAt man page\n    vec3 f = normalize(center - eye);\n    vec3 s = normalize(cross(f, up));\n    vec3 u = cross(s, f);\n    return mat4(\n        vec4(s, 0.0),\n        vec4(u, 0.0),\n        vec4(-f, 0.0),\n        vec4(0.0, 0.0, 0.0, 1)\n    );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\t//vec3 dir = rayDirection(45.0, iResolution.xy, fragCoord);\n\n    \n    vec3 viewDir = rayDirection(45.0, iResolution.xy, fragCoord);\n    vec3 eye = vec3(6.0*cos(iTime*0.5), 4.0, 8.0);\n    \n    mat4 viewToWorld = viewMatrix(eye, vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));\n    \n    vec3 worldDir = (viewToWorld * vec4(viewDir, 0.0)).xyz;\n    \n    float dist = CastRay(eye, worldDir, MIN_DIST, MAX_DIST);\n    \n    if (dist > MAX_DIST - EPSILON) {\n\n        fragColor = vec4(0.0, 0.0, 0.0, 0.0);\n\t\treturn;\n    }\n    \n    vec3 p = eye + dist * worldDir;\n    \n    vec3 K_a = vec3(0.2, 0.2, 0.2);\n    vec3 K_d = vec3(0.2, 0.2, 0.2);\n    vec3 K_s = vec3(1.0, 1.0, 1.0);\n    float shininess = 10.0;\n    \n    vec3 color = phongIllumination(K_a, K_d, K_s, shininess, p, eye);\n    \n    fragColor = vec4(color + vec3(0.05,0.05,0.05), 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

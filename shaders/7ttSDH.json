@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1639066331",
+            "description": "This is a simulation of what happens without near clipping such that we can see the object behind the camera. This demonstrate the topological distortion of perspective projection.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7ttSDH",
+            "likes": 2,
+            "name": "No nearclip",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raycasting",
+                "clipping"
+            ],
+            "usePreview": 0,
+            "username": "theraot",
+            "viewed": 254
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.1415926\n#define MAX 1000000.0;\n\n// Transform functions\n\nmat4 rotate_xz(float t)\n{\n    return mat4(\n        cos(t) , 0.0, sin(t), 0.0,\n        0.0    , 1.0, 0.0   , 0.0,\n        -sin(t), 0.0, cos(t), 0.0,\n        0.0    , 0.0, 0.0   , 1.0\n    );\n}\n\nmat4 rotate_yz(float t)\n{\n    return mat4(\n        1.0 , 0.0    , 0.0   , 0.0,\n        0.0 , cos(t) , sin(t), 0.0,\n        0.0 , -sin(t), cos(t), 0.0,\n        0.0 , 0.0    , 0.0   , 1.0\n    );\n}\n\nmat4 translate(vec3 v)\n{\n    return mat4(1.0, 0.0, 0.0, 0.0,\n                0.0, 1.0, 0.0, 0.0,\n                0.0, 0.0, 1.0, 0.0,\n                v.x, v.y, v.z, 1.0);\n}\n\nmat4 scale(vec3 s)\n{\n    return mat4(s.x, 0.0, 0.0, 0.0,\n                0.0, s.y, 0.0, 0.0,\n                0.0, 0.0, s.z, 0.0,\n                0.0, 0.0, 0.0, 1.0);\n}\n\n// Ray and Ray functions\n\nstruct Ray {vec3 direction; vec3 position; };\n\nvoid rayAdvance(inout Ray ray, float dist)\n{\n    ray.position = (ray.direction * dist) + ray.position;\n}\n\nRay rayTransform(Ray ray, mat4 transformation)\n{\n    return Ray\n    (\n        normalize((transformation * vec4(ray.direction, 0.0)).xyz),\n        (transformation * vec4(ray.position, 1.0)).xyz\n    );\n}\n\n// Ray Casting\n\n#define OBJ_COUNT 6\n\nvec3 raycast(Ray camRay)\n{\n    // Note: we could get these transforms and colors as uniforms\n\n    // Object transform (these are actually inverse transform, so we can apply them to the ray):\n    mat4 transforms[] = mat4[](\n        translate(vec3(0.0, 0.0, 0.5)),\n        translate(vec3(0.0, 0.0, -0.5)),\n        rotate_xz(PI * 0.5) * translate(vec3(0.5, 0.0, 0.0)),\n        rotate_xz(PI * 0.5) * translate(vec3(-0.5, 0.0, 0.0)),\n        rotate_yz(PI * 0.5) * translate(vec3(0.0, 0.5, 0.0)),\n        rotate_yz(PI * 0.5) * translate(vec3(0.0, -0.5, 0.0))\n    );\n\n    // Object color:\n    vec3 colors[] = vec3[](\n        vec3(1.0, 0.0, 0.0),\n        vec3(1.0, 1.0, 0.0),\n        vec3(0.0, 1.0, 0.0),\n        vec3(0.0, 1.0, 1.0),\n        vec3(0.0, 0.0, 1.0),\n        vec3(1.0, 0.0, 1.0)\n    );\n\n    // Cast Setup:\n    float r = MAX;\n    vec3 color = vec3(0.0);\n\n    // Cast (we are not marching):\n    for (int i = 0; i < OBJ_COUNT; i++)\n    {\n        Ray modelRay = rayTransform(camRay, transforms[i]);\n        float dist = -modelRay.position.z/modelRay.direction.z;\n        rayAdvance(modelRay, dist);\n        vec2 check = sign(vec2(0.5) - abs(modelRay.position.xy));\n        // float nearClipMask = clamp(sign(dist), 0.0, 1.0); // This is the correct one\n        float nearClipMask = clamp(abs(dist), 0.0, 1.0); // Incorrect one for demostration purposes\n        float hitMask = nearClipMask * clamp(sign(check.x + check.y), 0.0, 1.0);\n        float got = dist * hitMask + (1.0 - hitMask) * MAX;\n        // ---\n        // float betterMask = clamp(sign(abs(r) - abs(got)), 0.0, 1.0); // Use this to fix face culling\n        float betterMask = clamp(sign(r - got), 0.0, 1.0);\n        vec3 candidateColor = colors[i] * texture(iChannel0, modelRay.position.xy + 0.5).rgb;\n        color = candidateColor * betterMask + color * (1.0 - betterMask);\n        r = got * betterMask + r * (1.0 - betterMask);\n    }\n\n    // // We could advance the ray, compute simple reflection, loop mixing colors until some max reflections\n    // rayAdvance(camRay, r);\n\n    // Fog\n    vec3 fogcolor = vec3(1.0);\n    color = mix(fogcolor, color, exp(-r * r / 200.0));\n\n    // Output\n    return color;\n}\n\n// Main\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Basic setup:\n    vec2 screenPos = (fragCoord.xy / iResolution.xy) * 2.0 - 1.0;\n    Ray camRay = Ray\n    (\n        normalize(vec3(screenPos.x, screenPos.y * (iResolution.y/iResolution.x), 1.0)),\n         vec3(0.0, 0.0, 0.0)\n    );\n\n    // Camera transform (I apply an scaling transform to the ray to make the world appear stretched in z):\n    float verticalOscilation = sin(iTime * 0.7) * 1.0;\n    float forth = sin(iTime) * 5.0;\n    float zStreching = 5.0;\n    mat4 camTransform = scale(vec3(1.0, 1.0, 1.0/zStreching)) * translate(vec3(2.0, verticalOscilation, forth));\n    camRay = rayTransform(camRay, camTransform);\n\n    // Cast:\n    fragColor = vec4(raycast(camRay), 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

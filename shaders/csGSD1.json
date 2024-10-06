@@ -1,0 +1,203 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1681157192",
+            "description": "Encodes visibility data from a heightmap, allowing fast direct light self-shadowing and ambient GI.\nLeft: New technique.\nRight: Normal mapping with ambient occlusion.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "csGSD1",
+            "likes": 33,
+            "name": "Fast Baked GI via Visibility Map",
+            "published": 3,
+            "tags": [
+                "gi",
+                "occlusion",
+                "ambient",
+                "bentnormals"
+            ],
+            "usePreview": 0,
+            "username": "Hatchling",
+            "viewed": 776
+        },
+        "renderpass": [
+            {
+                "code": "// Shader Summary:\n// Encodes visibility data from a heightmap,\n// allowing fast direct light self-shadowing and ambient GI.\n// Left: New technique.\n// Right: Standard technique.\n// Given a heightmap, \n// computes the percentage of visible rays (occlusion),\n// the average visible ray direction (bent normals),\n// and their angular variability (for self shadowing). \n// These values are weighted by a Lambertian BDRF (dot product).\n// This data can be used to do fast realtime GI on textured surfaces, \n// including self shadowing for direct lights.\n\n// Image buffer:\n// Uses the previously baked visibility map to do fast realtime GI on a textured surface.\n\nconst float EnvMaxMipLevel = 8.;\n\nfloat softDot(vec3 a, vec3 b)\n{\n    float r = dot(a, b) * 0.5 + 0.5;\n    return r * r;\n}\n\nvec3 encironmentLighting(vec3 dir, float power)\n{\n    return //vec3(-powerToMipBias(power+1.0) / EnvMaxMipLevel);\n       // + softDot(dir, normalize(vec3(0,5,0))) * vec3(0.3, 0.6, 1.0)\n     //   + softDot(dir, normalize(vec3(0.5,-1,0.0))) * vec3(1.0, 0.5, 0.1) * 0.5\n     //   + softDot(dir, normalize(vec3(-1.5,0.5,1.5))) * vec3(0.7, 0.3, 0.2) * 0.5\n        + pow(textureLod(iChannel1, dir, EnvMaxMipLevel + powerToMipBias(power)).rgb, vec3(2.2))  * 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    // Virtual mouse (auto-controlled when 0,0)\n    vec2 virtualMouse;\n    if(iMouse.xy == vec2(0,0))\n    {\n        virtualMouse.xy = (vec2(sin(iTime), cos(iTime * 1.618)) * 0.5 + 0.5) * iResolution.xy;\n    }\n    else\n    {\n        virtualMouse.xy = iMouse.xy;\n    }\n\n    float sampleCount = float(iFrame);\n    vec4 data = texture(iChannel0, fragCoord/iChannelResolution[0].xy);\n    \n    if(data.a == 0.)\n    {\n        data.xyz = vec3(0,0,1);\n        data.a = 1.0;\n    }\n    else\n    {\n        data.xyz /= data.a;\n    }\n    \n    vec3 direction = normalize(data.xyz);\n    float occlusion = data.a / sampleCount * 2.0;\n    float mag = length(data.xyz);\n    float power = magToPower(mag);\n\n    vec4 normalHeight = texture(iChannel2, fragCoord/iChannelResolution[2].xy);\n    vec3 normal = normalize(normalHeight.xyz);\n    \n    vec3 lightPos = vec3(virtualMouse.xy, depthMax * ((sin(iTime * 2.618)+1.0) * 2.0 + 1.0));\n    vec3 pixelPos = vec3(fragCoord, normalHeight.w);\n    vec3 lightDir = normalize(lightPos - pixelPos);\n    float lightDistSqr = dot(lightPos - pixelPos,lightPos - pixelPos) / (depthMax * 1000.);\n    vec3 reflDir = reflect(vec3(0,0,-1), normal);\n    float lDotD = max(0.,dot(direction, lightDir));\n    float lDotN = max(0.,dot(normal, lightDir));\n    float lDotR = max(0.,dot(lightDir, reflDir));\n    float rDotD = max(0.,dot(direction, reflDir));\n    float vDotN = max(0.,dot(vec3(0,0,1), normal));\n           \n    float specularAmt;\n    float diffuseAmt;\n    {\n\n        // dot ^ 5 for fresnel approx.\n        float fresnel = 1.0-vDotN;\n        fresnel *= fresnel;\n        fresnel *= fresnel;\n        fresnel *= 1.0-vDotN;\n\n        specularAmt = mix(0.1f, 1.0f, fresnel);\n        diffuseAmt = 1.0 - specularAmt;\n    }\n        \n    // Left\n    if(fragCoord.x < iResolution.x * 0.5)\n    {        \n\n        \n        float specShadowing = pow(rDotD, power);\n        \n        // Harden shadows.\n        specShadowing = smoothstep(0., 1., specShadowing);    \n        specShadowing = smoothstep(0., 1., specShadowing);    \n        specShadowing = smoothstep(0., 1., specShadowing);\n\n        // Add environment lighting.\n        fragColor.rgb = encironmentLighting(direction, power) \n                      * occlusion \n                      * diffuseAmt;\n\n        \n        // Add environment reflection.\n        {\n            fragColor.rgb += encironmentLighting(reflDir, 20.0) \n                           * 3. \n                           * specShadowing \n                           * specularAmt;    \n        }\n\n        // Add diffuse.\n        {\n            float shadowing = pow(lDotD, power);\n\n            // Harden shadows.\n            shadowing = smoothstep(0., 1., shadowing);    \n            shadowing = smoothstep(0., 1., shadowing);    \n            shadowing = smoothstep(0., 1., shadowing);\n\n            fragColor.rgb += vec3(1.0,0.8,0.5) \n                           / lightDistSqr \n                           * lDotN \n                           * shadowing \n                           * diffuseAmt;\n        }\n\n        // Add specular.\n        fragColor.rgb += vec3(1.0,0.8,0.5) \n                       / lightDistSqr \n                       * pow(lDotR, 20.0) \n                       * 3. \n                       * specShadowing \n                       * specularAmt;\n        \n\n        // Tonemap.\n        {\n            fragColor.rgb = linearToGamma(fragColor.rgb);\n            fragColor.rgb /= (0.5 + fragColor.rgb);\n            fragColor.rgb = smoothstep(vec3(0), vec3(1), fragColor.rgb);\n            fragColor.rgb = smoothstep(vec3(0), vec3(1), fragColor.rgb);\n        }\n    }\n    \n    // Right\n    else\n    {\n        // Add environment lighting.\n        fragColor.rgb = encironmentLighting(normal, 1000000.0) \n                      * occlusion \n                      * diffuseAmt;\n\n        // Add environment reflection.\n        {\n            fragColor.rgb += encironmentLighting(reflDir, 20.0) \n                           * 3. \n                           * specularAmt;    \n        }\n        \n        // Add diffuse.\n        {\n\n            fragColor.rgb += vec3(1.0,0.8,0.5) \n                           / lightDistSqr \n                           * lDotN \n                           * diffuseAmt;\n        }\n\n        // Add specular.\n        {\n            fragColor.rgb += vec3(1.0,0.8,0.5) \n                           / lightDistSqr \n                           * pow(lDotR, 20.) \n                           * 3.\n                           * specularAmt;\n        }\n\n        // Tonemap.\n        {\n            fragColor.rgb = linearToGamma(fragColor.rgb);\n            fragColor.rgb /= (0.5 + fragColor.rgb);\n            fragColor.rgb = smoothstep(vec3(0), vec3(1), fragColor.rgb);\n            fragColor.rgb = smoothstep(vec3(0), vec3(1), fragColor.rgb);\n        }  \n    }\n  \n // fragColor.rgb = vec3(occlusion);\n    fragColor.a = 1.0;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buffer A:\n// Caches the normal and height values for faster processing.\n\nfloat GetDepth(vec2 fragCoord)\n{\n    return texture(iChannel0, fragCoord/iChannelResolution[0].xy).r * depthMax;\n}\n\nvec3 GetNormal(vec2 fragCoord)\n{\n    float ang1 = (1.0 / 12.0) * 6.2831853;\n    float ang2 = (5.0 / 12.0) * 6.2831853;\n    float ang3 = (9.0 / 12.0) * 6.2831853;\n    \n    vec3 v1 = vec3(fragCoord + vec2(sin(ang1), cos(ang1)) * 0.5, 0);\n    vec3 v2 = vec3(fragCoord + vec2(sin(ang2), cos(ang2)) * 0.5, 0);\n    vec3 v3 = vec3(fragCoord + vec2(sin(ang3), cos(ang3)) * 0.5, 0);\n    \n    v1.z = GetDepth(v1.xy);\n    v2.z = GetDepth(v2.xy);\n    v3.z = GetDepth(v3.xy);\n    \n    vec3 norm = normalize(cross(v1 - v2, v3 - v2));\n    \n    return norm;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor.rgb = GetNormal(fragCoord);\n    fragColor.a = GetDepth(fragCoord);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float depthMax = 100.0;\n\n\n#define decl_linearToGamma(type) \\\ntype linearToGamma(type v)       \\\n{                               \\\n    return pow(v, type(1.0 / 2.2));   \\\n}\n\ndecl_linearToGamma(float)\ndecl_linearToGamma(vec2)\ndecl_linearToGamma(vec3)\ndecl_linearToGamma(vec4)\n\n#define decl_gammaToLinear(type)    \\\ntype gammaToLinear(type v)          \\\n{                                   \\\n    return pow(v, type(2.2)); \\\n}\n\ndecl_gammaToLinear(float)\ndecl_gammaToLinear(vec2)\ndecl_gammaToLinear(vec3)\ndecl_gammaToLinear(vec4)\n\nfloat curve(float x) \n{ \n   float y = (1.0 - 1.0/(x+1.0))*2.0;\n   y = 1.-y;\n   y = pow(y, 2.25);\n   y = 1.-y;\n   y *= 0.74;\n   y += x*0.26;\n   return y;\n} \n\nfloat myFunc2(float x)\n{\n    const float mini = 0.752;\n    const float maxi = 1.0;\n    \n    x = (x-mini)/(maxi-mini);\n    \n    x = clamp(x, 0., 1.);\n    \n    return curve(x);\n}\n\nfloat magToPower(float magnitude)\n{\n    float x = myFunc2(magnitude);\n    \n    x = -x/(x-1.0);\n    \n    return x;\n}\n\nfloat powerToMipBias(float power)\n{\n    return -(log2(power)*0.445743);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    }
+                ],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Buffer B:\n// Computes the visibility mapping, where:\n// x, y, z: The average direction of all unoccluded rays\n//     - Direction: Average direction visible to the texel.\n//     - Magnitude: Encodes the variation of visible ray directions. \n// w: The weighted number of unoccluded rays.\n\nvec4 GetNormalDepth(vec2 fragCoord)\n{\n    return texture(iChannel0, fragCoord/iChannelResolution[0].xy);\n}\n\nfloat RayIsVisible(vec2 fragCoord, vec3 dir)\n{\n    vec4 normDepth = GetNormalDepth(fragCoord);\n    \n    normDepth.xyz = normalize(normDepth.xyz);\n\n    vec3 rayPos;\n    rayPos.xy = fragCoord;\n    rayPos.z = normDepth.w;\n    \n    float rDotN = dot(normDepth.xyz, dir);\n    if(rDotN < 0.0)\n        return 0.0;//dir -= 2.0 * rDotN * normDepth.xyz;\n     \n    if(dir.z <= 0.0)\n    {\n        return 0.0;\n    }\n    \n    float exitDepthDiff = depthMax - rayPos.z;\n    \n    if(exitDepthDiff <= 0.0)\n    {\n        return rDotN;\n    }\n    \n    vec3 exitPos = rayPos + dir * exitDepthDiff / dir.z;\n    \n    const int steps = 64;\n    for(int i = 1; i <= steps; i++)\n    {\n        vec3 pointAlongRay = mix(rayPos, exitPos, float(i) / float(steps));\n        \n        if(pointAlongRay.z <= GetNormalDepth(pointAlongRay.xy).w)\n            return 0.0;\n    }\n    \n    return rDotN;\n}\n\nvec2 hash2( float n ) { return fract(sin(vec2(n,n+1.0))*vec2(43758.5453123,22578.1459123)); }\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    fragColor = texture(iChannel2, fragCoord/iChannelResolution[2].xy);\n    \n    vec4 noise = texture(iChannel1, fragCoord/iChannelResolution[1].xy);\n\n    vec2  aa = hash2( noise.x + float(iFrame)*203.1 );\n    float ra = sqrt(aa.y);\n    float rx = ra*cos(6.2831*aa.x); \n    float ry = ra*sin(6.2831*aa.x);\n    float rz = sqrt(1.0-aa.y);\n    vec3  dir = normalize(vec3(rx,ry,rz));\n\n    float weight = RayIsVisible(fragCoord, dir);\n\n        fragColor.xyz += dir * weight;\n        fragColor.a += weight;\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

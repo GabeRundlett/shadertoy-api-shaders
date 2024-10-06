@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697453914",
+            "description": "A simple demo on how to use a float noise value to dither a bilinear interpolation so you can use a single sample. ",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ddGcWh",
+            "likes": 4,
+            "name": "Dither Bilinear Weights",
+            "published": 3,
+            "tags": [
+                "dither",
+                "interpolation",
+                "bilinear"
+            ],
+            "usePreview": 0,
+            "username": "gehtsiegarnixan",
+            "viewed": 202
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2023 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/*\nThis shader explains how to use a single noise value to select from 4 \nweights of bilinear interpolation. But the principle can be easily \nexpanded to any number of weights.\n\nThis is useful for dither interpolation to cut down the 4 samples of \nbilinear interpolation to a single one. It also needs only a single\nnoise value, and gives a nice even pattern. \n\nYou can enable mouse controls with a click. X controls the border and \nY the contrast.\n\nSee here how to use dithered interpolation: \nhttps://www.shadertoy.com/view/dsjBzh\n\nAnd here is an application in a terrain material:\nhttps://www.shadertoy.com/view/DsVcW1\n*/\n\n// The number of previous samples looked at to blur result, with a similar \n// effect to Temporal Anti-Aliasing (TAA) which you should use instead.\n#define TEMPORALBLUR 1\n\n// Enable debug grid where the two mappings blend with each other\n#define LINETHICKNESS 0.005\n//#define SHOWGRID\n\n// enable to show the alpha/weights otherwise shows textures\n#define SHOWALPHA\n\n// Generates a bilienar weights in a grid\nvec4 bilinearWeights(vec2 uv) {\n    // Alpha, also known as weights for bilinear interpolation\n    vec2 infUV = 1.0 - uv;\n\n    // The order here corresponds to GatherRed (which itself is arbitrary)\n    float weightA = infUV.x * uv.y;\n    float weightB = uv.x * uv.y;\n    float weightC = uv.x * infUV.y;\n    float weightD = infUV.x * infUV.y;\n\n    // Combine alpha values\n    return vec4(weightA, weightB, weightC, weightD);\n}\n\n// simple use case for bilinear interpolation\nvec3 bilinearSample(vec2 uv, float contrast) {\n     // generate weights or alpha for interpolation\n    vec4 weights = bilinearWeights(uv);\n    \n    // Increase contrast of alpha (power scale: 1. no contrast, 50 max contrast)\n    weights = smoothContrast(weights, contrast);   \n\n    #ifdef SHOWALPHA\n        // alpha as rgb which doubles up as interpolated colors\n        vec3 color = weights.xyz; \n    #else \n         // scale UV coordinates, is static for this demo\n        float scale = 2.;\n        vec2 uvA = uv * scale;\n\n        // generate 3 more set's of UVs with arbitrary rotations\n        vec2 uvB = vec2(-uvA.y, uvA.x); // rotated 90 deg\n        vec2 uvC = vec2(uvA.x, -uvA.y); // rotated 180 deg\n        vec2 uvD = vec2(uvA.y, -uvA.x); // rotated 270 deg\n        \n        // Sample texture 4 times\n        vec3 colA = texture(iChannel0, uvA).xyz;\n        vec3 colB = texture(iChannel0, uvB).xyz;\n        vec3 colC = texture(iChannel0, uvC).xyz;\n        vec3 colD = texture(iChannel0, uvD).xyz;\n\n        // interpolate the 4 samples\n        vec3 color = colA * weights.x + colB * weights.y + \n                     colC * weights.z + colD * weights.w;\n    #endif\n    \n    #ifdef SHOWGRID\n        // Overlaying the edges of the alpha mask\n        vec4 mask = step(abs(weights - 0.1), vec4(LINETHICKNESS));\n        color = max(mask.xyz, color * (1.0 - mask.w));\n    #endif    \n    return color;\n}\n\n// simple use case for dithered bilinear interpolation\nvec3 ditheredSample(vec2 uv, vec2 fragCoord, float time, float contrast) {        \n    // scale UV coordinates, is static for this demo\n    float scale = 2.;\n    vec2 uvA = uv * scale;\n    \n    // Calculate mip as the automatic ones don't work for dithering\n    vec2 duvdx = dFdx(uvA);\n    vec2 duvdy = dFdy(uvA);\n    \n    // generate weights or alpha for interpolation\n    vec4 weights = bilinearWeights(uv);\n    \n    // Increase contrast of alpha (power scale: 1. no contrast, 50 max contrast)\n    weights = smoothContrast(weights, contrast);   \n    \n    // Sample dither noise\n    float dither = ScreenSpaceDither12(fragCoord, time);\n    \n    // Smooth contrast creates artifacts in the dither. Clamping removes them\n    dither = clamp(dither, 0.01, 0.99);\n\n    // Applies float dither to weight values.\n    // The order has to be in in sync with the weights and offsets\n    // The weights are grouped cumulatively, and if the dither value is within one \n    // cumulative section for one of the weights, that weight is selected\n    vec2 uvMix;\n    vec4 weightsDither;\n    if (dither < weights.x) {\n        // Weight A\n        uvMix = uvA;\n        weightsDither = vec4(1, 0, 0, 0);\n    } else if (dither < weights.x + weights.y) {\n        // Weight B\n        // generate 3 more set's of UVs with arbitrary rotations\n        uvMix = vec2(-uvA.y, uvA.x); // rotated 90 deg\n        weightsDither = vec4(0, 1, 0, 0);\n    } else if (dither < 1. - weights.w) {\n        // Weight C\n        // because sum of all weights is 1, so 1-w = sum of xyz\n        uvMix = vec2(-uvA.x, -uvA.y); // rotated 180 deg\n        weightsDither = vec4(0, 0, 1, 0);\n    } else {\n        // Weight D\n        uvMix = vec2(uvA.y, -uvA.x); // rotated 270 deg\n        weightsDither = vec4(0, 0, 0, 1);\n    }\n\n    #ifdef SHOWALPHA\n        // alpha as rgb which doubles up as interpolated colors\n        vec3 color = weightsDither.xyz; \n    #else \n        // Sample texture 4 times\n        vec3 color = textureGrad(iChannel0, uvMix, duvdx, duvdy).xyz;        \n    #endif\n    \n    #ifdef SHOWGRID\n        // Overlaying the edges of the alpha mask\n        vec4 mask = step(abs(weights - 0.1), vec4(LINETHICKNESS));\n        color = max(mask.xyz, color * (1.0 - mask.w));\n    #endif    \n    return color;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {   \n    // Calculate centered UV coordinates\n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.y + 0.5;\n        \n    // enable mouse controls when clicked, otherwise animate\n    float contrast;\n    float border;    \n    if (iMouse.x > 0.0)\t{  \n        vec2 mouse = (iMouse.xy - iResolution.xy * 0.5) / iResolution.y + 0.5;\n        border = mouse.x;\n        contrast = mix(1., 16., pow(mouse.y,2.));\n    } else {\n        float myTime = iTime * 0.5;\n        border = sin(myTime) * 0.5 + 0.5;\n        contrast = 1.;\n    }\n    \n    // Alternate between smooth alpha and dithered alpha\n    vec3 color;\n    if (uv.x > border) {\n        // Right dithered Side\n        #if TEMPORALBLUR <= 1\n            // We just take a single sample from the ditheredSample function.\n            color += ditheredSample(uv, fragCoord, iTime, contrast);\n        #else\n            // We take multiple samples from the ditheredSample function and average them.\n            // This is normally done automatically by your TAA or motion blur\n            for(int i = 0; i < TEMPORALBLUR; i++) {\n                color += ditheredSample(uv, fragCoord, iTime - float(i), contrast);\n            }\n            color /= float(TEMPORALBLUR);\n        \n        #endif\n    } else {\n        // Left control Bilinear Side \n        color += bilinearSample(uv, contrast);\n    }\n    \n    // mask values outside of 0 to 1\n    vec2 mask = step(abs(uv*2.-1.), vec2(1.0));\n    color *= min(mask.x, mask.y);\n    \n    // Add a dividing line\n    color += step(abs(uv.x - border), 0.002);\n    \n    // Output to screen\n    fragColor = vec4(color, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//_____________________________Generic Functions________________________________\n\n// Increases the steepness of Alpha while preserving 0-1 range and 1 sum\n// See 2 value example https://www.desmos.com/calculator/n6gpory8yq\nvec4 smoothContrast(vec4 alpha, float contrast) {\n    // increase steepness using power\n    vec4 powAlpha = pow(alpha, vec4(contrast));\n    \n    // normalize back to precentage of 1\n    return powAlpha/(powAlpha.x + powAlpha.y + powAlpha.z + powAlpha.w);\n}\n\n// valve edition (slightly modified to be a true 12 dither)\n// http://alex.vlachos.com/graphics/Alex_Vlachos_Advanced_VR_Rendering_GDC2015.pdf\n// input in pixels (ie not normalized uv)\nfloat ScreenSpaceDither12(vec2 vScreenPos, float time) {\n    float vDither = dot( vec2( 171.0, 231.0 ), vScreenPos.xy + time); \n    return fract( vDither / 103.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,200 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697489637",
+            "description": "I liked this enough to fork it\n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "dstfRf",
+            "likes": 56,
+            "name": "3D Water Box Particles only",
+            "published": 3,
+            "tags": [
+                "particle",
+                "sph"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 1363
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"3D Water Box\" by michael0884. https://shadertoy.com/view/dscfRf\n// 2023-10-16 20:53:25\n\n#define SHADOWS \n//#define REFRACTION\n\n#define RADIUS 0.3\n#define NORMAL_SMOOTHNESS 0.0\n\n#define FOV 2.5\nmat3 getCamera(vec2 angles)\n{\n   mat3 theta_rot = mat3(1,   0,              0,\n                          0,  cos(angles.y),  -sin(angles.y),\n                          0,  sin(angles.y),  cos(angles.y)); \n        \n   mat3 phi_rot = mat3(cos(angles.x),   sin(angles.x), 0.,\n        \t\t       -sin(angles.x),   cos(angles.x), 0.,\n        \t\t        0.,              0.,            1.); \n        \n   return theta_rot*phi_rot;\n}\n\nvec3 getRay(vec2 angles, vec2 pos)\n{\n    mat3 camera = getCamera(angles);\n    return normalize(transpose(camera)*vec3(FOV*pos.x, 1., FOV*pos.y));\n}\n\n\n#define MAX_DIST 1e10\n\nstruct Ray \n{\n    vec3 ro;\n    vec3 rd;\n    float td;\n    vec3 normal;\n    vec3 color;\n};\n\nvoid iSphere(inout Ray ray, vec4 sphere, vec3 color)\n{\n    vec3 ro = ray.ro - sphere.xyz;\n    float b = dot(ro, ray.rd);\n    float c = dot(ro, ro) - sphere.w*sphere.w;\n    float h = b*b - c;\n    if (h > 0.) \n    {\n\t    h = sqrt(h);\n        float d1 = -b-h;\n        float d2 = -b+h;\n        if (d1 >= 0.0 && d1 <= ray.td) {\n            ray.normal = normalize(ro + ray.rd*d1);\n            ray.color = color;\n            ray.td = d1;\n        } else if (d2 >= 0.0 && d2 <= ray.td) { \n            ray.normal = normalize(ro + ray.rd*d2); \n            ray.color = color;\n            ray.td = d2;\n        }\n    }\n}\n\nvec2 iBox( in vec3 ro, in vec3 rd, in vec3 boxSize ) \n{\n    vec3 m = sign(rd)/max(abs(rd), 1e-8);\n    vec3 n = m*ro;\n    vec3 k = abs(m)*boxSize;\n\t\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n\n\tfloat tN = max( max( t1.x, t1.y ), t1.z );\n\tfloat tF = min( min( t2.x, t2.y ), t2.z );\n\t\n    if (tN > tF || tF <= 0.) {\n        return vec2(MAX_DIST);\n    } else {\n        return vec2(tN, tF);\n    }\n}\n\n\nvoid TraceCell(inout Ray ray, vec3 p)\n{\n    //load the particles \n    vec4 packed = LOAD3D(ch0, p);\n    Particle p0, p1;\n    unpackParticles(packed, p, p0, p1);\n\n    if(p0.mass > 0u) iSphere(ray, vec4(p0.pos, RADIUS*1.5), vec3(1.000,1.000,1.000));\n    if(p1.mass > 0u) iSphere(ray, vec4(p1.pos, RADIUS*1.5), vec3(1.000,1.000,1.000));\n}\n\nvoid TraceCells(inout Ray ray, vec3 p)\n{\n    vec3 p0 = floor(p);\n    vec4 rho = voxel(ch1, p);\n    if(rho.z < 1e-3) return;\n    range(i, -1, 1) range(j, -1, 1) range(k, -1, 1)\n    {\n        //load the particles \n        vec3 p1 = p0 + vec3(i, j, k);\n        TraceCell(ray, p1);\n    }\n}\n\n\nfloat Density(vec3 p)\n{\n    return trilinear(ch1, p).z;\n}\n\nfloat Shadow(vec3 p)\n{\n    float optical_density = trilinear(ch2, p).x;\n    return exp(-optical_density)+0.05;\n}\n\nvec4 calcNormal(vec3 p, float dx) {\n\tconst vec3 k = vec3(1,-1,0);\n\treturn   (k.xyyx*Density(p + k.xyy*dx) +\n\t\t\t k.yyxx*Density(p + k.yyx*dx) +\n\t\t\t k.yxyx*Density(p + k.yxy*dx) +\n\t\t\t k.xxxx*Density(p + k.xxx*dx))/vec4(4.*dx,4.*dx,4.*dx,4.);\n}\n\nfloat TraceDensity(vec3 ro, vec3 rd)\n{\n    float dens = 0.0;\n    float td = 0.0;\n    for(int i = 0; i < 100; i++)\n    {\n        vec3 p = ro + rd * td;\n        if(any(lessThan(p, vec3(1.0))) || any(greaterThan(p, size3d - 1.0))) return dens;\n        float d = Density(p);\n        dens += d * 2.0;\n        td += 2.0;\n    }\n    return dens;\n}\n\n\n#define ISO_VALUE 0.5\nfloat ParticleDensity(vec3 p)\n{\n    vec3 p0 = floor(p);\n    float rho = voxel(ch1, p).z;\n    //if(rho < 0.001) return rho;\n    //rho = 0.0;\n    ////if larger then compute accurate density from particles\n    //range(i, -1, 1) range(j, -1, 1) range(k, -1, 1)\n    //{\n    //    //load the particles \n    //    vec3 p1 = p0 + vec3(i, j, k);\n    //    //load the particles\n    //    vec4 packed = LOAD3D(ch0, p1);\n    //    Particle p0_, p1_;\n    //    unpackParticles(packed, p1, p0_, p1_);\n    //    if(p0_.mass > 0u) rho += float(p0_.mass)*GD(length(p0_.pos - p), RADIUS);\n    //    if(p1_.mass > 0u) rho += float(p1_.mass)*GD(length(p1_.pos - p), RADIUS);\n    //}\n\n    return rho;\n}\n\nvec3 ParticleGradient(vec3 p)\n{\n    vec3 p0 = floor(p);\n    vec3 grad = vec3(0.0);\n\n    range(i, -1, 1) range(j, -1, 1) range(k, -1, 1)\n    {\n        //load the particles \n        vec3 p1 = p0 + vec3(i, j, k);\n\n        //load the particles\n        vec4 packed = LOAD3D(ch0, p1);\n        Particle p0_, p1_;\n\n        unpackParticles(packed, p1, p0_, p1_);\n\n        if(p0_.mass > 0u) grad += float(p0_.mass)*GGRAD(p0_.pos - p, RADIUS);\n        if(p1_.mass > 0u) grad += float(p1_.mass)*GGRAD(p1_.pos - p, RADIUS);\n    }\n\n    return grad;\n}\n\n\nfloat DE(vec3 p)\n{\n    return ISO_VALUE - ParticleDensity(p);\n}\n\nfloat TraceIsoSurface(Ray ray, float mint, float inside)\n{\n    const int step_count = 300;\n    float td = mint;\n    for(int i = 0; i < step_count; i++)\n    {\n        vec3 p = ray.ro + ray.rd * td;\n        if(!all(lessThanEqual(p, size3d)) || !all(greaterThanEqual(p, vec3(0.))))\n        {\n            return ray.td;\n        }\n        float d = inside*4.0*DE(p);\n        if(d < 0.0)\n        {\n            return td;\n        }\n        td += d;\n    }\n    return td;\n}\n\nvec3 Background(vec3 rd)\n{\n    return 2.0*pow(texture(iChannel3,  rd.yzx).xyz, vec3(2.0));\n}\n\n\nvoid mainImage( out vec4 col, in vec2 fragCoord )\n{    \n    InitGrid(iResolution.xy);\n    \n    vec2 uv = (fragCoord - 0.5*R)/max(R.x, R.y);\n\n    vec2 angles = vec2(2.*PI, PI)*(iMouse.xy/iResolution.xy - 0.5);\n\n    if(iMouse.z <= 0.)\n    {\n        angles = vec2(0.04, -0.5);\n    }\n    vec3 rd = getRay(angles, uv);\n    vec3 center_rd = getRay(angles, vec2(0.));\n \n    float d = sqrt(dot(vec3(size3d), vec3(size3d)))*0.5;\n    vec3 ro = vec3(size3d)*vec3(0.5, 0.5, 0.5) - center_rd*d;\n    \n    \n\n    vec2 tdBox = iBox(ro - vec3(size3d)*0.5, rd, 0.5*vec3(size3d));\n    col.xyz =Background(rd);\n    if(tdBox.x < MAX_DIST)\n    {\n        float td = max(tdBox.x+0.5, 0.0);\n        Ray ray;\n        ray.ro = ro;\n        ray.rd = rd;\n        ray.td = tdBox.y;\n        int i = 0;\n        for(; i < 200; i++)\n        {\n            vec3 p = ro + rd*td;\n            TraceCells(ray, p);\n            td += 2.5;\n            if(td > tdBox.y-1.0)\n            {\n                break;\n            }\n            if(ray.td < tdBox.y-1.0)\n            {\n                break;\n            }\n        }\n        \n        //col.xyz = vec3(i)/200.0;\n        //return;\n        \n        //float liq_td = TraceIsoSurface(ray, td);\n        //ray.td = min(liq_td, ray.td);\n        \n        if(ray.td < tdBox.y)\n        {\n            vec3 p0 = ray.ro + ray.rd*ray.td;\n            vec3 normal = normalize(-ParticleGradient(p0));\n            vec3 normal1 = normalize(calcNormal(p0, 0.5).xyz);\n            normal = -normalize(mix(normal, normal1, NORMAL_SMOOTHNESS));\n            vec3 albedo = vec3(0.039,0.153,1.000);\n            float LdotN = 0.5*dot(normal, light_dir)+0.5;\n            #ifdef SHADOWS\n                float shadow_d = TraceDensity(p0+light_dir*1.0, light_dir);\n                float shadow = exp(-shadow_d) + 0.3*exp(-0.1*shadow_d);\n            #else\n                float shadow = 1.0;\n            #endif\n            vec3 refl_d = reflect(ray.rd, normal);\n            vec3 refl = Background(refl_d);\n            float K = 1. - pow(max(dot(normal,refl_d),0.), 2.);\n            K = mix(0.0, K, 0.1);\n            \n            #ifdef REFRACTION\n            vec3 refr_d = refract(ray.rd, normal, 1.0/1.33);\n            \n            float liquid_density = TraceDensity(p0, refr_d);\n            \n            vec3 liquid_color = exp(-0.5*liquid_density*vec3(0.953,0.353,0.247));\n            vec3 refr_color = Background(refr_d) * liquid_color;\n            col.xyz = 2.5*shadow*refr_color*(1.0 - K) + 0.*ray.color + 0.75*shadow*refl*K;\n            #else\n            col.xyz = 2.5*shadow*albedo*LdotN*(1.0 - K) + 0.*ray.color + 0.75*shadow*refl*K;\n            #endif\n        }\n        \n        //col.xyz = 0.01*vec3(1,1,1)*TraceDensity(ro + rd*max(tdBox.x+0.001,0.0), rd);\n    }\n    \n    col.xyz = 1.0 - exp(-2.5*pow(col.xyz,vec3(1.0/1.4)));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define ch0 iChannel0\n#define ch1 iChannel1\n#define ch2 iChannel2\n#define ch3 iChannel3\n\n#define R iResolution.xy\n\n#define LOAD(ch, pos) texelFetch(ch, ivec2(pos), 0)\n#define LOAD3D(ch, pos) texelFetch(ch, ivec2(dim2from3(pos)), 0)\n\n#define PI 3.1415926535\n#define TWO_PI 6.28318530718\n\n#define light_dir normalize(vec3(0.741,1.000,0.580))\n\n#define initial_particle_density 1u\n#define dt 1.0\n#define rest_density 0.45\n#define gravity 0.01\n\n#define PRESSURE 2.5\n#define PRESSURE_RAD 0.8\n#define VISCOSITY 0.65\n#define SPIKE_KERNEL 0.5\n#define SPIKE_RAD 0.75\n\n#define force_mouse 0.005\n#define force_mouse_rad 40.0\n#define force_boundary 5.0\n#define boundary_h 5.0\n#define max_velocity 1.0\n#define cooling 0.0\n\nfloat sqr(float x)\n{\n    return x * x;\n}\n\nfloat cub(float x)\n{\n    return x*x*x;\n}\n\nfloat Pressure(float rho)\n{\n    return (rho/rest_density - 1.0)/max(rho*rho, 0.001);\n}\n\nfloat Gaussian(float r, float d)\n{\n    float norm = 1.0/(cub(d)*sqrt(cub(TWO_PI)));\n    return norm * exp(-0.5*sqr(r/d));\n}\n\nvec3 GaussianGrad(vec3 dx, float d)\n{\n    float norm = 1.0/(cub(d)*sqrt(cub(TWO_PI)));\n    float r = length(dx);\n    return - (norm/sqr(d)) * exp(-0.5*sqr(r/d)) * dx;\n}\n\nvec4 GaussianGrad2(vec3 dx, float d)\n{\n    float norm = 1.0/(cub(d)*sqrt(cub(TWO_PI)));\n    float r = length(dx);\n    return norm * exp(-0.5*sqr(r/d)) * vec4(-dx /sqr(d), 1.0);\n}\n\n#define KERNEL_POLY6_NORMALIZATION (315.0 / (64.0 * PI))\n#define KERNEL_SPIKE_NORMALIZATION (45 / PI)\n#define KERNEL_RADIUS 1.0\n\nfloat KernelPoly6(float r, float d)\n{\n    float c = KERNEL_POLY6_NORMALIZATION / cub(cub(d));\n    return (r <= d) ? c * cub(sqr(d) - sqr(r)) : 0.0;\n}\n\nvec3 KernelPoly6Grad(vec3 dx, float d)\n{\n    float c = KERNEL_POLY6_NORMALIZATION / cub(cub(d));\n    float r = length(dx);\n    return (r <= d) ? clamp(-6.0 * c * sqr(sqr(d) - sqr(r)), -3.0, 0.0) * dx : vec3(0.0);\n}\n\n#define GD(x, R) Gaussian(length(x),R)\n#define GGRAD(x, R) GaussianGrad(x, R)\n#define GGRAD2(x,R) GaussianGrad2(x, R)\n//#define GD(x, R) 12.0*KernelPoly6(length(x),R*4.0/2.0)\n//#define GGRAD(x, R) 12.0*KernelPoly6Grad(x, R*4.0/2.0)\n#define GS(x) exp(-dot(x,x))\n#define DIR(phi) vec2(cos(TWO_PI*phi),sin(TWO_PI*phi))\n\n#define loop(i,x) for(int i = 0; i < x; i++)\n#define range(i,a,b) for(int i = a; i <= b; i++)\n\n//3d slice aspect ratio \n#define ar vec2(1.0,0.5)\nvec2 SCALE;\nvec3 size3d;\n\nvec2 dim2from3(vec3 p3d)\n{\n    p3d = clamp(p3d, vec3(0.0), size3d);\n    float ny = floor(p3d.z/SCALE.x);\n    float nx = floor(p3d.z) - ny*SCALE.x;\n    return vec2(nx, ny)*vec2(size3d.xy) + p3d.xy;\n}\n\nvec3 dim3from2(vec2 p2d)\n{\n    return vec3(p2d - size3d.xy*floor(p2d/size3d.xy),(floor(p2d.x/size3d.x) + SCALE.x*floor(p2d.y/size3d.y)));\n}\n\n//#define pixel(a, p, s) texture(a, (p+0.5)/vec2(s))\n\nvec4 pixel(sampler2D ch, vec2 pos)\n{\n    vec2 d = pos - floor(pos);\n    vec4 p00 = texelFetch(ch, ivec2(pos), 0);\n    vec4 p01 = texelFetch(ch, ivec2(pos) + ivec2(0, 1), 0);\n    vec4 p10 = texelFetch(ch, ivec2(pos) + ivec2(1, 0), 0);\n    vec4 p11 = texelFetch(ch, ivec2(pos) + ivec2(1, 1), 0);\n    return mix(mix(p00, p01, d.y), mix(p10, p11, d.y), d.x);\n}\n\nvec4 voxel(sampler2D ch, vec3 p3d)\n{\n    return pixel(ch, dim2from3(p3d));\n}\n\n//trilinear interpolation = linear interp between layers\nvec4 trilinear(sampler2D ch, vec3 p3d)\n{\n    return mix(voxel(ch, vec3(p3d.xy, floor(p3d.z))),voxel(ch, vec3(p3d.xy, ceil(p3d.z))), fract(p3d.z));\n}\n\n\nfloat sdBox( vec3 p, vec3 b )\n{\n    vec3 d = abs(p) - b;\n    return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));\n}\n\nvec2 hash21(float p)\n{\n\tvec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n\tp3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 udir(vec2 rng)\n{\n    float phi = 2.*PI*rng.x;\n    float ctheta = 2.*rng.y-1.;\n    float stheta = sqrt(1.0-ctheta*ctheta);\n    return vec3(cos(phi)*stheta, sin(phi)*stheta, ctheta);\n}\n\nstruct Particle \n{\n    uint mass;\n    vec3 pos;\n    vec3 vel;\n    vec3 force;\n    float density;\n};\n\n//5 bits for shared exponent, 9 bits for each component\nuint packvec3(vec3 v)\n{\n    //get the exponent\n    float maxv = max(abs(v.x), max(abs(v.y), abs(v.z)));\n    int exp = clamp(int(ceil(log2(maxv))), -15, 15);\n    float scale = exp2(-float(exp));\n    uvec3 sv = uvec3(round(clamp(v*scale, -1.0, 1.0) * 255.0) + 255.0);\n    uint packed = uint(exp + 15) | (sv.x << 5) | (sv.y << 14) | (sv.z << 23);\n    return packed;\n}\n\nvec3 unpackvec3(uint packed)\n{\n    int exp = int(packed & 0x1Fu) - 15;\n    vec3 sv = vec3((packed >> 5) & 0x1FFu, (packed >> 14) & 0x1FFu, (packed >> 23) & 0x1FFu);\n    vec3 v = (sv - 255.0) / 255.0;\n    v *= exp2(float(exp));\n    return v;\n}\n\nuint packmasspos(uint mass, vec3 p0)\n{\n    uvec3 pos0 = uvec3(clamp(p0, 0.0, 1.0) * 255.0);\n    return mass | (pos0.x << 8) | (pos0.y << 16) | (pos0.z << 24);\n}\n\nuint packMassPos(uint mass, vec3 pos)\n{\n    uvec3 pos0 = uvec3(clamp(pos, 0.0, 1.0) * 255.0); // Assuming pos range [0, 1] in a cell\n    uint data1 = mass | (pos0.x << 8) | (pos0.y << 16) | (pos0.z << 24);\n    return data1;\n}\n\nvoid unpackMassPos(uint packed, out uint mass, out vec3 pos)\n{\n    mass = packed & 0xFFu;\n    uvec3 pos0 = uvec3((packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu, (packed >> 24) & 0xFFu);\n    pos = vec3(pos0) / 255.0;\n}\n\nvec4 packParticles(Particle p0, Particle p1, vec3 pos)\n{\n    p0.pos -= pos;\n    p1.pos -= pos;\n\n    uvec4 data = uvec4(\n        packMassPos(p0.mass, p0.pos),\n        packMassPos(p1.mass, p1.pos),\n        packvec3(p0.vel),\n        packvec3(p1.vel)\n    );\n\n    return uintBitsToFloat(data);\n}\n\nvoid unpackParticles(vec4 packed, vec3 pos, out Particle p0, out Particle p1)\n{\n    uvec4 data = floatBitsToUint(packed);\n    \n    unpackMassPos(data.x, p0.mass, p0.pos);\n    unpackMassPos(data.y, p1.mass, p1.pos);\n\n    p0.pos += pos;\n    p1.pos += pos;\n\n    p0.vel = unpackvec3(data.z);\n    p1.vel = unpackvec3(data.w);\n}\n\nfloat sdBox( in vec2 p, in vec2 b )\n{\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\nint ClosestCluster(Particle p0, Particle p1, Particle incoming)\n{\n    //first try to choose the particle with significantly smaller mass\n    if(float(p0.mass) < 0.01*float(p1.mass) || float(p1.mass) < 0.01*float(p0.mass))\n    {\n        return p0.mass < p1.mass ? 0 : 1;\n    }\n\n    //otherwise choose the closest one\n    float d0 = length(p0.pos - incoming.pos);\n    float d1 = length(p1.pos - incoming.pos);\n    return d0 < d1 ? 0 : 1;\n}\n\nvoid BlendParticle(inout Particle p, in Particle incoming)\n{\n    uint newMass = p.mass + incoming.mass;\n    vec2 weight = vec2(p.mass, incoming.mass) / float(newMass);\n    p.pos = p.pos*weight.x + incoming.pos*weight.y;\n    p.vel = p.vel*weight.x + incoming.vel*weight.y;\n    p.mass = newMass;\n}\n\nvoid Clusterize(inout Particle p0, inout Particle p1, in Particle incoming, vec3 pos)\n{\n    //check if the incoming particle is in the cell\n    if(!all(equal(pos, floor(incoming.pos))))\n    {\n        return;\n    }\n\n    int closest = ClosestCluster(p0, p1, incoming);\n    if(closest == 0)\n    {\n        BlendParticle(p0, incoming);\n    }\n    else\n    {\n        BlendParticle(p1, incoming);\n    }\n}\n\nvoid SplitParticle(inout Particle p1, inout Particle p2)\n{\n    vec3 pos = p1.pos;\n    uint newMass = p1.mass;\n    p1.mass = newMass/2u;\n    p2.mass = newMass - p1.mass;\n    vec3 dir = udir(hash23(pos));\n    p1.pos = pos - dir*5e-3;\n    p2.pos = pos + dir*5e-3;\n    p2.vel = p1.vel;\n}\n\nvoid ApplyForce(inout Particle p, in Particle incoming)\n{\n    if(incoming.mass == 0u) return;\n\n    vec3 dx = incoming.pos - p.pos;\n    vec3 dv = incoming.vel - p.vel;\n    float d = length(dx);\n    vec3 dir = dx / max(d, 1e-3);\n    \n    float rho0 = p.density;\n    float rho1 = incoming.density;\n    float mass0 = float(p.mass);\n    float mass1 = float(incoming.mass);\n  \n    vec3 ggrad = GGRAD(dx, PRESSURE_RAD);\n    float pressure = 0.5*p.density*(Pressure(p.density) + Pressure(incoming.density));\n    vec3 F_SPH = - PRESSURE * pressure * ggrad;\n    vec3 F_VISC = VISCOSITY * dot(dir, dv) * ggrad;\n    vec3 F_SPIKE = SPIKE_KERNEL * GD(d, SPIKE_RAD) * dir;\n   \n    p.force += - (F_SPH + F_VISC + F_SPIKE) * mass1;\n    \n}\n\nfloat minv(vec3 a)\n{\n    return min(min(a.x, a.y),a.z);\n}\n\nfloat maxv(vec3 a)\n{\n    return max(max(a.x, a.y),a.z);\n}\n\nfloat distance2border(vec3 p)\n{\n    vec3 a = vec3(size3d - 1.) - p;\n    return min(minv(p),minv(a)) + 1.;\n}\n\nvec4 border_grad(vec3 p)\n{\n    const float dx = 0.001;\n    const vec3 k = vec3(1,-1,0);\n\treturn  (k.xyyx*distance2border(p + k.xyy*dx) +\n\t\t\t k.yyxx*distance2border(p + k.yyx*dx) +\n\t\t\t k.yxyx*distance2border(p + k.yxy*dx) +\n\t\t\t k.xxxx*distance2border(p + k.xxx*dx))/vec4(4.*dx,4.*dx,4.*dx,4.);\n}\n\nvoid IntegrateParticle(inout Particle p, vec3 pos, vec2 iR, vec4 iM, float time)\n{\n    p.force = p.force;/// max(0.0001, float(p.mass));\n    p.force += gravity*vec3(0.4*sin(1.5*time), 0.2*cos(0.75*time), -1.0); //gravity\n    \n\n    vec4 border = border_grad(p.pos);\n    vec3 bound =1.*normalize(border.xyz)*exp(-0.4*border.w*border.w);\n    p.force += force_boundary*bound*dt;\n    //p.force += vec2(0.0, 0.0)*GS(distance(p.pos, iR*vec2(0.2,0.5))/force_mouse_rad);\n \n    //if(iM.z > 0.)\n    //{\n    //    vec3 dx = pos - vec3(iM.xy, 0.0);\n    //    p.force -= force_mouse*dx*GS(dx/force_mouse_rad);\n    //}\n        \n    p.vel += p.force * dt;\n\n    //velocity limit\n    float v = length(p.vel)/max_velocity;\n    p.vel /= (v > 1.)?v:1.;\n}\n\nvoid InitGrid(vec2 iR)\n{\n    SCALE = floor(ar*pow(iR.x*iR.y,0.1666666));\n    size3d = vec3(floor(iR.xy/SCALE), SCALE.x*SCALE.y);\n}\n\nvec3 hsv2rgb( in vec3 c )\n{\n    vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n\n\trgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n\n\treturn c.z * mix( vec3(1.0), rgb, c.y);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    InitGrid(iResolution.xy);\n    fragCoord = floor(fragCoord);\n    vec3 pos = dim3from2(fragCoord);\n    \n    Particle p0, p1;\n\n    //advect neighbors and accumulate + clusterize density if they fall into this cell\n    range(i, -1, 1) range(j, -1, 1) range(k, -1, 1)\n    {\n        //load the particles \n        vec3 pos1 = pos + vec3(i, j, k);\n        if(!all(lessThanEqual(pos1, size3d)) || !all(greaterThanEqual(pos1, vec3(0.0))))\n        {\n            continue;\n        }\n        Particle p0_, p1_;\n        unpackParticles(LOAD3D(ch0, pos1), pos1, p0_, p1_);\n        \n        if(p0_.mass > 0u)\n        {\n            p0_.pos += p0_.vel*dt;\n            Clusterize(p0, p1, p0_, pos);\n        }\n   \n        if(p1_.mass > 0u)\n        {\n            p1_.pos += p1_.vel*dt;\n            Clusterize(p0, p1, p1_, pos);\n        }\n    }\n    \n    if(p1.mass == 0u && p0.mass > 0u)\n    {\n        SplitParticle(p0, p1);\n    }\n\n    if(p0.mass == 0u && p1.mass > 0u)\n    {\n        SplitParticle(p1, p0);\n    }\n    \n    vec4 packed = packParticles(p0, p1, pos);\n    fragColor = packed;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void AddDensity(inout Particle p, in Particle incoming, float rad)\n{\n    if(incoming.mass == 0u) return;\n    float d = distance(p.pos, incoming.pos);\n    float mass = float(incoming.mass);\n    p.density += mass*GD(d,rad);\n}\n\n//compute particle SPH densities\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    InitGrid(iResolution.xy);\n    fragCoord = floor(fragCoord);\n    vec3 pos = dim3from2(fragCoord);\n    \n    Particle p0, p1, pV;\n    pV.pos = pos + 0.5;\n    \n    //load the particles\n    vec4 packed = LOAD3D(ch0, pos);\n    unpackParticles(packed, pos, p0, p1);\n    \n    range(i, -2, 2) range(j, -2, 2) range(k, -2, 2)\n    {\n        if(i == 0 && j == 0 && k == 0) continue;\n        vec3 pos1 = pos + vec3(i, j, k);\n        Particle p0_, p1_;\n        unpackParticles(LOAD3D(ch0, pos1), pos1, p0_, p1_);\n\n        if(p0.mass > 0u)\n        {\n            AddDensity(p0, p0_, KERNEL_RADIUS);\n            AddDensity(p0, p1_, KERNEL_RADIUS);\n        }\n        if(p1.mass > 0u)\n        {\n            AddDensity(p1, p0_, KERNEL_RADIUS);\n            AddDensity(p1, p1_, KERNEL_RADIUS);\n        }\n        \n        AddDensity(pV, p0_, 1.0);\n        AddDensity(pV, p1_, 1.0);\n    }\n\n    if(p0.mass > 0u)\n    {\n        AddDensity(p0, p0, KERNEL_RADIUS);\n        AddDensity(p0, p1, KERNEL_RADIUS);\n    }\n    if(p1.mass > 0u)\n    {\n        AddDensity(p1, p0, KERNEL_RADIUS);\n        AddDensity(p1, p1, KERNEL_RADIUS);\n    }\n    AddDensity(pV, p0, 1.0);\n    AddDensity(pV, p1, 1.0);\n\n    fragColor = vec4(p0.density, p1.density, pV.density, 0.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define EMITTER_POS vec3(0.1,0.5,0.5)\n#define EMITTER_RAD 4.0\n#define EMITTER_VEL vec3(1.0, 0.0, 0.0)\n#define EMITTER_NUM 1\n\n#define VOID_POS vec3(0.8,0.5,0.1)\n#define VOID_RAD 12.0\n\nconst int KEY_SPACE = 32;\nconst int KEY_LEFT  = 37;\nconst int KEY_UP    = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN  = 40;\nbool isKeyPressed(int KEY)\n{\n\treturn texelFetch( iChannel3, ivec2(KEY,2), 0 ).x > 0.5;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    InitGrid(iResolution.xy);\n    fragCoord = floor(fragCoord);\n    vec3 pos = dim3from2(fragCoord);\n\n    Particle p0, p1;\n    \n    //load the particles\n    vec4 packed = LOAD3D(ch0, pos);\n    unpackParticles(packed, pos, p0, p1);\n    \n    //load density\n    vec2 densities = voxel(ch1, pos).xy;\n    p0.density = densities.x;\n    p1.density = densities.y;\n    \n    if(p0.mass + p1.mass > 0u) \n    {\n        range(i, -2, 2) range(j, -2, 2) range(k, -2, 2)\n        {\n            if(i == 0 && j == 0 && k == 0) continue;\n            vec3 pos1 = pos + vec3(i, j, k);\n            Particle p0_, p1_;\n            unpackParticles(LOAD3D(ch0, pos1), pos1, p0_, p1_);\n            \n            vec2 densities_ = voxel(ch1, pos1).xy;\n            p0_.density = densities_.x;\n            p1_.density = densities_.y;\n\n            //apply the force\n            ApplyForce(p0, p0_);\n            ApplyForce(p0, p1_);\n            ApplyForce(p1, p0_);\n            ApplyForce(p1, p1_);\n        }\n\n        ApplyForce(p0, p1);\n        ApplyForce(p1, p0);\n\n        IntegrateParticle(p0, pos, iResolution.xy, iMouse, iTime);\n        IntegrateParticle(p1, pos, iResolution.xy, iMouse, iTime);\n        \n        if(isKeyPressed(KEY_UP))\n        {\n            float void_d = distance(p0.pos, size3d*VOID_POS);\n            if(void_d < VOID_RAD)\n            {\n                p0.mass = 0u;\n            }\n        }\n    \n        if(isKeyPressed(KEY_LEFT))\n        {\n            vec3 dx = normalize(p0.pos - size3d*0.5);\n            p0.vel += vec3(dx.y, -dx.x, 0.0)*0.003;\n        }\n        \n        if(isKeyPressed(KEY_RIGHT))\n        {\n            vec3 dx = normalize(p0.pos - size3d*0.5);\n            p0.vel += vec3(-dx.y, dx.x, 0.0)*0.003;\n        }\n    }\n    \n        \n    if(iFrame < 10)\n    {\n        if(pos.x < 0.4*size3d.x && pos.x > 0.0*size3d.x && \n           pos.y < 0.85*size3d.y && pos.y > 0.15*size3d.y &&\n           pos.z < 0.85*size3d.z && pos.z > 0.15*size3d.z)\n        {\n            p0.mass = initial_particle_density;\n            p1.mass = 0u;\n        }\n\n        p0.pos = pos;\n        p0.vel = vec3(0.0);\n        p1.pos = pos;\n        p1.vel = vec3(0.0);\n    }\n\n    if(all(equal(p0.pos, p1.pos)))\n    {\n        p1.pos += 1e-2;\n    }\n    \n    if(isKeyPressed(KEY_SPACE))\n    {\n    \tfloat emitter_d = distance(pos, size3d*EMITTER_POS);\n        if(emitter_d < EMITTER_RAD && int(pos.y) % 2 == 0 && int(pos.z) % 2 == 0 && int(pos.x) % 2 == 0)\n        {\n            Particle emit;\n            emit.pos = pos;\n            emit.mass = 1u;\n            emit.vel = EMITTER_VEL;\n            \n            BlendParticle(p0, emit);\n        }\n    }\n    \n        \n    packed = packParticles(p0, p1, pos);\n    fragColor = packed;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

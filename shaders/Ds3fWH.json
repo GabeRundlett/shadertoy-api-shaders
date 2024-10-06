@@ -1,0 +1,101 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1697173948",
+            "description": "Press LMB to see a single layer in both techniques and also redirect the flowmap.\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Ds3fWH",
+            "likes": 9,
+            "name": "Flow mapping: 2-tap vs 6-tap",
+            "published": 3,
+            "tags": [
+                "flowmapping"
+            ],
+            "usePreview": 1,
+            "username": "Suslik",
+            "viewed": 399
+        },
+        "renderpass": [
+            {
+                "code": "//Note that both of these can work with native mipmapping (no textureGrad or textureLod needed).\n//Both techniques also use exclusively int hashes, which means they will perform the same way regardless of floating point\n//shenanigans. For example, they'll perform the same between the GPU and the CPU. This is different from most techniques that\n//rely on vec3 hash33(vec3) and such, where the result of the hash is unstable to small pertrubations.\n\nvec2 GetFlowField(vec2 pixel_pos, vec2 focus_point)\n{\n    vec2 delta = pixel_pos - focus_point;\n    vec2 n = delta / (length(delta) + iResolution.x / 10.0f);\n    float l = length(delta) / (iResolution.x / 2.0f);\n    return \n        100.0f * n +\n        cos(length(delta) / (iResolution.x / 10.0f)) * vec2(-n.y, n.x) * iResolution.x / 10.0f;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pixel_pos = fragCoord.xy;\n    vec2 pixel_velocity = GetFlowField(pixel_pos, iMouse.xy);\n    \n    vec3 linear_col = vec3(0.0f);\n    vec2 moments = vec2(0.0f);\n\n    float grid_step2 = 0.5f;\n    float grid_step3 = iResolution.x / 15.0f;\n    \n    float uv_tiling = iResolution.x / 20.0f;\n    float debug_pos = (sin(iTime) * 0.5f + 0.5f) * iResolution.y;\n\n    bool mouse_was_pressed = texelFetch(iChannel2, ivec2(0), 0).r > 0.5f;\n    float mouse_pressed_time = texelFetch(iChannel2, ivec2(0), 0).g;\n\n    float debug_draw = mix(\n        1.0f - clamp((pixel_pos.y - debug_pos) / 10.0f - 0.5f, 0.0f, 1.0f),\n        clamp(mouse_pressed_time, 0.0f, 1.0f),\n        mouse_was_pressed);\n        \n        \n    int quad_index = 0;\n    float width = 2.0f;\n    if(pixel_pos.x < iResolution.x * 0.5f - width)\n        quad_index = 1;\n    if(pixel_pos.x > iResolution.x * 0.5f + width)\n        quad_index = 2;\n    \n    if(quad_index == 1)\n    {\n        float time_pos = iTime;\n        vec2 gyroid_pos = fragCoord.xy / (iResolution.x * 0.05f);\n        float smooth_noise = sin(gyroid_pos.x) * cos(gyroid_pos.y) + sin(gyroid_pos.y) + cos(gyroid_pos.x);\n        float time_offset = smooth_noise * grid_step2 * 0.5f;\n        InterpNodes2 interp_nodes2 = GetLinearInterpNodes(time_pos + time_offset, grid_step2);\n        for(int j = 0; j < 2; j++)\n        {\n            vec3 node2_hash = hash3i3f(ivec3(0, 0, interp_nodes2.indices[j]));\n            float time_delta = time_pos - (interp_nodes2.positions[j]);\n\n            vec2 uv = Rotate2(pixel_pos + pixel_velocity * time_delta, 2.0f * pi * node2_hash.x) / uv_tiling + node2_hash.yz;\n            float weight = interp_nodes2.weights[j];\n            linear_col += SrgbToLinear(texture(iChannel0, uv).rgb) * weight * mix(1.0f, (j > 0) ? 0.0f : 1.0f, debug_draw);\n            moments += vec2(weight, weight * weight);\n        }\n    }\n    if(quad_index == 2)\n    {\n        InterpNodes3 interp_nodes3 = GetHexGridInterpNodes(pixel_pos, vec2(grid_step3));\n        for(int i = 0; i < 3; i++)\n        {\n            vec3 node3_hash = hash3i3f(interp_nodes3.indices[i].xyy);\n\n            float time_pos = node3_hash.x * grid_step2 + iTime;\n            InterpNodes2 interp_nodes2 = GetLinearInterpNodes(time_pos, grid_step2);\n\n            vec2 pixel_delta = pixel_pos - interp_nodes3.positions[i];\n            vec3 debug_col = vec3(0.0f);\n            debug_col[i] = 1.0f;\n            for(int j = 0; j < 2; j++)\n            {\n                vec3 node2_hash = hash3i3f(ivec3(interp_nodes3.indices[i].xy, interp_nodes2.indices[j]));\n                float time_delta = time_pos - interp_nodes2.positions[j];\n                vec2 uv = Rotate2(pixel_delta + pixel_velocity * time_delta, 2.0f * pi * node2_hash.x) / uv_tiling + node2_hash.yz;\n                float weight = interp_nodes3.weights[i] * interp_nodes2.weights[j];\n                linear_col += SrgbToLinear(texture(iChannel0, uv).rgb) * weight * mix(1.0f, (j > 0 || i > 0) ? 0.0f : 1.0f, debug_draw);\n                moments += vec2(weight, weight * weight);\n            }\n        }\n    }    \n\n    vec3 mean_col = SrgbToLinear(textureLod(iChannel0, vec2(0.5f), 10.0f).rgb);\n    vec3 linear_res = mix(PreserveVariance(linear_col, mean_col, moments.y), linear_col, debug_draw);\n    fragColor = vec4(LinearToSrgb(linear_res), 1.0f);\n    //InterpNodes2 interp_nodes2 = GetLinearInterpNodes(fragCoord.x, 200.0f);\n    //fragColor = vec4(abs(interp_nodes2.positions[1] - fragCoord.x) / 20.0f);\n    //fragColor = vec4(interp_nodes2.weights[1]);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Inspired by https://www.shadertoy.com/view/dtySDy\n\n//http://www.jcgt.org/published/0009/03/02/paper.pdf\nuvec3 hash33UintPcg(uvec3 v)\n{\n    v = v * 1664525u + 1013904223u;\n    v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;\n    //v += v.yzx * v.zxy; //swizzled notation is not exactly the same because components depend on each other, but works too\n\n    v ^= v >> 16u;\n    v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;\n    //v += v.yzx * v.zxy;\n    return v;\n}\n\nvec3 hash3i3f(ivec3 seed)\n{\n    uvec3 hash_uvec3 = hash33UintPcg(uvec3(seed));\n    return vec3(hash_uvec3) * (1.0f / float(~0u));\n}\n\nconst float pi = 3.141592f;\n\n//Amazing resource explaining cube coordinates of hexagon grids:\n//https://www.redblobgames.com/grids/hexagons/more-pixel-to-hex.html#justin-pombrio\nmat2 skewed_to_grid = mat2(1.0f, 0.0f, 0.5f, sqrt(3.0f) / 2.0f);\n\nvec2 GridToSkewed(vec2 grid_pos)\n{\n    return inverse(skewed_to_grid) * grid_pos;\n}\n\nvec2 SkewedToGrid(vec2 skewed_pos)\n{\n    return skewed_to_grid * skewed_pos;\n}\n\nvec3 SkewedToCube(vec2 skewed_pos)\n{\n    return vec3(skewed_pos.xy, -skewed_pos.x - skewed_pos.y);\n}\n\n//https://justinpombrio.net/programming/2020/04/28/pixel-to-hex.html\nvec3 CubeToTri(vec3 cube_pos)\n{\n    return floor(cube_pos.xyz - cube_pos.zxy);\n}\n\nvec3 TriToHex(vec3 tri_index)\n{\n    return round((tri_index.xyz - tri_index.yzx) / 3.0f);\n}\n\nfloat max3(vec3 v)\n{\n    return max(max(v.x, v.y), v.z);\n}\nfloat HexOuterDist(vec3 cube_delta)\n{\n    return 1.0f - max3(abs(cube_delta.xyz - cube_delta.yzx));\n}\n\nfloat HexInnerDist(vec3 cube_delta)\n{\n    return length(cube_delta) / (sqrt(2.0f) / sqrt(3.0f)); //(sqrt(2.0f) / 2.0f) for inscribed normalization\n}\n\nstruct InterpNodes3\n{\n    vec2 positions[3];\n    ivec2 indices[3];\n    vec3 weights;\n};\n\nInterpNodes3 GetHexGridInterpNodes(vec2 pos, vec2 grid_step)\n{\n    vec2 hex_size = grid_step * sqrt(3.0f);\n    InterpNodes3 interp_nodes3;\n    for(int i = 0; i < 3; i++)\n    {\n        vec2 grid_pos = pos / hex_size;\n        vec2 skewed_offset = vec2(float(i) / 3.0f);\n        vec2 skewed_pos = GridToSkewed(grid_pos) + skewed_offset;\n        vec3 cube_pos = SkewedToCube(skewed_pos);\n        vec3 hex_index = TriToHex(CubeToTri(cube_pos));\n        vec2 hex_skewed_pos = hex_index.xy - skewed_offset;\n        vec2 hex_grid_pos = SkewedToGrid(hex_skewed_pos);\n        interp_nodes3.positions[i] = hex_grid_pos * hex_size;\n        interp_nodes3.indices[i] = ivec2(hex_index.xy) * ivec2(3, 1) + ivec2(i, 0);\n        interp_nodes3.weights[i] = HexOuterDist(cube_pos - hex_index);\n    }\n    return interp_nodes3;\n}\n\nmat2 Rotate2Mat(float ang)\n{\n    return mat2(cos(ang), sin(ang), -sin(ang), cos(ang));\n}\n\nvec2 Rotate2(vec2 vec, float ang)\n{\n    return Rotate2Mat(ang) * vec;\n}\n\nstruct InterpNodes2\n{\n    vec2 positions;\n    ivec2 indices;\n    vec2 weights;\n};\nInterpNodes2 GetLinearInterpNodes(float position, float grid_step)\n{\n    float grid_pos = position / grid_step;\n    vec2 global_phases = vec2(grid_pos * 0.5f) + vec2(0.5f, 0.0);\n    vec2 indices = floor(global_phases) * 2.0f + vec2(0.0f, 1.0f);\n    vec2 weights = vec2(1.0f) - abs(grid_pos - indices);\n    return InterpNodes2(indices * grid_step, ivec2(indices), weights);\n}\n\nvec3 SrgbToLinear(vec3 srgb_col)\n{\n    return pow(srgb_col.rgb, vec3(2.2f));\n}\n\nvec3 LinearToSrgb(vec3 linear_col)\n{\n    return pow(linear_col.rgb, vec3(1.0f / 2.2f));\n}\n\n//Qizhi Yu, Fabrice Neyret, Eric Bruneton, and Nicolas Holzschuch. 2011. \n//Lagrangian Texture Advection: Preserving Both Spectrum and Velocity Field.\n//IEEE Transactions on Visualization and Computer Graphics 17, 11 (2011), 1612–1623\nvec3 PreserveVariance(vec3 linear_col, vec3 mean_col, float moment2)\n{\n    return (linear_col - mean_col) / sqrt(moment2) + mean_col;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 pixel_coord = ivec2(fragCoord.xy);\n    fragColor = texelFetch(iChannel0, pixel_coord, 0);\n    if(pixel_coord == ivec2(0, 0))\n    {\n        fragColor.r = max(fragColor.r, iMouse.z);\n        fragColor.g = clamp(fragColor.g + (iMouse.z > 0.5f ? iTimeDelta : -iTimeDelta) * 4.0f, 0.0f, 1.0f);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,93 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1590699158",
+            "description": "In the \"monte carlo geometry processing\" paper they describe a way to distort 2d shapes using bezier control points. this is an attempt to do something like that with the RWoS integrator. changes every 15*60 frames.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wdSBDG",
+            "likes": 8,
+            "name": "RWoS Distortion",
+            "published": 3,
+            "tags": [
+                "bep"
+            ],
+            "usePreview": 0,
+            "username": "blackle",
+            "viewed": 637
+        },
+        "renderpass": [
+            {
+                "code": "//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n\n    vec4 BuffA = texture(iChannel0, uv);\n    vec2 distorted = BuffA.xy/BuffA.z;\n    fragColor = texture(iChannel1, distorted);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//buf A calculates the distortion map given boundary conditions (see \"scene\")\n//based on the bezier distortion described here: http://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/paper.pdf\n\n#define FK(k) floatBitsToInt(cos(k))^floatBitsToInt(k)\nfloat hash(float a, float b) {\n    int x = FK(a); int y = FK(b);\n    return float((x*x-y)*(y*y+x)+x)/2.14e9;\n}\n\nvec2 rand_unit(float seed) {\n    float h1 = hash(seed, 4375893.44353);\n    float h2 = hash(seed, h1);\n    return normalize(tan(vec2(h1,h2))); //see https://www.shadertoy.com/view/3djyWW for an explination of this trick\n}\n\nfloat box(vec2 p, vec2 d) {\n    vec2 q = abs(p)-d;\n    return abs(length(max(q,0.)) + min(0.,max(q.x,q.y)));\n}\n\nmat2 rot(float a) {\n    float c = cos(a); float s = sin(a);\n    return mat2(c,-s,s,c);\n}\n\nint distorter_id;\nvec3 scene(vec2 p) {\n    float border = box(p - vec2(.5), vec2(.5));\n    if (distorter_id % 4 == 0) {\n        //rotated circle\n        float distorter = abs(length(p-.5)-.3);\n    \tif (distorter < border) {\n        \treturn vec3(distorter, (p-.5)*0.5*rot(.9)+.5);\n    \t}\n    }\n    if (distorter_id % 4 == 1) {\n        //shifted square\n        float distorter = box(p - vec2(.5), vec2(.18));\n    \tif (distorter < border) {\n        \treturn vec3(distorter, p+.2);\n    \t}\n    }\n    if (distorter_id % 4 == 2) {\n        //differently spaced dots with different boundary conditions at each\n        float distorter1 = length(asin(sin(p*20.))/20.);\n        float distorter2 = length(asin(sin(rot(.2)*p*25.))/25.);\n    \tif (min(distorter1, distorter2) < border) {\n            if (distorter1 < distorter2) {\n        \t\treturn vec3(distorter1, (p-.5)*rot(1.1)+.5);\n            }\n        \treturn vec3(distorter2, (p-.5)*rot(-1.1)+.5);\n    \t}\n    }\n    if (distorter_id % 4 == 3) {\n        //noop, just the regular boundary conditions that will converge to undistorted UVs. fun to watch converge\n    }\n    return vec3(border, p);\n}\n\n//random walk on spheres. see: https://www.shadertoy.com/view/WsXBzl\nvec3 rWoS(vec2 p, float seed) {\n    float res = iChannelResolution[0].x;\n    \n    for (int i = 0; i < 25; i++) {\n        seed = hash(seed, seed);\n        vec2 dir = rand_unit(seed);\n        vec3 dist = scene(p);\n        if (dist.x < 1./res) return vec3(dist.yz, 1.);\n        p += dir*dist.x;\n    }\n    //return nothing if we didn't reach the boundary\n    return vec3(0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //iq's 1 sample blur https://www.shadertoy.com/view/MsdGD2\n    float sgn = iFrame % 2 == 0 ? -.5 : .5;\n    fragColor = texture(iChannel0, (fragCoord+sgn)/iChannelResolution[0].xy);\n    distorter_id = iFrame / (15*60);\n    if (iFrame % (15*60) == 0) {\n        fragColor = vec4(0);\n\t}\n    vec2 uv = fragCoord/iResolution.xy;\n    //our seed is only time-based to reduce the noise level of the final image,\n    //though it results in some funny elastic distortion as it converges\n    float seed = hash(hash(uv.x,uv.y), float(iFrame));\n    for (int i = 0; i < 10; i++) {\n        seed = hash(seed, 3423.);\n        fragColor.xyz += rWoS(uv, seed);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

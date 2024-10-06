@@ -1,0 +1,66 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1496510912",
+            "description": "This is a PBR demo, the actual BRDF should be OK but the IBL is just a hack right now.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XssBDr",
+            "likes": 11,
+            "name": "PBR demo",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "pbr"
+            ],
+            "usePreview": 0,
+            "username": "piluve",
+            "viewed": 984
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\tPBR demo nachocpol@gmail.com\n\tThis is a PBR demo, the actual BRDF should be OK but\n\tthe IBL is just a hack right now.\n\t\n\tTO-DO:\n\t+ Fix multiple lights & shadows\n\t+ Find a way to blur the radiance map\n\t+ Check IBL for dielectric (non metals) it looks wrong?\n\t+ Add more detail with some noise\n\n\tThanks to:\n\t@iq for the distance functions & AA code\n\t@learnopengl for the amazing pbr tutorial\n\n*/\n\n#define AA 2 \n\nconst float kPi = 3.14159265359;\nconst int kSteps = 256;\nconst float kMinD = 0.01;\nconst float kMaxD = 500.0;\nconst float kDelD = 0.0001;\n\nconst vec3 kGold = vec3(0.91, 0.74, 0.24);\nconst vec3 kAluminium = vec3(0.73,0.72,0.7);\nconst vec3 kRedPlastic = vec3(1.0,0.0,0.0);\nconst vec3 kCopper = vec3(0.72,0.45,0.2);\nconst vec3 kSky = vec3(0.04,0.71,0.94);\n\nconst int kLights = 1;\nstruct Light\n{\n    vec3 Position;\n    vec3 Color;\n}lights[kLights];\n\nconst int kMaterials = 4;\nstruct Material\n{\n    float Metalness;\n    float Roughness;\n    vec3 Albedo;\n}materials[kMaterials];\n\nstruct Hit\n{\n    float Dist;\n    float MaterialId;\n};\n\nvec3 Translate(vec3 p,vec3 t)\n{\n    return p - t;\n}\n\nfloat Cube(vec3 p,vec3 size)\n{\n    return length(max(abs(p)-size,0.0));\n}\n\nfloat Sphere(vec3 p,float rad)\n{\n    return length(p) - rad;\n}\n    \nfloat Torus( vec3 p, vec2 t )\n{\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  return length(q)-t.y;\n}\n\n/*\n\tScene definition\n*/\nHit Scene(vec3 p)\n{\n    float sphere \t= Sphere(Translate(p,vec3(0.0,1.1,0.0)),1.0);\n    float floorS \t= Cube(p,vec3(5.0,0.1,2.0));\n    float cube \t\t= Cube(Translate(p,vec3(2.5,1.0,0.0)),vec3(1.0,1.0,1.0));\n    float torus \t= Torus(Translate(p,vec3(-2.5,1.0,0.0)),vec2(1.0,0.4));\n    \n    // Hit struct\n    Hit hit;\n    hit.Dist = min(min(min(sphere,floorS),cube),torus);\n\n   \t// Set the material ID\n    if(hit.Dist == sphere)\n    {\n        hit.MaterialId = 0.0;\n    }\n    else if(hit.Dist == floorS)\n    {\n        hit.MaterialId = 1.0;\n    }\n    else if(hit.Dist == cube)\n    {\n        hit.MaterialId = 2.0;\n    }\n    else if(hit.Dist == torus)\n    {\n        hit.MaterialId = 3.0;\n    }\n    else\n    {\n        hit.MaterialId  = -1.0;\n    }\n    \n    return hit;\n}\n\n/*\n\tReturns the normal at the given point\n*/\nvec3 SceneNormal(vec3 p) \n{\n    vec2 eps = vec2(0.001, 0.0);\n    vec3 nor = vec3\n    (\n        Scene(p + eps.xyy).Dist - Scene(p - eps.xyy).Dist,\n        Scene(p + eps.yxy).Dist - Scene(p - eps.yxy).Dist,\n        Scene(p + eps.yyx).Dist - Scene(p - eps.yyx).Dist\n    );\n    return normalize(nor);\n}\n\n/*\n\tMarchs trough the scene\n*/\nHit Raymarch(vec3 ro,vec3 rd)\n{\n    float curD = kMinD;\n    for(int i=0;i<kSteps;i++)\n    {\n        Hit h = Scene(ro + curD * rd);\n        float dist = h.Dist;\n        if (dist < kDelD) \n        {\n\t\t\treturn Hit(curD,h.MaterialId);\n        }\n        curD += dist;\n        if (curD >= kMaxD) \n        {\n            return Hit(kMaxD,-1.0);\n        }\n    }\n    return Hit(kMaxD,-1.0);\n}\n\n/*\n\tReturns 1.0 if hits something in the scene\n*/\nfloat Shadow(vec3 p,vec3 d)\n{\n    float dist = Raymarch(p,d).Dist;\n    if(dist < kMaxD - kDelD)\n    {\n        return 1.0;\n    }\n    return 0.0;\n}\n\n/*\n\tUnused. Returns a direction vector with the provided\n\tfov in degrees aplied\n*/\nvec3 RayDir(float fov, vec2 size, vec2 fragCoord) \n{\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(fov) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\n/*\n\tReturns a rotation matrix to look at the given target.\n*/\nmat3 LookAt(vec3 origin, vec3 target, float roll) \n{\n  vec3 rr = vec3(sin(roll), cos(roll), 0.0);\n  vec3 ww = normalize(target - origin);\n  vec3 uu = normalize(cross(ww, rr));\n  vec3 vv = normalize(cross(uu, ww));\n\n  return mat3(uu, vv, ww);\n}\n\n/*\n\tTrowbridge-Reitz GGX normal distribution function\n*/\nfloat Distribution(float ndh,float r)\n{\n    // Input r should be r * r!\n    float r2 = pow(r,4.0);\n    float ndh2 = pow(ndh,2.0);\n    float nom = r2;\n    float denom = ndh2 * (r2 - 1.0) + 1.0;\n    return nom / (kPi * denom * denom);\n}\n\n/*\n\tSchlick-GGX term\n*/\nfloat GeoTerm(float d,float r)\n{\n    float k = (r + 1.0);\n    k = (k * k) / 8.0;\n\tfloat nom = d;\n    float denom = d * (1.0 - k) + k;\n    return nom / denom;\n}\n\n/*\n\tSmith's geometry method\n*/\nfloat Geometry(float ndv,float ndl,float r)\n{\n    float ggx2 = GeoTerm(ndv, r);\n    float ggx1 = GeoTerm(ndl, r);\n\n    return ggx1 * ggx2;\n}\n\n/*\n\tFresnel-Schlick approximation\n*/\nvec3 Fresnel(float ndv,vec3 F0)\n{\n    return F0 + (1.0 - F0) * pow(1.0 - ndv,5.0);\n}\n\n/*\n\tFresnel-Schlick approximation (with roughness)\n*/\nvec3 FresnelRoughness(float ndv,vec3 F0, float r)\n{\n    return F0 + (max(vec3(1.0 - r), F0) - F0) * pow(1.0 - ndv, 5.0);\n}\n\n/*\n\tReturns the irradiance map (diffuse IBL).\n\tIts 50% hack\n*/\nvec3 IrradianceMap(vec3 n)\n{\n    return texture(iChannel1,n).xyz;\n}\n\n/*\n\tReturns the reflectance map (specular IBL)\n\tIts 100% hack, a version that blurs the cubemap should give\n\tmuch better results at hight roughness.\n*/\nvec3 ReflectanceMap(vec3 refl,float r,vec3 n)\n{\n    vec3 blurMap = IrradianceMap(n);\n    vec3 reflecMap = textureLod(iChannel0,refl,4.0 * r).xyz;\n    return mix(reflecMap,blurMap,r);\n}\n\n/*\n\tReturns the color of the current point. Uses the Cook-Torrance for the\n\tspecular BRDF and Lambertian for the diffuse BRDF\n*/\nvec3 ShadePbr(vec3 p,vec3 rd,vec3 ro,float matId)\n{    \n    // Check matId ???\n    \n    // Material\n    Material mat = materials[int(matId)];\n    mat.Roughness = max(mat.Roughness,0.005);\n    \n    \n    vec3 F0 = vec3(0.04);\t\t\t\t\t// Base normal incidence for \n    \t\t\t\t\t\t\t\t\t\t// non-conductors (average of some materials)\n    F0 = mix(F0,mat.Albedo,mat.Metalness);\t// If it is a metal, take the normal incidence (color)\n    \t\t\t\t\t\t\t\t\t\t// from the albedo as metals should not have albedo color\n    \n    // Parameters\n    vec3 eye = normalize(ro - p);\n    vec3 n = SceneNormal(p);\n    vec3 r = reflect(-eye,n);\n    float ndv = max(dot(n,eye),0.0);\n    \n    float sAcum = float(kLights);\n    vec3 acum = vec3(0.0);\n    for(int i = 0; i < kLights; i++)\n    {\n        // Per-light parameters\n        vec3 lp = lights[i].Position;\n   \t \tvec3 ld = normalize(lp - p);\n        vec3 h = normalize(ld + eye);\n    \tfloat ndl = max(dot(n,ld),0.0);\n        float ndh = max(dot(n,h),0.0);\n        \n        // Diffuse\n        vec3 diffuseBRDF = mat.Albedo / kPi;\n\n        // Specular\n        float D = Distribution(ndh,mat.Roughness);\n        float G = Geometry(ndv,ndl,mat.Roughness);\n        vec3 F = Fresnel(ndv,F0);\n        \n        vec3 specularBRDFNom = D * G * F;\n        float specularBRDFDenom = 4.0 * max(ndv * ndl, 0.0) + 0.001; \t// add bias to prevent\n        \t\t\t\t\t\t\t\t\t\t\t\t\t\t \t\t// division by 0\n        vec3 specularBRDF = specularBRDFNom / specularBRDFDenom;\n        \n        // Outgoing light can't exced 1\n        vec3 kS = F;\n        vec3 kD = 1.0 - kS;\n        kD *= 1.0 - mat.Metalness;\n            \n        vec3 finalCol = (kD * diffuseBRDF + specularBRDF);\n        finalCol = finalCol * ndl * lights[i].Color;\n        acum += finalCol;\n        \n        // Shadow\n        vec3 sDir = normalize(lp - p);\n        sAcum -= Shadow(p,sDir);\n    }\n    \n    // IBL\n   \tvec3 F = FresnelRoughness(ndv,F0,mat.Roughness);\n    vec3 kS = F;\n    vec3 kD = 1.0 - kS;\n   \tkD *= 1.0 - mat.Metalness;\n    vec3 totalIBL = vec3(0.0);\n    \n    // Diffuse IBL\n    vec3 diffuseIBL = IrradianceMap(n) * mat.Albedo * kD * 1.0;\n    \n    // Specular IBL\n    vec3 specularIBL = ReflectanceMap(r,mat.Roughness,n) * F;\n    \n    totalIBL = kD * diffuseIBL + specularIBL;\n    \n    // Shadowing\n    float finalShadow = max(sAcum / float(kLights),0.02);\n    \n    return (acum + totalIBL) * max(finalShadow,0.15);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Setup materials\n    materials[0] = Material(1.0, 0.2, kGold);\n\tmaterials[1] = Material(0.0, 0.4, kSky);\n    materials[2] = Material(1.0, 0.2, kCopper);\n    materials[3] = Material(1.0, 0.2, kAluminium);\n    \t\n    // Setup lights\n    lights[0] = Light(vec3(2.0,9.0,4.0),vec3(1.0,1.0,1.0));\n    //lights[1] = Light(vec3(10.0,5.0,5.0),vec3(1.0,1.0,1.0));\n    \n    vec3 tot = vec3(0.0);\n#if AA>1\n    for( int m=0; m<AA; m++ )\n    for( int n=0; n<AA; n++ )\n    {\n        vec2 o = vec2(float(m),float(n)) / float(AA) - 0.5;\n        vec2 uv = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n#else  \n    \t// Setup camera\n        vec2 uv  = (2.0*gl_FragCoord.xy-iResolution.xy)/iResolution.y;\n#endif\n        vec3 ro = vec3(sin(iTime* 0.15) * 5.0,4.0,6.0);\n        mat3 camRot = LookAt(ro,vec3(0.0,0.0,0.0),0.0);\n        vec3 rd = normalize(camRot * vec3(uv,2.2));\n\n        // Check intersection\n        Hit hit = Raymarch(ro,rd);\n        vec3 color = texture(iChannel1,rd).xyz;\t// background\n        if(hit.Dist < kMaxD - kDelD)\n        {\n            vec3 p = ro + rd * hit.Dist;\n            color = ShadePbr(p,rd,ro,hit.MaterialId);\n        }\n\n        // Tonemap and gamma correct\n        color = color / (color + 1.0);\n        color = pow(color,vec3(1.0/2.2));\n        tot += color;\n#if AA>1\n    }\n    tot /= float(AA*AA);\n#endif\n    fragColor = vec4(tot,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

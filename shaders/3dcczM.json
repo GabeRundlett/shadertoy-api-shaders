@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1600695288",
+            "description": "some delaunay-ing - just to have done it once. ...and for all? ...nope, might actually come in handy one day ;-)\n...hopefully not too slow on moderte machines... also added a ONE_LOOP define - not quite sure bout unrolling behavior on different platforms.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3dcczM",
+            "likes": 36,
+            "name": "jean claude van delaunay",
+            "published": 3,
+            "tags": [
+                "triangles",
+                "effect",
+                "triangulation",
+                "delaunay"
+            ],
+            "usePreview": 1,
+            "username": "flockaroo",
+            "viewed": 1196
+        },
+        "renderpass": [
+            {
+                "code": "// created by florian berger (flockaroo) - 2020\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n// \n// delaunay triangulation\n//\n//  ...somewhat brute force - might be better ways to do this\n\n// use this if the shader wont compile due to too many nested loops...\n\n//#define ONE_LOOP\n\n// comment to disable the line-hatching of triangles\n#define SCHRAFF\n// show simple voro cells - nothing fancy, jsut for debugging...\n//#define SHOW_VORONOI\n\n#define Res (iResolution.xy)\n#define Res0 vec2(textureSize(iChannel0,0))\n\n#define PI 3.14\n\nconst float TileSizeRel=9.;\n#define TileSize (TileSizeRel*sqrt(Res.x/600.))\n\n#define VidTex iChannel0\nvec4 getCol(vec2 p) { vec2 uv=(p-Res*.5)*min(Res0.x/Res.x,Res0.y/Res.y)/Res0+.5; return texture(VidTex,uv); }\nvec4 getCol2(vec2 p) { vec4 c=getCol(p); return mix(c,vec4(.2,.5,.2,1),dot(c.xyz,vec3(-1,2,-1))); }\nfloat getVal(vec2 p) { return dot(getCol2(p).xyz,vec3(.333)); }\nvec2 getGrad(vec2 p, float eps) { vec2 d=vec2(eps*.5,0); return vec2(getVal(p+d.xy)-getVal(p-d.xy), getVal(p+d.yx)-getVal(p-d.yx))/eps; }\n\nvec4 getRand(int x, int y)\n{\n    return texelFetch(iChannel1,ivec2(x,y),0);\n}\n\nvec2 getPoint(int x, int y)\n{\n    vec4 r=getRand(x,y);\n    vec2 p=vec2(x,y)+vec2(1,0)*(float(y%2)-.5)*.5+(r.xy-.5)*.2;\n    vec2 g=getGrad(p*TileSize,TileSize);\n    vec2 ng=(dot(g,g)<.00000001)?(r.zw-.5)*.1:normalize(g);\n    float glen=min(.005/(length(g)+0.),1.);\n    return (p-ng*glen)*TileSize;\n}\n\nfloat lineDist(vec2 p, vec2 p1, vec2 p2)\n{\n    float l=length(p2-p1);\n    float px=dot(p-p1,p2-p1)/l;\n    float py=dot(p-p1,(p2-p1).yx*vec2(-1,1))/l;\n    return max(abs(px-l*.5)-l*.5,abs(py));\n}\n\nfloat lineDistInf(vec2 p, vec2 p1, vec2 p2)\n{\n    return abs(dot(p-p1,normalize((p2-p1).yx*vec2(-1,1))));\n}\n\n#define TXCH(T,a,b) { T dummy=a; a=b; b=dummy; }\n\n// check if point is in triangle\nbool inTriangle(vec2 p, vec2 p1, vec2 p2, vec2 p3)\n{\n    mat2 m=mat2(p2-p1,p3-p1);\n    p=inverse(m)*(p-p1);\n    return p.x>0. && p.y>0. && (p.x+p.y)<1.;\n}\n\nconst int HistNum = 25;\n\n// cut 2 lines given by point + dir each\nvec2 cut(vec2 p1,vec2 d1, vec2 p2,vec2 d2)\n{\n    mat2 m=mat2(d1,-d2);\n    vec2 p=inverse(m)*(p2-p1);\n    return p1+d1*p.x;\n}\n\n// check if all other points are outside the circumscribes circle of triangle p[i1],p[i2],p[i3]\nbool otherOutsideUmkreis(int i1, int i2, int i3, vec2 p[HistNum])\n{\n    vec2 c=cut((p[i1]+p[i2])*.5,(p[i2]-p[i1]).yx*vec2(1,-1),\n               (p[i1]+p[i3])*.5,(p[i3]-p[i1]).yx*vec2(1,-1));\n    float r=length(p[i1]-c);\n    for(int i=0;i<HistNum;i++) {\n        if (i==i1) continue;\n        if (i==i2) continue;\n        if (i==i3) continue;\n        if (length(p[i]-c)<r) return false;\n    }\n    return true;\n}\n\nfloat schraff(vec2 p, float br, vec2 dir)\n{\n    //c=br=(l-1)/l;\n    //l=1/(1-br)\n    float l=1./(1.-br); \n    // FIXME: some quick hand-fix to get no aliasing in the hashing lines\n    l=sqrt(l)+.3;\n    float s=sin(dot(p,dir)/l*PI);\n    s=abs(fract(dot(p,dir)/l*.25)-.5)-.25;\n    float w=fwidth(s)*.7;\n    return clamp(1.-s*s/w/w,0.,1.);\n    return exp(-s*s/(w*w));\n    return abs(s);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor=vec4(0);\n    vec2 p=fragCoord;\n    vec2 p0=floor(p/TileSize+.5);\n    float dmin[HistNum]; for(int i=0;i<HistNum;i++) dmin[i]=10000.;\n    vec2 pmin[HistNum];\n    // generate a \"history\" of the HistNum nearest points\n    // ...check 3 steps in each direction - makes 7x7 points\n    #define NNUM 3\n    for(int x=-NNUM;x<=NNUM;x++)\n    {\n        for(int y=-NNUM;y<=NNUM;y++)\n        {\n            vec2 pi=getPoint(int(p0.x)+x,int(p0.y)+y);\n            float d=length(p-pi);\n            for(int i=0;i<HistNum;i++) { if (d<dmin[i] ) { TXCH(float,dmin[i],d); TXCH(vec2,pmin[i],pi); } }\n        }\n    }\n    int i1,i2,i3;\n    // check all possible triangles from HistNum points for one that includes \n    // the actual screen pos and the circumscribed circle of which contains no other points\n    // ...there might be more eficient ways to do this?!\n    bool found=false;\n#ifdef ONE_LOOP\n    for(int i=0;i<HistNum*HistNum*HistNum;i++)\n    {\n        i1=i%HistNum;\n        i2=(i/HistNum)%HistNum;\n        i3=(i/HistNum/HistNum)%HistNum;\n#else\n    for(i1=0+min(iFrame,0);i1<HistNum;i1++){\n    for(i2=0+min(iFrame,0);i2<HistNum;i2++){\n    for(i3=0+min(iFrame,0);i3<HistNum;i3++){\n#endif\n        if (i1==i2 || i1==i3 || i3==i2) continue;\n        if (inTriangle(p,pmin[i1],pmin[i2],pmin[i3]) && otherOutsideUmkreis(i1,i2,i3,pmin)) { found=true; }\n        if (found) break;\n    }\n#ifndef ONE_LOOP\n        if (found) break;\n    }\n        if (found) break;\n    }\n#endif\n    \n    vec2 c=(pmin[i1]+pmin[i2]+pmin[i3])/3.;\n    vec4 col2=getCol2(c);\n    vec4 col=getCol(c);\n    float d=10000.;\n    d=min(d,lineDistInf(fragCoord,pmin[i1],pmin[i2]));\n    d=min(d,lineDistInf(fragCoord,pmin[i2],pmin[i3]));\n    d=min(d,lineDistInf(fragCoord,pmin[i3],pmin[i1]));\n    float d2=10000.;\n    d2=min(d2,lineDist(fragCoord,(pmin[i1]+pmin[i2])*.5,c));\n    d2=min(d2,lineDist(fragCoord,(pmin[i2]+pmin[i3])*.5,c));\n    d2=min(d2,lineDist(fragCoord,(pmin[i3]+pmin[i1])*.5,c));\n    //d2=min(d2,lineDist(fragCoord,(pmin[i1]+pmin[i2])*.5,(pmin[i2]+pmin[i3])*.5));\n    //d2=min(d2,lineDist(fragCoord,(pmin[i2]+pmin[i3])*.5,(pmin[i3]+pmin[i1])*.5));\n    //d2=min(d2,lineDist(fragCoord,(pmin[i3]+pmin[i1])*.5,(pmin[i1]+pmin[i2])*.5));\n    \n   \tfragColor.xyz=clamp(col.xyz*.7+.3,0.,1.);\n   \tfloat br=getVal(c);\n   \tvec3 schraffCol=vec3(0,.2,.4)*.7+.3;\n   \t//schraffCol=vec3(0);\n   \tfragColor.xyz=vec3(1);\n#ifdef SCHRAFF\n   \tfragColor.xyz-=(1.-schraffCol)*schraff(fragCoord,pow(br,.5),normalize(getGrad(c,TileSize)+.0001));\n#endif\n   \tfragColor.xyz=mix(fragColor.xyz,col2.xyz*.8+.2,.75);\n    //fragColor.xyz*=vec3(0)+min(d*.8,1.)*.7+.3;\n    fragColor.xyz*=mix(min(d*1.2,1.)*.5+.5,1.,0.*dot(col.xyz,vec3(-1,2,-1)));\n    //fragColor.xyz*=mix(min(d2*1.2,1.)*.5+.5,1.,.3);\n#ifdef SHOW_VORONOI\n    fragColor.xyz+=vec3(0)+.3*clamp(1.-.5*abs(dmin[0]-dmin[1]),0.,1.);\n#endif\n   \t//fragColor.xyz+=vec3(0)+.4*dmin[0]/TileSize;\n    fragColor.w=1.;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 36,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/35c87bcb8d7af24c54d41122dadb619dd920646a0bd0e477e7bdc6d12876df17.webm"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

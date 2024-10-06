@@ -1,0 +1,105 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1690199435",
+            "description": "This is a novel (I think) method to improve performance by using dither to generate a bitmask and interpolate UVs instead of using UVs on textures and interpolating the textures colors.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dsjBzh",
+            "likes": 1,
+            "name": "Dither UV Interpolation",
+            "published": 3,
+            "tags": [
+                "noise",
+                "fast",
+                "dither",
+                "performance",
+                "interpolation"
+            ],
+            "usePreview": 0,
+            "username": "gehtsiegarnixan",
+            "viewed": 214
+        },
+        "renderpass": [
+            {
+                "code": "// The MIT License\n// Copyright © 2023 Gehtsiegarnixan\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n/*\nThis is a novel technique (I think)* that makes it possible to interpolate UVs.\n\nMany shaders require blending between two or more UV mappings. However, directly \ninterpolating UVs creates noise, so the common approach is to read a texture \nper UV and then interpolate the resulting colors. This can be computationally \nexpensive because texture reads are among the most expensive operations in a \nshader.\n\nTo address this, you can only use one UV at a time and use a bit-mask to switch \nbetween them. Normally, this would create a hard edge between the two UVs. However, \nyou can employ dithering to break up the bit-mask, resulting in an appearance \nthat closely resembles true interpolation. This technique only requires a single \ntexture lookup, which significantly improves performance.\n\nThere are a few limitations to consider. \n- Automatic mipmaps will not work with this approach because the dithered region \n  becomes noise. However, you can use your own computed mipmaps. \n- The speed of the dithering algorithm must be faster than the texture lookups \n  you are trying to save; otherwise, this technique becomes pointless. I recommend \n  conducting a performance test to compare different dithering methods against \n  texture lookups (you can find an example here: \n  https://www.shadertoy.com/view/mdjcDK). \n- This method works best with textures that have low variation, testing is \n  adviced. \n- And lastly as with all screenspace methods higher resolutions improve the \n  smoothness. To me at 4k it becomes hard to tell which is the dithered one, \n  but my fading eyesight might also help. \n\nThis shader shows the simplest version, two sets of UVs get mixed, one is at a\n45 degree angle. However this technique is applicable to any problem involving \nmultiple texture lookups, whether it's linear, barycentric \n(3 values https://www.shadertoy.com/view/DdlBWf), bilinear, GausSSian Blurs, or \nany other interpolation method.\n\n*it is not novel Far Cry 5 did it first\nhttps://www.gdcvault.com/play/1025480/Terrain-Rendering-in-Far-Cry\n*/\n\n// to switch between textures for this demo, normally you would use a normal texturelookup\nvec3 textureSwitcher(int index, vec2 uv, vec2 duvdx, vec2 duvdy) {\n    vec4 color;    \n    // automatic mips don't work and create noise, so use linear instead\n    if (index == 0) {\n        color = textureGrad(iChannel0, uv, duvdx, duvdy);\n    } else if (index == 1) {\n        color = textureGrad(iChannel1, uv, duvdx, duvdy);\n    } else if (index == 2) {\n        color = textureGrad(iChannel2, uv, duvdx, duvdy);\n    } else {\n        color = textureGrad(iChannel3, uv, duvdx, duvdy);\n    }\n    return color.xyz;\n}\n\n// creates Noise, don't do this\nvec3 UVLerp(vec2 uvA, vec2 uvB, float alpha, int texIndex) {\n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n\n    vec2 uvLerp = mix(uvA, uvB, alpha);\n    return textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n}\n\n// hard Edge from switching directly between on or the other\nvec3 BitLerp(vec2 uvA, vec2 uvB, float alpha, int texIndex) {\n    // you could also use if it hardly matters to performance see:\n    // (https://www.shadertoy.com/view/clsGDr)\n    float bitmask = step(0.5, alpha);\n    vec2 uvLerp = mix(uvA, uvB, bitmask);\n     \n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n     \n    return textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n}\n\n// normal beautiful interpolation but with 2 texture lookups\nvec3 TwoTextureLerp(vec2 uvA, vec2 uvB, float alpha, int texIndex) {\n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n\n     vec3 texA = textureSwitcher(texIndex, uvA, duvdx, duvdy);\n     vec3 texB = textureSwitcher(texIndex, uvB, duvdx, duvdy);\n     return mix(texA, texB, alpha);\n}\n\n// looks terrible in 2D, but Hashes look best in volumetric\nvec3 hash12CLerp(vec2 uvA, vec2 uvB, float alpha, vec2 fragCoord, int texIndex) {\n     float dither = hash12C(fragCoord);\n     float bitmask = step(1.0, alpha + dither);\n     vec2 uvLerp = mix(uvA, uvB, bitmask);\n     \n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n     \n     return textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n}\n\n// COD Dither produces pretty nice static results\nvec3 InterleavedGradientLerp(vec2 uvA, vec2 uvB, float alpha, vec2 fragCoord, int texIndex) {\n    float dither = InterleavedGradientNoise(fragCoord);\n    float bitmask = step(1.0, alpha + dither);\n    vec2 uvLerp = mix(uvA, uvB, bitmask);\n     \n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n     \n    return textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n}\n\n// Valve Dither very nice animated\nvec3 ScreenSpaceDither12Lerp(vec2 uvA, vec2 uvB, float alpha, vec2 fragCoord, int texIndex) {\n    float dither = ScreenSpaceDither12(fragCoord, iTime);\n    float bitmask = step(1.0, alpha + dither);\n    vec2 uvLerp = mix(uvA, uvB, bitmask);\n     \n    // Mip caculation as the automatic ones don't work\n    vec2 duvdx = dFdx( uvA );\n    vec2 duvdy = dFdy( uvA );\n     \n    return textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n}\n\n// Valve Dither animated blended with past samples\nvec3 MotionBlurSSD12Lerp(vec2 uvA, vec2 uvB, float alpha, vec2 fragCoord, int texIndex) {\n    // This function emulates the look of Temporal Anti-Aliasing (TAA) or motion blur,\n    // which helps to hide the noise pattern. It's not technically TAA or motion blur,\n    // but it can produce a similar visual effect.\n    int numSamples = 8; // like TAA usually\n    vec3 result = vec3(0.);\n    for(int i = 0; i < numSamples; i++) {\n        float dither = ScreenSpaceDither12(fragCoord, iTime - float(i));\n        float bitmask = step(1.0, alpha + dither);\n        vec2 uvLerp = mix(uvA, uvB, bitmask);\n        \n        // Mip calculation as the automatic ones don't work\n        vec2 duvdx = dFdx( uvA );\n        vec2 duvdy = dFdy( uvA );\n        \n        result += textureSwitcher(texIndex, uvLerp, duvdx, duvdy);\n    }    \n    return result / float(numSamples);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {   \n    // square UVs\n    vec2 uvA = fragCoord/iResolution.y;\n    // add some movement\n    float movePeriod = 15.; // in seconds for a full cycle\n    uvA += alternatingPattern(iTime, movePeriod) * vec2(0.05, 0.1);\n    \n    // rotate UVs to have two sets of UVs\n    vec2 direction = normalize(vec2(1., -1.));\n    vec2 uvB = mat2x2(direction.y, direction.x, -direction.x, direction.y)*uvA; \n\n    // normalized UV, Alpha.y for spliting up and Alpha.x the interpolation\n    vec2 Alpha = fragCoord / iResolution.xy;\n    // slightly increase contrast of alpha.x\n    Alpha.x = clamp(Alpha.x * 1.5 - 0.25, 0., 1.);\n    \n    // setup breakup of screen\n    float ComparisonCount = 6.; // increase to 6 to see some terrible demos\n    float y = floor(Alpha.y*(ComparisonCount));\n    \n    // switch textures around to see method on different textures\n    float switchPerid = (movePeriod * 4.0); // in seconds\n    int texIndex = int(4.0 * fract(iTime / switchPerid)); //0-4 values\n    \n    // add the texture blending methods\n    if (y == 6.) {\n        // lerping UVs is just broken, disabled by default\n        fragColor.xyz = UVLerp(uvA, uvB, Alpha.x, texIndex); \n    } else if (y == 5.) {\n        // simple bitmask switch\n        fragColor.xyz = BitLerp(uvA, uvB, Alpha.x, texIndex); \n    } else if (y == 4.) {\n        // default 2 texture lookup lerp\n        fragColor.xyz = TwoTextureLerp(uvA, uvB, Alpha.x, texIndex); \n    } else if (y == 3.) {\n        // hash Dither, ugly in 2d, but best in volumetrics\n        fragColor.xyz = hash12CLerp(uvA, uvB, Alpha.x, fragCoord, texIndex); \n    } else if (y == 2.) {\n        // COD Dither (static)\n        fragColor.xyz = InterleavedGradientLerp(uvA, uvB, Alpha.x, fragCoord, texIndex); \n    } else if (y == 1.) {\n        // Valve Dither (animated)\n        fragColor.xyz = ScreenSpaceDither12Lerp(uvA, uvB, Alpha.x, fragCoord, texIndex); \n    } else if (y == 0.) {\n        // Valve Dither (animated) with psuedo motion blur\n        fragColor.xyz = MotionBlurSSD12Lerp(uvA, uvB, Alpha.x, fragCoord, texIndex); \n    }\n\n    // black bars\n    float BorderThickness = 0.04;\n    float ZigzagPattern = abs(fract(Alpha.y*(ComparisonCount))-0.5);\n    fragColor *= vec4(step(ZigzagPattern, 0.5-BorderThickness*0.5)); \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//_____________________________Generic Functions________________________________\n\n// makes a flope stair used for iTime (https://www.desmos.com/calculator/8vh6zysjxv)\nfloat alternatingPattern(float x, float period) {\n    float flipFlop = mod(x, period * 0.5) * mod(floor((2.0 * x) / period), 2.0);\n    float staircase = 0.5 * period * floor(x / period);\n    return flipFlop + staircase;\n}\n\n// Created by David Hoskins. May 2018\n// https://www.shadertoy.com/view/XdGfRR\n#define UI0 1597334673U\n#define UI1 3812015801U\n#define UI2 uvec2(UI0, UI1)\n#define UIF (1.0 / float(0xffffffffU))\nfloat hash12C(vec2 p) {\n\tuvec2 q = uvec2(ivec2(p)) * UI2;\n\tuint n = (q.x ^ q.y) * UI0;\n\treturn float(n) * UIF;\n}\n\n// returns [-intensity;intensity[, magnitude of 2x intensity\n// \"NEXT GENERATION POST PROCESSING IN CALL OF DUTY: ADVANCED WARFARE\"\n// https://advances.realtimerendering.com/s2014/index.html#_NEXT_GENERATION_POST\nfloat InterleavedGradientNoise( vec2 uv ) {\n    const vec3 magic = vec3( 0.06711056, 0.00583715, 52.9829189 );\n    return fract( magic.z * fract( dot( uv, magic.xy ) ) );\n}\n\n// valve edition (slightly modified to be a true 12 dither)\n// http://alex.vlachos.com/graphics/Alex_Vlachos_Advanced_VR_Rendering_GDC2015.pdf\n// input in pixels (ie not normalized uv)\nfloat ScreenSpaceDither12(vec2 vScreenPos, float time) {\n    float vDither = dot( vec2( 171.0, 231.0 ), vScreenPos.xy + time); \n    return fract( vDither / 103.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

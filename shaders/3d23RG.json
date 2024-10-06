@@ -1,0 +1,67 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1549192714",
+            "description": "Similar to iq's fog [url]https://iquilezles.org/articles/fog/fog.htm[/url] but applied around a spherical domain instead. Useful when you want a cheap planet atmosphere that still retain some volumetric properties.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3d23RG",
+            "likes": 22,
+            "name": "Spherical Volumetric Fog",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "analytical",
+                "erf"
+            ],
+            "usePreview": 0,
+            "username": "Klems",
+            "viewed": 2000
+        },
+        "renderpass": [
+            {
+                "code": "\n#define PI 3.14159265359\n#define rot(a) mat2(cos(a + PI*0.5*vec4(0,1,3,0)))\n\n// Dave_Hoskins hash\n#define HASHSCALE3 vec3(.1031, .1030, .0973)\nvec3 hash33( in vec3 p3 ){\n\tp3 = fract(p3 * HASHSCALE3);\n    p3 += dot(p3, p3.yxz+19.19);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\n// triplanar mapping\nvec4 tex3D( in sampler2D t, in vec3 p, in vec3 n ){\n    n = abs(n);\n    float tot = n.x + n.y + n.z;\n\treturn (texture(t,p.yz)*n.x+texture(t,p.zx)*n.y+texture(t,p.xy)*n.z)/tot;\n}\n\n// noise with smooth derivative\nfloat snoise( in vec3 x, const in float lod ) {\n    float dim = 32.0 / exp2(lod);\n    x = x * dim;\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n    f = f*f*(3.0-2.0*f);\n    x = (p+f+0.5) / dim;\n    return textureLod(iChannel0, x, lod).r;\n}\n\n// distance estimator\nfloat de( in vec3 p ) {\n    float n = snoise(p*0.15+iTime*0.01, 0.0)-0.5;\n    return length(p) - 1.0 + n*0.5;\n}\n\n// normal from central difference\nvec3 getNormal( in vec3 p ) {\n\tvec3 e = vec3(0.0, 0.03, 0.0);\n\treturn normalize(vec3(\n\t\tde(p+e.yxx)-de(p-e.yxx),\n\t\tde(p+e.xyx)-de(p-e.xyx),\n\t\tde(p+e.xxy)-de(p-e.xxy)));\t\n}\n\n// approximation of the error function\n// https://github.com/libretro/glsl-shaders/blob/master/blurs/blur9fast-vertical.glsl\nfloat erf( in float x ) {\n    //return tanh(1.202760580 * x);\n\tfloat sign_x = sign(x);\n\tfloat t = 1.0/(1.0 + 0.47047*abs(x));\n\tfloat result = 1.0 - t*(0.3480242 + t*(-0.0958798 + t*0.7478556))*exp(-(x*x));\n\treturn result * sign_x;\n}\n\n// analytical volumetric fog applied around a sphere\n// similar to https://iquilezles.org/articles/fog\nfloat getFog( in vec3 start, in vec3 dir, in float dist ) {\n    \n    const float a = 7.000; // fog exponent\n\tconst float b = 1.000; // sphere radius\n    const float c = 500.0; // fog strength\n    \n    float k = start.x;\n    float l = dir.x;\n    float m = start.y;\n    float n = dir.y;\n    float o = start.z;\n    float p = dir.z;\n    float d = dot(start, dir);\n\n    float res = exp(b-a*(+k*k*(n*n+p*p)\n                         -m*m*(-1.0+n*n)\n                         -o*o*(-1.0+p*p)\n                         -2.0*k*l*o*p\n                         -2.0*m*n*(k*l+o*p) ));\n    res *= erf( sqrt(a)*(d+dist) ) - erf( sqrt(a)*d );\n    res *= (0.5/sqrt(a)) * sqrt(PI) * c;\n    \n    return res;\n    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.y;\n\t\n\tvec3 from = vec3(0, 0, -5.0);\n\tvec3 dir = normalize(vec3(uv*0.5, 1.0));\n\t\n    if (iMouse.z > 0.5) {\n        vec2 mouse=(iMouse.xy - iResolution.xy*0.5) / iResolution.y * 2.5;\n        mat2 rotxz = rot(-mouse.x);\n        mat2 rotxy = rot(mouse.y);\n        from.zy *= rotxy;\n        from.xz *= rotxz;\n        dir.zy  *= rotxy;\n        dir.xz  *= rotxz;\n    }\n    \n\tfloat totdist = 0.0;\n\tfor (int steps = min(iFrame, 0) ; steps < 300 ; steps++) {\n\t\tvec3 p = from + totdist * dir;\n        float dist = de(p);\n\t\tif (dist < 0.0001)\n            break;\n        totdist += min(dist*0.2, 1.0);\n\t}\n    \n    vec3 p = from + totdist * dir;\n    \n    if (length(p) < 2.0) {\n        vec3 n = getNormal(p);\n        \n        vec3 albedo = tex3D(iChannel1, p*0.5+iTime*0.01, n).rgb;\n        albedo = sqrt(albedo.brg);\n        \n        // main light source\n        const vec3 pri = vec3(0.8, 0.7, 0.5)*2.0;\n        fragColor.rgb += albedo * pri * max(0.0, dot(n, normalize(vec3(7, 10, -3))));\n        \n        // secondary light source\n        const vec3 sec = vec3(0.1, 0.2, 0.3);\n        fragColor.rgb += albedo * sec * max(0.0, dot(n, normalize(vec3(-7, -4, 2))));\n        \n    } else {\n        fragColor = vec4(0.01);\n    }\n    \n    // apply fog\n    float d = getFog(from, dir, totdist);\n    d = 1.0 - exp(-d);\n    //d = min(d, 1.0);\n    fragColor.rgb = mix(fragColor.rgb, vec3(0.5, 0.6, 0.7), d);\n    \n    // gamma correction\n    fragColor.rgb = pow(fragColor.rgb, vec3(1.0/2.2));\n    // dithering\n    fragColor.rgb += (hash33(vec3(fragCoord, iFrame))-0.5)*0.02;\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

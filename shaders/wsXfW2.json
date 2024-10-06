@@ -1,0 +1,52 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1704592523",
+            "description": "An old raymarcher with hacky refractions and reflections. Very suspicious",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wsXfW2",
+            "likes": 8,
+            "name": "Glass is Real",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "glass"
+            ],
+            "usePreview": 0,
+            "username": "TheBen27",
+            "viewed": 268
+        },
+        "renderpass": [
+            {
+                "code": "#define MAT_INVALID -1.0\n#define MAT_PLASTIC 0.0\n#define MAT_GLASS 1.0\n\n#define MAX_DEPTH 25.0\n#define MAX_GLASS_DEPTH 10.0\n#define MARCH_STEPS 85\n\nconst float minDepth = 0.01;\nconst float matchEps = 0.001;\n\nmat3 rotY(float theta) {\n    float ct = cos(theta);\n    float st = sin(theta);\n    return mat3(\n        ct, 0.0, st,\n        0.0, 1.0, 0.0,\n        -st, 0.0, ct\n        );\n}\n\n// from inigo quilez\nfloat sdOctahedron( vec3 p, float s)\n{\n  p = abs(p);\n  float m = p.x+p.y+p.z-s;\n  vec3 q;\n       if( 3.0*p.x < m ) q = p.xyz;\n  else if( 3.0*p.y < m ) q = p.yzx;\n  else if( 3.0*p.z < m ) q = p.zxy;\n  else return m*0.57735027;\n    \n  float k = clamp(0.5*(q.z-q.y+s),0.0,s); \n  return length(vec3(q.x,q.y-s+k,q.z-k)); \n}\n\n// from inigo quilez\nfloat opSmoothUnion( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n\nfloat smallOcta(vec3 p) {\n    vec3 octaPos = p;\n    octaPos.y -= 1.5;\n    octaPos.y = 0.5 - abs(-(octaPos.y + 0.5));\n    return sdOctahedron(octaPos, 0.5);\n}\n\nconst float totalTime = 30.0;\nconst float spacing = 5.0;\nconst float halfSpace = spacing * 0.5;\n\nvec2 sceneSDF(vec3 pos) {\n    vec2 cell = floor((pos.xz + halfSpace) / spacing);\n    pos.xz = mod(pos.xz + halfSpace, spacing) - halfSpace;\n    \n    float octa1 = smallOcta(rotY(iTime * 0.125) * pos);\n    float octa2 = sdOctahedron(rotY(iTime * -0.25) * pos - vec3(0.0, 1.0, 0.0), 0.25);\n    \n    float fadeFactor = smoothstep(0.0, 1.0, length(cell) / 12.0);\n    float octa =\n        min(octa1, octa2)\n        - sin(pos.y * 12.0 - iTime) * 0.1\n        + fadeFactor;\n    \n    float len = length(pos.xz);\n    float sinemix = \n        mix(\n            smoothstep(0.0, 1.0, len * 0.3),\n            smoothstep(0.0, 1.0, 1.0 - len * 0.3),\n            clamp(0.0, 1.0, len)\n        );\n    float plane = pos.y + sinemix * sin(len * 5.0 - iTime) * 0.1;\n    \n    float mat = octa < plane ? MAT_GLASS : MAT_PLASTIC;\n    return vec2(opSmoothUnion(octa, plane, 0.1), mat);\n}\n\nvec3 sceneNormal(vec3 pt) {\n    const vec2 eps = vec2(0.0001, 0.0);\n    float x = sceneSDF(pt - eps.xyy).x - sceneSDF(pt + eps.xyy).x;\n    float y = sceneSDF(pt - eps.yxy).x - sceneSDF(pt + eps.yxy).x;\n    float z = sceneSDF(pt - eps.yyx).x - sceneSDF(pt + eps.yyx).x;\n    return normalize(vec3(x, y, z));\n}\n\nvec2 getDepthAndMaterial(vec3 eye, vec3 dir, bool inside) {\n    float depth = minDepth;\n    float sdf = matchEps;\n    float sdfMul = inside ? -1.0 : 1.0;\n    float mat = MAT_INVALID;\n    for (int steps = 0;\n         sdf >= matchEps && depth < MAX_DEPTH && steps < MARCH_STEPS;\n         steps++\n    ) {\n        vec2 result = sdfMul * sceneSDF(eye + depth * dir);\n        sdf = result.x;\n        mat = result.y;\n        depth += sdf;\n    }\n    depth = min(depth, MAX_DEPTH);\n    \n    return vec2(depth, mat);\n}\n\nvec3 sky(vec3 dir) {\n    float sunlight = max(0.0, dot(dir, normalize(vec3(-1.0, 3.0, 0.2))) - 0.7);\n    \n    return sunlight + vec3(0.8, 0.8, 1.0) * texture(iChannel0, dir).rgb;\n}\n\nfloat fresnel(vec3 dir, vec3 norm) {\n    return pow(1.0-clamp(dot(dir, norm),0.0,1.0),2.0);\n}\n\nvec3 getRefractColor(vec3 pos, vec3 dir, vec3 norm) {\n    vec3 oil = vec3(abs(sin(pos + 4.0 * reflect(dir, norm))) * 0.5 + 0.5);\n    vec3 base = mix(vec3(0.5, 0.3, 0.8), vec3(0.8, 0.5, 0.3), norm.x * 0.5 + 0.5);\n    return mix(base, oil, fresnel(dir, norm));\n}\n\n// simplified version of fullMarch with no reflection or refraction\nvec3 marchBase(vec3 eye, vec3 dir, vec2 cameraHit) {\n    const vec3 lightDir = normalize(vec3(0.0, 1.0, 1.0));\n    \n    if (cameraHit.x >= MAX_DEPTH) {\n        return sky(dir);\n    }\n    \n    vec3 hitPt = eye + dir * cameraHit.x;\n    vec3 norm = sceneNormal(hitPt);\n    if (cameraHit.y == MAT_PLASTIC) {\n        return sky(reflect(dir, norm));\n    }\n    \n    vec3 refracted = getRefractColor(hitPt, dir, norm) * sky(refract(dir, -norm, 1.0 - 0.4));\n    vec3 reflected = sky(reflect(dir, norm));\n    float f = fresnel(dir, norm);\n    vec3 base = mix(refracted, reflected, f);\n    \n    float fog = exp(-0.15 * cameraHit.x);\n    \n    return mix(sky(dir), base, fog);\n}\n\nvec3 fullMarch(vec3 eye, vec3 dir) {\n    // cast initial ray\n    vec2 cameraHit = getDepthAndMaterial(eye, dir, false);\n    \n    if (cameraHit.x >= MAX_DEPTH) {\n        return sky(dir);\n    }\n    \n    // if we are too far away from the camera's assumed position (0.0),\n    // don't do the full march\n    vec3 hitPt = eye + dir * (cameraHit.x);\n    if (length(hitPt) > MAX_GLASS_DEPTH && cameraHit.y == MAT_GLASS) {\n        return marchBase(eye, dir, cameraHit);\n    }\n    \n    vec3 norm = sceneNormal(hitPt);\n    \n    // reflection\n    vec3 reflectDir = reflect(dir, norm);\n    vec3 reflectCol =\n        marchBase(hitPt, reflectDir, getDepthAndMaterial(hitPt, reflectDir, false));\n    \n    if (cameraHit.y == MAT_PLASTIC) {\n        float fog = exp(-cameraHit.x * 0.05);\n        return mix(sky(dir), reflectCol, fog);\n    }\n    \n    // refraction\n    vec3 refractDir = refract(dir, -norm, 1.0 / 1.5);\n    vec3 outPt = hitPt + refractDir *\n        getDepthAndMaterial(hitPt, refractDir, true).x;\n    \n    vec3 outNorm = sceneNormal(outPt);\n    vec3 outDir = refract(refractDir, outNorm, 1.5);\n    \n    vec3 refractCol = \n        getRefractColor(hitPt, dir, outNorm) * marchBase(outPt, outDir, getDepthAndMaterial(outPt, outDir, false));\n    \n    float fres = fresnel(dir, norm);\n    return mix(refractCol, reflectCol, fres);\n}\n\nvec3 mainSample(vec2 uv) {\n    vec3 eye, dir;\n    uv *= 2.0;\n    uv -= 1.0;\n    uv.x *= iResolution.x / iResolution.y;\n    float dist = -2.0;\n    mat3 rot = rotY(3.14159 / 4.0 * 17.9);\n    eye = rot * vec3(0.0, 1.25, dist);\n    dir = rot * normalize(vec3(uv, 1.0));\n    \n    return fullMarch(eye, dir);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n#if 0\n    vec3 col = vec3(0.0);\n    vec3 halfPixel = vec3(0.5 / iResolution.xy, 0.0);\n    col += mainSample(uv);\n    col += mainSample(uv + halfPixel.xz);\n    col += mainSample(uv + halfPixel.zy);\n    col += mainSample(uv + halfPixel.xy);\n    col *= 0.25;\n#else\n    vec3 col = mainSample(uv);\n#endif\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,286 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665468372",
+            "description": "A very loose interpretation of the ReSTIR paper, in particular, I only implemented the Reservoir part of it, not the PDF resampling. [url]https://research.nvidia.com/sites/default/files/pubs/2020-07_Spatiotemporal-reservoir-resampling/ReSTIR.pdf[/url]",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "stVfWc",
+            "likes": 114,
+            "name": "Reservoir sampling",
+            "published": 3,
+            "tags": [
+                "3d",
+                "sampling",
+                "restir",
+                "reservoir"
+            ],
+            "usePreview": 0,
+            "username": "iq",
+            "viewed": 6373
+        },
+        "renderpass": [
+            {
+                "code": "// Inigo Quilez 2022\n//\n// A very loose interpretation of the ReSTIR paper,\n//\n// https://research.nvidia.com/sites/default/files/pubs/2020-07_Spatiotemporal-reservoir-resampling/ReSTIR.pdf\n//\n// but without the pdf resampling bit. I'm just implementing the spation-temporal\n// reservoir for ambient occlusion, but I might be mwking mistakes ^__^\n//\n// The paper is awesome although a bit too vague and unclear at times, but the\n// main insight anyways is that one can share \"samples\" across pixels and frames,\n// instead of sharing the \"lighting\" resulting from those samples. A \"sample\" in\n// this context is a raycast direction for the ambient occlusion visibility test.\n//\n// When a pixel casts a ray that doesn't hit geometry and gets ambient light as a\n// result, it informs its neigbors and future self about this unocluded direction\n// for them to consider raycasting in that direction as well. Recall we ideally\n// cast only in the direction of unoccluded incoming light, if we had such knowledge\n// that is. Along with the sample direction, the per pixel reservoir also shares\n// the weight that the sample  should be reused with. In an ideal world all samples\n// converge into unoccluded directions and their weights to the real ambient\n// occlusion value. That would produce noise free images!\n//\n// I think I probably got some of the math wrong, including the sample invalidation.\n// Also I'm casting cosine distributed rays, which in theory cannot be reused just\n// like that with neighboring pixels. Some re-weighting needs to happen, but I am\n// not doing anything about it right now. Regardless, the shader is doing something\n// useful, at least images come cleaner, especially in higher res monitors.\n//\n// Also because Shadertoy only has RGBA32F buffers, I had to be a bit creative with\n// data packing, since I needed to store surface normals, object IDs, intersection\n// distances, the reservoir's sample direction and its weight. So I'm encoding\n// samples in a single float insted of three floats by choosing its closest\n// spherical fibonacci point. I used 2^21 (2 million) such points so I can store\n// the point ID in a float32 without exceeding its mantissa bits. Surface normals\n// are also stored that way in a single float.\n//\n// Buffer A contains the main render pass, and the initial random sample. Buffer B\n// does the temporal reservoir reuse. Buffers C and D do the spatial reservoir\n// reuse. The Image pass casts the second and final occlusion ray, using a good \n// sample direction by looking into the reservoir.\n//\n// You can use the mouse to compare 2 naive samples of ambient occlusion to the\n// reservoir method, which also uses 2 samples. Also you can disable the temporal \n// and spatial reservoirs in the Common tab. You can also choose to compare to\n// ground-truth:\n\n// 0: 64 samples - ground truth\n// 1:  2 samples - same cost as reservoir, so fair comparison\n#define COMPARE_TO 1\n\n// set to 0 for clean but wrong images...\n#define UNBIASED 1\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ip = ivec2(fragCoord);\n    \n    // init randoms\n    int ifr = int(iTime*144.0); // not using iFrame so I can pause and compare\n    srand( ip, ifr + 5 );\n\n    // read gbuffer\n    vec4 data = texelFetch(iChannel0,ip,0);\n\n    // get reservoir, object id and intersection distance from gbuffer\n    Reservoir r; vec2 tm;\n    read_gbuffer( data, r, tm );\n    \n    // reconstruct current camera\n    vec3 ro, rd; mat3 ca;\n    raster_to_camera( fragCoord, iResolution.xy, iTime, ro, rd, ca );\n\n\n    // pixel and mouse coordiantes\n    float px = (2.0*fragCoord.x-iResolution.x)/iResolution.y;\n    float mx = (2.0*   iMouse.x-iResolution.x)/iResolution.y;\n    if( iMouse.z<0.5 ) mx = -cos((iTime-7.0)*6.283185/6.0)*iResolution.x/iResolution.y;\n    \n    // animation\n    float ani = smoothstep(7.0,8.0,iTime);\n    mx = mix(-2.0,mx,ani);\n    \n    // do lighting/shading\n    vec3 col = vec3(0.0);\n    if( tm.y>0.0 )\n    {\n        vec3 pos = ro + tm.x*rd;\n        \n        // read normap from G-Buffer and decompress it\n        vec3 nor = id_to_nor( texelFetch(iChannel1,ip,0).z );\n\n        // coloring/material\n        float al = smoothstep( 0.01, 0.2, -sin((iTime-7.0)*6.283185/12.0) );\n        vec3 mate = mix( vec3(1.0), 0.6 + 0.5*sin(tm.y+vec3(0,2,4)), al*ani );\n        \n        // do ambient occlusion as usual... (left)\n        if( px<mx )\n        {\n             #if COMPARE_TO==0\n                 // 36 stratified samples as \"ground truth\"\n                 col = vec3(0.0);\n                 const int num = 6;\n                 for( int j=0; j<num; j++ )\n                 for( int i=0; i<num; i++ )\n                 {\n                    vec2 uv = vec2(float(i)+frand(), float(j)+frand())/float(num);\n                    vec3 dir = cosineDirection( uv, nor );\n                    if( raycast(pos+0.001*nor, dir ).y < 0.0 ) col += 1.0;\n                 }\n                 col /= float(num*num);\n             #else\n                 // one or two blue noise samples\n                 vec4 ra = texelFetch( iChannel2, (ip+ifr*ivec2(71,313))&1023, 0 );\n                 vec3 dir = cosineDirection( ra.xy, nor ); if( raycast(pos+0.001*nor, dir ).y < 0.0 ) col += 1.0;\n                 #if UNBIASED==1\n                 dir = cosineDirection( ra.zw, nor ); if( raycast(pos+0.001*nor, dir ).y < 0.0 ) col += 1.0;\n                 col /= 2.0;\n                 #endif\n             #endif\n        }\n        // ... or using the reservoir (right)\n        else\n        {\n            #if UNBIASED==1\n            vec3 dir = id_to_nor(r.y); dir *= sign(dot(dir,nor));\n            float sha = (raycast(pos+0.001*nor,dir).y<0.0) ? 1.0 : 0.0;\n            col = vec3( sha * r.wsum/r.m );\n            #else\n            col = vec3(       r.wsum/r.m ); \n            #endif\n        }\n        col *= mate;\n    }\n\n    // gammaish\n    // col = sqrt(col);\n    \n    // vertical separating line\n    col = mix( col, vec3(1,0,0), 1.0-smoothstep( 0.0, 0.01, abs(px-mx) ) );\n    \n    fragColor = vec4( col, 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// --------------------------------------------------------\n// render G-Buffer and shoot initial random occlusion ray\n// --------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ip = ivec2(fragCoord);\n    \n    // init randoms\n    int ifr = int(iTime*144.0);\n    srand( ip, ifr + 0 );\n\n\n    // camera and ray\n    vec3 ro, rd; mat3 ca;\n    raster_to_camera( fragCoord, iResolution.xy, iTime, ro, rd, ca );\n\n    // raycast scene (.x = distance, .y = material)\n    vec2 tm = raycast( ro, rd );\n    \n    if( tm.y<0.0 )\n    {\n        fragColor = vec4( 0.0, 0.0, 0.0, -1.0 );\n        return;\n    }\n    \n    // compute intersection and normal\n    vec3 pos = ro + tm.x*rd;\n    vec3 nor = calcNormal(pos,tm.x);\n\n    // pick one random direction and shoot an shadow/occlusion ray\n    vec2  ran = texelFetch( iChannel2, (ivec2(fragCoord)+ifr*ivec2(71,313))&1023, 0 ).xy;\n    vec3  dir = cosineDirection( ran, nor );\n    float sha = (raycast(pos+0.001*nor, dir ).y < 0.0) ? 1.0 : 0.0;\n    \n    // store occlusion information in reservoir\n    Reservoir r = Reservoir( nor_to_id(dir), sha, 1.0 );\n\n    // store all this in G-Buffer (4 floats)\n    //    reservoir (sample direction and weight - no need to store M, which is 1)\n    //    normal\n    //    object id\n    //    intersection distance\n    fragColor = vec4( r.y, r.wsum, nor_to_id(nor), tm_to_float(tm) );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// --------------------------------------------------------\n// temporal reservoir reuse\n// --------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ip = ivec2(fragCoord);\n    \n    // init randoms\n    int ifr = int(iTime*144.0);\n    srand( ip, ifr + 2 );\n\n    \n    // reconstruct current camera\n    vec3 ro, rd; mat3 ca;\n    raster_to_camera( fragCoord, iResolution.xy, iTime, ro, rd, ca );\n    \n    // store it for next frame\n    if( ip.y==0 && ip.x<=2 )\n    {\n        fragColor = vec4( ca[ip.x], -dot(ca[ip.x],ro) );\n        return;\n    }\n    \n    // read gbuffer\n    vec4 data = texelFetch(iChannel0,ip,0);\n    if( data.w<0.0 ) { fragColor= vec4(0.0,0.0,0.0,-1.0); return; }\n    \n    Reservoir r = Reservoir( data.x, data.y, 1.0 );\n    vec2 tm = float_to_tm(data.w);\n\n    #if USE_TEMPORAL==1\n    \n    // get old camear matrix\n    mat3x4 oldCam = mat3x4( texelFetch(iChannel1,ivec2(0,0), 0),\n                            texelFetch(iChannel1,ivec2(1,0), 0),\n                            texelFetch(iChannel1,ivec2(2,0), 0) );\n\n    // recontruct current intersection in world space\n    vec4 wpos = vec4(ro + rd*tm.x,1.0);\n    \n    // project to previous camera space\n    vec3 cpos = wpos*oldCam; // note inverse multiply\n    \n    // convert to previous ndc space\n    ivec2 rpos = ivec2( camera_to_raster( cpos, iResolution.xy ) );\n    \n    if( rpos.x>=0 && rpos.y>=0 && rpos.x<int(iResolution.x) && rpos.y<int(iResolution.y) )\n    {\n        // fetch reservoir from gbuffer at previous frame's pixel's location\n        vec4 old_data = texelFetch(iChannel1,rpos,0);\n        // depack data\n        Reservoir prev_r;\n        vec2 prev_tm;\n        read_gbuffer( old_data, prev_r, prev_tm );\n        \n        // is this what the paper means by \"clamp\"?\n        if( prev_r.m>r.m*20.0 ) { prev_r.wsum=r.m*20.0*prev_r.wsum/prev_r.m; prev_r.m=r.m*20.0; }\n\n        // if this is still same object...\n        if( abs(prev_tm.y-tm.y)<0.5 ) \n        {\n            // ... then combine its reservoir with current reservoir\n            r = combineReservoirs( r, prev_r );\n        }\n    }\n    #endif\n\n   \n    fragColor = store_gbuffer( r, tm );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define USE_TEMPORAL 1\n#define USE_SPATIAL  1\n\n\n//=====================================================\n// rand\n//=====================================================\n\nint   seed = 1;\nint    rand(void) { seed=seed*0x343fd+0x269ec3; return (seed>>16)&32767; }\nfloat frand(void) { return float(rand())/32767.0; }\nvoid  srand(ivec2 p, int frame)\n{\n    int n = 0;\n    n += frame; n=(n<<13)^n; n=n*(n*n*15731+789221)+1376312589; // hash by Hugo Elias\n    n += p.y;   n=(n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    n += p.x;   n=(n<<13)^n; n=n*(n*n*15731+789221)+1376312589;\n    seed = n;\n}\n\n//=====================================================\n// Geometry\n//=====================================================\n\n// https://iquilezles.org/articles/intersectors\nvec2 iBox( in vec3 ro, in vec3 rd, in vec3 rad ) \n{\n    vec3 m = 1.0/rd;\n    vec3 n = m*ro;\n    vec3 k = abs(m)*rad;\n\t\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n\n\tfloat tN = max( max( t1.x, t1.y ), t1.z );\n\tfloat tF = min( min( t2.x, t2.y ), t2.z );\n\t\n\tif( tN > tF || tF < 0.0) return vec2(-1.0);\n\n\treturn vec2( tN, tF );\n}\n\nvec3 cosineDirection( in vec2 uv, in vec3 nor )\n{\n    float a = 6.2831853*uv.x; float b = 2.0*uv.y-1.0;\n    vec3 dir = vec3(sqrt(1.0-b*b)*vec2(cos(a),sin(a)),b);\n    return normalize( nor + dir );\n}\n\nmat3 setCamera( in vec3 ro, in vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\n//=====================================================\n// Reservoir\n//=====================================================\n\nstruct Reservoir\n{\n\tfloat y;       // sample, stored as a fibonacci direction in the sphere\n\tfloat wsum;\n\tfloat m;\n};\n\nReservoir combineReservoirs( Reservoir a, Reservoir b )\n{\n    Reservoir s;\n    s.y = ( frand()*(a.wsum+b.wsum)<=a.wsum ) ? a.y : b.y;\n    s.wsum = a.wsum + b.wsum;\n    s.m = a.m + b.m;\n    return s;\n}\n\n//=====================================================\n// find closest Fibonacci points in a sphere\n// https://dl.acm.org/doi/10.1145/2816795.2818131\n//=====================================================\n\nconst float PI = 3.1415926535897932384626433832795;\nconst float PHI = 1.6180339887498948482045868343656;\n\nfloat madfrac( float a,float b) { return a*b -floor(a*b); }\nvec2  madfrac( vec2  a,float b) { return a*b -floor(a*b); }\nconst float kConvPrecis = float(1<<21);\nfloat nor_to_id(vec3 p) \n{\n    const float n = kConvPrecis;\n    float phi = min(atan(p.y, p.x), PI), cosTheta = p.z;\n    \n    float k  = max(2.0, floor( log(n * PI * sqrt(5.0) * (1.0 - cosTheta*cosTheta))/ log(PHI*PHI)));\n    float Fk = pow(PHI, k)/sqrt(5.0);\n    \n    vec2 F = vec2( round(Fk), round(Fk * PHI) );\n\n    vec2 ka = -2.0*F/n;\n    vec2 kb = 2.0*PI*madfrac(F+1.0, PHI-1.0) - 2.0*PI*(PHI-1.0);    \n    mat2 iB = mat2( ka.y, -ka.x, -kb.y, kb.x ) / (ka.y*kb.x - ka.x*kb.y);\n\n    vec2 c = floor( iB * vec2(phi, cosTheta - (1.0-1.0/n)));\n    float d = 8.0;\n    float j = 0.0;\n    for( int s=0; s<4; s++ ) \n    {\n        vec2 uv = vec2( float(s-2*(s/2)), float(s/2) );\n        \n        float cosTheta = dot(ka, uv + c) + (1.0-1.0/n);\n        \n        cosTheta = clamp(cosTheta, -1.0, 1.0)*2.0 - cosTheta;\n        float i = floor(n*0.5 - cosTheta*n*0.5);\n        float phi = 2.0*PI*madfrac(i, PHI-1.0);\n        cosTheta = 1.0 - (2.0*i + 1.0)/n;\n        float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n        \n        vec3 q = vec3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta);\n        float squaredDistance = dot(q-p, q-p);\n        if (squaredDistance < d) \n        {\n            d = squaredDistance;\n            j = i;\n        }\n    }\n    return j;\n}\n\nvec3 id_to_nor( float i) \n{\n    const float n = kConvPrecis;\n    float phi = 2.0*PI*madfrac(i,PHI);\n    float zi = 1.0 - (2.0*i+1.0)/n;\n    float sinTheta = sqrt( 1.0 - zi*zi);\n    return vec3( cos(phi)*sinTheta, sin(phi)*sinTheta, zi);\n}\n\n//=====================================================\n// SDFs\n// https://iquilezles.org/articles/distfunctions/\n//=====================================================\n\nfloat ndot(vec2 a, vec2 b ) { return a.x*b.x - a.y*b.y; }\n\nfloat sdRhombus( in vec2 p, in vec2 b, in float r ) \n{\n    vec2 q = abs(p);\n    float h = clamp( (-2.0*ndot(q,b) + ndot(b,b) )/dot(b,b), -1.0, 1.0 );\n    float d = length( q - 0.5*b*vec2(1.0-h,1.0+h) );\n    d *= sign( q.x*b.y + q.y*b.x - b.x*b.y );\n\treturn d - r;\n}\n\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 d = abs(p) - b;\n  return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));\n}\n\nfloat opRepLim( in float p, in float s, in float lima, float limb, out float id )\n{\n    id = round(p/s);\n    return p-s*clamp(id,-lima,limb);\n}\n\nvec2 opRepLim( in vec2 p, in float s, in vec2 lim, out vec2 id )\n{\n    id = round(p/s);\n    return p-s*clamp(id,-lim,lim);\n}\n\nvec2 opRepLim( in vec2 p, in float s, in vec2 limmin, in vec2 limmax, out vec2 id )\n{\n    id = round(p/s);\n    return p-s*clamp(id,-limmin,limmax);\n}\nfloat opExtrussion( in float sdf, float z, in float h )\n{\n    vec2 w = vec2( sdf, abs(z) - h );\n  \treturn min(max(w.x,w.y),0.0) + length(max(w,0.0));\n}\n\n//=====================================================\n// scene data\n//=====================================================\nfloat hash1( vec2 p ) { p = 50.0*fract( p*0.3183099 ); return fract( p.x*p.y*(p.x+p.y) ); }\nvec2 map( in vec3 p )\n{\n    vec3 op = p;\n    p.y += 2.0;\n    float ma = 0.0;\n\n    // columns\n    vec2 id;\n    vec3 q = p; q.xz = opRepLim( q.xz, 4.0, vec2(4.0,2.0), id );\n    float d = length(q.xz) - 0.9 + 0.05*p.y;\n    d = max(d,p.y-6.0);\n    d = max(d,-p.y-5.0);\n    d -= 0.05*pow(0.5+0.5*sin(atan(q.x,q.z)*16.0),2.0);\n    d -= 0.15*pow(0.5+0.5*sin(q.y*3.0+0.6),0.12) - 0.15;\n    ma = floor(50.0*hash1( id + 11.2*floor(0.25 + (q.y*3.0+0.6)/6.2831) ));\n    d *= 0.85;\n    vec3 w = vec3(q.x,abs(q.y-0.3)-5.5, q.z );\n    d = min( d,  sdBox(w,vec3(1.4,0.2,1.4)+sign(q.y-0.3)*vec3(0.1,0.05,0.1))-0.1 ); // base\n    d = max( d, -sdBox(p,vec3(14.0,10.0,6.0)) ); // clip in\n\n    // floor\n    p.y -= 0.1;\n    float bb1 = op.y+7.0;\n    if( bb1<d ) //  bounding plane\n    {\n        vec2 id0 = round(p.xz/4.0);\n        vec2 off = step(vec2(0.0), p.xz/4.0-id0);\n        for( int j=0; j<2; j++ )\n        for( int i=0; i<2; i++ )\n        {\n            vec2 id = id0 + vec2(i,j) - off;\n            id = clamp( id, -vec2(4.0,3.0), vec2(4.0,3.0) );\n            vec2 ce = id*4.0;\n            q = p-vec3(ce.x,0.0,ce.y);\n\n            float ra = 1.0*0.05 * hash1(id+vec2(1.0,3.0));\n            float b = sdBox( q-vec3(0.0,-6.0-ra,0.0), vec3(2.0,0.5,2.0)-0.1-ra )-0.1;\n            if( b<d ) { d = b; ma = floor(20.0*hash1(id)); }\n        }\n    }\n\n    float bb2 = op.y+8.0;\n    if( bb2<d ) //  bounding plane\n    {\n        p.xz -= 2.0;\n        \n        vec2 id0 = round(p.xz/4.0);\n        vec2 off = step(vec2(0.0), p.xz/4.0-id0);\n        for( int j=0; j<2; j++ )\n        for( int i=0; i<2; i++ )\n        {\n            vec2 id = id0 + vec2(i,j) - off;\n            id = clamp( id, -vec2(5.0,4.0), vec2(4.0,3.0) );\n            vec2 ce = id*4.0;\n            q = p-vec3(ce.x,0.0,ce.y);\n            \n            float ra = 0.15 * hash1(id+vec2(1.0,3.0)+23.1);\n            float b = sdBox( q-vec3(0.0,-7.0-ra,0.0), vec3(2.0,0.6,2.0)-0.1-ra )-0.1;\n            if( b<d ) { d = b; ma = floor(20.0*hash1( id + 13.5 )); }\n        }\n        p.xz += 2.0;\n    }    \n     \n    float bb3 = op.y+9.0;\n    if( bb3<d ) //  bounding plane\n    {\n        vec2 id0 = round(p.xz/4.0);\n        vec2 off = step(vec2(0.0), p.xz/4.0-id0);\n        for( int j=0; j<2; j++ )\n        for( int i=0; i<2; i++ )\n        {\n            vec2 id = id0 + vec2(i,j) - off;\n            id = clamp( id, -vec2(5.0,4.0), vec2(5.0,4.0) );\n            vec2 ce = id*4.0;\n            q = p-vec3(ce.x,0.0,ce.y);\n\n            float ra = 0.15 * hash1(id+vec2(1.0,3.0)+37.7);\n            float b = sdBox( q-vec3(0.0,-8.0-ra-1.0,0.0), vec3(2.0,0.6+1.0,2.0)-0.1-ra )-0.1;\n            if( b<d ) { d = b; ma = floor(20.0*hash1( id*7.0 + 31.1 )); }\n        }\n    }\n\n    // roof\n    float bb4 = -(op.y-4.0);\n    if( bb4<d ) //  bounding plane\n    {\n        {\n        float id1;\n        q = vec3(p.x,p.y,abs(p.z))-vec3(0.0,0.0,9.0);\n        q.x = opRepLim( q.x, 4.0, 4.0, 4.0, id1 );\n        float b = sdBox( q-vec3(0.0,7.0,0.0), vec3(1.95,1.0,0.95)-0.1 )-0.1;\n        if( b<d ) { d = b; ma = floor(20.0*(id1+6.0)); }\n        }\n        {\n        float id1;\n        q = vec3(abs(p.x)+1.0,p.y,p.z-2.0)-vec3(17.0,0.0,0.0);\n        q.z = opRepLim( q.z, 4.0, 2.0, 1.0, id1 );\n        float b = sdBox( q-vec3(0.0,7.0,0.0), vec3(1.95,1.0,1.95)-0.1 )-0.1;\n        if( b<d ) { d = b; ma = floor(30.0*(id1+6.0)); }\n        }\n\n        q = p; q.xz = opRepLim( q.xz+0.5, 1.0, vec2(18,10),vec2(19,11), id );\n        float b = sdBox( q-vec3(0.0,8.0,0.0), vec3(0.45,0.2,0.47)-0.05 )-0.05;\n        if( b<d ) { d = b; ma = floor(20.0*hash1( id + 7.8 )); }\n\n        b = sdRhombus( p.yz-vec2(8.2,0.0), vec2(3.0,10.8), 0.0 ) ;\n        b = opExtrussion( b, p.x, 19.0-0.1 )-0.1;\n        q = vec3( mod(p.x+1.0,2.0)-1.0, p.y, mod(p.z+1.0,2.0)-1.0 );\n        b = max( b, -sdBox( vec3( abs(p.x)-20.0,p.y,q.z)-vec3(0.0,8.0,0.0), vec3(2.0,5.0,0.1) )-0.05 );\n        b = max( b, -p.y+8.2 );\n        \n        float bma = 13.0;\n        float c = sdRhombus( p.yz-vec2(8.2,0.0), vec2(2.25,8.7), 0.05 );\n        c = opExtrussion( c, abs(p.x)-19.0, 2.0 );\n        if( -c>b ) { b=-c; bma = 12.0; }\n        \n        b = max( b,-sdBox(p-vec3(0.0,9.5,0.0),vec3(15.0,2.0,9.0)) );\n        if( b<d ) { d=b; ma=bma; }\n    }\n\n    return vec2( d, ma );\n}\n\nvec2 raycast( in vec3 ro, in vec3 rd )\n{\n    vec2 b = iBox( ro-vec3(0.0,-2.0,0.0), rd, vec3(24.0,12.0,19.0) );\n    if( b.y>0.0 )\n    {\n        b.x = max(0.001,b.x);\n        \n        float tmax = b.y;\n        float t = b.x;\n        for( int i=0; i<256; i++ )\n        {\n            vec3 pos = ro + t*rd;\n            vec2 h = map( pos );\n            if( h.x<(0.001*t) ) return vec2(t,1.0+h.y);\n            t += h.x*0.9;\n            if( t>tmax ) break;\n        }\n    }\n    \n    return vec2(1e20,-1.0);\n}\n\nvec3 calcNormal( in vec3 p, in float t )\n{\n#if 0\n    float e = 0.001*t;\n\n    vec2 h = vec2(1.0,-1.0)*0.5773;\n    return normalize( h.xyy*map( p + h.xyy*e ).x + \n\t\t\t\t\t  h.yyx*map( p + h.yyx*e ).x + \n\t\t\t\t\t  h.yxy*map( p + h.yxy*e ).x + \n\t\t\t\t\t  h.xxx*map( p + h.xxx*e ).x );\n#else    \n    // inspired by tdhooper and klems - a way to prevent the compiler from inlining map() 4 times\n    vec3 n = vec3(0.0);\n    for( int i=0; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*map(p+e*0.001*t).x;\n    }\n    return normalize(n);\n#endif    \n}\n\nconst float kFocalLength = 2.0;\n\nvoid raster_to_camera( in vec2 px, in vec2 resolution, in float time, out vec3 ro, out vec3 rd, out mat3 ca )\n{\n    vec2 p = (2.0*px-resolution) / resolution.y;\n\n    float h = 0.5 - 0.5*cos(time*0.13);\n    vec3 ta = vec3(0.0, -5.0*h, 0.0 );\n\tro = vec3(38.0*cos(time*0.1), 10.0*h, 25.0*sin(time*0.1) );\n\n    ca = setCamera( ro, ta, 0.0 );\n    rd = ca * normalize( vec3(p,kFocalLength));\n}\n\nvec2 camera_to_raster( vec3 cpos, vec2 resolution )\n{\n    // convert camera to ndc\n    vec2 npos = kFocalLength * cpos.xy / cpos.z;\n    \n    // convert ndc to screen space\n    vec2 spos = 0.5 + 0.5*npos*vec2(resolution.y/resolution.x,1.0);\n    \n\t// convert screen to raster space\n    return spos * resolution;\n}    \n\n// note I'm normalizing the ray distance to 60 units so that I can encode\n// object ID and ray distance in a single float (as integer and decimal parts)\nfloat tm_to_float( in vec2 tm )\n{\n    return tm.y + ((tm.y<0.0)?0.0:clamp(tm.x/60.0,0.0,1.0));\n}\n\nvec2 float_to_tm( in float f )\n{\n    return vec2(fract(f)*60.0, floor(f) );\n}\n\nvec4 store_gbuffer( Reservoir r, vec2 tm )\n{\n    return vec4( r.y, r.wsum, r.m, \n                 tm.y + ((tm.y<0.0)?0.0:clamp(tm.x/60.0,0.0,1.0)) );\n}\n\nvoid read_gbuffer( vec4 data, out Reservoir r, out vec2 tm )\n{\n    r = Reservoir( data.x, data.y, data.z );\n    tm = vec2(fract(data.w)*60.0, floor(data.w) );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// --------------------------------------------------------\n// spatial reservoir reuse\n// --------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ip = ivec2(fragCoord);\n    \n    // init randoms\n    int ifr = int(iTime*144.0);\n    srand( ip, ifr + 3 );\n\n\n    // reconstruct current camera\n    vec3 ro, rd; mat3 ca;\n    raster_to_camera( fragCoord, iResolution.xy, iTime, ro, rd, ca );\n    \n    // store it for next frame\n    if( ip.y==0 && ip.x<=2 )\n    {\n        fragColor = vec4( ca[ip.x], -dot(ca[ip.x],ro) );\n        return;\n    }\n    \n    // read gbuffer\n    vec4 data = texelFetch(iChannel0,ip,0);\n    if( data.w<0.0 ) { fragColor= vec4(0.0,0.0,0.0,-1.0); return; }\n    \n    // get reservoir, object id and intersection distance from gbuffer\n    Reservoir r; vec2 tm;\n    read_gbuffer( data, r, tm );\n    \n    #if USE_SPATIAL==1\n\n    //vec3 nor = calcNormal( ro + tm.x*rd, tm.x );\n    vec3 nor = id_to_nor( texelFetch(iChannel1,ip,0).z );\n    \n    vec2 ran = texelFetch( iChannel2, (ivec2(fragCoord)+ifr*ivec2(71,313))&1023, 0 ).xy;\n    \n    // gather samples from 32 neighboring pixels\n    for( int i=0; i<32; i++ )\n    {\n        float h = float(i)/float(32-1);\n        // note I am using h and NOT sqrt(h), which would be the correct\n        // thing to do to get homegeneous coverage. However, concentrating\n        // more samples around the origin seems like a good idea, since\n        // that's where the most relevant information is\n        float a = 6.2831*(h*13.0 + ran.x);\n        vec2 q = h*vec2(cos(a),sin(a));\n        \n        ivec2 of = ivec2( 30.0*h*vec2(cos(a),sin(a)) );\n        \n        vec4 neig_data = texelFetch(iChannel0,ip+of,0);\n\n        Reservoir neig_r;\n        vec2 neig_tm;\n        read_gbuffer( neig_data, neig_r, neig_tm );\n\n        if( abs(tm.x-neig_tm.x)<0.1*tm.x )\n        {\n            vec3 mor = id_to_nor( texelFetch(iChannel1,ip+of,0).z );\n            if( dot(nor,mor)>cos(25.0*3.14159/180.0) )\n            \n            r = combineReservoirs( r, neig_r );\n        }\n    }\n\n    #endif\n    \n    fragColor = store_gbuffer( r, tm );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// --------------------------------------------------------\n// spatial reservoir reuse\n// --------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ip = ivec2(fragCoord);\n    \n    // init randoms\n    int ifr = int(iTime*144.0);\n    srand( ip, ifr + 4 );\n    \n    \n    // reconstruct current camera\n    vec3 ro, rd; mat3 ca;\n    raster_to_camera( fragCoord, iResolution.xy, iTime, ro, rd, ca );\n    \n    // store it for next frame\n    if( ip.y==0 && ip.x<=2 )\n    {\n        fragColor = vec4( ca[ip.x], -dot(ca[ip.x],ro) );\n        return;\n    }\n    \n    // read gbuffer\n    vec4 data = texelFetch(iChannel0,ip,0);\n    if( data.w<0.0 ) { fragColor= vec4(0.0,0.0,0.0,-1.0); return; }\n    \n    // get reservoir, object id and intersection distance from gbuffer\n    Reservoir r; vec2 tm;\n    read_gbuffer( data, r, tm );\n    \n    #if USE_SPATIAL==1\n   \n    //vec3 nor = calcNormal( ro + tm.x*rd, tm.x );\n    vec3 nor = id_to_nor( texelFetch(iChannel1,ip,0).z );\n    \n    vec2 ran = texelFetch( iChannel2, (ivec2(fragCoord)+ifr*ivec2(71,313))&1023, 0 ).xy;\n    \n    // gather samples from 32 neighboring pixels\n    for( int i=0; i<32; i++ )\n    {\n        float h = float(i)/float(32-1);\n        // note I am using h and NOT sqrt(h), which would be the correct\n        // thing to do to get homegeneous coverage. However, concentrating\n        // more samples around the origin seems like a good idea, since\n        // that's where the most relevant information is\n        float a = 6.2831*(h*13.0 + ran.y);\n        vec2 q = h*vec2(cos(a),sin(a));\n        \n        ivec2 of = ivec2( 30.0*h*vec2(cos(a),sin(a)) );\n        \n        vec4 neig_data = texelFetch(iChannel0,ip+of,0);\n\n        Reservoir neig_r;\n        vec2 neig_tm;\n        read_gbuffer( neig_data, neig_r, neig_tm );\n\n        if( abs(tm.x-neig_tm.x)<0.1*tm.x )\n        {\n            vec3 mor = id_to_nor( texelFetch(iChannel1,ip+of,0).z );\n            if( dot(nor,mor)>cos(25.0*3.14159/180.0) )\n            \n            r = combineReservoirs( r, neig_r );\n        }\n    }\n\n    #endif\n    \n    fragColor = store_gbuffer( r, tm );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

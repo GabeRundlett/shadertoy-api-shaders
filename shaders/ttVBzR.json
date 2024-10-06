@@ -1,0 +1,121 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1614063253",
+            "description": "An invertible, area-preserving mapping from the unit disk to the unit sphere.\n\nleft:  unit disk with a checkerboard pattern where each cell has the same area + a number of random points\nright: pattern + points shown on the left mapped to the unit sphere",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ttVBzR",
+            "likes": 16,
+            "name": "Area-Preserving Disk<->Sphere",
+            "published": 3,
+            "tags": [
+                "sphere",
+                "map",
+                "sampling",
+                "mapping",
+                "disk",
+                "unitdisk",
+                "unitsphere"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 743
+        },
+        "renderpass": [
+            {
+                "code": "// CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n// To the extent possible under law, Mirko Salm has waived all copyrights and related or neighboring rights to this work.\n\n// https://twitter.com/Mirko_Salm\n\n/*\n\nAn invertible, area-preserving mapping from the unit disk to the unit sphere.\n\nleft:  unit disk with a checkerboard pattern where each cell has the same area + a number of random points\nright: the pattern + the points shown on the left mapped to the unit sphere in an area-preserving manner\n\nSpace - toggle points off/on\nTab   - toggle checkerboard pattern off/on\nCtrl  - toggle animation of points on/off\nShift - toggle between sampling the whole sphere and just a spherical cap\n        A/D - controls polar angle of spherical cap\n\nCamera controls via mouse.\n\nDerivation:\nGiven a point u on the unit disk the idea is to feed normalize(u) and length(u)² into the following sampling routine: */\n\n// s0 [-1..1], s1 [-1..1]\n// samples spherical cap for s1 [cosAng05..1]\n// samples hemisphere if s1 [0..1]\nvec3 SampleSphere(float s0, float s1)\n{\n    float phi = s0 * Pi;\n    \n    float cosPhi = cos(phi);\n    float sinPhi = sin(phi);\n    \n    float cosTheta = s1;\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n    \n    return vec3(cosPhi * sinTheta, \n                         cosTheta, \n                sinPhi * sinTheta);\n}\n\n/*\nAs we can see s0 is just the angle phi divided by Pi. So we can replace cosPhi and sinPhi by the x and y coords of normalize(u).\ns1 is the cosine of theta and ranges from -1 to 1. So we first square length(u) to get a uniformly distributed value between 0 and 1.\nWe then expand its range to -1 to 1 by a simple linear mapping: cosTheta = 1.0 - 2.0 * dot(u, u);\nOur sampling routine looks this now:\n*/\n\n// u [-1,1]²\nvec3 _SphereFromDisk(vec2 u)\n{\n    vec2 dir = normalize(u);\n    \n    float cosPhi = dir.x;\n    float sinPhi = dir.y;\n    \n    float cosTheta = 1.0 - 2.0 * dot(u, u);\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n    \n    return vec3(cosPhi * sinTheta, \n                         cosTheta, \n                sinPhi * sinTheta);\n}\n\n/*\nWe can now apply a series of optimization steps:\n*/\n// u [-1,1]²\nvec3 _SphereFromDisk_(vec2 u)\n{\n    float cosTheta = 1.0 - 2.0 * dot(u, u);\n\n   #if 0\n   // 1. fold the normalization of u and the multiplication with sinTheta into a single factor l\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n    float l = (1.0/sqrt(dot(u, u))) * sinTheta;\n   #elif 0\n   // 2. move sinTheta inside the sqrt()\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n    float l = sqrt((sinTheta * sinTheta) / dot(u, u));\n   #elif 0\n   // 3. insert the expressions of cosTheta and sinTheta..\n    float l = sqrt((1.0 - (1.0 - 4.0*dot(u,u) + 4.0*dot(u,u)*dot(u,u))) / dot(u, u));\n   #elif 1\n   // 4. ..and simplify\n    float l = sqrt(4.0 - 4.0 * dot(u,u));\n   #endif\n   \n    return vec3(u.x * l, \n               cosTheta, \n                u.y * l);\n}\n\n/*\nAs we can see the optimized result is pretty compact.\nIts inversion even more so; it is just one-liner: s.xz * inversesqrt(s.y * 2.0 + 2.0);\n\nInstead of mapping to the whole sphere we can also restrict the map to a spherical cap.\nWe do this by scaling u before feeding it into the routine: u *= sqrt(1.0 - cosAng).\n\nOne practical use case for this mapping is to sample the solid angle subtended by a spherical light source using a low discrepancy sequence. \nTo do this we would first map the LDS output to the unit disk using an area-preserving mapping like the concentric mapping: \nhttp://psgraphics.blogspot.com/2011/01/improved-code-for-concentric-map.html\n(or this one https://www.shadertoy.com/view/wtcfWl; although the concentric one causes less extreme distortions).\nThe advantage of this approach is that we potentialy distort our LDS points less compared to feeding them directly into SampleSphere(s0, s1).\nThis does, however, also depend on the type of LD sequence and the size of the polar angle of the spherical cap \n(smaller angles work better; the mapping quality gets worse towards the south pole).\n\nA good strategy for sampling the entire unit sphere seems to be to only sample the upper hemisphere (cosAng=0) and then \nfor every other sample to not actually generate a new LDS point but to just reuse the last one multiplied with -1 \n(placing it not only as far away from the previous point as possible but also putting it in the lower hemisphere).\n\n\nThe mapping is area-preserving when the determinant of its Jacobian matrix is constant.\nThe following Mathematica code performs the necessary computations to verify this:\n\ns := Sqrt[1 - c]\nmap[x_, y_] := {s x Sqrt[2 - (x x + y y) s s], 1 - (x x + y y) s s, \n  s y Sqrt[2 - (x x + y y) s s]}\nphi := ArcTan[map[x, y][[1]], map[x, y][[3]]]\ncosTheta := map[x, y][[2]]\nmap2[x_, y_] := {phi, cosTheta}\ndet[x_, y_] = \n FullSimplify[\n  Det[{{D[map2[x, y][[1]], x], \n     D[map2[x, y][[2]], x]}, {D[map2[x, y][[1]], y], \n     D[map2[x, y][[2]], y]}}]]\n     \nThis code evaluates to 2-2c (c is the cosine of the polar angle of the spherical cap (c=cos(Pi)=-1 if we map to the entire unit sphere)     \n*/\n\n\n#define KEY_CTRL 17\n#define KEY_SHIFT 16\n#define KEY_SPACE 32\n#define KEY_TAB 9\n\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel1, ivec2(keyCode, 2), 0).x;}\n\n\nvec3 SphereFromDisk(vec2 u)\n{\n    float d = dot(u, u);\n    float l = sqrt(4.0 - 4.0 * d);\n    \n    return vec3(u.x * l, \n          1.0 - 2.0 * d, \n                u.y * l);\n}\n\nvec3 SphericalCapFromDisk(vec2 u, float cosAng)\n{\n    u *= sqrt(1.0 - cosAng);\n    \n    float d = dot(u, u);\n    float l = sqrt(2.0 - d);\n    \n    return vec3(u.x * l, \n                1.0 - d, \n                u.y * l);\n}\n\nvec2 DiskFromSphere(vec3 s)\n{\n    return s.xz * inversesqrt(s.y * 2.0 + 2.0);\n}\n\n\n// checkerboard test texture\nvec3 SampleDiskTexture(vec2 u)\n{\n    float mC = clamp01(rescale(1.0-dot(u,u))-0.5);\n    \n   #if 1\n    float r = dot(u, u);\n   #else\n    float r = length(u);\n   #endif\n   \n    float n = sin(-r*8.0*Pi);\n\n    float mA = sin(-r*2.0*Pi);\n\n    n *= u.x*u.y;\n    n *= (u.x+u.y)*(u.x-u.y)*0.5;\n\n    vec2 k = cmul(u, Pi*0.125);\n\n    n *= k.x*k.y;\n    n *= (k.x+k.y)*(k.x-k.y)*0.5;\n\n    u.x = rescale(u.x)*0.5+0.+0.5;\n    u.x = clamp01(u.x+0.25);\n\n    u.y = rescale(u.y)*0.5+0.+0.5;\n    u.y = clamp01(u.y-0.25);\n\n    mA = rescale(mA)*0.5+0.+0.5;\n    mA = clamp01(mA+0.25);\n\n    n = rescale(n)*0.5+0.5;\n    n = cubic(cubic(clamp01(n)));\n\n    vec3 col = vec3(0.0);\n\n    col  = mix(vec3(1.0, 0.125, 0.125), vec3(0.125, 0.  , 1.0  ), u.x);\n    col += mix(vec3(0.0, 0.   , 0.25 ), vec3(0.   , 0.25, 0.125), u.y);\n    \n    col = mix(col.rgb, vec3(1.0), mix(0.5, 0., mA));\n    col *= max(0.05, n);\n\n    if(ReadKeyToggle(KEY_TAB) != 0.0) col.rgb = vec3(0.01);\n\n    col *= mC;\n    \n    return col;\n}\n\n\nvoid mainImage(out vec4 col, in vec2 uv0)\n{\n    vec2 uv = uv0 - 0.5;\n    vec2 tc = uv0/iResolution.xy;\n\n    vec4 mouseAccu = texelFetch(iChannel0, ivec2(1, 0), 0); \n    vec4 wasdAccu  = texelFetch(iChannel0, ivec2(2, 0), 0); \n    float angAccuLast = texelFetch(iChannel0, ivec2(3, 0), 0).x;\n        \n    col = vec4(0.0);\n    \n    float l = iResolution.x*0.5;\n    \n    uv0.y -= max(0.0, (iResolution.y-l)*0.5);\n    \n    vec2 u = vec2(0.0);\n    vec3 s = vec3(0.0);\n    float mask = 1.0;\n    \n    bool isLeft = uv0.x < l;\n    \n    if(isLeft)// LEFT\n    {\n        vec2 tc = uv0 / l;\n        \n        u = tc * 2.0 - 1.0;\n        \n        if(abs(u.x) > 1.01 || abs(u.y) > 1.01) return;\n        \n    }\n    else // RIGHT\n    {\n        vec2 tc = (uv0-vec2(l,0.0)) / l;\n        \n        vec2 p0 = tc * 2.0 - 1.0;\n        \n        if(abs(p0.x) > 1.01 || abs(p0.y) > 1.01) return;\n    \n        vec2 ang = vec2(Pi * -0.5, -Pi * 0.23);\n        ang += mouseAccu.xy * 0.008;\n\n        mat3 cmat;\n        {\n            float sinPhi   = sin(ang.x);\n            float cosPhi   = cos(ang.x);\n            float sinTheta = sin(ang.y);\n            float cosTheta = cos(ang.y);    \n\n            vec3 front = vec3(cosPhi * cosTheta, \n                                       sinTheta, \n                              sinPhi * cosTheta);\n\n            vec3 right = vec3(-sinPhi, 0.0, cosPhi);\n\n            vec3 up    = vec3(-cosPhi * sinTheta,\n                                        cosTheta,\n                              -sinPhi * sinTheta);\n\n            cmat = mat3(right, up, front);\n        }\n\n        float cdist = exp2(-0.5 + mouseAccu.w * 0.02);\n        vec3 cpos = -cmat[2] * cdist;\n\n        float focalLen = 2.0;// = 0.5 * tan(Pi05 - fov * 0.5)\n        vec3 rd = normalize(cmat * vec3(p0, focalLen));\n        \n        vec2 t;\n        Intersect_Ray_Sphere(cpos, rd, vec3(0.0), 0.095, t);\n        \n        vec3 N = normalize(cpos + rd * t.x);\n        \n        s = N;\n        s.z = -s.z;// swap to left-handed to make side-by-side comparison easier\n                    \n        u = DiskFromSphere(s);\n        \n        mask = clamp01(rescale(1.0-dot(p0,p0)*1.065)-0.5);\n        mask *= dot(N, -rd)*0.5+0.5;\n    }\n\n    col.rgb = SampleDiskTexture(u);\n\n    if(ReadKeyToggle(KEY_SPACE) == 0.0)\n    {\n        uint count = 64u;\n\n        float m = -1024.0;\n        for(uint i = 0u; i < count; ++i)\n        {\n            uint j = i + 1033u;\n            \n            if(ReadKeyToggle(KEY_CTRL) != 0.0)\n            j += uint(iFrame)*(count/8u);\n\n            // 2d Roberts LDS\n            vec2 p = vec2(j * uvec2(2447445413u, 3242174889u)) * (1.0/4294967296.0);\n            \n           #if 1\n            {\n                // jitter points\n                float ang = float(WellonsHash(j))*(Pi*2.0/4294967296.0);\n\n                p = fract(p + vec2(cos(ang), sin(ang)) * 0.03);\n            }\n           #endif\n\n            vec2 u0 = DiskFromSquare(p * 2.0 - 1.0);\n            \n            float pt;\n            if(isLeft)\n            {\n                vec2 vec = u0 - u;\n                pt = 1.0-dot(vec, vec)*(64.0*64.0);\n            }\n            else\n            {\n                vec3 vec = SphereFromDisk(u0) - s;\n                \n                if(ReadKeyToggle(KEY_SHIFT) != 0.0)\n                vec = SphericalCapFromDisk(u0, cos(angAccuLast))-s;\n                \n                pt = 1.0-dot(vec, vec)*(64.0*64.0);\n            }\n            \n            m = max(m, pt);\n        }\n        \n        col.rgb *= 1.0-clamp01(rescale(m+8.0))*0.9;\n        col.rgb += clamp01(rescale(m+.0))*0.8;\n    }\n    \n    col.rgb *= mask;\n        \n    col.rgb = GammaEncode(clamp(col.rgb, 0.0, 1.0));\n}\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define clamp11(x) clamp(x,-1.0, 1.0)\n#define rsqrt inversesqrt\n\nconst float Pi = 3.14159265359;\nconst float Pi2 = Pi * 2.0;\nconst float Pi05 = Pi * 0.5;\nconst float Pi025 = Pi * 0.25;\nconst float Phi    = 1.61803399;\nconst float PhiRcp = 0.61803399;\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\n\n\nvec3 GammaEncode(vec3 x) {return pow(x, vec3(1.0 / 2.2));}\n\nfloat ddxyLen(float v) { return length(vec2(dFdx(v), dFdy(v))); }\nfloat ddxyRcpLen(float v) { return rsqrt( Pow2(dFdx(v)) + Pow2(dFdy(v)) ); }\n\nfloat rescale(float v) { return v * ddxyRcpLen(v); }\n\nvec2 cmul(vec2 a,float b) { return mat2(a,-a.y,a.x) * vec2(cos(b),sin(b)); } \n\nfloat cubic(float x) { return x*x*(3.0-2.0*x); }\n\n\n// http://psgraphics.blogspot.com/2011/01/improved-code-for-concentric-map.html\nvec2 DiskFromSquare(vec2 p) \n{\n    float phi, r;\n\n    if (abs(p.x) > abs(p.y))\n    { \n        r = p.x;\n        phi = Pi025 * (p.y / p.x);\n    } \n    else \n    {\n        r = p.y;\n        phi = Pi05 - Pi025 * (p.x / p.y);\n    }\n    \n    return r * vec2(cos(phi), sin(phi));\n}\n\n// low bias version https://nullprogram.com/blog/2018/07/31/\nuint WellonsHash(uint x)\n{\n    x ^= x >> 16u;\n    x *= 0x7feb352dU;\n    x ^= x >> 15u;\n    x *= 0x846ca68bU;\n    x ^= x >> 16u;\n\n    return x;\n}\n\nbool Intersect_Ray_Sphere(\nvec3 rp, vec3 rd, \nvec3 sp, float sr2, \nout vec2 t)\n{\t\n\trp -= sp;\n\t\n\tfloat a = dot(rd, rd);\n\tfloat b = 2.0 * dot(rp, rd);\n\tfloat c = dot(rp, rp) - sr2;\n\t\n\tfloat D = b*b - 4.0*a*c;\n\t\n    bool didHit = D >= 0.0;\n    \n\tif(!didHit) D = 0.0;\n\t\n\tfloat sqrtD = sqrt(D);\n\tt = (-b + vec2(-sqrtD, sqrtD)) / a * 0.5;\n        \n    return didHit;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/* program state */\nvoid mainImage( out vec4 col, in vec2 uv0 )\n{  \n    if(uv0.y != 0.5) discard;\n    \n    col = vec4(0.0);\n    \n    vec2 uv = uv0 - 0.5;\n    \n    vec4 iMouseLast      = texelFetch(iChannel0, ivec2(0, 0), 0);\n    vec4 iMouseAccuLast  = texelFetch(iChannel0, ivec2(1, 0), 0);\n    vec4 wasdAccuLast    = texelFetch(iChannel0, ivec2(2, 0), 0);\n    float angAccuLast = texelFetch(iChannel0, ivec2(3, 0), 0).x;\n\n    bool shift = texelFetch(iChannel1, ivec2(16, 0), 0).x != 0.0;\n    \n    float kW = texelFetch(iChannel1, ivec2(0x57, 0), 0).x;\n    float kA = texelFetch(iChannel1, ivec2(0x41, 0), 0).x;\n    float kS = texelFetch(iChannel1, ivec2(0x53, 0), 0).x;\n    float kD = texelFetch(iChannel1, ivec2(0x44, 0), 0).x;\n    \n    vec4 wasdAccu = wasdAccuLast + vec4(kW, kA, kS, kD);\n    float angAccu = clamp(angAccuLast + (kD - kA)*0.05, 0.0, Pi);\n    \n    if(iFrame == 0 || iFrame == 1) angAccu = Pi * 0.25;\n    \n    vec2 mouseDelta = iMouse.xy - iMouseLast.xy;\n    \n    bool cond0 = iMouse.z > 0.0 && iMouseLast.z > 0.0;\n    vec2 mouseDelta2 = cond0 && !shift ? mouseDelta.xy : vec2(0.0);\n    vec2 mouseDelta3 = cond0 &&  shift ? mouseDelta.xy : vec2(0.0);\n    \n    vec2 iMouseAccu1 = iMouseAccuLast.xy + mouseDelta2;\n    vec2 iMouseAccu2 = iMouseAccuLast.zw + mouseDelta3;\n    \n    if(uv.x == 0.0 && uv.y == 0.0) col = iMouse;  \n    if(uv.x == 1.0 && uv.y == 0.0) col = vec4(iMouseAccu1, iMouseAccu2);\n    if(uv.x == 2.0 && uv.y == 0.0) col = wasdAccu;\n    if(uv.x == 3.0 && uv.y == 0.0) col = vec4(angAccu);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

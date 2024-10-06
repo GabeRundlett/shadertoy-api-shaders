@@ -1,0 +1,86 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1625102985",
+            "description": "I'm currently having some issues where convergence still has banding (even with uv noise enabled), but that could easily just be that my random-functions are a bit lacking",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "flfSRH",
+            "likes": 4,
+            "name": "Bounce lighting test",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "raymarching",
+                "sdf",
+                "gi",
+                "global",
+                "pathtracing",
+                "montecarlo"
+            ],
+            "usePreview": 0,
+            "username": "fraser",
+            "viewed": 348
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord ){\n\tvec4 data = texture(iChannel0, fragCoord/iResolution.xy);\n\tvec3 col = data.xyz/data.w;\n\n    col = pow(col,vec3(0.4545)); // gamma correction\n\n\n    vec2 rC = vec2(max(iResolution.x,iResolution.y),\n                   min(iResolution.x,iResolution.y));\n    col*=0.24*(clamp(1.3-1.5*length(fragCoord-0.5*vec2(rC.x,rC.y))/rC.y,0.0,1.0)-1.0)+1.0;\n\n\n\tfragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//--<RANDOM>--------------------------------------------------------------------\n\t#define UV_NOISE 0\n\t// Rand functions postfixed with _tuv are generally for scattering, take UVs \n\t// as a seed (which may or may not be used depending on a define), and use  \n\t// an internal time-based seed.\n\n\t// I'm about 60% sure random's originally from the book of shaders, though I've\n\t// seen it used literally everywhere \n\tfloat rand_base_uv(float x, vec2 uv){\n\t\t#if UV_NOISE == 1\n\t\t\treturn fract(sin(dot(vec3(uv, x), vec3(12.9898, 78.233, 47.2964))) * 43758.5453);\n\t\t#else\n\t\t\treturn fract(sin(x) * 43758.5453);\n\t\t#endif\n\t}\n\n\t// A few quick wrapper functions, probably could be faster if I put more time into it.\n\t// These should be made so tweaking any component in gives an unpredictably \n\t// different out on all components.\n\tfloat rand_f_tuv(vec2 seed){\n\t\treturn rand_base_uv(float(iFrame), seed);\n\t}\n\tvec2 rand_2f_tuv(vec2 seed){\n\t\treturn vec2(rand_base_uv(float(iFrame), seed), \n\t\t\t\t\trand_base_uv(float(iFrame)+3341.23138, seed));\n\t}\n\tvec2 rand_unitCircle_tuv(vec2 seed){ // uniform (in theory)\n\t\tvec2 r = rand_2f_tuv(seed);\n\t\tr.x *= 6.2831853;\n\t\treturn sqrt(r.y) * vec2(cos(r.x), sin(r.x));\n\t}\n\tvec3 rand_disk_tuv(vec3 nor, vec2 seed){\n\t\tvec3 u = vec3(0, -nor.z, nor.y);\n\t\tvec3 v = vec3(nor.y*nor.y+nor.z*nor.z, -nor.x*nor.y, -nor.x*nor.z);\n\t\tvec2 p = rand_unitCircle_tuv(seed);\n\t\treturn u*p.x+v*p.y;\n\t}\n\n\t// fizzer's tan-less method (http://www.amietia.com/lambertnotangent.html)\n\tvec3 cosDir_tuv(vec3 nor, vec2 seed){\n\t\tvec2 r = rand_2f_tuv(seed);\n\t\tr.x *= 6.2831853;\n\t\tr.y = 2.0*r.y-1.0;\n\t\treturn normalize(nor + vec3(sqrt(1.0-r.y*r.y) * \n\t\t\tvec2(cos(r.x), sin(r.x)), r.y));\n\t}\n\t// from wolfram-alpha, maybe could be faster.\n\tvec3 hemiSphereDir_tuv(vec3 nor, vec2 seed){\n\t\tvec2 r = rand_2f_tuv(seed);\n\t\tr.x *= 6.2831853;\n\t\tr.y = acos(2.0*r.y-1.0);\n\t\treturn normalize(nor + vec3(sqrt(1.0-r.y*r.y) * \n\t\t\tvec2(cos(r.x), sin(r.x)), r.y));\n\t}\n//--</RANDOM>-------------------------------------------------------------------\n\n//--<DATA TYPES>----------------------------------------------------------------\n\t// A way of packaging together distance information with an object identifier \n\t// (uint standing in for an enum). Possibly expand to include more information \n\t// (blending, etc) later, though it'll be tough without even so much as a \n\t// c-union, never-mind something like rust-enums.\n\t#define SKY_MAT\t0u\n\t#define MATTE_MAT  1u\n\t#define ORANGE_MAT 2u\n\t#define GREEN_MAT  3u\n\t#define LIGHT_MAT  4u\n\tstruct DistIden{\n\t\tfloat dist;\n\t\tuint  iden;\n\t};\n//--</DATA TYPES>---------------------------------------------------------------\n\n//--<DISTANCE FUNCTIONS>--------------------------------------------------------\n\t// speed isn't particularly important rn, so I'm going with an exponential \n\t// implementation for commutability. We can change this later for RTRT.  \n\tfloat smin(float a, float b, float k){\n\t\treturn -log2(exp2(-k*a) + exp2(-k*b))/k;\n\t}\n\tfloat smax(float a, float b, float k){\n\t\treturn log2(exp2(k*a) + exp2(k*b))/k;\n\t}\n\tfloat SDF_SPHERE(vec3 pos, float r){\n\t\treturn length(pos)-r;\n\t}\n\n\t#define windowPeriod 3.0\n\t#define boxwidth 3.0\n\t#define boxheight 1.5\n\t#define boxthickness 0.1\n\n\t#define ENABLE_boxroundness 0\n\t#define boxroundness 0.0\n\n\t#define holewidth 0.5 // 0.5\n\tfloat SDF_BOXTUBE(vec3 pos){\n\t\tvec2 q2 = abs(pos.yz) - vec2(boxheight/2.0, boxwidth/2.0);\n\t\tfloat d_tube = abs(length(max(q2,0.0)) + min(max(q2.x,q2.y),0.0)-boxroundness*3.0) - boxthickness;\n\t\tvec3 q3 = abs(vec3(mod(pos.x, windowPeriod)-windowPeriod*0.5, pos.y-boxheight/2.0, pos.z)) - vec3(holewidth,0.5,holewidth);\n\t\tfloat d_hole = length(max(q3,0.0)) + min(max(q3.x,max(q3.y,q3.z)),0.0)-boxroundness;\n\t#if ENABLE_boxroundness == 0\n\t\treturn max(d_tube, -d_hole);\n\t#else\n\t\treturn smax(d_tube, -d_hole, 50.0);\n\t#endif\n\t}\n\n\tDistIden DI_WORLD(vec3 pos){\n\t\tfloat d_sphere1   = SDF_SPHERE(vec3(mod(pos.x,2.62)-1.31, pos.y+0.6, pos.z+1.25), 0.85);\n\t\tfloat d_sphere2   = SDF_SPHERE(vec3(mod(pos.x-4.0,11.0)-5.5, pos.y-0.35, pos.z-1.1), 0.25);\n\t\tfloat d_left_wall = max(1.35-pos.z, abs(pos.y)-boxheight/2.0-boxthickness-0.1);\n\t\tfloat d_boxtube   = SDF_BOXTUBE(pos);\n\t\t\n\t\tDistIden di;\n\t\t\n\t\tdi.iden = d_boxtube < d_sphere1 ?  MATTE_MAT : ORANGE_MAT;\n\t\tdi.dist = smin(d_boxtube, d_sphere1, 12.0);\n\t\t\n\t\tdi.iden = d_sphere2 < di.dist ? GREEN_MAT : di.iden;\n\t\tdi.dist = min(d_sphere2, di.dist);\n\t\t\n\t\tdi.iden = d_left_wall < di.dist ? MATTE_MAT : di.iden;\n\t\tdi.dist = min(d_left_wall, di.dist); \n\t\t\n\t\treturn di;\n\t}\n//--</DISTANCE FUNCTIONS>-------------------------------------------------------\n\n//--<WORLD-RENDERER INTERFACE>--------------------------------------------------\n\t#define SPHEREMARCH_ITERATIONS 512 // set via macro\n\tDistIden raycast(vec3 rayOrg, vec3 rayDir, float maxDist){\n\t\tfloat rayLength = 0.0;\n\t\tDistIden query;\n\t\tfor(int i=0;i<SPHEREMARCH_ITERATIONS;i++){\n\t\t\tquery = DI_WORLD(rayOrg + rayLength * rayDir);\n\t\t\tif(query.dist<0.001) break;\n\t\t\tif(rayLength>maxDist){\n\t\t\t\tquery.iden = SKY_MAT;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\trayLength += query.dist;\n\t\t}\n\t\tquery.dist = rayLength;\n\t\treturn query;\n\t}\n\n\t// using IQ's \"tetrahedron technique\"\n\tvec3 calcNormal(vec3 pos){\n\t\tvec2 EPSILON2 = 0.0001*vec2(1,-1);\n\t\treturn normalize(EPSILON2.xyy*DI_WORLD(pos+EPSILON2.xyy).dist+ \n\t\t\t\t\t\t EPSILON2.yyx*DI_WORLD(pos+EPSILON2.yyx).dist+ \n\t\t\t\t\t\t EPSILON2.yxy*DI_WORLD(pos+EPSILON2.yxy).dist+ \n\t\t\t\t\t\t EPSILON2.xxx*DI_WORLD(pos+EPSILON2.xxx).dist);\t\n\t}\n\n\t// occlusion-only version of raycast (0.0 for hit, 1.0 for miss)\n\t// once I'm generating shaders through code, write this as a separate \n\t// implementation to save from unnecessarily calculating identifiers.\n\tfloat raycastOcc(vec3 rayOrg, vec3 rayDir, float maxDist){\n\t\treturn (raycast(rayOrg, rayDir, maxDist).iden==SKY_MAT)?1.0:0.0;\n\t}\n\n\tvec3 skyColour(vec3 dir){\n\t\treturn vec3(0.639, 0.941, 1) - dir.y * 0.63;\n\t}\n\n\t// In the future this can be expanded to possibly take more parameters \n\t// (position, normal, incident ray angle, etc)\n\tvec3 renderMaterial(uint mat_iden){ \n\t\tvec3 matte = vec3(0.2);\n\t\t\tswitch(mat_iden){\n\t\t\t\tcase ORANGE_MAT:\n\t\t\t\t\tmatte *= vec3(1.0,0.5,0.0);\n\t\t\t\t\tbreak;\n\t\t\t\tcase GREEN_MAT:\n\t\t\t\t\tmatte *= vec3(0.0,1.0,0.16);\n\t\t\t\t\tbreak;\n\t\t\t}\n\t\treturn matte;\n\t}\n//--</WORLD-RENDERER INTERFACE>-------------------------------------------------\n\n//--<RENDERER>------------------------------------------------------------------\n\t#define FAR_PLANE 5000.0 // set via macro, optionally non-existent via macro\n\n\tconst vec3 sun_dir = normalize(vec3(-0.03,0.5,0.5));\n\t// general direct-lighting function\n\tvec3 worldLighting(vec3 pos, vec3 nor, vec2 seed){\n\t\t// Procedure: for every (easy) light in the scene (including the sun and \n\t\t// sky), pick a random point on the surface of the light (weighted even in \n\t\t// regards to area from the perspective of pos). Calculate the Lambert (dot \n\t\t// product) lighting, and perform a direct occlusion test (with the light's \n\t\t// distance as the max dist). Add this to a running total.\n\t\tvec3 col = vec3(0.0);\n\t\t{\t// sky -----------\n\t\t\t// importance sampling: cosign weighted random means the dot product is baked into the distribution (and it's way faster).\n\t\t\tvec3 dir = cosDir_tuv(nor, seed);\n\t\t\tcol += skyColour(dir) * raycastOcc(pos, dir, FAR_PLANE);\n\t\t}{\t// sun -----------\n\t\t\tvec3  src\t  = 1000.0 * sun_dir + 50.0 * rand_disk_tuv(nor, seed);\n\t\t\tvec3  dir\t  = normalize(src - pos);\n\t\t\tfloat lambert = max(0.0, dot(dir, nor));\n\t\t\tcol += (vec3(1, 0.976, 0.929)*20.0) * lambert * raycastOcc(pos, dir, FAR_PLANE);\n\t\t}\t//    ------------\n\t\treturn col;\n\t}\n\n\t#define EPSILON1 0.001;\n\t#define DEPTH 6\n\tvec3 render(vec3 pos, vec3 dir, vec2 seed){\n\t\tvec3 summed = vec3(0.0);\n\t\tvec3 factional = vec3(1.0);\n\t\t\n\t\tfor(int i=0;i<DEPTH;i++){\n\t\t\tDistIden ray = raycast(pos, dir, FAR_PLANE);\n\t\t\t// fall out criteria\n\t\t\tif(ray.iden == SKY_MAT) {\n\t\t\t   if(i==0) return skyColour(dir);\n\t\t\t   break;\n\t\t\t}\n\t\t\t//update normal and pos\n\t\t\tpos += ray.dist * dir;\n\t\t\tvec3 nor = calcNormal(pos);\n\t\t\t// nudge so next raycast doesn't just immediately return a hit\n\t\t\t// (if very large scale things don't work make this dependent on dist from cam (|pos| if org = 0))\n\t\t\tpos += nor * EPSILON1; \n\n\t\t\t// loop unpacks to surface_1(direct_1 + surface_2(direct_2 + surface_3(direct_3 + ... ) ) )\n\t\t\t// (same as recursive approach)\n\t\t\tfactional *= renderMaterial(ray.iden);\n\t\t\tsummed += factional * worldLighting(pos, nor, seed);\n\t\t\t// currently random weight, possibly change later to allow for shiny mats\n\t\t\tdir = cosDir_tuv(nor, seed);\n\t\t}\n\t\treturn summed;\n\t}\n//--</RENDERER>-----------------------------------------------------------------\n\n//--<IMAGE>---------------------------------------------------------------------\n\tmat4x3 cameraMatrix(float time){\n\t\t// this following 4 var system is temporary, will be turned into a proper set of uniforms with full control later.\n\n\t\tvec3  subjectPos\t= vec3(0.0, -0.3, 0.0); \n\t\tfloat yawAngle\t  = -0.2;// + sin(time*0.347)*0.05;\n\t\tfloat subjectXZDist = 2.0; \n\t\tfloat subjectYDist  = 0.6; // + sin(time*0.6)*0.1;\n\n\t\t//cameraPointingVec\n\t\tvec3 cpv = vec3(subjectXZDist*cos(yawAngle), subjectYDist, subjectXZDist*sin(yawAngle));\n\t\tvec3 cpv_n = normalize(cpv);\n\n\t\tvec3 x = normalize(vec3(cpv_n.z, 0.0, -cpv_n.x));\n\t\treturn mat4x3(subjectPos + cpv, x, cross(cpv_n,x), -cpv_n);\n\t}\n\n\t#define FOV_OFFSET 1.64 //=1/tan(0.5*FOV)\n\t#define FOCUS_DIST 1.7\n\t#define BLUR_AMOUNT 0.01\n\n\tvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n\t\t\n\t\tvec3 col = vec3(0);\n\t\t{\n\t\t\t// AA within pixel\n\t\t\tvec2 uv = (2.0*(fragCoord+rand_2f_tuv(fragCoord)-0.5)\n\t\t\t\t-iResolution.xy)/min(iResolution.x, iResolution.y);\n\t\t\t// motion blur\n\t\t\tfloat time = iTime + rand_f_tuv(uv)*float(iFrame);\n\n\t\t\t//<Camera with DOF (random offset of rayOrg on uv plane)>\n\t\t\t\tmat4x3 camM = cameraMatrix(time);\n\t\t\t\t\n\t\t\t\tvec3 uv3 = normalize(vec3(uv, FOV_OFFSET));\n\n\t\t\t\tvec3 randOffset = BLUR_AMOUNT*vec3(2.0*rand_2f_tuv(uv)-1.0, 0);\n\t\t\t\tvec3 randDir\t= normalize(uv3*FOCUS_DIST - randOffset);\n\n\t\t\t\tvec3 rayOrg = camM[0] + randOffset.x*camM[1] + randOffset.y*camM[2];\n\t\t\t\tvec3 rayDir = normalize((uv3.x+randDir.x)*camM[1] + (uv3.y+randDir.y)*camM[2] + uv3.z*camM[3]);\n\t\t\t//</Camera>\n\n\t\t\tcol = render(rayOrg, normalize(rayDir), uv);\n\t\t}\n\t\t\n\t\tvec4 data = texture(iChannel0, fragCoord/iResolution.xy);\n\t\tfragColor = data + vec4(col,1.0);\n        if(iMouse.z > 0.9) fragColor = vec4(0.0);\n\t}\n//--</IMAGE>---------------------------------------------------------------------",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1610727721",
+            "description": "Testing a monte carlo rendering in 2D for global illumination with caustics.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ttVyzw",
+            "likes": 15,
+            "name": "2D Caustics (GI)",
+            "published": 3,
+            "tags": [
+                "2d",
+                "reflection",
+                "gi",
+                "caustics"
+            ],
+            "usePreview": 1,
+            "username": "darkeclipz",
+            "viewed": 997
+        },
+        "renderpass": [
+            {
+                "code": "#define R iResolution.xy\n#define AA 2.\n#define PI 3.14159265359\n#define LIGHT_SAMPLES 3.\n\nstruct material {\n    vec3 diffuse;\n    vec3 emissive;\n    bool light;\n    float intensity;\n};\n\nmaterial[] materials = material[] (\n    material(vec3(0.9), vec3(1), false, 0.),\n    material(vec3(0.4,0.4,1), vec3(.4, .4, 1), true, 2.5),\n    material(vec3(0.4,0.4,1), vec3(1,.4,.4), true, 2.5),\n    material(vec3(1), vec3(0.9), false, 0.)\n);\n\nfloat sdBox(vec2 p, vec2 b) {\n    vec2 r = abs(p) - b;\n    return min(max(r.x, r.y),0.) + length(max(r,vec2(0,0)));\n}\n\nfloat sdCircle(vec2 p, float r) {\n    return length(p) - r;\n}\n\nfloat random (in vec2 _st) {\n    return fract(sin(dot(_st.xy, vec2(12.9898,78.233))) * 43758.5453123);\n}\n\nmat2 rot(float a) {\n    float co = cos(a), si = sin(a);\n    return mat2(co, si, -si, co);\n}\n\nfloat sdArc( in vec2 p, in vec2 sca, in vec2 scb, in float ra, float rb ) {\n    p *= mat2(sca.x,sca.y,-sca.y,sca.x);\n    p.x = abs(p.x);\n    float k = (scb.y*p.x>scb.x*p.y) ? dot(p.xy,scb) : length(p.xy);\n    return sqrt( dot(p,p) + ra*ra - 2.0*ra*k ) - rb;\n}\n\nfloat sdCuttedBox(vec2 p) {\n    float d = sdBox(p, vec2(0.3)) - 0.02;\n    float c = sdCircle(abs(p) - vec2(0.28, 0.28), 0.24);\n    d = max(d, -c);\n    return d;\n}\n\nint id = 0;\nfloat lastMapValue = 0.;\nfloat map(vec2 p) {\n    id = 0;\n    float t = iTime / 20.;\n    float ljs = 0.6; // lissajous size for lights\n    \n    // Cutted box\n    float size = 1.1;\n    vec2 modp = mod(1.1*p, 1.0) - 0.5;\n    float d = sdCuttedBox(rot(PI/4.)*size*p) / size;\n    \n    // Light 1\n    float lx1 = cos(23.*t/4. + 2.) * R.x/R.y *ljs;\n    float ly1 = sin(31.*t/4.) * ljs; \n    float circle = sdCircle(p + vec2(lx1, ly1), 0.05);\n    if(circle < d) {\n        id = 1;\n    }\n    d = min(d, circle);\n    \n    // Light 2\n    float lx2 = cos(17.*t + 1.) * R.x/R.y *ljs;\n    float ly2 = sin(7.*t) * ljs;\n    float circle2 = sdCircle(p + vec2(lx2, ly2), 0.05);\n    if(circle2 < d) {\n        id = 2;\n    }\n    d = min(d, circle2);\n    \n    // Horse shoe\n    vec2 absX = p;\n    absX.x = abs(absX.x);\n    absX.x = -absX.x;\n    \n    float a = PI/2.;\n    float b = -0.6;\n    vec2 ra = vec2(cos(a), sin(a));\n    vec2 rb = vec2(cos(b), sin(b));\n    float arc = sdArc(absX - vec2(-0.5*R.x/R.y + 0.1, 0), ra, rb, 0.8, 0.05);\n    if(arc < d) {\n        id = 0;\n    }\n    d = min(d, arc);\n    \n    lastMapValue = d;\n    return d;\n}\n\nvec2 normal(vec2 p) {\n    vec2 e = vec2(0.00001, 0);\n    float x = lastMapValue;\n    return normalize(vec2(map(p+e.xy)-x,\n                          map(p+e.yx)-x));\n}\n\nfloat trace(vec2 ro, vec2 rd) {\n    float t = 0.0;\n    for(float i=0.; i<60.; i++) {\n        vec2 p = ro + t * rd;\n        float d = map(p);\n        if(d < 0.0001) {\n            break;\n        }\n        t += d;\n        if(t > 20.) {\n            break;\n        }\n    }\n    return t;\n}\n\nvec3 sampleScene(vec2 ro) {\n    vec3 fcol = vec3(0);\n    \n    for(float i=0.; i < LIGHT_SAMPLES; i++) {\n    \n        float r = (random(ro + i) + i) / LIGHT_SAMPLES * PI * 2.0;\n\n        vec2 rd = vec2(cos(r), sin(r));\n        float t = trace(ro, rd);\n        vec3 col = vec3(0.);\n        \n        if(t < 20.) {\n            vec2 p = ro + t * rd;\n            \n            if(materials[id].light) {\n                // hit a light\n                col = materials[id].emissive * materials[id].intensity;\n            }\n            else {\n                if(t < 0.0001) {\n                    // inside object (not light)\n                    col = texture(iChannel0, ro * 1.2).rrr;\n                }\n                else {\n                    // hit object; calculate reflection\n                    vec2 nor = normal(p);\n                    vec2 refl = reflect(rd, nor);\n                    int matId = id;\n                    float k = trace(p + refl * 0.001, refl);\n                    if(k < 20.) {\n                        // hit light\n                        if(materials[id].light) {\n                            col = materials[id].emissive * materials[id].intensity * materials[matId].diffuse;\n                        }\n                        else {\n                            // hit material; calculate second reflection\n                            vec2 p2 = p + refl*0.001 + k*refl;\n                            nor = normal(p2);\n                            refl = reflect(refl, nor);\n                            int matId2 = id;\n                            float j = trace(p + refl * 0.001, refl);\n                            if(k < 20. && materials[id].light) {\n                                // hit light\n                                col = materials[id].emissive * materials[id].intensity \n                                                             * materials[matId].diffuse;\n                            }\n                        }\n                    }\n                }\n            }\n        }\n        else col = vec3(0.3); // ambient\n        fcol += col;\n    }\n    \n    return fcol / LIGHT_SAMPLES;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 fcol = vec3(0);\n    vec2 npos = (2.*fragCoord-R)/R.y;\n    float randSeed = fract(float(iTime) / 30.);\n    float stratSize = 1. / AA;\n    for(float aax = 0.; aax < AA; aax++)\n    for(float aay = 0.; aay < AA; aay++) {\n        vec2 strat = vec2(aax, aay) * stratSize;\n        vec2 jitter = vec2(random(npos + 4.1252 + aax + randSeed), \n                           random(npos + 1.3483 + aay + randSeed)) * stratSize;\n        vec2 uv = (2.*fragCoord + strat + jitter - R)/R.y;\n        vec3 col = sampleScene(uv);\n        fcol += col;\n    }\n    \n    fragColor = vec4(fcol/(AA*AA),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

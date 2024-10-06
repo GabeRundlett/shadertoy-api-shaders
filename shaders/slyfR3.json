@@ -1,0 +1,103 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1664928031",
+            "description": "Just need to figure out a method to get rid of those streaky artefacts and maybe (impossibly) the sharp point in the middle of the circles.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "slyfR3",
+            "likes": 1,
+            "name": "Outpainting experiment #4",
+            "published": 3,
+            "tags": [
+                "inpainting",
+                "jumpflood",
+                "outpainting"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 244
+        },
+        "renderpass": [
+            {
+                "code": "float hash(vec2 uv) {\n    // Seeing some weird discontinuity coming from overflow cases -- this'll fix it!\n    uv = vec2(ivec2(floatBitsToUint(uv.x), floatBitsToUint(uv.y))) / 65537.0;\n\n    const vec2 swiz = vec2(12.9898, 78.233);\n    return fract(sin(dot(uv, swiz)) * 43758.5453);\n}\n\nfloat hash(float f) {\n    return hash(vec2(f));\n}\n\nfloat noise(vec2 uv, float p) {\n    vec2 i = floor(uv);\n    vec2 f = fract(uv);\n    f = smoothstep(0.0, 1.0, f);\n    vec4 o = vec4(vec2(-0.5), vec2(0.5)) + fract(p * 1.73737373);\n    return mix(mix(hash(i + o.xy), hash(i + o.zy), f.x),\n               mix(hash(i + o.xw), hash(i + o.zw), f.x),\n               f.y);\n}\n\nfloat nnoise(vec2 uv, float p) {\n    return noise(uv, p) * 0.5\n         + noise(uv * 2.01, p) * 0.25\n         + noise(uv * 4.017, p) * 0.125\n         + noise(uv * 8.029, p) * 0.125;\n}\n\nvec2 scribble(vec2 uv) {\n    uv *= 16.0;\n    return vec2(nnoise(uv, 0.0), nnoise(uv, 1.0)) - 0.5;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 origin = tex_coord(fragCoord, iResolution.xy);\n\n    // Time varying pixel color\n    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));\n\n    vec2 nearest = texture(iChannel0, uv).zw;\n    for (int i = 0; i < 1; ++i) {\n        vec2 diff = (nearest - origin) * 0.75;\n        float s = length(diff) * 1.8;\n        nearest += diff + scribble(origin) * s;\n        uv = map_coord(nearest, iResolution.xy);\n        vec2 next_nearest = texture(iChannel0, uv).zw;\n        if (distance(nearest, next_nearest) < 0.001) break;\n        nearest = next_nearest;\n    }\n    vec4 tex = texture(iChannel1, nearest, -1.0);\n    if (nearest.x < 0.0) tex = vec4(0.5);\n\n    col += (tex.rgb - col.rgb) * tex.a;\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "bool IsVisible(vec2 uv) {\n    uv -= 0.5;\n    float t = iTime * 0.7;\n    vec2 c0 = vec2(cos(t), sin(t)) * 0.2;\n    t = (t + 1.0) * 0.65;\n    vec2 c1 = vec2(cos(t), sin(t)) * 0.27;\n    t = (t + 1.0) * 0.65;\n    if (distance(uv, c0) < 0.07) return false;\n    if (distance(uv, c1) < 0.12) return false;\n\n    uv = vec2(dot(uv, vec2(cos(t), sin(t))),\n              dot(uv, vec2(-sin(t), cos(t))));\n    if (uv.y > 0.3) return false;\n    return true;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 tc = tex_coord(fragCoord, iResolution.xy);\n\n    vec4 r = texture(iChannel0, uv);\n\n    if (iFrame % STEP_INTERVAL >= 1) {\n        fragColor = r;\n        return;\n    }\n\n    int stage = (iFrame / STEP_INTERVAL) % NUM_STAGES;\n    float step_size = exp2(float(NUM_STAGES - 1 - stage));\n    vec2 scale = vec2(step_size) * tex_step(iResolution.xy);\n\n    for (int y = -1; y <= 1; ++y) {\n        for (int x = -1; x <= 1; ++x) {\n            vec2 nuv = uv + vec2(x, y) * scale;\n            vec4 neighbour = texture(iChannel0, nuv);\n            if (distance(neighbour.xy, tc) < distance(r.xy, tc)) {\n                r.xy = neighbour.xy;\n            }\n        }\n    }\n    if (stage >= NUM_STAGES - 1) {\n        r.zw = r.xy;\n        r.xy = vec2(-8.0);\n        if (IsVisible(tc)) {\n            r.xy = tc;\n        }\n    }\n    fragColor = r;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define NUM_STAGES 11\n#define STEP_INTERVAL 1\n\nvec2 tex_coord(vec2 fragCoord, vec2 resolution) {\n    return (fragCoord - resolution * 0.5) / resolution.xx + 0.5;\n}\nvec2 map_coord(vec2 tc, vec2 resolution) {\n    return ((tc - 0.5) * resolution.xx + resolution * 0.5) / resolution.xy;\n}\n\nvec2 tex_step(vec2 resolution) {\n    return 1.0 / resolution.xx;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

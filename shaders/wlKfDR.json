@@ -1,0 +1,133 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1614209817",
+            "description": "Bouncy particle simulation in 3D! (with feedback effects and cheap hacky smoothing)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wlKfDR",
+            "likes": 13,
+            "name": "3D Feedback Particles",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "particles",
+                "bouncy",
+                "buffering"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 224
+        },
+        "renderpass": [
+            {
+                "code": "// filt 0: no filter\n// filt 1: trilinear\n// filt 2: tricubic\n#define fetch(p) texelFetch(iChannel0, ivec2(_322(p, SIZE, RESOLUTION, iChannelResolution[0].xy)), 0)\nvec4 sampleDistanceField(in vec3 p, in int filt) {\n    vec3 halfSize = 0.5 * SIZE;\n    if (all(lessThan(abs(p), halfSize))) {\n        vec3 sp = mod(p + halfSize, SIZE) - halfSize;\n        if (filt == 0) {\n            return fetch(sp);\n        }\n\n        else {\n            vec3 UNIT = SIZE / RESOLUTION;\n            vec3 cell = floor(sp / UNIT) * UNIT;\n            vec3 local = fract(sp / UNIT);\n\n            if (filt == 2) local *= local * (3.0 - 2.0 * local);\n\n            // Sample at cell corners (8 tap)\n            vec4 ldb = fetch(cell);\n            vec4 rdb = fetch(cell + vec3(UNIT.x, 0.0, 0.0));\n            vec4 lub = fetch(cell + vec3(0.0, UNIT.y, 0.0));\n            vec4 rub = fetch(cell + vec3(UNIT.xy, 0.0));\n            vec4 ldf = fetch(cell + vec3(0.0, 0.0, UNIT.z));\n            vec4 rdf = fetch(cell + vec3(UNIT.x, 0.0, UNIT.z));\n            vec4 luf = fetch(cell + vec3(0.0, UNIT.yz));\n            vec4 ruf = fetch(cell + UNIT);\n\n            // Interpolate\n            return mix(mix(mix(ldb, rdb, local.x), mix(lub, rub, local.x), local.y),\n                       mix(mix(ldf, rdf, local.x), mix(luf, ruf, local.x), local.y), local.z);\n        }\n    }\n\n    vec3 q = abs(p) - halfSize + 0.25;\n    float bbox = max(q.x, max(q.y, q.z));\n    return vec4(0.0, 0.0, 0.0, bbox);\n}\n\nvec4 mapScene(in vec3 p) {\n    float env = mapEmptyEnvironment(p);\n    vec4 balls = sampleDistanceField(p, 1);\n    return env < balls.w ? vec4(0.6, 0.3, 0.0, env) : balls;\n}\n\nvec3 getNormal(in vec3 p) {\n    vec3 e = vec3(0.05, 0.0, 0.0); // Hacky smoothing effect\n    return normalize(vec3(mapScene(p + e.xyy).w - mapScene(p - e.xyy).w,\n                          mapScene(p + e.yxy).w - mapScene(p - e.yxy).w,\n                          mapScene(p + e.yyx).w - mapScene(p - e.yyx).w));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 screenCenter = 0.5 * iResolution.xy;\n\n    vec2 mouse = (iMouse.xy - screenCenter) / iResolution.y * 3.14;\n    vec2 uv = (fragCoord - screenCenter) / iResolution.y;\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n\n    vec3 ro = vec3(0.0, 0.0, 5.0);\n    vec3 rd = normalize(vec3(uv, -1.0));\n\n    // Rotate with mouse\n    float cy = cos(mouse.x), sy = sin(mouse.x);\n    float cp = cos(mouse.y), sp = sin(mouse.y);\n\n    ro.yz *= mat2(cp, -sp, sp, cp);\n    ro.xz *= mat2(cy, -sy, sy, cy);\n    rd.yz *= mat2(cp, -sp, sp, cp);\n    rd.xz *= mat2(cy, -sy, sy, cy);\n\n    float t = 0.0;\n    for (int i=0; i < 80; i++) {\n        vec3 p = ro + rd * t;\n        vec4 d = mapScene(p);\n        if (d.w < 0.001) {\n            vec3 n = getNormal(p);\n            vec3 l = vec3(-0.58, 0.58, 0.58);\n            fragColor.rgb += d.rgb;\n            fragColor.rgb *= max(0.2, dot(n, l));\n            break;\n        }\n\n        if (t > 8.0) {\n            break;\n        }\n\n        t += d.w;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// RESOLUTION is the number of distance samples, SIZE is the space it maps to\n#define RESOLUTION vec3(45.0)\n#define SIZE vec3(3.5)\n\n// Simulation settings\n#define NUMBER_OF_BALLS 100\n#define BALL_RADIUS 0.08\n\n#define GRAVITY 0.001\n#define FRICTION 0.95\n\n#define INFINITY 1000000.0\n#define DELTA 0.001\n\n#define getBallPos(id) texelFetch(iChannel0, ivec2(id, 0), 0).xyz\n#define getBallVel(id) texelFetch(iChannel0, ivec2(id, 1), 0).xyz\n\n// SDFs\nfloat sdSphere(in vec3 p, in float r) {\n    return length(p) - r;\n}\n\nfloat sdBox(in vec3 p, in vec3 b) {\n    vec3 q = abs(p) - b;\n    return length(max(q, 0.0)) + min(0.0, max(q.x, max(q.y, q.z)));\n}\n\n// Environment SDF\nfloat mapEmptyEnvironment(in vec3 p) {\n    float ground = sdBox(p + vec3(0.0, 1.0, 0.0), vec3(2.0, 0.1, 2.0)) - 0.1;\n\n    vec3 wp = vec3(abs(p.xz), p.y).xzy;\n    float walls = sdBox(wp - vec3(0.0, -0.5, 1.9), vec3(2.0, 0.5, 0.1));\n    walls = min(walls, sdBox(wp - vec3(1.9, -0.5, 0.0), vec3(0.1, 0.5, 2.0)));\n    walls -= 0.1;\n\n    float ball = sdSphere(p + vec3(0.5, 0.0, 0.8), 0.5);\n    float box = sdBox(p - vec3(0.25, -0.45, 0.5), vec3(0.125, 0.25, 0.5)) - 0.1;\n    return min(min(ground, walls), min(ball, box));\n}\n\n// Hashes from \"Hash without Sine\" by Dave_Hoskins (https://www.shadertoy.com/view/4djSRW)\nvec3 Hash13(in float x) {\n   vec3 p3 = fract(x * vec3(0.1031, 0.103, 0.0973));\n   p3 += dot(p3, p3.yzx + 33.33);\n   return fract((p3.xxy + p3.yzz) * p3.zyx); \n}\n\nfloat Hash11(in float x) {\n    x = fract(x * 0.1031);\n    x *= x + 33.33;\n    x *= x + x;\n    return fract(x);\n}\n\n// Distance field sampling utilities\nvec3 _223(in vec2 p2D, in vec3 size3D, in vec3 res3D, in vec2 res2D) {\n    p2D = floor(p2D);\n    float p1D = p2D.y * res2D.x + p2D.x;\n    float x = mod(p1D, res3D.x);\n    float y = mod(p1D - x, res3D.x * res3D.y) / res3D.x;\n    float z = (p1D - x - y * res3D.x) / res3D.x / res3D.y;\n    return vec3(x, y, z) / res3D * size3D - 0.5 * size3D;\n}\n\nvec2 _322(in vec3 p3D, in vec3 size3D, in vec3 res3D, in vec2 res2D) {\n    p3D = floor(p3D / size3D * res3D + 0.5 * res3D);\n    float p1D = p3D.z * res3D.x * res3D.y + p3D.y * res3D.x + p3D.x;\n    float x = mod(p1D, res2D.x);\n    float y = (p1D - x) / res2D.x;\n    return vec2(x, y);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Convenience struct\nstruct EnvData {\n    float distToEnv;\n    vec3 colliderVel;\n    int colliderType;\n};\n\n// Generates an arbitrary perpendicular vector\nvec3 getPerpVec3(in vec3 v) {\n    vec3 perp = vec3(-v.y, v.x, 0.0), a = abs(v);\n    if (a.x <= a.y && a.x <= a.z) perp = vec3(0.0, -v.z, v.y);\n    if (a.y < a.x && a.y < a.z) perp = vec3(-v.z, 0.0, v.x);\n    return perp;\n}\n\n// Gets information about the environment\nEnvData mapEnvironment(in vec3 p, in int ballID) {\n    vec3 ballPos = getBallPos(ballID);\n\n    float distToEnv = mapEmptyEnvironment(p);\n    vec3 colliderVel = vec3(0.0, 0.0, 0.0);\n    int colliderType = 0;\n\n    for (int id=0; id < NUMBER_OF_BALLS; id++) {\n        if (id != ballID) {\n            vec3 colliderPos = getBallPos(id);\n            distToEnv = min(distToEnv, length(p - colliderPos) - BALL_RADIUS);\n\n            if (length(ballPos - colliderPos) < 2.0 * BALL_RADIUS) {\n                colliderVel = getBallVel(id);\n                colliderType = 1;\n            }\n        }\n    }\n\n    return EnvData(distToEnv, colliderVel, colliderType);\n}\n\nvec3 getNormal(in vec3 p, in int id) {\n    vec2 e = vec2(DELTA, 0.0);\n    return normalize(vec3(mapEnvironment(p + e.xyy, id).distToEnv - mapEnvironment(p - e.xyy, id).distToEnv,\n                          mapEnvironment(p + e.yxy, id).distToEnv - mapEnvironment(p - e.yxy, id).distToEnv,\n                          mapEnvironment(p + e.yyx, id).distToEnv - mapEnvironment(p - e.yyx, id).distToEnv));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    ivec2 iFragCoord = ivec2(fragCoord);\n    if (iFragCoord.x < NUMBER_OF_BALLS && iFragCoord.y == 0) {\n        vec3 randPos = Hash13(fragCoord.x + iDate.w) * 2.0 - 1.0;\n        fragColor = vec4(randPos, 1.0);\n    }\n\n    if (iFragCoord.x < NUMBER_OF_BALLS && iFragCoord.y == 1) {\n        vec3 randVel = Hash13(fragCoord.x * 365.748 + 478.487 + iDate.w) * 0.02 - 0.01;\n        fragColor = vec4(randVel, 1.0);\n    }\n\n    if (iFrame > 0) {\n        if (iFragCoord.x < NUMBER_OF_BALLS) {\n            vec3 ballPos = getBallPos(iFragCoord.x);\n            vec3 ballVel = getBallVel(iFragCoord.x);\n\n            // Accelerate and update\n            ballVel.y -= GRAVITY;\n            ballPos += ballVel;\n\n            EnvData envData = mapEnvironment(ballPos, iFragCoord.x);\n            if (envData.distToEnv < BALL_RADIUS) {\n                vec3 hitNormal = getNormal(ballPos, iFragCoord.x);\n                ballPos += hitNormal * (BALL_RADIUS - envData.distToEnv); // Decollide\n\n                // Bounce off other balls\n                if (envData.colliderType > 0) {\n                    vec3 perpNormal = getPerpVec3(hitNormal);\n                    vec3 ballVel2 = envData.colliderVel;\n                    ballVel = dot(ballVel2, hitNormal) * hitNormal + dot(ballVel, perpNormal) * perpNormal;\n                }\n\n                // Bounce off static objects\n                else {\n                    ballVel = reflect(ballVel, hitNormal);\n                }\n\n                ballVel *= FRICTION; // Decelerate\n            }\n\n            // Store\n            if (iFragCoord.y == 0) {\n                fragColor = vec4(ballPos, 1.0);\n            }\n\n            if (iFragCoord.y == 1) {\n                fragColor = vec4(ballVel, 1.0);\n            }\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Precalulated distance field and colors\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    ivec2 iFragCoord = ivec2(fragCoord);\n    if (iFrame == 0) fragColor = vec4(0.0, 0.0, 0.0, INFINITY);\n    else fragColor = texelFetch(iChannel1, iFragCoord, 0);\n\n    float c = cos(iTime), s = sin(iTime);\n    mat2 colorRot = mat2(c, s, -s, c);\n\n    vec3 p = _223(fragCoord, SIZE, RESOLUTION, iResolution.xy);\n    for (int id=0; id < NUMBER_OF_BALLS; id++) {\n        vec3 ballPos = getBallPos(id);\n        float newShape = sdSphere(p - ballPos, BALL_RADIUS);\n        if (newShape < fragColor.w) {\n            vec3 newColor = Hash13(float(id) * 483.385 + 343.747);\n            newColor.rb *= colorRot;\n            newColor.gb *= colorRot;\n            newColor = 0.5 + 0.5 * newColor;\n\n            fragColor.rgb = newColor;\n            fragColor.w = newShape;\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

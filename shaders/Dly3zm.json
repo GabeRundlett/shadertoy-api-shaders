@@ -1,0 +1,160 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1684051448",
+            "description": "Fast ray-traversal of an extruded hexagonal grid\nFeatures hexagonal depth of field with FXAA 3.11\n\nMouse drag to look around\nDefines in Common",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Dly3zm",
+            "likes": 17,
+            "name": "Extruded Hexagon Grid Traversal",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "hexagon",
+                "tiling"
+            ],
+            "usePreview": 0,
+            "username": "gelami",
+            "viewed": 421
+        },
+        "renderpass": [
+            {
+                "code": "\n// Extruded Hexagon Traversal - gelami\n// https://www.shadertoy.com/view/Dly3zm\n\n/*\n * Fast ray-traversal of an extruded hexagonal grid\n * Features hexagonal depth of field with FXAA 3.11\n * \n * Mouse drag to look around\n * Defines in Common\n * \n * Hexagonal grid traversals are nothing new and have been done alot of times already\n * but I figured I'd give it a try myself, which turned out to be pretty neat\n * \n * The traversal works by precomputing the side distances in the slab intersection\n *   which allows us to only use additions to advance the ray, like you would in DDA\n * That simplifies the traversal to only use additions for the side distances,\n *   and a couple of checks for picking the axis\n * \n * The rest is the usual extruded traversal method,\n * where you intersect the far-hit only, checking if the y position is less than height\n * before and after advancing the ray, if before its a top hit, else a side hit\n * \n * The DoF pass actually takes longer to do than rendering the actual scene itself lol\n * \n * Would be cool to add rounded edges to the hexagons, but perhaps for next time\n * Also a 3D voxel traversal equivalent to this, something like a truncated octahedron\n * or a a rhombic dodecahedral honeycomb would be quite interesting to explore as well\n * \n * Other hexagonal grid traversal shaders:\n * \n * Hexagonal Grid Traversal - 3D - iq\n * https://www.shadertoy.com/view/WtSfWK\n *\n * Hex Voxel Scene - Shane\n * https://www.shadertoy.com/view/4dsBz4\n * \n * Hex grid traversal - mattz\n * https://www.shadertoy.com/view/XdSyzK\n *\n * \n * FXAA 3.11 implementation and DoF from:\n * Two Grid Traversal w/ 1Pass DoF - gelami\n * https://www.shadertoy.com/view/dtt3DS\n * \n */\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec3 col = texelFetch(iChannel0, ivec2(fragCoord), 0).rgb;\n    \n    #ifdef CHROMATIC_ABBERATION\n    col = vec3(0);\n    vec3 w = vec3(0);\n    \n    float caStr = smoothstep(0.0, 0.5, dot(uv - 0.5, uv - 0.5));\n    \n    vec2 dir = normalize(uv - 0.5) / iResolution.xy;\n    \n    const float count = CHROMATIC_ABBERATION_STEPS;\n    for (float i = 0.0; i < count; i++)\n    {\n        vec3 c = palette((i + 0.5) / count);\n        w += c;\n        col += texture(iChannel0, uv + caStr * dir * i).rgb * c;\n    }\n    col /= w;\n    #endif\n    \n    #ifdef VIGNETTE\n    col *= smoothstep(1.0, 0.0, dot(uv - 0.5, uv - 0.5)) * 0.8 + 0.2;\n    #endif\n    \n    col = col / (1.0 + col);\n    \n    //col = mix(col, smoothstep(vec3(0), vec3(1), col), 0.2);\n    //col = ACESFilm(col);\n    fragColor = vec4(linearTosRGB(col), 1);\n    fragColor += (dot(hash23(vec3(fragCoord, iTime)), vec2(1)) - 0.5) / 255.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n//#define SSAA 2\n\n#define FXAA\n#define DOF\n\n#define CHROMATIC_ABBERATION\n#define CHROMATIC_ABBERATION_STEPS 8.0\n\n//#define VIGNETTE\n//#define FOG\n\n#define CAMERA_DISTANCE (14.0+(sin(iTime*0.25-PI*0.3)*0.5+0.5)*12.0)\n\n// DoF Defines\n#define DOF_FLAT_Z_DEPTH\n#define DOF_STEPS 32\n#define DOF_RADIUS 12.0\n\n#define DOF_FOCUS_DIST (CAMERA_DISTANCE*1.1)\n#define DOF_FOCUS_SCALE 12.0\n\n#define GOLDEN_ANGLE 2.39996323\n\n// Scene Defines\n#define STEPS 256\n\n#define MAX_HEIGHT 6.0\n#define MOTION 1\n\n// Constants\n#define MAX_DIST 100.0\n#define EPS 1e-4\n\n#define PI (acos(-1.))\n#define TAU (PI*2.)\n\nmat3 getCameraMatrix(vec3 ro, vec3 lo)\n{\n    vec3 cw = normalize(lo - ro);\n    vec3 cu = normalize(cross(cw, vec3(0, 1, 0)));\n    vec3 cv = cross(cu, cw);\n\n    return mat3(cu, cv, cw);\n}\n\nfloat safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }\n\nfloat saturate(float x) { return clamp(x, 0., 1.); }\nvec2 saturate(vec2 x) { return clamp(x, vec2(0), vec2(1)); }\nvec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }\n\nfloat sqr(float x) { return x*x; }\nvec2 sqr(vec2 x) { return x*x; }\nvec3 sqr(vec3 x) { return x*x; }\n\nfloat luminance(vec3 col) { return dot(col, vec3(0.2126729, 0.7151522, 0.0721750)); }\n\nmat2 rot2D(float a)\n{\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n// https://iquilezles.org/articles/smin/\nfloat smin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n    \nfloat smax( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) + k*h*(1.0-h); }\n\n\n// https://iquilezles.org/articles/palettes/\nvec3 palette(float t)\n{\n    return .5 + .5 * cos(TAU * (vec3(1, 1, 1) * t + vec3(0, .25, .75)));\n}\n\nvec3 palette2(float t)\n{\n    return .45 + .55 * cos(TAU * (vec3(1, 0.95, 1) * t + vec3(0.3, 0.6, 0.8)));\n}\n\n// Hash without Sine\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nvec3 sRGBToLinear(vec3 col)\n{\n    return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));\n}\n\nvec3 linearTosRGB(vec3 col)\n{\n    return mix(1.055 * pow(col, vec3(1.0 / 2.4)) - 0.055, col * 12.92, lessThan(col, vec3(0.0031308)));\n}\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\n// Scene\n\n// Fork of \"Gelami Raymarching Template\" by gelami. https://shadertoy.com/view/mslGRs\n// 2023-05-10 08:41:22\n\nfloat map(vec2 p)\n{\n    vec2 r = texture(iChannel0, 0.35 * (p - 1.5) / iChannelResolution[0].xy).xy;\n    float h = r.x;\n    \n    //h = (h-0.5)*1.7+0.5;\n    //h = saturate(h)*0.8+0.1;\n    h = smoothstep(0.22, 0.78, h)*0.8+0.1;\n    \n    #if MOTION == 0\n    h = saturate(sin((h + iTime * 0.4 + p.x * 0.06 + p.y * 0.08) * TAU)*0.5+0.5)*(h*0.7+0.3);\n    #elif MOTION == 1\n    h += sin((h + iTime * 0.55 + p.x * 0.06 + p.y * 0.08) * TAU)*0.13;\n    #endif\n    \n    return saturate(h) * 0.9999 * MAX_HEIGHT;\n}\n\nstruct HitInfo\n{\n    float t;\n    vec3 n;\n    vec2 id;\n};\n\n// Traversal method\nbool trace(vec3 ro, vec3 rd, out HitInfo hit)\n{\n    if (rd.y > 0.0 && ro.y > MAX_DIST)\n        return false;\n    \n    // Normals\n    const vec2 n0 = vec2(1, 0);\n    const vec2 n1 = vec2(0.5, sqrt(3.0)/2.0);\n    const vec2 n2 = vec2(0.5, -sqrt(3.0)/2.0);\n    \n    const vec2 ts = vec2(1, sqrt(3.0));\n    \n    // ID\n    vec2 p0 = floor(ro.xz / ts);\n    vec2 p1 = floor(ro.xz / ts - 0.5) + 0.5;\n    \n    vec2 c0 = (ro.xz - p0 * ts) - ts*0.5;\n    vec2 c1 = (ro.xz - p1 * ts) - ts*0.5;\n    \n    vec2 id = dot(c0, c0) < dot(c1, c1) ? p0 : p1;\n    \n    vec2 pc = id * ts + ts*0.5;\n    vec2 pp = ro.xz - pc;\n    \n    // Pre-compute variables\n    vec3 prd = 1.0 / vec3(dot(rd.xz, n0), dot(rd.xz, n1), dot(rd.xz, n2));\n    vec3 pro = vec3(dot(pp, n0), dot(pp, n1), dot(pp, n2)) * prd;\n    vec3 ard = abs(prd);\n    vec3 srd = sign(prd);\n    \n    vec2 o0 = n0 * srd.x;\n    vec2 o1 = n1 * srd.y;\n    vec2 o2 = n2 * srd.z;\n    \n    vec2 i0 = vec2(1, 0) * srd.x;\n    vec2 i1 = vec2(0.5, 0.5) * srd.y;\n    vec2 i2 = vec2(0.5, -0.5) * srd.z;\n    \n    vec3 pp0 = vec3(dot(i0 * ts, n0), dot(i0 * ts, n1), dot(i0 * ts, n2)) * prd;\n    vec3 pp1 = vec3(dot(i1 * ts, n0), dot(i1 * ts, n1), dot(i1 * ts, n2)) * prd;\n    vec3 pp2 = vec3(dot(i2 * ts, n0), dot(i2 * ts, n1), dot(i2 * ts, n2)) * prd;\n    \n    vec2 nrd = vec2(0);\n    float lt = 0.0;\n    vec3 pos = ro;\n    \n    vec3 k = ard * 0.5;\n    \n    vec2 ido = vec2(0);\n    vec3 ppo = vec3(0);\n    \n    for (int i = 0; i < STEPS; i++)\n    {\n        float h = map(id + ido);\n        \n        // Side hit\n        if (pos.y < h)\n        {\n            hit.t = lt;\n            hit.n = -vec3(nrd.x, 0, nrd.y);\n            hit.id = id + ido;\n            return true;\n        }\n        \n        // Compute side distances\n        vec3 n = pro - ppo;\n        vec3 t2 = -n + k;\n        \n        // Pick smallest axis\n        float tF = t2.x;\n        vec2 no = i0;\n        vec3 ppp = pp0;\n        nrd = o0;\n        \n        if (t2.y < tF)\n        {\n            tF = t2.y;\n            no = i1;\n            nrd = o1;\n            ppp = pp1;\n        }\n        if (t2.z < tF)\n        {\n            tF = t2.z;\n            no = i2;\n            nrd = o2;\n            ppp = pp2;\n        }\n        \n        pos = ro + rd * tF;\n        \n        // Early exit if above max height\n        if (rd.y > 0.0 && pos.y > MAX_HEIGHT)\n            return false;\n        \n        // Top hit\n        if (pos.y < h)\n        {\n            hit.t = -(ro.y - h) / rd.y;\n            hit.n = vec3(0, 1, 0);\n            hit.id = id + ido;\n            return true;\n        }\n        \n        // Advance ray\n        lt = tF;\n        id += no;\n        ppo += ppp;\n    }\n    \n    return false;\n}\n\nvec3 getSky()\n{\n    return palette2(0.35) * 0.6 + 0.1;\n}\n\nvec3 shade(vec3 pos, HitInfo hit, const bool shadow)\n{\n    vec3 col = vec3(0);\n    vec3 alb = palette2(hash12(hit.id));\n    \n    col += alb * dot(abs(vec3(hit.n)), vec3(0.8, 1, 0.9));\n    \n    vec3 ldir = normalize(vec3(1, 3, 1));\n    vec3 ligCol = vec3(1, 0.6, 0.5)*1.2;\n    \n    float diff = max(dot(hit.n, ldir), 0.0);\n    \n    if (shadow)\n    {\n        HitInfo hitL;\n        bool isHitL = trace(pos + hit.n * EPS, ldir, hitL);\n\n        diff *= float(!isHitL);\n    }\n    \n    col *= smoothstep(0.0, MAX_HEIGHT*0.8, pos.y)*0.7+0.3;\n    \n    col *= (diff * 0.8 + 0.2) * ligCol;\n    \n    //col += alb * getSky() * 0.15;\n    \n    return col;\n}\n\nfloat fresnel(float r0, vec3 rd, vec3 n)\n{\n    return r0 + (1.0 - r0) * pow(1.0 - dot(-rd, n), 5.0);\n}\n\nvec3 fresnel(vec3 r0, vec3 rd, vec3 n)\n{\n    return r0 + (1.0 - r0) * pow(1.0 - dot(-rd, n), 5.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    #ifdef SSAA\n    vec4 tot = vec4(0);\n    \n    for (int x = 0; x < SSAA; x++)\n    {\n        for (int y = 0; y < SSAA; y++)\n        {\n    vec2 o = (vec2(x, y) + 0.5) / float(SSAA);\n    vec2 pv = (2. * (fragCoord + o - 0.5) - iResolution.xy) / iResolution.y;\n    #else\n    vec2 pv = (2. * (fragCoord) - iResolution.xy) / iResolution.y;\n    #endif\n    \n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec3 ro = vec3(0, 0, CAMERA_DISTANCE);\n    vec3 lo = vec3(0, MAX_HEIGHT, 0);\n    \n    lo.xz += vec2(1, 0.4) * iTime * 0.8;\n    \n    vec2 m = iMouse.xy / iResolution.xy;\n    \n    float ax = iMouse.z < 0. || iMouse.x == 0. ? -TAU * 0.3 + iTime * .21 : -m.x * TAU + PI;\n    float ay = iMouse.z < 0. || iMouse.y == 0. ? PI * (0.18+(sin(iTime*0.13)*0.5+0.5)*0.2) : -m.y * PI * 0.5 + PI * 0.5;\n    \n    ro.yz *= rot2D(ay);\n    ro.xz *= rot2D(ax);\n    ro += lo;\n    \n    mat3 cmat = getCameraMatrix(ro, lo);\n\n    vec3 rd = normalize(cmat * vec3(pv, 2));\n\n    vec3 pos = ro;\n    float pt = 0.0;\n    \n    if (pos.y > MAX_HEIGHT)\n    {\n        pt = -(ro.y - MAX_HEIGHT) / rd.y;\n        pos = pos + rd * pt;\n    }\n    \n    HitInfo hit;\n    bool isHit = trace(pos, rd, hit);\n    //vec2 id = round((hit.id - 0.5) / vec2(1, sqrt(3.0)));\n    \n    float t = pt + hit.t;\n    \n    pos = pos + rd * hit.t;\n    \n    vec3 col = shade(pos, hit, true);\n    \n    vec3 alb = palette2(hash12(hit.id));\n    \n    vec3 ref = reflect(rd, hit.n);\n    \n    HitInfo hitR;\n    bool isHitR = trace(pos + hit.n * EPS, ref, hitR);\n    \n    vec3 refPos = pos + ref * hitR.t;\n    \n    vec3 refCol = shade(refPos, hitR, true);\n    \n    if (!isHitR)\n    {\n        refCol = getSky();\n    }\n    \n    vec3 specCol = mix(alb, vec3(1), 0.8);\n    float r0 = hash12(hit.id.yx) < 0.1 ? 1.0 : 0.1;\n    \n    float fre = fresnel(r0, rd, hit.n);\n    \n    col = mix(col, refCol * specCol, fre);\n    \n    if (!isHit)\n    {\n        col = getSky();\n    }\n    \n    #ifdef FOG\n    float fog = 1.0 - exp(-max(t - 20.0, 0.0) * 0.001);\n    col = mix(col, getSky(), fog);\n    #endif\n    \n    \n    #ifdef DOF_FLAT_Z_DEPTH\n    t *= dot(rd, cmat[2]);\n    #endif\n    \n    #ifndef SSAA\n    col = max(col, vec3(0));\n    \n    col = col / (1.0 + col);\n    col = linearTosRGB(col);\n    \n    fragColor = vec4(saturate(col), t);\n    \n    #else\n        tot += vec4(col, t);\n        }\n    }\n    tot /= float(SSAA*SSAA);\n    \n    tot.rgb = tot.rgb / (1.0 + tot.rgb);\n    tot.rgb = linearTosRGB(tot.rgb);\n    tot.rgb = saturate(tot.rgb);\n    \n    fragColor = tot;\n    #endif\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n// FXAA 3.11\n\n// Implementation from\n// Two Grid Traversal w/ 1Pass DoF - gelami\n// https://www.shadertoy.com/view/dtt3DS\n\n// FXAA Defines\n// Trims the algorithm from processing darks.\n//   0.0833 - upper limit (default, the start of visible unfiltered edges)\n//   0.0625 - high quality (faster)\n//   0.0312 - visible limit (slower)\n#define FXAA_THRESHOLD_MIN 0.0312\n\n// The minimum amount of local contrast required to apply algorithm.\n//   0.333 - too little (faster)\n//   0.250 - low quality\n//   0.166 - default\n//   0.125 - high quality \n//   0.063 - overkill (slower)\n#define FXAA_THRESHOLD_MAX 0.063\n\n// This can effect sharpness.\n//   1.00 - upper limit (softer)\n//   0.75 - default amount of filtering\n//   0.50 - lower limit (sharper, less sub-pixel aliasing removal)\n//   0.25 - almost off\n//   0.00 - completely off\n#define FXAA_SUBPIXEL_QUALITY 0.75\n\n// Assumed to be in perceptual/gamma-encoded space\nfloat luma(vec3 col)\n{\n    //return dot(col, vec3(0.2126729, 0.7151522, 0.0721750));\n    return dot(col, vec3(0.299, 0.587, 0.114));\n    return sqrt(dot(col, vec3(0.299, 0.587, 0.114)));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 px = 1.0 / iResolution.xy;\n    \n    vec4 col = texture(iChannel0, uv);\n    \n    #ifndef FXAA\n    col.rgb = sRGBToLinear(col.rgb);\n    col.rgb = col.rgb / (1.0 - col.rgb);\n    \n    fragColor = col;\n    #else\n    float lumaCenter = luma(col.rgb);\n    float lumaUp    = luma(texture(iChannel0, uv + vec2(0, px.y)).rgb);\n    float lumaDown  = luma(texture(iChannel0, uv - vec2(0, px.y)).rgb);\n    float lumaLeft  = luma(texture(iChannel0, uv - vec2(px.x, 0)).rgb);\n    float lumaRight = luma(texture(iChannel0, uv + vec2(px.x, 0)).rgb);\n\n    float lumaMin = min(min(min(lumaUp, lumaDown), min(lumaLeft, lumaRight)), lumaCenter);\n    float lumaMax = max(max(max(lumaUp, lumaDown), max(lumaLeft, lumaRight)), lumaCenter);\n\n    float lumaRange = lumaMax - lumaMin;\n\n    if (lumaRange < max(FXAA_THRESHOLD_MIN, lumaMax * FXAA_THRESHOLD_MAX))\n    {\n        col.rgb = sRGBToLinear(col.rgb);\n        col.rgb = col.rgb / (1.0 - col.rgb);\n    \n        fragColor = col;\n        return;\n    }\n    \n    float lumaDownLeft  = luma(texture(iChannel0, uv - vec2(px.x, px.y)).rgb);\n    float lumaUpRight   = luma(texture(iChannel0, uv + vec2(px.x, px.y)).rgb);\n    float lumaDownRight = luma(texture(iChannel0, uv + vec2(px.x, -px.y)).rgb);\n    float lumaUpLeft    = luma(texture(iChannel0, uv + vec2(-px.x, px.y)).rgb);\n    \n    float lumaDownUp = lumaDown + lumaUp;\n    float lumaLeftRight = lumaLeft + lumaRight;\n    \n    float lumaCornerDown = lumaDownRight + lumaDownLeft;\n    float lumaCornerUp = lumaUpRight + lumaUpLeft;\n    float lumaCornerLeft = lumaDownLeft + lumaUpLeft;\n    float lumaCornerRight = lumaDownRight + lumaUpRight;\n\n    float edgeHorizontal = abs(-2.0 * lumaLeft + lumaCornerLeft) +\n                           abs(-2.0 * lumaCenter + lumaDownUp) * 2.0 +\n                           abs(-2.0 * lumaRight + lumaCornerRight);\n    \n    float edgeVertical   = abs(-2.0 * lumaUp + lumaCornerUp) +\n                           abs(-2.0 * lumaCenter + lumaLeftRight) * 2.0 +\n                           abs(-2.0 * lumaDown + lumaCornerDown);\n\n    bool isEdgeHorizontal = edgeHorizontal >= edgeVertical;\n\n    float luma0 = isEdgeHorizontal ? lumaDown : lumaLeft;\n    float luma1 = isEdgeHorizontal ? lumaUp : lumaRight;\n    \n    float grad0 = abs(luma0 - lumaCenter);\n    float grad1 = abs(luma1 - lumaCenter);\n\n    bool gradStep = grad0 >= grad1;\n    \n    float gradScaled = 0.25 * max(grad0, grad1);\n    \n    float stepSize = isEdgeHorizontal ? px.y : px.x;\n    stepSize = gradStep ? -stepSize : stepSize;\n    \n    float lumaLocalAvg = 0.5 * ((gradStep ? luma0 : luma1) + lumaCenter);\n\n    vec2 curUV = uv;\n    \n    if (isEdgeHorizontal)\n        curUV.y += stepSize * 0.5;\n    else\n        curUV.x += stepSize * 0.5;\n    \n    vec2 stepOffset = isEdgeHorizontal ? vec2(px.x, 0) : vec2(0, px.y);\n    \n    vec2 uv0 = curUV - stepOffset;\n    vec2 uv1 = curUV + stepOffset;\n    \n    float lumaEnd0 = luma(texture(iChannel0, uv0).rgb) - lumaLocalAvg;\n    float lumaEnd1 = luma(texture(iChannel0, uv1).rgb) - lumaLocalAvg;\n    \n    bool reached0 = abs(lumaEnd0) >= gradScaled;\n    bool reached1 = abs(lumaEnd1) >= gradScaled;\n    \n    if (!reached0) uv0 -= stepOffset;\n    if (!reached1) uv1 += stepOffset;\n    \n    if (!(reached0 && reached1))\n    {\n        #define ITERATIONS 12\n        const float QUALITY[ITERATIONS] = float[](1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0);\n        for (int i = 2; i < ITERATIONS; i++)\n        {\n            if (!reached0)\n            {\n                lumaEnd0 = luma(texture(iChannel0, uv0).rgb) - lumaLocalAvg;\n            }\n            if (!reached1)\n            {\n                lumaEnd1 = luma(texture(iChannel0, uv1).rgb) - lumaLocalAvg;\n            }\n            \n            reached0 = abs(lumaEnd0) >= gradScaled;\n            reached1 = abs(lumaEnd1) >= gradScaled;\n            \n            if (!reached0) uv0 -= stepOffset * QUALITY[i];\n            if (!reached1) uv1 += stepOffset * QUALITY[i];\n            \n            if (reached0 && reached1) break;\n        }\n    }\n    \n    float distance0 = isEdgeHorizontal ? (uv.x - uv0.x) : (uv.y - uv0.y);\n    float distance1 = isEdgeHorizontal ? (uv1.x - uv.x) : (uv1.y - uv.y);\n    \n    float lumaDist = distance0 < distance1 ? lumaEnd0 : lumaEnd1;\n    \n    float pixelOffset = -min(distance0, distance1) / (distance0 + distance1) + 0.5;\n    \n    bool correctVar = lumaCenter < lumaLocalAvg != lumaDist < 0.0;\n    \n    float finalOffset = correctVar ? pixelOffset : 0.0;\n    \n    float lumaAvg = (1.0 / 12.0) * (2.0 * (lumaDownUp + lumaLeftRight) + lumaCornerLeft + lumaCornerRight);\n    \n    float subpixelOffset = smoothstep(0.0, 1.0, abs(lumaAvg - lumaCenter) / lumaRange);\n    subpixelOffset = subpixelOffset * subpixelOffset * FXAA_SUBPIXEL_QUALITY;\n    \n    finalOffset = max(finalOffset, subpixelOffset);\n    \n    vec2 finalUV = uv;\n    \n    if (isEdgeHorizontal)\n        finalUV.y += stepSize * finalOffset;\n    else\n        finalUV.x += stepSize * finalOffset;\n    \n    vec3 fcol = texture(iChannel0, finalUV).rgb;\n    \n    fcol = sRGBToLinear(fcol);\n    fcol = fcol / (1.0 - fcol);\n    \n    fragColor = vec4(fcol, col.a);\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n// Depth of Field\n\n// Hexagonal bokeh shape from:\n// Morphing bokeh shape sample taps - BeRo\n// https://www.shadertoy.com/view/MtlGRn\n// http://www.crytek.com/download/Sousa_Graphics_Gems_CryENGINE3.pdf\nvec2 getBokehCoord(vec2 o, const float f, const float n, const float offset){\n    vec2 ab = o;    \n    vec2 p;\n    if (ab.x * ab.x > ab.y * ab.y)\n        p = vec2(abs(ab.x) > 1e-8 ? PI * 0.25 * ab.y / ab.x : 0.0, ab.x);\n    else\n        p = vec2(abs(ab.y) > 1e-8 ? (PI * 0.5 - (PI * 0.25 * ab.x / ab.y)) : 0.0, ab.y); \n    p.x += f * offset;\n    \n    if (f > 0.0)\n        p.y *= pow((cos(PI / n) / cos(p.x - ((TAU / n) * floor((n * p.x + PI) / TAU)))), f);\n    \n    return vec2(cos(p.x), sin(p.x)) * p.y;\n}\n\nfloat getCoC(float t, float focalDist, float scale)\n{\n    return saturate(abs(1.0 / focalDist - 1.0 / t) * scale) * DOF_RADIUS;\n}\n\n// Depth of Field method modified from:\n// Two Grid Traversal w/ 1Pass DoF - gelami\n// https://www.shadertoy.com/view/dtt3DS\nvec3 depthOfField(sampler2D tex, vec2 fragColor, vec2 res)\n{\n    vec2 px = 1.0 / res;\n    vec2 uv = fragColor * px;\n    \n    vec4 center = texture(tex, uv);\n    \n    float coc = getCoC(center.a, DOF_FOCUS_DIST, DOF_FOCUS_SCALE);\n    \n    if (coc < 0.5)\n        return center.rgb;\n    \n    const float DOF_SIDES = 6.0;\n    const float f = 1.0;\n    \n    vec3 color = center.rgb;\n    float w = 1.0;\n    \n    float radStep = DOF_RADIUS / float(DOF_STEPS);\n    float rad = radStep * 0.5;\n    float ang = 0.0;\n    \n    for (int i = 0; i < DOF_STEPS; i++)\n    {\n        //vec2 p = vec2(cos(ang), sin(ang));\n        vec2 p = getBokehCoord(vec2(cos(ang), sin(ang)), f, DOF_SIDES, PI * 0.5);\n        \n        vec4 samp = texture(tex, uv + p * rad * px);\n        \n        float sampCoC = getCoC(samp.a, DOF_FOCUS_DIST, DOF_FOCUS_SCALE);\n        \n        if (samp.a > center.a)\n            sampCoC = clamp(sampCoC, 0.0, coc * 2.0);\n        \n        float r = rad * length(p);\n        float m = smoothstep(r - 0.5, r + 0.5, sampCoC);\n        \n        color += mix(color / w, samp.rgb, m);\n        ang += GOLDEN_ANGLE;\n        rad += radStep / rad;\n        //rad = sqrt(DOF_RADIUS * float(i) / float(DOF_STEPS));\n        w += 1.0;\n    }\n    \n    return color / w;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    #ifdef DOF\n    vec3 col = depthOfField(iChannel0, fragCoord, iResolution.xy);\n    #else\n    vec3 col = texelFetch(iChannel0, ivec2(fragCoord), 0).rgb;\n    #endif\n    \n    fragColor = vec4(col, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

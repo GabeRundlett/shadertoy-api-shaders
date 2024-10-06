@@ -1,0 +1,96 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1542115262",
+            "description": "Unbiased Monte Carlo render of fog, illuminated by emissive materials. Each ray hits either an object or a fog particle. Fog particles bounce light in a random direction, objects are black or emissive. Set ANIMATED to 0 for high quality still.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "4tVBzh",
+            "likes": 8,
+            "name": "Monte Carlo Media",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "volumetric",
+                "fog",
+                "montecarlo"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 1101
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    fragColour = texelFetch(iChannel0,ivec2(fragCoord),0);\n//    fragColour = texture(iChannel0,(fragCoord-.5)/iResolution.xy); // 2x2 blur\n    fragColour /= fragColour.a;\n\n    fragColour.rgb = pow( fragColour.rgb, vec3(1./2.2) );\n    fragColour.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Monte Carlo Media\n// by Hazel Quantock 2018\n// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. http://creativecommons.org/licenses/by-nc-sa/4.0/\n\n// set this to 0 and restart the render for a high quality still (and press space to restart the still render)\n#define ANIMATED 1\n#define ANIMATED_NOISE 1\n#define NON_ANIMATED_TIME 24.45\n\n// reduce this if your frame rate is too low\n#define SAMPLES_PER_PIXEL 250\n\n// http://keycode.info/\nconst int kLeft = 37, kUp = 38, kRight = 39, kDown = 40, kSpace = 32;\n\nvec2 Key( int key )\n{\n    return\n        vec2(\n            texelFetch(iChannel3,ivec2(key,0),0).x,\n            texelFetch(iChannel3,ivec2(key,1),0).x\n        );\n}\n\n\nconst float far = 1e10;\nconst float epsilon = 1e-6;\n\n\n// quasi random numbers from: http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/\nconst uvec2 quasi2 = uvec2(3242174889u,2447445413u);\nconst uvec3 quasi3 = uvec3(3518319155U,2882110345U,2360945575U); // 0.819172513396\n\n//const uint quasirandomFactor = 3518319155U; // for an ideal sequence of 3\nconst uint quasirandomFactor = 0xE60E2B72u; //3859688306u; // 0.8986537126287 for 6\nuint quasi;\nuint seed;\n\nvoid InitRand( uvec3 p )\n{\n    seed = quasi2.x*p.x + quasi2.y*p.y + p.z;\n    quasi = quasirandomFactor;\n}\n\nuint Hash()\n{\n    uint _out = seed*quasi;\n    \n    // the sequence is x, x^2, x^3, ... with each successive invocation\n    // since I'm using all 32 bits for a fractional number, I need to break up the maths\n    /*\n    (0xaaaa<<16 + 0xbbbb) * (0xcccc<<16 + 0xdddd) >> 32\n    (0xaaaa*0xcccc) + (0xbbbb*0xcccc)>>16 + (0xaaaa*0xdddd)>>16\n    */  \n    uint a = quasi>>16U;\n    uint b = quasi&0xffffU;\n    uint c = quasirandomFactor>>16U;\n    uint d = quasirandomFactor&0xffffU;\n    quasi = a*c + ((b*c)>>16U) + ((a*d)>>16U);\n    \n    return _out;\n} \n\nfloat Rand()\n{\n    return float(Hash())/exp2(32.); // [0,1)\n}\n\n\n// returns a span, either [0,intersection] or [intersection,far] depending on facing direction of plane\nvec2 IntersectPlane( vec3 rayStart, vec3 rayDir, vec3 normal, float dist )\n{\n    float rdn = dot( rayDir, normal );\n    float rds = dot( rayStart, normal );\n    \n    float t = (dist - rds)/rdn;\n    if ( abs(rdn) < epsilon )\n    {\n        t = far;\n    }\n    \n    bool inside = (rdn > epsilon);\n    return inside ? vec2(-far,t) : vec2(t,far);\n    \n    /* 4 cases: intersection behind/infront x rdn +/-\n    \t       \t  t < 0 | t > 0\n\trdn < 0|vec2(t,far) | vec2(t,far)\n\trdn > 0|vec2(-far,t)| vec2(-far,t)\n\t^ so it should work for planes behind start\n    */      \n}\n\n\nstruct Intersect\n{\n    float dist;\n    vec3 normal;\n};\n\n\nIntersect IntersectScene( vec3 rayStart, vec3 rayDir )\n{\n    vec3 normal = vec3(0);\n    \n    vec2 span = vec2(-far,far);\n    #define Intersection(a) { vec3 n = normalize(a.xyz); vec2 tt=IntersectPlane(rayStart, rayDir, n, a.w ); if ( tt.x > span.x ) { span.x = tt.x; normal = n; } span.y = min(span.y,tt.y); }\n    \n    Intersection( vec4( 1,1,1, .2 ) );\n    Intersection( vec4( 1,-1,-1, .2 ) );\n    Intersection( vec4( -1,1,-1, .2 ) );\n    Intersection( vec4( -1,-1,1, .2 ) );\n\n    float t = (span.x < span.y && span.x > 0.) ? span.x : far;\n    #define Union(a) { vec3 n = normalize(a.xyz); vec2 tt=IntersectPlane(rayStart, rayDir, n, a.w ); if ( tt.x > 0. && tt.x < t ) { t = tt.x; normal = n; } }\n\n    Union( vec4( 0,1,0, -1. ) );\n    Union( vec4( 0,0,-1, -8. ) );\n    Union( vec4( -1,-.99,0, -2. ) ); // there's a bug when this hits 1\n    Union( vec4( 1,0,-1, -5. ) );\n    Union( vec4( 1,0,0, -5. ) );\n    Union( vec4( 0,-1,1, -5. ) );\n    \n    return Intersect( t, normal );\n}\n\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n#if (ANIMATED)\n    float time = iTime;\n#if (ANIMATED_NOISE)\n    int frame = iFrame;\n#else\n    int frame = 0;\n#endif\n#else\n    float time = NON_ANIMATED_TIME;//52.; //37.4 41.5\n    int frame = iFrame;\n#endif\n    \n    const int passes = SAMPLES_PER_PIXEL; // crank this up until it hurts the fps\n    for ( int pass=0; pass < passes; pass++ )\n    {\n        InitRand( uvec3(fragCoord*vec2(1,1),frame*passes+pass) );\n        \n        // jitter is way less important, so don't waste high Rand() taps on it\n        vec3 jitterRand = vec3(quasi3*seed)/exp2(32.);\n        vec2 jitter = jitterRand.xy-.5;//vec2(Rand(),Rand());\n        jitter *= 1./(1.-pow(jitterRand.z,5.)); // add a little bloom so HDR shapes don't go jagged\n\n        float zoom = 1.;\n        vec3 rayDir = vec3( (fragCoord.xy + jitter - iResolution.xy*.5), zoom*length(iResolution.xy) );\n\n        float timec = time;//-5.;//time;\n        vec3 camK = normalize(vec3(.1,.1,1)\n    \t + sin(timec*4.*vec3(.1,.13,.17))*.03);\n        camK.xz = camK.xz*cos(timec*.1)+camK.zx*vec2(-1,1)*sin(timec*.1);// */);\n\n        vec3 camPos = vec3(-.3,0,0) - camK*4.;\n        vec3 camI = normalize(cross(vec3(0,1,0),camK));\n        vec3 camJ = cross(camK,camI);\n\n        vec3 rayStart = camPos;\n        rayDir = rayDir.x*camI + rayDir.y*camJ + rayDir.z*camK;\n        rayDir = normalize(rayDir);\n\n        vec3 light = vec3(1);\n        vec3 result = vec3(0);\n\n        // bounce loop\n        for ( int i=0; i < 3; i++ )\n        {\n            Intersect inter = IntersectScene( rayStart, rayDir );\n            float t = inter.dist;\n\n            // work out where the particle would be that we'd hit\n            float t2 = Rand();\n            /*\n            visibility should be:\n            1/2 at m\n            1/4 at 2m\n            1/8 at 3m\n            i.e. number of fog particles should be 1/2, 3/4, 7/8\n            => 0.5 value -> m, 0.75 value -> 2m, 0.875 value -> 3m\n            log2(0.5) = -1, log2(0.75) = ...\n            ok, flip it, say particle with value .25 == 25% visibility distance\n            log2(0.5) = -1, log2(0.25) = -2, log2(1/8) = -3\n            => distance = -log2([1-]value)*m\n            */\n            t2 = -3.*log2(1.-t2);\n            \n            bool fog = false;\n            if ( t2 < t )\n            {\n                fog = true;\n                t = t2;\n            }\n\n            // move\n            rayStart = rayStart + rayDir*t;\n\n            // bounce\n            if ( fog )\n            {\n                // fog - bounce in random sphere direction\n                vec2 angle = vec2(Rand(),Rand());\n                angle.x *= 6.283185;\n                angle.y = angle.y*2.-1.;//asin(angle.y*2.-1.); // I think this is right\n                rayDir = vec2(sqrt(1.-angle.y*angle.y),angle.y).xyx * vec3(cos(angle.x),1,sin(angle.x));\n            }\n            else\n            {\n                // emissive shapes\n                if ( rayStart.z > 7.99 )\n                {\n                    light *= 15.;\n                }\n                else if ( length(rayStart) < .33 )\n                {\n                    light *= 28.\n                        //*vec3(1,0,.05)\n                        //*max(vec3(0),-inter.normal.xyz)\n                        *step(.5,fract(rayStart/.7)) // useful debug - CMYK in middle, surrounded by 3 adjacent colours\n                        //*(t*vec3(1,0,-1)*.5+.5) //Huh, it definitely thinks it's hitting the front\n                        *step(.5,fract(time*.6+(time*.1+1.)*dot(inter.normal,vec3(1,2,3))))\n                        ;\n                }\n                else\n                {\n                    // make all walls emissive\n                    //light *= vec3(.4,.7,1)*2.*smoothstep(.4,1.,rayStart.y); // sky\n                    //light *= 1.*pow(.5-.5*inter.normal.yzx,vec3(5)); // colour code by normals\n                    light *= 0.; // paint everything else black\n                }\n                result = light;\n                break;\n            }\n        }\n\n        fragColour.rgb += result;\n        fragColour.a += 1.;\n    }\n        \n#if (ANIMATED)\n    float feedback = .5; // this reduces noise but blurs motion/flashing\n#else\n    float feedback = 1.;\n#endif\n    if ( Key(kSpace).x == 0. )\n\t    fragColour += texelFetch(iChannel0,ivec2(fragCoord),0)*feedback;\n}\n\n\n/*\ntodo: cloudy patterns - rather than varying density could vary colour.\nIt's not perfect but it will give a nice effect without marching\n*/",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

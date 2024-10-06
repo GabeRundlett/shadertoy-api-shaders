@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1589658757",
+            "description": "a technique to add pitting to an SDF in a controlled way. cycles between three different \"modes\". see [url]https://www.shadertoy.com/view/WsBBRw[/url] for the 2d case",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "td2fRD",
+            "likes": 30,
+            "name": "Corroding Arbitrary SDF",
+            "published": 3,
+            "tags": [
+                "sdf"
+            ],
+            "usePreview": 0,
+            "username": "blackle",
+            "viewed": 1018
+        },
+        "renderpass": [
+            {
+                "code": "//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\n//this shader is an experiment with mapping a 4 dimensional SDF onto a 3 dimensional one, by\n//using the components of 3d space plus the distance to a given SDF. this can be used to\n//map domain-repeated spheres onto the surface of an SDF, and use those spheres to cut holes\n//into it, much like pitted metal. Becase these spheres are restrained to the surface of the\n//SDF, we can control exactly what part of the SDF gets pitted. This shader cycles through 3\n//possibilities. pitting everything, only pitting inside existing pits, or only pitting\n//outside existing pits. There is no visible domain repetition pattern because I am also using\n//a modified version of domain repetition where some of the domains are \"disabled\" such that\n//they report the distance as if the neighbour domains are filled, but it is empty. this means\n//you can make an arbitrary percentage of domains empty, and therefore no holes will appear\n\n//see https://www.shadertoy.com/view/WsBBRw for the 2d case\n\n//return the SDF for a sphere, or the SDF for an empty region surrounded by spheres\nfloat gated_domain(vec4 p, float scale, bool gated) {\n    if (!gated) {\n        p.yzw = abs(p.yzw);\n        if (p.y > p.z) p.yz = p.zy;\n        if (p.z > p.w) p.zw = p.wz;\n        if (p.y > p.z) p.yz = p.zy;\n        p.w -= scale;\n    }\n    return length(p)-scale/2.2;\n}\n\n#define FK(k) floatBitsToInt(k)^floatBitsToInt(cos(k))\nfloat hash(float a, float b) {\n    int x = FK(a); int y = FK(b);\n    return float((x*x-y)*(y*y+x)+x)/2.14e9;\n}\n\nvec3 erot(vec3 p, vec3 ax, float ro) {\n    return mix(dot(ax,p)*ax,p,cos(ro))+sin(ro)*cross(ax,p);\n}\n\nfloat smin(float a, float b, float k) {\n    float h = max(0., k-abs(a-b))/k;\n    return min(a,b)-h*h*h*k/6.;\n}\n\nint pittingtype;\nfloat scene(vec3 p) {\n    float sphere = length(p)-1.;\n    float cut = p.z;\n    \n    float top = sphere;\n    float last = sphere;\n    for (int i = 0; i < 5; i++) { //5 octaves of noise\n        //random rotations\n        p = erot(p, normalize(vec3(1,2,3)), .2);\n        p = erot(p, normalize(vec3(1,3,2)), .51);\n\n    \tfloat scale = .5/pow(float(i+1),1.5);\n\n        //create 4d coordinates where the first coordinate is the distance to the SDF\n    \tvec4 p4d = vec4(last,p);\n\n        //domain repetition *only* along the yzw axes\n    \tvec3 id = floor(p4d.yzw/scale);\n    \tp4d.yzw = (fract(p4d.yzw/scale)-0.5)*scale;\n\n        //disable 50% of spheres. see https://www.shadertoy.com/view/WsSBRD for another example of this technique\n    \tbool gated = hash(id.x, hash(id.y, id.z)) > 0.;\n        float holes = gated_domain(p4d, scale, gated);\n        top = -smin(-top, holes, 0.04*sqrt(scale));\n\n        if (pittingtype == 0) last = holes; //add pitting to existing pits\n        if (pittingtype == 1) last = top; //add pitting everywhere\n        if (pittingtype == 2) last = sphere; //add pitting only to original surface\n    }\n    \n    return max(top,-cut);\n}\n\nvec3 norm(vec3 p) {\n    mat3 k = mat3(p,p,p)-mat3(0.001);\n    return normalize(scene(p)-vec3(scene(k[0]),scene(k[1]),scene(k[2])));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n    vec2 mouse = (iMouse.xy-0.5*iResolution.xy)/iResolution.y;\n    \n    pittingtype = int(iTime)%3;\n\n    vec3 cam = normalize(vec3(2,uv));\n    vec3 init = vec3(-5,0,0);\n\n   \tfloat yrot = 0.5;\n    float zrot = 4.5;\n    if (iMouse.z > 0.) {\n        yrot += -4.*mouse.y;\n        zrot += 4.*mouse.x;\n    } else {\n        yrot += cos(iTime)*.2;\n        zrot += sin(iTime)*.2;\n    }\n    cam = erot(cam, vec3(0,1,0), yrot);\n    init = erot(init, vec3(0,1,0), yrot);\n    cam = erot(cam, vec3(0,0,1), zrot);\n    init = erot(init, vec3(0,0,1), zrot);\n    \n    vec3 p = init; \n    bool hit = false;\n    //raymarch\n    for (int i = 0; i < 100 && !hit; i++) {\n        float dist = scene(p);\n        hit = dist*dist < 1e-6;\n        p+=cam*dist*.9;\n        if (distance(p,init) > 10.) break;\n    }\n    //shading\n    vec3 n = norm(p);\n    vec3 r = reflect(cam, n);\n    float ao = smoothstep(-.1,.1,scene(p+n*.1));\n    ao *= smoothstep(-.2,.2,scene(p+n*.2));\n    ao*=ao;\n    float diff = length(sin(n*2.)*.5+.5)/sqrt(3.);\n    float spec = length(sin(r*2.)*.5+.5)/sqrt(3.);\n    float fresnel = 1.-abs(dot(cam,n))*.98;\n    vec3 col = abs(erot(vec3(0.1,0.04,0.03),r,0.05))*diff*diff*ao + pow(spec, 10.)*fresnel*ao;\n    fragColor.xyz = sqrt((hit ? col : vec3(0.))*2.) + abs(hash(iTime, hash(uv.x,uv.y)))*.04;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

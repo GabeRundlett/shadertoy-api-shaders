@@ -1,0 +1,95 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1519256586",
+            "description": "Flow mapping test. Done by advecting 2 textures, and calculating a flow vector from the gradient of the geometry.\nsee comments in code for references.\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4dtyWM",
+            "likes": 16,
+            "name": "FlowMappedLand",
+            "published": 3,
+            "tags": [
+                "flow",
+                "advection",
+                "texturing"
+            ],
+            "usePreview": 0,
+            "username": "kuvkar",
+            "viewed": 1200
+        },
+        "renderpass": [
+            {
+                "code": "/**\n\nWanted to try out FabriceNeyret2's gradient based flow mapping and ended up making this landscape. I didn't want to use extra buffers\nI instead advect 2 textures for animation. I feel this technique could be useful for a game for example.\n\nCalculating the flow map is basicly the same as calculating gradient, it's just rotated 90 degrees. \nThe screen space derivates cause some aliasing on the border to water, I might fix that later.\n\nThe terrain is a height field.\n\nsee https://www.shadertoy.com/view/ls3cR4 by Fabrice\nand http://graphicsrunner.blogspot.fi/2010/08/water-using-flow-map\n\n*/\n\n/////////////////////////////\n// simplex noise by IQ\n// https://www.shadertoy.com/view/Msf3WH\n//////////////////////////////////////////\nvec2 hash( vec2 p ) \n{\n\tp = vec2( dot(p,vec2(127.1,311.7)),\n\t\t\t  dot(p,vec2(269.5,183.3)) );\n\n\treturn -1.0 + 2.0*fract(sin(p)*43758.5453123);\n}\n\nfloat noise( in vec2 p )\n{\n    const float K1 = 0.366025404; // (sqrt(3)-1)/2;\n    const float K2 = 0.211324865; // (3-sqrt(3))/6;\n\n\tvec2 i = floor( p + (p.x+p.y)*K1 );\n\t\n    vec2 a = p - i + (i.x+i.y)*K2;\n    vec2 o = step(a.yx,a.xy);    \n    vec2 b = a - o + K2;\n\tvec2 c = a - 1.0 + 2.0*K2;\n\n    vec3 h = max( 0.5-vec3(dot(a,a), dot(b,b), dot(c,c) ), 0.0 );\n\n\tvec3 n = h*h*h*h*vec3( dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));\n\n    return dot( n, vec3(70.0) );\n\t\n}\nfloat fbm(vec2 uv)\n{\n    uv *= 1.5;\n    mat2 m = mat2( 1.6,  1.2, -1.2,  1.6 );\n\tfloat f = 0.;\n    f  = 0.5000*noise( uv ); uv = m*uv;\n    f += 0.2500*noise( uv ); uv = m*uv;\n    f += 0.1250*noise( uv ); uv = m*uv;\n    f += 0.0625*noise( uv ); uv = m*uv;    \n    return f;\n}\n\n////////////////\n////////////////\n////////////////\n\n\nfloat map(in vec2 uv)\n{\n\treturn fbm(uv);\n}\n///////////////////\n/// Flow vector calculation from the geometry\n/// Basicly just a gradient with 90 degree rotation so that it's tangential to surface\n////////////////////////////////////\n/// Reference from Fabrice,\n/// https://www.shadertoy.com/view/ls3cR4\nvec2 getFlowVec(float distanceAtPos)\n{\n    float x = dFdy(distanceAtPos);\n    float y = -dFdx(distanceAtPos);\n\treturn vec2(x, y);\n}\n\n/////////////////////////////////////////////////////////////////////\n// Advecting 2 textures for animation\n// http://graphicsrunner.blogspot.fi/2010/08/water-using-flow-maps.html\nfloat getMixValue(float cycle, inout float offset1, inout float offset2)\n{\n    // mixval 0..1..0 over full cycle\n    float mixval = cycle * 2.0;\n    if(mixval > 1.0) mixval = 2.0 - mixval;\n    \n    // texture phase 1 \n    offset1 = cycle;\n    // texture phase 2, phase 1 offset by .5\n    offset2 = mod(offset1 + .5, 1.0);\n    return mixval;\n}\n\nvec3 cameraPos;\n\nvec3 traceGround(in vec2 uv, out float height, out vec3 waterSurfaceCoord)\n{\n    vec3 rd = normalize(vec3(uv, -.7));\n    vec3 rp = cameraPos + vec3(rd.xy/-rd.z, -1.0) * (cameraPos.z - 1.);\n    waterSurfaceCoord = cameraPos + vec3(rd.xy/-rd.z, -1.0) * (cameraPos.z);\n    \n    float steps = 100.0;\n    float h = 0.;\n    bool hit = false;\n    \n    // roughly to the surface\n    for (float i = 0.; i < steps; i = i + 1.0)\n    {\n        h = fbm(rp.xy);\n        \n        if(h > rp.z)\n        {\n            hit = true;\n            break;\n        }\n        \n        float stp = max(0.01, (rp.z - h) * .4);\n        rp += rd*stp;\n    }\n    \n    // more detailed steps\n    for(float i = 0.; i < 20.; i = i + 1.)\n    {\n        h = fbm(rp.xy);\n        float stp = (rp.z - h) * .05;\n        rp += rd * stp;\n    }\n    \n    if(!hit) h = -.1;\n    height = h;\n    return rp;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    uv -= vec2(.5);\n    uv.y /= iResolution.x / iResolution.y;\n\tuv *= .5;\n    \n    cameraPos.xy = vec2(iTime * .2, iTime * .1) * .1;\n    cameraPos.z = 1.5 + sin(iTime * .3) * .2;\n   \n    fragColor = vec4(.0);\n    \n    float h = 0.;\n    vec3 waterSurface = vec3(.0);\n    vec3 hitp = traceGround(uv, h, waterSurface);\n    float ch = smoothstep(-1., 1.0, h);\n    ch = smoothstep(0.0, 1.0, ch);\n    vec4 col = vec4(ch);\n    \n    // land\n    float grassline = smoothstep(-0.1, 0.1, h);\n    vec4 grasstex = texture(iChannel3, hitp.xy * .4);\n    vec4 grasstex2 = texture(iChannel0, hitp.xy * 2.2) * vec4(.4, .7, .4, 1.0);\n    grasstex = mix(grasstex, grasstex2, smoothstep(0.3, 0., h) * smoothstep(0., 0.1, h) * smoothstep(0.4, 0.5, grasstex.b));\n    grasstex *= mix(texture(iChannel1, hitp.xy * 9.).r, 1.0, 0.85);\n    // graininess\n    col = mix(col, col * vec4(1., 1., 1., 1.0) * grasstex, grassline);\n    \n    float waterline = smoothstep(0.1, -0.1, h);\n    col = mix(col, col * vec4(0.4, .5, 0.7, 1.0), waterline);\n    \n    // water surface hit\n    if(h <= 0.)\n    {\n        float dist = -map(waterSurface.xy);\n        vec2 origFlowvec = getFlowVec(dist);\n        \n        // fade out the influence of the vector at distance for shore foam.\n        float influence = smoothstep(.35, .0, dist);\n\t    vec2 shoreFlowvec = origFlowvec * influence;\n\t\tfloat l = length(shoreFlowvec);\n        float PHASE_LEN = 2.0;\n        float T = iTime * 2.;\n\n        // one full cycle\n        float cycle = mod(T, PHASE_LEN) / PHASE_LEN; \n\n        float phase1 = 0.0;\n        float phase2 = 0.0;\n        float mixval = getMixValue(cycle, phase1, phase2);\n\n        float textureScale = 15.;\n        float flowSpeed = 25.;\n        \n        vec2 flow_uv1 = waterSurface.xy * textureScale + flowSpeed * shoreFlowvec * phase1;\n        vec2 flow_uv2 = waterSurface.xy * textureScale + flowSpeed * shoreFlowvec * phase2;\n\n        // flow texturing\n        vec4 c1 = texture(iChannel2, flow_uv1).rrrr;\n        vec4 c2 = texture(iChannel2, flow_uv2).rrrr;\n        //vec4 c = mix(c2, c1, vec4(mixval));\n        \n\t\tfloat a = mixval;\n        vec4 c = .5 + ( mix(c2, c1, a) - .5) / sqrt(a*a+(1.-a)*(1.-a));        \n        c *= vec4(0.5, 0.5, 0.7, 1.0);\n        float edge = smoothstep(0.0, 0.009, l);\n        col += c * edge * .5;\n\n        // 2nd flow texturing for deep sea\n        origFlowvec = normalize(origFlowvec) * .01;\n        vec2 flow_uv11 = waterSurface.xy * textureScale + 0.4 * flowSpeed * origFlowvec * phase1;\n        vec2 flow_uv22 = waterSurface.xy * textureScale + 0.4 * flowSpeed * origFlowvec * phase2;\n\n        vec4 c11 = texture(iChannel1, flow_uv11).rrrr;\n        vec4 c22 = texture(iChannel1, flow_uv22).rrrr;\n        //vec4 cc = mix(c22, c11, vec4(mixval));\n        vec4 cc = .5 + ( mix(c22, c11, a) - .5) / sqrt(a*a+(1.-a)*(1.-a));        \n        \n        vec4 deepsea = col + cc  * vec4(.1, .15, .2, 1.0) * .5;\n        col = mix(col, deepsea, 1.0 - edge);\n    }\n    \n    col = smoothstep(vec4(0.0), vec4(.6), col);\n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 15,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0a40562379b63dfb89227e6d172f39fdce9022cba76623f1054a2c83d6c0ba5d.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

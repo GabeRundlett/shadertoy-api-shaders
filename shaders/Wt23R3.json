@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1560516108",
+            "description": "no description",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Wt23R3",
+            "likes": 4,
+            "name": "mydemo",
+            "published": 3,
+            "tags": [
+                "notag"
+            ],
+            "usePreview": 0,
+            "username": "michwqy",
+            "viewed": 365
+        },
+        "renderpass": [
+            {
+                "code": "#define M_MAX 1e9\n#define KEY_M (float(77)+0.5)/256.0\n\nconst float M_PI = 3.1415926535;\nconst float M_4PI = 4.0 * M_PI;\n\n///////////////////////////////////////\n// planet\nconst float earthRadius \t= 6360.0;\nconst float atmoHeight \t\t= 60.0;\nconst float atmoRadius \t\t= earthRadius + atmoHeight;\nconst vec3 earthCenter \t\t= vec3(0.0, 0.0, 0.0);\n\n///////////////////////////////////////\n// sun\nconst float distanceToSun = 1.496e8;\nconst float sunRadius = 2.0 * 109.0 * earthRadius;\nconst float sunIntensity = 10.0;\n\n///////////////////////////////////////\n// atmosphere\nconst vec3 betaR \t\t\t= vec3(5.8e-4, 1.35e-3, 3.31e-3);\nconst vec3 betaM \t\t\t= vec3(4.0e-3, 4.0e-3, 4.0e-3);\n\nconst vec3 M_4PIbetaR\t \t= M_4PI * betaR;\nconst vec3 M_4PIbetaM \t\t= M_4PI * betaM;\n\nconst float heightScaleRayleight = 6.0;\nconst float heightScaleMie = 1.2;\nconst float g = -0.76;\n\nconst float NUM_DENSITY_SAMPLES = 8.0;\nconst float NUM_VIEW_SAMPLES = 8.0;\nconst int \tINT_NUM_DENSITY_SAMPLES = int(NUM_DENSITY_SAMPLES);\nconst int\tINT_NUM_VIEW_SAMPLES = int(NUM_VIEW_SAMPLES);\n\n///////////////////////////////////////\n// ray - sphere intersection\nvec2 iSphere(vec3 ro, vec3 rd, vec4 sph)\n{\n    vec3 tmp = ro - sph.xyz;\n\n    float b = dot(rd, tmp);\n    float c = dot(tmp, tmp) - sph.w * sph.w;\n    \n    float disc = b * b - c;\n    \n    if(disc < 0.0) return vec2(-M_MAX, -M_MAX);\n    \n    float disc_sqrt = sqrt(disc);\n\t\n    float t0 = -b - disc_sqrt;\n    float t1 = -b + disc_sqrt;\n    \n    return vec2(t0, t1);\n}\n\n///////////////////////////////////////\n// Henyey-Greenstein phase function\nfloat phase(float nu, float g)\n{\n\treturn (3.0 * (1.0 - g * g) * (1.0 + nu * nu)) / (2.0 * (2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * nu, 1.5));\n}\n\n///////////////////////////////////////\n// density integral calculation from p0 to p1 \n// for mie and rayleight\nvec2 densityOverPath(vec3 p0, vec3 p1, vec2 prescaler)\n{\n    float l = length(p1 - p0);\n    vec3  v = (p1 - p0) / l;\n    \n    l /= NUM_DENSITY_SAMPLES;\n    \n    vec2 density = vec2(0.0);\n    float t = 0.0;\n    \n\tfor(int i = 0; i < INT_NUM_DENSITY_SAMPLES; i++)\n    {\n        vec3 sp = p0 + v * (t + 0.5 * l);\n        vec2 h = vec2(length(sp) - earthRadius);\n        density += exp(-h / prescaler);\n        \n        t += l;\n    }\n    \n    return l * density;\n}\n\n///////////////////////////////////////\n// inscatter integral calculation\nvec4 inscatter(vec3 cam, vec3 v, vec3 sun)\n{    \n    vec4 atmoSphere \t= vec4(earthCenter, atmoRadius);\n    vec4 earthSphere \t= vec4(earthCenter, earthRadius);\n        \n\tvec2 t0 = iSphere(cam, v, atmoSphere);\n    vec2 t1 = iSphere(cam, v, earthSphere);\n   \n    bool bNoPlanetIntersection = t1.x < 0.0 && t1.y < 0.0;\n    \n    float farPoint = bNoPlanetIntersection ? t0.y : t1.x;\n    float nearPoint = t0.x > 0.0 ? t0.x : 0.0;\n    \n    float l = (farPoint - nearPoint) / NUM_VIEW_SAMPLES;\n\tcam += nearPoint * v;  \n    \n    float t = 0.0;\n\n    vec3 rayleight = vec3(0.0);\n\tvec3 mie = vec3(0.0);\n    \n    vec2 prescalers = vec2(heightScaleRayleight, heightScaleMie);\n    \n    vec2 densityPointToCam = vec2(0.0);\n    \n    for(int i = 0; i < INT_NUM_VIEW_SAMPLES; i++)\n    {\n        vec3 sp = cam + v * (t + 0.5 * l);\n        float tc = iSphere(sp, sun, vec4(earthCenter, atmoRadius)).y;\n        \n        vec3 pc = sp + tc * sun;\n        \n        vec2 densitySPCam = densityOverPath(sp, cam, prescalers);\n        vec2 densities = densityOverPath(sp, pc, prescalers) + densitySPCam;\n        \n        vec2 h = vec2(length(sp) - earthRadius);\n        vec2 expRM = exp(-h / prescalers);\n        \n        rayleight \t+= expRM.x * exp( -M_4PIbetaR * densities.x );\n\t\tmie \t\t+= expRM.y * exp( -M_4PIbetaM * densities.y );\n\n\t\tdensityPointToCam += densitySPCam;\n        \n        t += l;\n    }\n    \n\trayleight *= l;\n    mie *= l;\n    \n    vec3 extinction = exp( - (M_4PIbetaR * densityPointToCam.x + M_4PIbetaM * densityPointToCam.y));\n    \n    float nu = dot(sun, -v);\n    \n    vec3 inscatter_ = sunIntensity * (betaM * mie * phase(nu, g) + betaR * phase(nu, 0.0) * rayleight);\n    return vec4(inscatter_, extinction.r * float(bNoPlanetIntersection));\n}\n\n///////////////////////////////////////\n// rotation around axis Y\nvec3 rotate_y(vec3 v, float angle)\n{\n\tvec3 vo = v; float cosa = cos(angle); float sina = sin(angle);\n\tv.x = cosa*vo.x - sina*vo.z;\n\tv.z = sina*vo.x + cosa*vo.z;\n\treturn v;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 sc = 2.0 * fragCoord.xy / iResolution.xy - 1.0;\n    sc.x *= iResolution.x / iResolution.y;\n    \n    vec3 mouse = M_PI * vec3(2.0 * iMouse.xy / iResolution.xy - 1.0,0.0);\n    \n    vec3 ro = vec3(0.0);\n    \n   \tro = 2.0 * vec3(earthRadius * sin(mouse.x), 0.0, earthRadius * cos(mouse.x));\n    \n    vec3 rd = normalize(rotate_y(vec3(sc, 1), M_PI - mouse.x));\n    \n    vec3 sun = normalize(vec3(1.0, 1.0, 1.0));\n    \n    vec4 col = inscatter(ro, rd, sun);\n    \n    vec3 sunPos = sun * distanceToSun;\n    \n    vec4 star = vec4(sunPos, sunRadius);\n    vec2 t0 = iSphere(ro, rd, star);\n    \n    if(t0.x > 0.0)\n    {\n    \tcol.xyz += vec3(1.0,1.0,1.0) * col.a;\n    }\n    \n    col.xyz = pow(col.xyz, vec3(1.0 / 2.2));\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

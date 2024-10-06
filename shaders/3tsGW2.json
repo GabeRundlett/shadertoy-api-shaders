@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1557807592",
+            "description": "Exploring PBR implementation from this article.  https://learnopengl.com/PBR/Theory\n\nThe BRDF, reflection and irradiance convolution are all integrated in real time, so it's pretty slow.\n\nUse the mouse to change roughness and metallicity.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3tsGW2",
+            "likes": 29,
+            "name": "PBR BRDF",
+            "published": 3,
+            "tags": [
+                "shader",
+                "brdf",
+                "pbr"
+            ],
+            "usePreview": 0,
+            "username": "ivansafrin",
+            "viewed": 3666
+        },
+        "renderpass": [
+            {
+                "code": "\n// BRDF approximation sample count (higher is better quality and slower)\nconst int BRDF_SAMPLE_COUNT = 64;\n\n// reflection convolution sample count (higher is better quality and slower)\nconst int REFLECTION_SAMPLE_COUNT = 256;\n\n// irradiance convolution step (lower is better quality and slower)\nconst float sampleDelta = 0.1;\n\n\nconst float PI = 3.14159265358979323846;\nfloat roughness = 0.0;\nfloat metallic = 0.0;\n\nfloat GeometrySchlickGGX(float NdotV, float roughness) {\n    float a = roughness;\n    float k = (a * a) / 2.0;\n\n    float nom   = NdotV;\n    float denom = NdotV * (1.0 - k) + k;\n\n    return nom / denom;\n}\n\nfloat GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)\n{\n    float NdotV = max(dot(N, V), 0.0);\n    float NdotL = max(dot(N, L), 0.0);\n    float ggx2 = GeometrySchlickGGX(NdotV, roughness);\n    float ggx1 = GeometrySchlickGGX(NdotL, roughness);\n\n    return ggx1 * ggx2;\n}\n\nfloat VanDerCorpus(int n, int base) {\n    float invBase = 1.0 / float(base);\n    float denom   = 1.0;\n    float result  = 0.0;\n\n    for(int i = 0; i < 32; ++i)\n    {\n        if(n > 0)\n        {\n            denom   = mod(float(n), 2.0);\n            result += denom * invBase;\n            invBase = invBase / 2.0;\n            n       = int(float(n) / 2.0);\n        }\n    }\n\n    return result;\n}\n\nvec2 Hammersley(int i, int N) {\n    return vec2(float(i)/float(N), VanDerCorpus(i, 2));\n}  \n\nvec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness) {\n    float a = roughness*roughness;\n\t\n    float phi = 2.0 * PI * Xi.x;\n    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a*a - 1.0) * Xi.y));\n    float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n\t\n    vec3 H;\n    H.x = cos(phi) * sinTheta;\n    H.y = sin(phi) * sinTheta;\n    H.z = cosTheta;\n\n    vec3 up        = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);\n    vec3 tangent   = normalize(cross(up, N));\n    vec3 bitangent = cross(N, tangent);\n\t\n    vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;\n    return normalize(sampleVec);\n}  \n\nvec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {\n    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);\n}   \n\nvec3 filtered_reflection(vec3 D, vec3 N) {\n \n    float totalWeight = 0.0;   \n    vec3 prefilteredColor = vec3(0.0);    \n   \n  \tfor(int i = 0; i < REFLECTION_SAMPLE_COUNT; ++i)\n    {\n        vec2 Xi = Hammersley(i, REFLECTION_SAMPLE_COUNT);\n        vec3 H  = ImportanceSampleGGX(Xi, N, roughness);\n        vec3 L  = normalize(2.0 * dot(D, H) * H - D);\n\n        float NdotL = max(dot(N, D), 0.0);\n        if(NdotL > 0.0)\n        {\n            prefilteredColor += texture(iChannel0, L).xyz * 2.0 * NdotL;\n            totalWeight      += NdotL;\n        }\n    }\n    prefilteredColor = prefilteredColor / totalWeight;\n    return prefilteredColor;    \n}\n\nvec2 IntegrateBRDF(float NdotV, float roughness) {\n    vec3 V;\n    V.x = sqrt(1.0 - NdotV*NdotV);\n    V.y = 0.0;\n    V.z = NdotV;\n\n    float A = 0.0;\n    float B = 0.0;\n\n    vec3 N = vec3(0.0, 0.0, 1.0);\n\n    for(int i = 0; i < BRDF_SAMPLE_COUNT; ++i)\n    {\n        vec2 Xi = Hammersley(i, BRDF_SAMPLE_COUNT);\n        vec3 H  = ImportanceSampleGGX(Xi, N, roughness);\n        vec3 L  = normalize(2.0 * dot(V, H) * H - V);\n\n        float NdotL = max(L.z, 0.0);\n        float NdotH = max(H.z, 0.0);\n        float VdotH = max(dot(V, H), 0.0);\n\n        if(NdotL > 0.0)\n        {\n            float G = GeometrySmith(N, V, L, roughness);\n            float G_Vis = (G * VdotH) / (NdotH * NdotV);\n            float Fc = pow(1.0 - VdotH, 5.0);\n\n            A += (1.0 - Fc) * G_Vis;\n            B += Fc * G_Vis;\n        }\n    }\n    A /= float(BRDF_SAMPLE_COUNT);\n    B /= float(BRDF_SAMPLE_COUNT);\n    return vec2(A, B);\n}\n\n\nvec3 light(vec3 N) {\n    vec3 irradiance = vec3(0.0);\n        \n\tvec3 up    = vec3(0.0, 1.0, 0.0);\n\tvec3 right = cross(up, N);\n\tup         = cross(N, right);\n \n\tfloat nrSamples = 0.0; \n\tfor(float phi = 0.0; phi < 2.0 * PI; phi += sampleDelta)\n\t{\n    \tfor(float theta = 0.0; theta < 0.5 * PI; theta += sampleDelta)\n    \t{\n        \tvec3 tangentSample = vec3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));\n        \tvec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * N; \n            \n            irradiance += texture(iChannel0, sampleVec).xyz * 2.0 * cos(theta) * sin(theta);\n       \t \tnrSamples++;\n    \t}\n\t}\n\tirradiance = PI * irradiance * (1.0 / nrSamples);\n    return irradiance;\n    \n}\n\nvec3 surface(vec3 D, vec3 N) {\n    vec3 albedo = vec3(1.0, 0.5, 0.0);\n    vec3 F0 = vec3(0.04); \n    F0 = mix(F0, albedo, metallic);\n    \n    vec3 F = fresnelSchlickRoughness(max(dot(N, D), 0.0), F0, roughness);\n\tvec3 prefilteredColor = filtered_reflection(D, N);\n    \n    vec3 R = reflect(D, N);\n    \n \tvec2 brdf = IntegrateBRDF(dot(D, N), roughness);\n    \n    vec3 specular = prefilteredColor * (F * brdf.x + brdf.y);\n    \n    vec3 kS = F;\n    vec3 kD = 1.0 - kS;\n    kD *= 1.0 - metallic;\n    \n    vec3 diffuse  = light(N) * albedo;\n    return (kD * diffuse + specular);\n}\n\n\nfloat scene(vec3 position) {\n    float height = 0.3;\n    return length(position)-height;\n}\n\nvec3 getNormal(vec3 ray_hit_position, float smoothness) {\t\n\tvec3 n;\n\tvec2 dn = vec2(smoothness, 0.0);\n\tn.x\t= scene(ray_hit_position + dn.xyy) - scene(ray_hit_position - dn.xyy);\n\tn.y\t= scene(ray_hit_position + dn.yxy) - scene(ray_hit_position - dn.yxy);\n\tn.z\t= scene(ray_hit_position + dn.yyx) - scene(ray_hit_position - dn.yyx);\n\treturn normalize(n);\n}\n\nfloat raymarch(vec3 position, vec3 direction) {\n    float total_distance = 0.0;\n    for(int i = 0 ; i < 16 ; ++i) {\n        float result = scene(position + direction * total_distance);\n        if(result < 0.005)\n        {\n            return total_distance;\n        }\n        total_distance += result;\n    }\n    return -1.0;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\tvec2 uv = fragCoord.xy / iResolution.y;\n    \n    roughness = iMouse.x/iResolution.x;\n    metallic = iMouse.y/iResolution.y;\n    \n    uv -= vec2(0.5*iResolution.x/iResolution.y, 0.5);\n    vec3 direction = normalize(vec3(uv, 2.5));\n    vec3 origin = vec3(0.0, 0.0, -2.5);\n    float dist = raymarch(origin, direction);\n    if(dist < 0.0) {\n\t\tfragColor = vec4(0.0, 0.2, 0.2, 1.0);\n    } else{\n        vec3 fragPosition = origin+direction*dist;\n \t\tvec3 N = getNormal(fragPosition, 0.01);\n        fragColor = mix(vec4(0, .2, .2, 1), vec4(surface(-direction, N), 1), smoothstep(.0, .15, dot(-direction, N) - .1));\n\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

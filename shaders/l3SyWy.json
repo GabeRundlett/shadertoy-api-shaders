@@ -1,0 +1,91 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1727647262",
+            "description": "made brownian motion more toxic",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "l3SyWy",
+            "likes": 2,
+            "name": "Brownian motion v2beta",
+            "published": 3,
+            "tags": [
+                "brownianmotiontoxic"
+            ],
+            "usePreview": 0,
+            "username": "ospanovalen",
+            "viewed": 37
+        },
+        "renderpass": [
+            {
+                "code": "const float PI = 3.14159265359;\nconst int MAX_STEPS = 200;\nconst float MAX_DIST = 100.0;\nconst float MIN_DIST = 0.001;\nconst float SHADOW_SOFTNESS = 64.0;\nconst float SPECULAR_POWER = 32.0;\nconst float AMBIENT_LIGHT = 0.2;\nconst float BALL_RADIUS = 0.4;\nconst float BALL_SPEED = 0.7;\nconst float BALL_ROTATION_SPEED = 1.2;\n\nvec3 lightPos = vec3(4.0, 6.0, 8.0);\n\nmat3 rotateY(float angle) {\n    float s = sin(angle);\n    float c = cos(angle);\n    return mat3(vec3(c, 0.0, -s), vec3(0.0, 1.0, 0.0), vec3(s, 0.0, c));\n}\n\nvec3 triplanarMapping(vec3 p, vec3 normal, sampler2D tex) {\n    vec3 blend = abs(normal);\n    blend = blend / (blend.x + blend.y + blend.z); \n\n    vec3 xProj = texture(tex, p.yz).rgb;  \n    vec3 yProj = texture(tex, p.xz).rgb;\n    vec3 zProj = texture(tex, p.xy).rgb;\n\n    return blend.x * xProj + blend.y * yProj + blend.z * zProj;\n}\n\nvec3 getSkyboxColor(vec3 dir) {\n    return texture(iChannel0, dir).rgb;\n}\n\nfloat sdSphere(vec3 p, float r) {\n    return length(p) - r;\n}\n\nvec3 ballTrajectory(float time, float index) {\n    float jumpHeight = abs(sin(time * BALL_SPEED + index)) * 3.0;\n    return vec3(sin(time * BALL_SPEED + index) * 4.0, jumpHeight, cos(time * BALL_SPEED + index) * 4.0);\n}\n\nfloat sceneSDF(vec3 p) {\n    float time = iTime * BALL_ROTATION_SPEED;\n    float d = MAX_DIST;\n\n    for (int i = 0; i < 5; i++) {\n        vec3 ballPos = ballTrajectory(time, float(i) * 2.0 * PI / 5.0);\n        float ballDist = sdSphere(p - ballPos, BALL_RADIUS);\n        d = min(d, ballDist);\n    }\n\n    float ground = p.y + 0.4;\n    d = min(d, ground);\n\n    return d;\n}\n\nvec3 getNormal(vec3 p) {\n    float h = MIN_DIST;\n    vec3 n = vec3(\n        sceneSDF(p + vec3(h, 0, 0)) - sceneSDF(p - vec3(h, 0, 0)),\n        sceneSDF(p + vec3(0, h, 0)) - sceneSDF(p - vec3(0, h, 0)),\n        sceneSDF(p + vec3(0, 0, h)) - sceneSDF(p - vec3(0, 0, h))\n    );\n    return normalize(n);\n}\n\nvec3 rayMarch(vec3 ro, vec3 rd) {\n    float t = 0.0;\n    for (int i = 0; i < MAX_STEPS; i++) {\n        vec3 p = ro + rd * t;\n        float dist = sceneSDF(p);\n        if (dist < MIN_DIST) {\n            return p;\n        }\n        t += dist;\n        if (t > MAX_DIST) break;\n    }\n    return vec3(MAX_DIST);\n}\n\nfloat softShadow(vec3 ro, vec3 rd, float k) {\n    float res = 1.0;\n    float t = 0.02;\n    for (int i = 0; i < MAX_STEPS; i++) {\n        float h = sceneSDF(ro + rd * t);\n        if (h < MIN_DIST) return 0.0;\n        res = min(res, k * h / t);\n        t += h;\n        if (t > MAX_DIST) break;\n    }\n    return res;\n}\n\nvec3 phongLighting(vec3 p, vec3 normal, vec3 viewDir) {\n    vec3 lightDir = normalize(lightPos - p);\n\n    vec3 ambient = AMBIENT_LIGHT * vec3(0.2, 0.8, 0.2);\n\n    float diff = max(dot(normal, lightDir), 0.0);\n    vec3 diffuse = diff * vec3(1.0);\n\n    vec3 reflectDir = reflect(-lightDir, normal);\n    float spec = pow(max(dot(viewDir, reflectDir), 0.0), SPECULAR_POWER);\n    vec3 specular = spec * vec3(1.0);\n\n    float shadow = softShadow(p, lightDir, SHADOW_SOFTNESS);\n\n    return (ambient + shadow * (diffuse + specular));\n}\n\nvec3 getCameraPosition(float time) {\n    float radius = 10.0;\n    float height = 4.0;\n    return vec3(sin(time) * radius, height, cos(time) * radius);\n}\n\nvec3 getCameraTarget() {\n    return vec3(0.0, 1.0, 0.0);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;\n\n    float time = iTime * 0.2;\n    vec3 ro = getCameraPosition(time);\n    vec3 lookAt = getCameraTarget();\n\n    vec3 forward = normalize(lookAt - ro);\n    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));\n    vec3 up = cross(right, forward);\n    vec3 rd = normalize(forward + uv.x * right + uv.y * up);\n\n    vec3 p = rayMarch(ro, rd);\n\n    if (length(p) < MAX_DIST) {\n        vec3 normal = getNormal(p);\n        vec3 viewDir = normalize(ro - p);\n\n        vec3 ballColor = triplanarMapping(p, normal, iChannel1);\n\n        vec3 color = phongLighting(p, normal, viewDir) * ballColor;\n        fragColor = vec4(color, 1.0);\n    } else {\n        fragColor = vec4(getSkyboxColor(rd), 1.0);\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI 3.14159265359\n\nvoid mainCubemap(out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir)\n{\n    vec2 uv = fragCoord.xy / iResolution.xy * 2.0 - 1.0;\n    uv.x *= iResolution.x / iResolution.y;\n    float r = length(uv);\n    float angle = atan(uv.y, uv.x) + iTime * 0.5;\n    float dist = r * 2.0 + sin(iTime + r * 6.0) * 0.2;\n    float wavePattern = sin(angle * 4.0 + dist * 8.0 + cos(iTime * 2.0) * 2.0);\n    float fractal = sin(dist * 3.0 + wavePattern) * 0.5 + 0.5;\n    vec3 color = vec3(sin(iTime + uv.x * 3.0), cos(iTime + uv.y * 3.0), sin(uv.x * uv.y * 5.0 + iTime * 2.0));\n    color *= fractal;\n    fragColor = vec4(mix(color, vec3(1.0 - fractal), dot(rayDir, vec3(0.0, 0.0, 1.0))), 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "#define PI2 6.283185\n#define MIN_DEPTH 2\n#define MAX_DEPTH 8\n\nvec2 rotate_vec2 (in vec2 v, in float r, in vec2 pivod)\n{\n    float rad = r * PI2;\n    float s = sin(rad);\n    float c = cos(rad);\n    return vec2((v-pivod) * mat2(c, s, -s, c)) + pivod;\n}\n\nvec4 g2c(in vec2 p) \n{\n    float d = dot(p, vec2(123.34547, 321.5643));\n    vec4 f = vec4(4823.9471,5643.2356, 1045.3865, 8326.3953) / (d + 0.513254);\n    vec4 s = fract(sin(f * 4572.8462));\n    return s;\n}\n\nfloat noise(in vec2 uv, in float scale, in float disorder)\n{\n    vec2 g = uv * scale;\n    vec2 g_id = floor(g); \n    vec2 g_uv = g - g_id;\n    vec2 g_uv_inv = 1.0 - g_uv;\n\n    vec3 cubx = vec3(g_uv.x, g_uv.x, g_uv_inv.x) * vec3(g_uv.x, g_uv_inv.x, g_uv_inv.x) * vec3(0.5, 1.0, 0.5) + vec3(0.0, 0.5, 0.0);\n    vec3 cuby = vec3(g_uv.y, g_uv.y, g_uv_inv.y) * vec3(g_uv.y, g_uv_inv.y, g_uv_inv.y) * vec3(0.5, 1.0, 0.5) + vec3(0.0, 0.5, 0.0);\n    \n    mat3 cubm = mat3(cubx.x*cuby.x, cubx.x*cuby.y, cubx.x*cuby.z,\n                     cubx.y*cuby.x, cubx.y*cuby.y, cubx.y*cuby.z, \n                     cubx.z*cuby.x, cubx.z*cuby.y, cubx.z*cuby.z);\n    \n    vec4 n4 = g2c(g_id - vec2(0.0, 0.0)) * cubm[0][0] + g2c(g_id - vec2(1.0, 0.0)) * cubm[1][0] + g2c(g_id - vec2(2.0, 0.0)) * cubm[2][0] +\n              g2c(g_id - vec2(0.0, 1.0)) * cubm[0][1] + g2c(g_id - vec2(1.0, 1.0)) * cubm[1][1] + g2c(g_id - vec2(2.0, 1.0)) * cubm[2][1] +\n              g2c(g_id - vec2(0.0, 2.0)) * cubm[0][2] + g2c(g_id - vec2(1.0, 2.0)) * cubm[1][2] + g2c(g_id - vec2(2.0, 2.0)) * cubm[2][2];\n   \n    return 1.0 - sqrt(length(rotate_vec2(n4.xy, disorder, vec2(0.5, 0.5)) - n4.zw));\n}\n\nfloat fract_noise(vec2 uv, float disorder, int minDepth, int maxDepth)\n{\n    float fract_noise = 0.0;\n    \n    for( int i = minDepth; i < maxDepth; i++)\n    {\n        float currentDepth2pow = pow(2.0, float(i - minDepth + 1));\n        fract_noise += noise(uv, pow(2.0, float(i)), disorder * currentDepth2pow) * (1.0 / currentDepth2pow);\n    }\n    return fract_noise;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    uv *= 2.0; \n    float t = iTime * 0.3; \n\n    float fbm = fract_noise(uv, t, MIN_DEPTH, MAX_DEPTH);\n    fbm = pow(fbm, 3.0); // увеличиваем контраст\n\n    vec3 color = vec3(0.5 + 0.5 * sin(fbm * 6.0 + t),\n                      0.5 + 0.5 * sin(fbm * 6.0 + t * 1.5),\n                      0.5 + 0.5 * cos(fbm * 6.0 + t * 2.0));\n    \n    fragColor = vec4(color * vec3(1.5, 1.0, 0.5), 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,359 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1618187752",
+            "description": "An evolutionary cellular automata with neural network rules and reaction-diffusion pheromones.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "NslSRn",
+            "likes": 42,
+            "name": "Evolutionary Cellular Automata",
+            "published": 3,
+            "tags": [
+                "diffusion",
+                "automata",
+                "evolution",
+                "cellular",
+                "reaction",
+                "neural",
+                "network"
+            ],
+            "usePreview": 1,
+            "username": "cornusammonis",
+            "viewed": 1046
+        },
+        "renderpass": [
+            {
+                "code": "/*\n    \n    *Hit SPACE to reset with new initial conditions.*\n    \n    Typical cellular automata systems have fixed rulesets that are set once at\n    initialization. This is an implementation of an Evolutionary Cellular Automata,\n    in which rulesets are randomized at initialization, and are modified over time\n    via an evolutionary process.\n    \n    In this implementation, cells can reproduce via sexual or asexual reproduction,\n    i.e. they can produce offspring by randomly swapping genes with a genetically-\n    related cell, or by producing a cloned offspring with random mutations.\n    Speciation is implemented here using a fixed threshold representing the maximum\n    genetic distance between two cells, under which two cells will be considered the\n    same species and are allowed to cross-breed. If two neighboring cells are above\n    the speciation threshold, they are considered to be competing species, and\n    movement by one cell into the territory of a competing species is interpreted as\n    an attempt to capture the territory for the attacking species, placing a mutated\n    offspring into the captured position if the attack is successful. Attack success\n    is deterministic, and will succeed if the sum of energy expended by attackers\n    entering a cell is larger than the sum of energy expended by defenders entering\n    or remaining in a cell.\n    \n    Rules are implemented using a simple neural network, which takes as input the \n    current 3x3 neighbor state grid, and the current 3x3 \"pheromone\" state grid.\n    Input and output layer weights are fixed, and hidden layer weights are encoded\n    in each cell's genetic code. Cell output is represented as the amount of \"energy\"\n    expended by the cell and placed into neighboring cells in order to take neighboring\n    cell positions (similar to the rules of the game \"Risk\"). In order to increase\n    the diversity of cell movement, a \"rotation\" parameter, controllable by neural\n    network output, can rotate the cell energy output positions.\n    \n    Each gene is an 8-bit value, represented as fixed point decimal number in the\n    range (-1,1). Two buffers store cell genes, and resolution of the cell grid is\n    cut in half, so that each of the two buffers can store 4 pixels for each cell\n    with genetic information. In total, this is \n    (2 buffers) * (4 pixels) * (4 float32s) * (4 int8s) = 128 genes per cell.\n    \n    Pheromones are implemented in Reaction-Diffusion fashion, with cells updating the\n    current (vec4) pheromone values by adding or subtracting some quantity according to\n    each cell's rules. Pheromones are diffused at a constant rate.\n    \n    Cell color is determined by a linear projection of the genetic code. Dissimilar\n    species may sometimes end up with similar colors by coincidence. The brightness\n    of a cell is determined by its energy level.\n    \n    A few other rendering modes are available:\n    \n    KEY   FUNCTION\n    A     Show species boundaries. Blue = Same species, Red = Boundary between different species\n    Z     Show pheromone levels (Projected from 4 components to 3 (RGB)).\n    W     Show raw genetic average, used to calculate coloring.\n    S     Show neural network activations.\n    Space Reset.\n    \n    I have had this cellular automata system kicking around for a few years, and I have\n    tried a variety of different neural network and genetic encoding configurations.\n    This particular one has yielded the most interesting results. Many other configurations are\n    possible, even within the limitations of Shadertoy, and even if, in theory, these\n    various configurations may be equivalent given the right choice of parameters in the\n    genetic code, the bias towards one type of behavior or another introduced by these \n    initial configurations results in divergent outcomes. \n*/\n#define iRes ivec2(iResolution.xy)\n\nivec2 pm(ivec2 i) {\n    return pm(i,ivec2(iResolution.xy));\n}\n\n#define C(v) texelFetch(iChannel2, pm(iuv_base + (v)), 0)\n#define D(u,v) texelFetch(iChannel0, pm(u + (v)), 0)\n#define D0(u,v) texelFetch(iChannel0, pm(u + (v)), 0)\n#define D1(u,v) texelFetch(iChannel1, pm(u + (v)), 0)\n\n\nfloat neighbor_dist(ivec2 iuv_base, ivec2 attacker_position) {\n\treturn neighbor_dist(iChannel0, iChannel1, iuv_base, attacker_position, iRes);\n}\n\nbool neighbor_is_friendly(ivec2 iuv_base, ivec2 attacker_position) {\n\t return neighbor_is_friendly(iChannel0, iChannel1, iuv_base, attacker_position, iRes);   \n}\n\nbool Q() {\n    return texture(iChannel3, vec2(KEY_Q, 1.0) ).x > 0.5;\n}\n\nbool A() {\n    return texture(iChannel3, vec2(KEY_A, 1.0) ).x > 0.5;\n}\n\nbool Z() {\n    return texture(iChannel3, vec2(KEY_Z, 1.0) ).x > 0.5;\n}\n\nbool W() {\n    return texture(iChannel3, vec2(KEY_W, 1.0) ).x > 0.5;\n}\n\nbool S() {\n    return texture(iChannel3, vec2(KEY_S, 1.0) ).x > 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 U )\n{\n    ivec2 iuv = ivec2(U);\n    ivec2 iuv_off  = iuv & ivec2(1u);\n    ivec2 iuv_base = iuv - iuv_off;\n    \n\t//vec2 uv = (U - mod(floor(U),2.) )/ iResolution.xy;\n    //vec2 tx = 1.0 / iResolution.xy;\n    \n    vec4 d0 = texelFetch(iChannel0, iuv_base, 0);\n    vec4 d1 = texelFetch(iChannel0, iuv_base + ivec2(1,0), 0);\n    vec4 d2 = texelFetch(iChannel0, iuv_base + ivec2(1,1), 0);\n    vec4 d3 = texelFetch(iChannel0, iuv_base + ivec2(0,1), 0);\n    vec4 d4 = texelFetch(iChannel1, iuv_base, 0);\n    vec4 d5 = texelFetch(iChannel1, iuv_base + ivec2(1,0), 0);\n    vec4 d6 = texelFetch(iChannel1, iuv_base + ivec2(1,1), 0);\n    vec4 d7 = texelFetch(iChannel1, iuv_base + ivec2(0,1), 0);\n    \n\n    \n    vec4 u = texelFetch(iChannel2, iuv_base, 0);\n    \n    vec4 ravg = unpack(d0.x) + unpack(d1.x) +\n        \t\tunpack(d0.y) + unpack(d1.y) + \n        \t\tunpack(d0.z) + unpack(d1.z) + \n        \t    unpack(d0.w) + unpack(d1.w) + \n                unpack(d2.x) + unpack(d3.x) +\n                unpack(d2.y) + unpack(d3.y) +\n                unpack(d2.z) + unpack(d3.z) +\n                unpack(d2.w) + unpack(d3.w) +\n        \t\tunpack(d4.x) + unpack(d5.x) +\n        \t\tunpack(d4.y) + unpack(d5.y) + \n        \t\tunpack(d4.z) + unpack(d5.z) + \n        \t    unpack(d4.w) + unpack(d5.w) + \n                unpack(d6.x) + unpack(d7.x) +\n                unpack(d6.y) + unpack(d7.y) +\n                unpack(d6.z) + unpack(d7.z) +\n                unpack(d6.w) + unpack(d7.w);\n\n    vec4 col = clamp(0.05 * ravg + 0.5, 0.0, 1.0);\n    \n    vec3 hsv = rgb2hsv(col.xyz);\n    hsv.z = clamp(1.0 * u.x,0.0,1.0);\n    hsv.y = clamp(hsv.y * 2.0,0.0,1.0);\n    \n\n\n    vec4 receive_state = C(ivec2(0));\n\n    //bool attacker_success = is_attack_successful(receive_state.y);\n    ivec2 attacker_position = 2*ivec2(receive_state.yz);\n\n\n\n    if (A()){\n        \n        ivec2 offsets[8] = ivec2[](ivec2(-2, 2),ivec2( 0, 2),ivec2( 2, 2),ivec2( 2, 0),\n                                   ivec2( 2,-2),ivec2( 0,-2),ivec2(-2,-2),ivec2(-2, 0));\n\t\tfloat dist = 0.0;\n        for (int i = 0; i < 8; i++) {\n        \tdist += neighbor_dist(iuv_base, offsets[i]);\n        }\n        \n        dist /= (8.0 * SPECIATION_THRESHOLD);       \n        fragColor = mix(vec4(0,0,1,1),vec4(1,0,0,1), 0.5 * (dist - 1.0) + 0.5);\n    } else if (Z()){\n        vec4 ph = unpack(u.w);\n        vec4 sc0 = normalize(vec4(0.5,0.7,0.1,0.1));\n        vec4 sc1 = normalize(vec4(0.2,0.3,0.6,0.2));\n        vec4 sc2 = normalize(vec4(0.3,0.1,0.3,0.7));\n        vec4 ra = 0.5+0.8*vec4(dot(sc0,ph),dot(sc1,ph),dot(sc2,ph),0.0);\n        fragColor = 0.5 + 0.5 * ra;\n    } else if (W()) {\n        fragColor = 0.2 * ravg + 0.5;\n    } else if (S()) {\n        vec2 packedL2 = texelFetch(iChannel2, iuv_base, 0).yz;\n        vec4 unpackedL2_0 = unpack(packedL2.x);\n        vec4 unpackedL2_1 = unpack(packedL2.y);\n        fragColor = 2.0 * (unpackedL2_0 + unpackedL2_1);\n    \t//fragColor = vec4(0.5 + 0.5 * texelFetch(iChannel2, iuv_base, 0).yz,0.5,0);\n    } else {\n    \tfragColor = vec4(hsv2rgb(hsv),1);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define T(i,j) texelFetch(iChannel0, pm(iuv + 2 * ivec2(i,j)), 0).x\n#define Q(i,j) unpack(texelFetch(iChannel2, pm(iuv + 2 * ivec2(i,j)), 0).w)\n#define R() texelFetch(iChannel0, ivec2(0), 0).y\n#define D0(u,v) texelFetch(iChannel1, pm(u + (v)), 0)\n#define D1(u,v) texelFetch(iChannel3, pm(u + (v)), 0)\n#define iRes (2*(ivec2(iResolution.xy)/2))\n\nivec2 pm(ivec2 i) {\n    return pm(i,iRes);\n}\n\nbool reset() {\n    return R() == 3.0;\n}\n\nbool neighbor_is_friendly(ivec2 iuv_base, ivec2 attacker_position) {\n\t return neighbor_is_friendly(iChannel1, iChannel3, iuv_base, attacker_position, iRes);   \n}\n\nfloat neighborhoods(mat3 m, ivec2 iuv, out mat3 a, out mat3 b) {\n    ivec2 offsets[8] = ivec2[](ivec2(-2, 2),ivec2( 0, 2),ivec2( 2, 2),ivec2( 2, 0),\n                               ivec2( 2,-2),ivec2( 0,-2),ivec2(-2,-2),ivec2(-2, 0));\n    ivec2 matpos[8]  = ivec2[](ivec2(0, 0),ivec2(1, 0),ivec2(2, 0),ivec2(2, 1),\n                               ivec2(2, 2),ivec2(1, 2),ivec2(0, 2),ivec2(0, 1));\n    a = mat3(0); b = mat3(0);\n    float friends = 0.0;\n    \n    for (int i = 0; i < 8; i++) {\n       \n        bool friend = neighbor_is_friendly(iuv, offsets[i]);\n        ivec2 mi = matpos[i];\n        if (friend) {\n            friends+=1.0;\n        \ta[mi.x][mi.y] = m[mi.x][mi.y];\n        } else {\n            b[mi.x][mi.y] = m[mi.x][mi.y];\n        }\n    }\n    \n    a[1][1] = m[1][1];\n    \n    return friends;\n}\n\n#define TWO_PI 6.28318530718\n\nvoid rot_neighbors(inout vec4 n0, inout vec4 n1, vec2 r) {\n    float n[8] = float[](n0.x, n0.y, n0.z, n0.w, n1.x, n1.y, n1.z, n1.w);\n    float m[8] = float[](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n    float off = r == vec2(0) ? 0.0 : fract(32.0 * (0.5 + atan(r.y,r.x) / TWO_PI));\n    int ioff = int(8.0 * off);\n    float fr = fract(8.0 * off);\n    \n    \n    for (int i = 0; i < 8; i++) {\n\t\tfloat n_left  = n[pm(i + ioff, 8)];\n        float n_right = n[pm(i + ioff + 1, 8)];\n        float n_mix = mix(n_left, n_right, fr);\n        m[i] = n_mix;\n    }\n    \n    n0 = vec4(m[0],m[1],m[2],m[3]);\n    n1 = vec4(m[4],m[5],m[6],m[7]);\n    \n}\n\n\nvec4 relu(vec4 x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn log(1.0 + exp(x));    \n}\n\nvec2 relu(vec2 x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn log(1.0 + exp(x));    \n}\n\nfloat relu(float x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn log(1.0 + exp(x));    \n}\n\n#define SCALE 3.0\nvec4 sigm(vec4 x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn SCALE * tanh(x);    \n}\n\nvec2 sigm(vec2 x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn SCALE * tanh(x);    \n}\n\nfloat sigm(float x) {\n    x = clamp(x, -80.0, 80.0);\n\treturn SCALE * tanh(x);    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 U )\n{\n    ivec2 iuv = ivec2(U);\n    ivec2 iuv_off  = iuv & ivec2(1u);\n    ivec2 iuv_base = iuv - iuv_off;\n    \n    float energy_here = T(0,0);\n    vec4 pheromones_here = Q(0,0);\n    \n    const float _K0 = -20.0/6.0; // center weight\n    const float _K1 = 4.0/6.0;   // edge-neighbors\n    const float _K2 = 1.0/6.0;   // vertex-neighbors\n    \n    float q_c =  T( 0, 0);\n    float q_n =  T( 0, 1);\n    float q_e =  T( 1, 0);\n    float q_s =  T( 0,-1);\n    float q_w =  T(-1, 0);\n    float q_nw = T(-1, 1);\n    float q_sw = T(-1,-1);\n    float q_ne = T( 1, 1);\n    float q_se = T( 1,-1);\n\n    float lapl  = _K0*q_c + _K1*(q_n + q_e + q_w + q_s) + _K2*(q_nw + q_sw + q_ne + q_se);\n    \n    vec4 ph_c =  Q( 0, 0);\n    vec4 ph_n =  Q( 0, 1);\n    vec4 ph_e =  Q( 1, 0);\n    vec4 ph_s =  Q( 0,-1);\n    vec4 ph_w =  Q(-1, 0);\n    vec4 ph_nw = Q(-1, 1);\n    vec4 ph_sw = Q(-1,-1);\n    vec4 ph_ne = Q( 1, 1);\n    vec4 ph_se = Q( 1,-1);\n    \n    vec4 p_lapl  = _K0*ph_c + _K1*(ph_n + ph_e + ph_w + ph_s) + _K2*(ph_nw + ph_sw + ph_ne + ph_se);\n    \n    energy_here += ENERGY_BLUR_AMOUNT * lapl;\n    pheromones_here += vec4(0.15,0.3,0.6,1.2) * PHEROMONE_BLUR_AMOUNT * p_lapl;\n    \n    if (iuv_off != ivec2(0)) {\n    \tfragColor = vec4(0);    \n    } else if (iFrame<10 || reset()) {\n        fragColor = vec4(0.5,0,0,0);\n    \t//fragColor = vec4(random(U),0,0,0);\n\t} else if (is_dead(energy_here)) {\n    \tfragColor = vec4(energy_here,0,0,0);    \n    } else {\n\n        \n        mat3 mx  = mat3(-1.0,-2.0,-1.0,\n                         0.0, 0.0, 0.0,\n                         1.0, 2.0, 1.0);\n        \n        mat3 my  = mat3( 1.0, 0.0,-1.0,\n                         2.0, 0.0,-2.0,\n                         1.0, 0.0,-1.0);\n        \n        // output kernels\n        \n        \n        #ifdef SINGLE_OUTPUT\n        mat3 mo0 = mat3( 1.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0);\n        \n        mat3 mo1 = mat3( 0.0, 1.0, 0.0,\n                         0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0);\n        \n        mat3 mo2 = mat3( 0.0, 0.0, 1.0,\n                         0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0);\n        \n        mat3 mo3 = mat3( 0.0, 0.0, 0.0,\n                         0.0, 0.0, 1.0,\n                         0.0, 0.0, 0.0);\n        \n        mat3 mo4 = mat3( 0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0,\n                         0.0, 0.0, 1.0);\n        \n        mat3 mo5 = mat3( 0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0,\n                         0.0, 1.0, 0.0);\n        \n        mat3 mo6 = mat3( 0.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0,\n                         1.0, 0.0, 0.0);\n        \n        mat3 mo7 = mat3( 0.0, 0.0, 0.0,\n                         1.0, 0.0, 0.0,\n                         0.0, 0.0, 0.0);\n        \n        #else\n        mat3 mo0 = mat3(-0.5,-0.5,-0.5,\n                         1.0, 1.0, 1.0,\n                        -0.5,-0.5,-0.5);\n        \n        mat3 mo1 = mat3(-0.5, 1.0,-0.5,\n                        -0.5, 1.0,-0.5,\n                        -0.5, 1.0,-0.5);\n        \n        mat3 mo2 = mat3( 0.0, -0.75, 1.0,\n                        -0.75, 1.0, -0.75,\n                         1.0, -0.75, 0.0);\n        \n        mat3 mo3 = mat3( 1.0, -0.75, 0.0,\n                        -0.75, 1.0, -0.75,\n                         0.0, -0.75, 1.0);\n        \n        mat3 mo4 = mat3(-2.0,-1.0, 0.0,\n                        -1.0, 0.0, 1.0,\n                         0.0, 1.0, 2.0);\n        \n        mat3 mo5 = mat3( 0.0, 1.0, 2.0,\n                        -1.0, 0.0, 1.0,\n                        -2.0,-1.0, 0.0);\n        \n        mat3 mo6 = mat3( 1.0, 2.0, 1.0,\n                         0.0, 0.0, 0.0,\n                        -1.0,-2.0,-1.0);\n        \n        mat3 mo7 = mat3(-1.0, 0.0, 1.0,\n                        -2.0, 0.0, 2.0,\n                        -1.0, 0.0, 1.0);\n        #endif\n\n        mat3 mp0 = mat3(ph_nw.x, ph_w.x, ph_sw.x,\n                         ph_n.x, ph_c.x,  ph_s.x,\n                        ph_ne.x, ph_e.x, ph_se.x);\n        \n        mat3 mp1 = mat3(ph_nw.y, ph_w.y, ph_sw.y,\n                         ph_n.y, ph_c.y,  ph_s.y,\n                        ph_ne.y, ph_e.y, ph_se.y);\n        \n        mat3 mp2 = mat3(ph_nw.z, ph_w.z, ph_sw.z,\n                         ph_n.z, ph_c.z,  ph_s.z,\n                        ph_ne.z, ph_e.z, ph_se.z);\n        \n        mat3 mp3 = mat3(ph_nw.w, ph_w.w, ph_sw.w,\n                         ph_n.w, ph_c.w,  ph_s.w,\n                        ph_ne.w, ph_e.w, ph_se.w);\n\n        \n        mat3 mh = mat3(q_nw, q_w, q_sw,\n                        q_n, q_c,  q_s,\n                       q_ne, q_e, q_se);\n        \n        mat3 a, b;\n        \n        float friends = neighborhoods(mh, iuv, a, b);\n        \n        mat3 mab = a - b;\n\n        vec4 v00 = D0(iuv, ivec2(0,0));\n        vec4 v01 = D0(iuv, ivec2(1,0));\n        vec4 v02 = D0(iuv, ivec2(0,1));\n        vec4 v03 = D0(iuv, ivec2(1,1));\n        vec4 v10 = D1(iuv, ivec2(0,0));\n        vec4 v11 = D1(iuv, ivec2(1,0));\n        vec4 v12 = D1(iuv, ivec2(0,1));\n        vec4 v13 = D1(iuv, ivec2(1,1));\n        \n        vec4 v000 = unpack(v00.x);\n        vec4 v001 = unpack(v00.y);\n        vec4 v002 = unpack(v00.z);\n        vec4 v003 = unpack(v00.w);\n        vec4 v010 = unpack(v01.x);\n        vec4 v011 = unpack(v01.y);\n        vec4 v012 = unpack(v01.z);\n        vec4 v013 = unpack(v01.w);\n        vec4 v020 = unpack(v02.x);\n        vec4 v021 = unpack(v02.y);\n        vec4 v022 = unpack(v02.z);\n        vec4 v023 = unpack(v02.w);\n        vec4 v030 = unpack(v03.x);\n        vec4 v031 = unpack(v03.y);\n        vec4 v032 = unpack(v03.z);\n        vec4 v033 = unpack(v03.w);\n        \n        vec4 v100 = unpack(v10.x);\n        vec4 v101 = unpack(v10.y);\n        vec4 v102 = unpack(v10.z);\n        vec4 v103 = unpack(v10.w);\n        vec4 v110 = unpack(v11.x);\n        vec4 v111 = unpack(v11.y);\n        vec4 v112 = unpack(v11.z);\n        vec4 v113 = unpack(v11.w);\n        vec4 v120 = unpack(v12.x);\n        vec4 v121 = unpack(v12.y);\n        vec4 v122 = unpack(v12.z);\n        vec4 v123 = unpack(v12.w);\n        vec4 v130 = unpack(v13.x);\n        vec4 v131 = unpack(v13.y);\n        vec4 v132 = unpack(v13.z);\n        vec4 v133 = unpack(v13.w);\n\n\n        #ifdef ENEMY_NEGATIVE\n            float f0 = mult(mx, mab);\n            float f1 = mult(my, mab);\n            float f2 = mult(mx, mab);\n            float f3 = mult(my, mab);\n        #else\n            float f0 = mult(mx, a);\n            float f1 = mult(my, a);\n            float f2 = mult(mx, b);\n            float f3 = mult(my, b);\n        #endif\n            float f4 = mult(mx, mp0);\n            float f5 = mult(my, mp0);\n            float f6 = mult(mx, mp1);\n            float f7 = mult(my, mp1);\n            float f8 = mult(mx, mp2);\n            float f9 = mult(my, mp2);\n            float f10= mult(mx, mp3);\n            float f11= mult(my, mp3);\n        \n        \n        vec4 l00 = relu(L0_SCALE *(v000 * f0 + v001 * f1 + v002 * f2 + v003 * f3 +\n                                   v010 * f4 + v011 * f5 + v012 * f6 + v013 * f7 + \n                                   v020 * f8 + v021 * f9 + v022 * f10+ v023 * f11+\n                                   PHEROMONE_INPUT_SCALE * v030 * pheromones_here.x + \n                                   PHEROMONE_INPUT_SCALE * v031 * pheromones_here.y + \n                                   PHEROMONE_INPUT_SCALE * v032 * pheromones_here.z + \n                                   PHEROMONE_INPUT_SCALE * v033 * pheromones_here.w +\n                                   v133 * energy_here\n                                   ));\n        \n        #define k(x) dot(x,vec4(1))\n        \n        vec4 delta_ph = vec4(k(v100 * l00),\n                             k(v101 * l00),\n                             k(v102 * l00),\n                             k(v103 * l00));\n        \n\n        \n\n        #ifdef SINGLE_OUTPUT\n            vec4 l10 = relu(L1_SCALE * \n                            vec4(\n                                k(v110 * delta_ph),\n                                k(v111 * delta_ph),\n                                k(v112 * delta_ph),\n                                k(v113 * delta_ph)\n                                )\n                            );\n            vec4 l11 = relu(L1_SCALE * \n                            vec4(\n                                k(v120 * delta_ph),\n                                k(v121 * delta_ph),\n                                k(v122 * delta_ph),\n                                k(v123 * delta_ph)\n                                )\n                            );\n\n            float l12 = relu(L1_SCALE * k(v130 * delta_ph));\n        #else\n            vec4 l10 = sigm(L1_SCALE * \n                            vec4(\n                                k(v110 * delta_ph),\n                                k(v111 * delta_ph),\n                                k(v112 * delta_ph),\n                                k(v113 * delta_ph)\n                                )\n                            );\n            vec4 l11 = sigm(L1_SCALE * \n                            vec4(\n                                k(v120 * delta_ph),\n                                k(v121 * delta_ph),\n                                k(v122 * delta_ph),\n                                k(v123 * delta_ph)\n                                )\n                            );\n\n            float l12 = sigm(L1_SCALE * k(v130 * delta_ph));\n        #endif\n        \n        vec2 r = vec2(k(v131 * delta_ph), k(v132 * delta_ph));\n        \n        //pheromones_here += PHEROMONE_OUTPUT_SCALE * vec4(delta_ph);\n        pheromones_here = (1.0 - PHEROMONE_OUTPUT_SCALE) * pheromones_here + PHEROMONE_OUTPUT_SCALE * delta_ph;\n\n        mat3 res = l10.x * mo0 + l10.y * mo1 + l10.z * mo2 + l10.w * mo3 +\n            \t   l11.x * mo4 + l11.y * mo5 + l11.z * mo6 + l11.w * mo7;\n\n        vec4  l20 = vec4(res[0][0], res[1][0], res[2][0], res[2][1]);\n        vec4  l21 = vec4(res[2][2], res[1][2], res[0][2], res[0][1]);\n        float l22 = l12;\n        \n        rot_neighbors(l20, l21, r);\n        \n        vec4 minl0 = min(l20, l21);\n        vec2 minl1 = min(minl0.xy,minl0.zw);\n        float minl = min(minl1.x,minl1.y);\n        minl = min(minl,l22);\n        \n        l20 -= minl;\n        l21 -= minl;\n        l22 -= minl;\n        \n        float lsum = dot(l20, vec4(1)) + dot(l21, vec4(1)) + l22;   \n\n        if (lsum == 0.0) {\n        \tl20 = vec4(0);\n            l21 = vec4(0);\n        } else {\n            float nrat = lsum - l22;\n            float lrat = nrat / lsum;\n            lsum = lrat > (1.0 - CENTER_MIN) ? nrat * (1.0 / (1.0 - CENTER_MIN)) : lsum;\n            l20 = l20 / lsum;\n            l21 = l21 / lsum;\n        }\n\n        \n        vec2 packed = vec2(pack(l20), pack(l21));\n\n        fragColor = vec4(energy_here,packed,pack(pheromones_here));\n\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define iRes (2*(ivec2(iResolution.xy)/2))\n\nivec2 pm(ivec2 i) {\n    return pm(i,iRes);\n}\n\nbool reset() {\n    return texture(iChannel3, vec2(KEY_SP, 0.5) ).x > 0.5;\n}\n\n#define T(v) texelFetch(iChannel0, pm(iuv + 2 * v), 0)\n#define D0(u,v) texelFetch(iChannel1, pm(u + (v)), 0)\n#define D1(u,v) texelFetch(iChannel2, pm(u + (v)), 0)\n\nbool neighbor_is_friendly(ivec2 iuv_base, ivec2 attacker_position) {\n\t return neighbor_is_friendly(iChannel1, iChannel2, iuv_base, attacker_position, iRes);   \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 U )\n{\n    ivec2 iuv = ivec2(U);\n    ivec2 iuv_off  = iuv & ivec2(1u);\n    ivec2 iuv_base = iuv - iuv_off;\n    \n\tif (iuv_off != ivec2(0)) {\n    \tfragColor = vec4(0);    \n    } else {       \n        vec4 state_here = T(ivec2(0));\n        vec2 receive_state = vec2(0);\n        \n        vec4 sending_attack_state_0 = unpack(state_here.y);\n        vec4 sending_attack_state_1 = unpack(state_here.z);\n        \n        float energy_here = state_here.x;\n        \n        // energy rounding adjustment\n        \n        float energy_expended_fraction = dot(sending_attack_state_0, vec4(1)) + \n            \t\t\t\t\t\t\t dot(sending_attack_state_1, vec4(1));\n        \n        float energy_expended  = energy_here * energy_expended_fraction;\n        float energy_remaining = energy_here * (1.0 - energy_expended_fraction); \n        \n        // end rounding adjustment\n        \n        \n        ivec2 offsets[8] = ivec2[](ivec2(-1, 1),ivec2( 0, 1),ivec2( 1, 1),ivec2( 1, 0),\n                                   ivec2( 1,-1),ivec2( 0,-1),ivec2(-1,-1),ivec2(-1, 0));\n        \n        float total_friend_energy = 0.0;\n        float total_foe_energy = 0.0;\n        \n        vec3 friends[8] = vec3[](vec3(0), vec3(0), vec3(0), vec3(0), \n                                 vec3(0), vec3(0), vec3(0), vec3(0));\n        \n        vec3 foes[8]    = vec3[](vec3(0), vec3(0), vec3(0), vec3(0), \n                                 vec3(0), vec3(0), vec3(0), vec3(0));\n        \n        int friend_count = 0;\n        int foe_count = 0;\n        \n        for (int i = 0; i < 8; i++) {\n            vec4 neighbor_state = T(offsets[i]);\n            vec4 t0 = unpack(neighbor_state.y);\n            vec4 t1 = unpack(neighbor_state.z);\n\n            /* \n            t0.x  t0.y  t0.z \n            t1.w        t0.w \n            t1.z  t1.y  t1.x\n            */\n            \n            float attack_fraction[8] = float[](t1.x, t1.y, t1.z, t1.w, \n                                               t0.x, t0.y, t0.z, t0.w);\n            \n            float attacker_energy = neighbor_state.x;\n            \n            if(neighbor_is_friendly(iuv_base, 2 * offsets[i])) {\n                float friend_energy   = attack_fraction[i] * attacker_energy;    \n                total_friend_energy  += friend_energy;\n                friends[friend_count] = vec3(offsets[i], friend_energy);\n                friend_count++;\n            } else {\n                float foe_energy      = attack_fraction[i] * attacker_energy;  \n                total_foe_energy     += foe_energy;\n                foes[foe_count]       = vec3(offsets[i], foe_energy);\n                foe_count++;\n            }\n        }\n        \n        bool attacker_success = false;\n        bool attacker_is_friendly = false;\n\n        energy_here = energy_remaining;\t    \n\n        \n        if (total_friend_energy >= total_foe_energy) {\n            if (total_friend_energy > energy_here) {\n                attacker_success = true;\n                attacker_is_friendly = true;\n                float max_friend_energy = 0.0;\n                for (int i = 0; i < friend_count; i++) {\n                    float friend_energy = friends[i].z;\n                    vec2 friend_position = friends[i].xy;\n                    if (friend_energy > max_friend_energy) {\n                        max_friend_energy = friend_energy;\n                        receive_state = friend_position;                                \n                    }\n                }\n            }   \n        } else {\n            if (total_foe_energy > energy_here) {\n                attacker_success = true;\n                attacker_is_friendly = false;\n                float max_foe_energy = 0.0;\n                for (int i = 0; i < foe_count; i++) {\n                    float foe_energy = foes[i].z;\n                    vec2 foe_position = foes[i].xy;\n                    if (foe_energy > max_foe_energy) {\n                        max_foe_energy = foe_energy;\n                        receive_state = foe_position;                                \n                    }\n                }\n            }\n        }\n        \n        energy_here += total_foe_energy + total_friend_energy;\n        \n        float attacker_success_state = attacker_success ? (attacker_is_friendly ? 2.0 : 1.0) : 0.0;\n\n        if (reset()) {\n        \tattacker_success_state = 3.0;    \n        }\n        \n        fragColor = vec4(energy_here, attacker_success_state, receive_state);\n\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define iRes (2*(ivec2(iResolution.xy)/2))\n\n#define random4(x) random4(x, iFrame)\n\nivec2 pm(ivec2 i) {\n    return pm(i,iRes);\n}\n\n#define C(v) texelFetch(iChannel0, pm(iuv_base + (v)), 0)\n#define D(u,v) texelFetch(iChannel1, pm(u + (v)), 0)\n\nbool reset() {\n    return texture(iChannel3, vec2(KEY_SP, 0.5) ).x > 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 U )\n{\n    ivec2 iuv = ivec2(U);\n    ivec2 iuv_off  = iuv & ivec2(1u);\n    ivec2 iuv_base = iuv - iuv_off;\n    \n    vec4 receive_state = C(ivec2(0));\n    \n    bool attacker_success = is_attack_successful(receive_state.y);\n    ivec2 attacker_position = 2 * ivec2(receive_state.zw);\n    \n    bool friend = is_attacker_friendly(receive_state.y);\n    vec4 attacker_rules = D(iuv, attacker_position);\n    vec4 current_rules = D(iuv, ivec2(0));\n    \n    vec4 r0 = random4(U);\n    vec4 r1 = random4(U+vec2(1.518176,2.941483)*iResolution.xy);\n    vec4 r2 = random4(U+vec2(6.194379,4.813467)*iResolution.xy);\n    vec4 r3 = random4(U+vec2(1.020569,6.260691)*iResolution.xy);\n    vec4 r4 = random4(U+vec2(7.033547,2.105361)*iResolution.xy);\n    vec4 r5 = random4(U+vec2(9.835233,5.349718)*iResolution.xy);\n    vec4 r6 = random4(U+vec2(7.697952,2.850486)*iResolution.xy);\n    vec4 r7 = random4(U+vec2(8.288882,3.622455)*iResolution.xy);\n    \n\n    if (attacker_success && !friend) {\n        vec4 m0 = MUTATION_RATE * (r0 - 0.5);\n        vec4 m1 = MUTATION_RATE * (r1 - 0.5);\n        vec4 m2 = MUTATION_RATE * (r2 - 0.5);\n        vec4 m3 = MUTATION_RATE * (r3 - 0.5);\n        \n        vec4 b0 = unpack(attacker_rules.x);\n        vec4 b1 = unpack(attacker_rules.y);\n        vec4 b2 = unpack(attacker_rules.z);\n        vec4 b3 = unpack(attacker_rules.w);\n        \n        vec4 d0 = m0 + b0;\n        vec4 d1 = m1 + b1;\n        vec4 d2 = m2 + b2;\n        vec4 d3 = m3 + b3;\n        \n        vec4 new_rules = vec4(pack(d0),pack(d1),pack(d2),pack(d3));\n    \tcurrent_rules = new_rules;\n    } else if (attacker_success && friend) {\n        vec4 m0 = MUTATION_RATE * (r0 - 0.5);\n        vec4 m1 = MUTATION_RATE * (r1 - 0.5);\n        vec4 m2 = MUTATION_RATE * (r2 - 0.5);\n        vec4 m3 = MUTATION_RATE * (r3 - 0.5);\n        \n        vec4 a0 = unpack(current_rules.x);\n        vec4 a1 = unpack(current_rules.y);\n        vec4 a2 = unpack(current_rules.z);\n        vec4 a3 = unpack(current_rules.w);\n        \n        vec4 b0 = unpack(attacker_rules.x);\n        vec4 b1 = unpack(attacker_rules.y);\n        vec4 b2 = unpack(attacker_rules.z);\n        vec4 b3 = unpack(attacker_rules.w);\n        \n        vec4 d0 = m0 + mix(a0, b0, greaterThan(r4, vec4(0.5)));\n        vec4 d1 = m1 + mix(a1, b1, greaterThan(r5, vec4(0.5)));\n        vec4 d2 = m2 + mix(a2, b2, greaterThan(r6, vec4(0.5)));\n        vec4 d3 = m3 + mix(a3, b3, greaterThan(r7, vec4(0.5)));\n        \n        vec4 new_rules = vec4(pack(d0),pack(d1),pack(d2),pack(d3));\n    \tcurrent_rules = new_rules;\n    }\n    \n    if(iFrame<10 || reset()) {\n        r0 = 2.0 * r0 - 1.0;\n        r1 = 2.0 * r1 - 1.0;\n        r2 = 2.0 * r2 - 1.0;\n        r3 = 2.0 * r3 - 1.0;\n        fragColor = vec4(pack(r0),pack(r1),pack(r2),pack(r3));\n    } else {\n\t\tfragColor = vec4(current_rules);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define iRes (2*(ivec2(iResolution.xy)/2))\n\n#define random4(x) random4(x, iFrame)\n\nivec2 pm(ivec2 i) {\n    return pm(i,iRes);\n}\n\n#define C(v) texelFetch(iChannel0, pm(iuv_base + (v)), 0)\n#define D(u,v) texelFetch(iChannel1, pm(u + (v)), 0)\n\nbool reset() {\n    return texture(iChannel3, vec2(KEY_SP, 0.5) ).x > 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 U )\n{\n    ivec2 iuv = ivec2(U);\n    ivec2 iuv_off  = iuv & ivec2(1u);\n    ivec2 iuv_base = iuv - iuv_off;\n    \n    vec4 receive_state = C(ivec2(0));\n    \n    bool attacker_success = is_attack_successful(receive_state.y);\n    ivec2 attacker_position = 2 * ivec2(receive_state.zw);\n    \n    bool friend = is_attacker_friendly(receive_state.y);\n    vec4 attacker_rules = D(iuv, attacker_position);\n    vec4 current_rules = D(iuv, ivec2(0));\n    \n    vec4 r0 = random4(U);\n    vec4 r1 = random4(U+vec2(2.941483,1.518176)*iResolution.xy);\n    vec4 r2 = random4(U+vec2(4.813467,6.194379)*iResolution.xy);\n    vec4 r3 = random4(U+vec2(6.260691,1.020569)*iResolution.xy);\n    vec4 r4 = random4(U+vec2(2.105361,7.033547)*iResolution.xy);\n    vec4 r5 = random4(U+vec2(5.349718,9.835233)*iResolution.xy);\n    vec4 r6 = random4(U+vec2(2.850486,7.697952)*iResolution.xy);\n    vec4 r7 = random4(U+vec2(3.622455,8.288882)*iResolution.xy);\n    \n\n    if (attacker_success && !friend) {\n        vec4 m0 = MUTATION_RATE * (r0 - 0.5);\n        vec4 m1 = MUTATION_RATE * (r1 - 0.5);\n        vec4 m2 = MUTATION_RATE * (r2 - 0.5);\n        vec4 m3 = MUTATION_RATE * (r3 - 0.5);\n        \n        vec4 b0 = unpack(attacker_rules.x);\n        vec4 b1 = unpack(attacker_rules.y);\n        vec4 b2 = unpack(attacker_rules.z);\n        vec4 b3 = unpack(attacker_rules.w);\n        \n        vec4 d0 = m0 + b0;\n        vec4 d1 = m1 + b1;\n        vec4 d2 = m2 + b2;\n        vec4 d3 = m3 + b3;\n        \n        vec4 new_rules = vec4(pack(d0),pack(d1),pack(d2),pack(d3));\n        current_rules = new_rules;\n    } else if (attacker_success && friend) {\n        vec4 m0 = MUTATION_RATE * (r0 - 0.5);\n        vec4 m1 = MUTATION_RATE * (r1 - 0.5);\n        vec4 m2 = MUTATION_RATE * (r2 - 0.5);\n        vec4 m3 = MUTATION_RATE * (r3 - 0.5);\n        \n        vec4 a0 = unpack(current_rules.x);\n        vec4 a1 = unpack(current_rules.y);\n        vec4 a2 = unpack(current_rules.z);\n        vec4 a3 = unpack(current_rules.w);\n        \n        vec4 b0 = unpack(attacker_rules.x);\n        vec4 b1 = unpack(attacker_rules.y);\n        vec4 b2 = unpack(attacker_rules.z);\n        vec4 b3 = unpack(attacker_rules.w);\n        \n        vec4 d0 = m0 + mix(a0, b0, greaterThan(r4, vec4(0.5)));\n        vec4 d1 = m1 + mix(a1, b1, greaterThan(r5, vec4(0.5)));\n        vec4 d2 = m2 + mix(a2, b2, greaterThan(r6, vec4(0.5)));\n        vec4 d3 = m3 + mix(a3, b3, greaterThan(r7, vec4(0.5)));\n        \n        vec4 new_rules = vec4(pack(d0),pack(d1),pack(d2),pack(d3));\n    \tcurrent_rules = new_rules;\n    }\n    \n    if(iFrame<10 || reset()) {\n        r0 = 2.0 * r0 - 1.0;\n        r1 = 2.0 * r1 - 1.0;\n        r2 = 2.0 * r2 - 1.0;\n        r3 = 2.0 * r3 - 1.0;\n        fragColor = vec4(pack(r0),pack(r1),pack(r2),pack(r3));\n    } else {\n\t\tfragColor = vec4(current_rules);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define SPECIATION_THRESHOLD 4.0\n#define ENERGY_BLUR_AMOUNT 0.05\n#define PHEROMONE_BLUR_AMOUNT 0.2\n#define L0_SCALE 2.0\n#define L1_SCALE 2.0\n#define CENTER_MIN 0.15\n\n#define MUTATION_RATE 0.02\n\n#define PHEROMONE_OUTPUT_SCALE 0.05\n#define PHEROMONE_INPUT_SCALE 2.0\n\n//#define ENEMY_NEGATIVE\n#define SINGLE_OUTPUT\n\n\n\n\n#define KEY_SP (32.5/256.0)\n#define KEY_Q  (81.5/256.0)\n#define KEY_A  (65.5/256.0)\n#define KEY_Z  (90.5/256.0)\n#define KEY_W  (87.5/256.0)\n#define KEY_S  (83.5/256.0)\n\n\n\nuint packSnorm4x8(vec4 x) {\n\tx = clamp(x,-1.0, 1.0) * 127.0;\n    uvec4 sig = uvec4(mix(vec4(0), vec4(1), greaterThanEqual(sign(x),vec4(0))));\n    uvec4 mag = uvec4(round(abs(x)));\n    uvec4 r = sig << 7 | mag;\n    return r.x << 24 | r.y << 16 | r.z << 8 | r.w;\n}\n\nvec4 unpackSnorm4x8(uint x) {\n\tuvec4 r = (uvec4(x) >> uvec4(24, 16, 8, 0)) & uvec4(0xFF);\n    uvec4 sig = r >> 7;\n    uvec4 mag = r & uvec4(0x7F);\n    vec4 fsig = mix(vec4(-1), vec4(1), greaterThanEqual(sig,uvec4(1)));\n    vec4 fmag = vec4(mag) / 127.0;\n    return fsig * fmag;\n}\n\n#define unpack(x) unpackSnorm4x8(floatBitsToUint(x))\n#define pack(x) uintBitsToFloat(packSnorm4x8(x))\n\nfloat mult(mat3 m, mat3 x) {\n    mat3 p = matrixCompMult(m, x);\n    return p[0][0] + p[0][1] + p[0][2] +\n           p[1][0] + p[1][1] + p[1][2] +\n           p[2][0] + p[2][1] + p[2][2];\n}\n\nivec2 pm(ivec2 i, ivec2 n) {\n    return ((i % n) + n) % n;\n}\n\nint pm(int i, int m) {\n    return ((i % m) + m) % m;\n}\n\nbool is_dead(float x) {\n\treturn x <= 0.0;    \n}\n\nbool is_attack_successful(float x) {\n    return x > 0.5;\n}\n\nbool is_attacker_friendly(float x) {\n    return x > 1.5;\n}\n\nfloat pdist(vec4 a, vec4 b) {\n    return dot(pow(a-b,vec4(2)),vec4(1));\n}\n\nfloat unpackdist(vec4 a, vec4 b) {\n    vec4 a0 = unpack(a.x);\n    vec4 a1 = unpack(a.y);\n    vec4 a2 = unpack(a.z);\n    vec4 a3 = unpack(a.w);  \n    \n    vec4 b0 = unpack(b.x);\n    vec4 b1 = unpack(b.y);\n    vec4 b2 = unpack(b.z);\n    vec4 b3 = unpack(b.w);\n    \n    float d0 = pdist(a0, b0);\n    float d1 = pdist(a1, b1);\n    float d2 = pdist(a2, b2);\n    float d3 = pdist(a3, b3);\n    \n    return d0 + d1 + d2 + d3;\n}\n\n#define D0(u,v) texelFetch(channel0, pm(u + (v), iResolution), 0)\n#define D1(u,v) texelFetch(channel1, pm(u + (v), iResolution), 0)\nfloat neighbor_dist(sampler2D channel0, sampler2D channel1, ivec2 iuv_base, ivec2 attacker_position, ivec2 iResolution) {\n\tvec4 v00 = D0(iuv_base, ivec2(0,0));\n    vec4 v01 = D0(iuv_base, ivec2(1,0));\n    vec4 v02 = D0(iuv_base, ivec2(0,1));\n    vec4 v03 = D0(iuv_base, ivec2(1,1));\n\n    vec4 w00 = D0(iuv_base, attacker_position + ivec2(0,0));\n    vec4 w01 = D0(iuv_base, attacker_position + ivec2(1,0));\n    vec4 w02 = D0(iuv_base, attacker_position + ivec2(0,1));\n    vec4 w03 = D0(iuv_base, attacker_position + ivec2(1,1));\n    \n    vec4 v10 = D1(iuv_base, ivec2(0,0));\n    vec4 v11 = D1(iuv_base, ivec2(1,0));\n    vec4 v12 = D1(iuv_base, ivec2(0,1));\n    vec4 v13 = D1(iuv_base, ivec2(1,1));\n\n    vec4 w10 = D1(iuv_base, attacker_position + ivec2(0,0));\n    vec4 w11 = D1(iuv_base, attacker_position + ivec2(1,0));\n    vec4 w12 = D1(iuv_base, attacker_position + ivec2(0,1));\n    vec4 w13 = D1(iuv_base, attacker_position + ivec2(1,1));\n        \n    vec4 d0 = vec4(unpackdist(v00, w00),\n                   unpackdist(v01, w01),\n                   unpackdist(v02, w02),\n                   unpackdist(v03, w03));\n    \n    vec4 d1 = vec4(unpackdist(v10, w10),\n                   unpackdist(v11, w11),\n                   unpackdist(v12, w12),\n                   unpackdist(v13, w13));\n\n    return (dot(d0,vec4(1)) + dot(d1,vec4(1)));   \n}\n\nbool neighbor_is_friendly(sampler2D channel0, sampler2D channel1, ivec2 iuv_base, ivec2 attacker_position, ivec2 iResolution) {\n\t return neighbor_dist(channel0, channel1, iuv_base, attacker_position, iResolution) < SPECIATION_THRESHOLD;   \n}\n#undef D0\n#undef D1\n\n\nvec3 rgb2hsv(vec3 c)\n{\n    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));\n    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));\n\n    float d = q.x - min(q.w, q.y);\n    float e = 1.0e-10;\n    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n\nvec3 hsv2rgb(vec3 c)\n{\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\n\n\n\n// BEGIN IQ integer noise\n// The MIT License\n// Copyright © 2017 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\nfloat hash1( uint n ) \n{\n    // integer hash copied from Hugo Elias\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return float( n & uvec3(0x7fffffffU))/float(0x7fffffff);\n}\n\n// BEGIN IQ integer noise\n// The MIT License\n// Copyright © 2017 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\nvec4 hash3( uint n ) \n{\n    // integer hash copied from Hugo Elias\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    uvec4 k = n * uvec4(n,n*16807U,n*48271U,n*127051U);\n    return vec4( k & uvec4(0x7fffffffU))/float(0x7fffffff);\n}\n\nfloat random(vec2 q, int seed) {\n    uvec2 p = uvec2(q);\n    return hash1( p.x + 1920U*p.y + (1920U*1080U)*uint(seed) );    \n}\n\nvec4 random4(vec2 q, int seed) {\n    uvec2 p = uvec2(q);\n    return hash3( p.x + 1920U*p.y + (1920U*1080U)*uint(seed) );    \n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

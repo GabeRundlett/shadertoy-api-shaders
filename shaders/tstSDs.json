@@ -1,0 +1,66 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1573272474",
+            "description": "May Rarching",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tstSDs",
+            "likes": 15,
+            "name": "Tray Racer",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "pun"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 444
+        },
+        "renderpass": [
+            {
+                "code": "#define FDIST 0.5\n#define MAXSTEP 100\n#define TOL 0.005\n#define MAXDIST 100.\n\n#define BEVEL 0.2\n#define EXTRUDE 0.05\n\n#define RAD 0.3\n#define WHEELDEPTH 0.2\n\n#define LENGTH 1.\n#define WIDTH 0.75\n\n#define AO_SAMPLES 5\n#define AO_STRENGTH 2.\n\n#define LAP_LENGTH 200.\n#define RACESPEED 20.\n\nvec3 lightdir = normalize(vec3(1.));\n\nfloat wheelsdf(in vec3 p) {\n    vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(RAD, WHEELDEPTH);\n  \tfloat dist = min(max(d.x,d.y),0.0) + length(max(d,0.0));\n    return min(max(length(p.xz)-0.1, p.y), max(dist, -(length(p+vec3(0., -0.55, 0.))-0.4)));\n}\n\n// minimum d.x keeping track of the closest material in d.y\nvec2 condmin(in vec2 d1, in vec2 d2) {\n    return vec2(min(d1.x, d2.x), mix(d1.y, d2.y, step(d2.x, d1.x)));\n}\n\nvec2 trayracer(in vec3 ro) {\n    //tray\n    vec3 dims = vec3(LENGTH, WIDTH, 0.0);\n    vec3 d = abs(ro)-dims;\n    float dist = length(max(d,0.0)) + \n\t       min(max(d.x, max(d.y, d.z)),0.0);\n    dist = abs(dist-BEVEL-0.5*EXTRUDE) - 0.5*EXTRUDE;\n    dist = max(ro.z, dist);\n    \n    //wheels\n    float offset = (RAD+BEVEL);\n    vec3 wheelro = vec3(abs(ro.xy), ro.z) - vec3(LENGTH, WIDTH, -offset);\n    float wheel_dist = wheelsdf(wheelro);\n    return condmin(vec2(dist, 1.), vec2(wheel_dist, 2.));\n}\n\nvec2 map(in vec3 ro, out vec2 uv) {\n    \n    vec4 o1 = vec4(1., 0.5, 0.75, 0.4) * sin(iTime * vec4(0.2, 0.45, 0.8, 0.15) + vec4(-1., 4.3, 2.15, 9.81));\n    float offset1 = o1.x + o1.y + o1.z + o1.w;\n    \n    vec4 o2 = vec4(0.45, 0.7, 0.1, 0.1) * sin(iTime * vec4(0.6, 0.7, 4.1, 4.) + vec4(-8., -2., 1.1, 0.7));\n    float offset2 = o2.x + o2.y + o2.z + o2.w;\n    \n    vec3 ro1 = ro + vec3(2.*offset1 + offset2, 1.4, 0.);\n    vec3 ro2 = ro + vec3(0., -1.4, 0.);\n    \n    vec2 d1 = trayracer(ro1);\n    vec2 d2 = trayracer(ro2);\n    uv = d1.x < d2.x ? ro1.xy : ro2.xy;\n    vec2 d = condmin(\n        d1,\n        d2\n    );\n    //ground\n    float ground_dist = ro.z+BEVEL+2.*RAD;\n    d = condmin(d, vec2(ground_dist, 3.));\n    \n    //walls\n    float wall_dist = max(ro.y + 5., ro.z - 3.);\n    return condmin(d, vec2(wall_dist, 4.));\n}\n\nvec3 getnormal(vec3 ro) {\n    vec2 uv;\n    vec2 d = vec2(TOL, 0.0);\n    float x1 = map(ro+d.xyy, uv).x;\n    float x2 = map(ro-d.xyy, uv).x;\n    float y1 = map(ro+d.yxy, uv).x;\n    float y2 = map(ro-d.yxy, uv).x;\n    float z1 = map(ro+d.yyx, uv).x;\n    float z2 = map(ro-d.yyx, uv).x;\n    return normalize(vec3(\n        x1-x2,\n        y1-y2,\n        z1-z2));\n}\n\nvec3 raymarch(in vec3 eye, in vec3 rd, out vec2 uv) {\n    float t = 0.0;\n    int i;\n    for (i=0; i<MAXSTEP; i++) {\n        vec3 pos = eye + rd*t;\n        vec2 dist = map(pos, uv);\n        t += dist.x;\n        if (abs(dist.x) < TOL) {\n            return vec3(t, dist.y, i);\n        } else if (t > MAXDIST) break;\n    }\n    return vec3(t, 0., i);\n}\n\nbool shadowmarch(in vec3 eye, in vec3 rd) {\n    float t = 0.;\n    vec2 uv;\n    for (int i=0; i<20; i++) {\n        vec3 pos = eye + rd*t;\n        vec2 dist = map(pos, uv);\n        t += max(0.03, dist.x);\n        if (dist.x < 0.) return true;\n    }\n    return false;\n}\n\nfloat occlusion(vec3 ro, vec3 rd){\n    vec2 uv;\n    float k = 1.0;\n    float d = 0.0;\n    float occ = 0.0;\n    for(int i = 0; i < AO_SAMPLES; i++){\n        d = map(ro + 0.1 * k * rd, uv).x;\n        occ += 1.0 / pow(2.0, k) * (k * 0.1 - d);\n        k += 1.0;\n    }\n    return 1.0 - clamp(AO_STRENGTH * occ, 0.0, 1.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy)/iResolution.xx;\n\t\n    vec3 up = vec3(0, 0, 1);\n    vec3 eye = vec3(2. * sin(iTime*0.4), 5., 1.);\n\tvec3 w = -normalize(eye);\n    vec3 u = normalize(cross(w, up));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(w*FDIST + u*uv.x + v*uv.y);\n    vec2 texcoords;\n\tvec3 t = raymarch(eye, rd, texcoords);\n    \n    vec3 col;\n    vec3 ro = eye + rd*t.x;\n\tfloat racepos = ro.x + iTime * RACESPEED;\n    \n    if (t.y < 0.5) {\n        //sky\n        col = vec3(0.5, 0.8, 1.);\n    } else if (t.y < 1.5) {\n        //tray\n        vec3 tex = texture(iChannel1, texcoords).xyz;\n        col = max(tex, vec3(0.25));\n    } else if (t.y < 2.5) {\n        //wheels\n        col = vec3(0.3, 0.3, 0.3);\n    } else if (t.y < 3.5) {\n        //ground\n        \n        vec3 asphalt = vec3(0.4, 0.4, 0.4);\n        vec3 mediancol = vec3(0.9);\n        float medianfac = step(abs(ro.y), 0.2) * step(mod(racepos, 2.), 1.);\n        float prixfac = abs(step(mod(racepos, 1.), 0.5) - step(mod(ro.y, 1.), 0.5)) * step(abs(mod(racepos + 0.5*LAP_LENGTH, LAP_LENGTH)-0.5*LAP_LENGTH), 2.);\n        medianfac = max(medianfac, prixfac);\n        vec3 roadcol = mix(asphalt, mediancol, medianfac);\n        col = mix(vec3(0.5, 1., 0.0), roadcol, step(abs(ro.y), 4.));\n    } else {\n        //wall\n        vec3 tex = texture(iChannel0, vec2(racepos, ro.z) * 0.2).xyz;\n        col = tex;\n    }\n    vec3 n = getnormal(ro);\n    bool shadowed = shadowmarch(ro + n*TOL, lightdir);\n    float fac = max(0.3, shadowed ? 0. : max(0., dot(n, lightdir)));\n    \n    float aofac = occlusion(ro, n);\n    \n    //float aofac = m\n    \n    col = fac * col * vec3(2.05, 2.05, 2.) * aofac;\n    \n    \n\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

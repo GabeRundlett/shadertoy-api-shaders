@@ -1,0 +1,113 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1552642029",
+            "description": "WIP",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "WdsSzr",
+            "likes": 12,
+            "name": "Volumetric Clouds WIP",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "volume",
+                "clouds",
+                "lighting",
+                "wip",
+                "volumetric",
+                "multipass"
+            ],
+            "usePreview": 1,
+            "username": "robobo1221",
+            "viewed": 2237
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    vec2 texcoord = fragCoord / iResolution.xy;\n\tvec3 color = texture(iChannel0, texcoord).rgb;\n         color = pow(color, vec3(2.2));\n         color = color / (color + 1.0);\n         color = pow(color, vec3(1.0 / 4.4));\n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float a = 0.5;\nconst float b = 0.5;\nconst float c = 0.85;\n\nconst int multiScatterSteps = 8;\n\nconst vec3 lightVector = normalize(vec3(0.0, 0.25, 1.0));\n\nconst int vSteps = 10;\nconst float rVSteps = 1.0 / float(vSteps);\n\nconst float cloudHeight = 1500.0;\nconst float cloudThickness = 1000.0;\nconst float maxCloudHeight = cloudThickness + cloudHeight;\nconst float centerHeight = (maxCloudHeight + cloudHeight) * 0.5;\n\nconst float rLOG2 = 1.0 / log(2.0);\nconst float PI = acos(-1.0);\nconst float rPI = 1.0 / PI;\n\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define max0(x) max(x, 0.0)\n\nfloat hgPhase(float cosTheta, const float g){\n    float g2 = g * g;\n    \n\treturn 0.25 * rPI * (1.0 - g2) * pow(1.0 + g2 - 2.0 * g * cosTheta, -1.5);\n}\n\nfloat twoLobePhase(float cosTheta){\n\tconst float a = 0.8;\n    const float mixer = 0.75;\n\n    float phase0 = hgPhase(cosTheta, 0.8 * a);\n    float phase1 = hgPhase(cosTheta, -0.5 * a);\n\n    return mix(phase1, phase0, a);\n}\n\nfloat remap(float value, const float originalMin, const float originalMax, const float newMin, const float newMax) {\n    return (((value - originalMin) / (originalMax - originalMin)) * (newMax - newMin)) + newMin;\n}\n\nfloat calculateDither(vec2 p){    \n    return texture(iChannel1, p * (1.0 / iChannelResolution[1].xy) + iTime).r;\n}\n\nfloat fbm(vec3 x, vec3 shiftM, const float d, const float m, const int oct) {\n    float v = 0.0;\n    float a = 0.5;\n    vec3 shift = vec3(100.0) * shiftM;\n\n    for (int i = 0; i < oct; ++i) {\n        v += a * texture(iChannel0, x).x;\n        x = x * m + shift;\n        a *= d;\n    }\n    return v;\n}\n\nfloat calculateCloudShape(vec3 position, vec3 windDirection){\n    const int octaves = 4;\n    \n    const float d = 0.5;\n    const float m = 3.0;\n    \n    float h = (d / m) / float(octaves);\n\n    vec3 shiftMult = -windDirection * 0.013;\n\n    float noise = fbm(position, shiftMult, d, m, octaves);\n          noise += h;\n\n    return noise;\n}\n\nfloat calcCloudOD(vec3 rayPos){\n    \n    float worldHeight = rayPos.y - cloudHeight;\n    float normalizedHeight = worldHeight * (1.0 / cloudThickness);\n    float heightAttenuation = clamp01(remap(normalizedHeight, 0.0, 0.4, 0.0, 1.0) * remap(normalizedHeight, 0.6, 1.0, 1.0, 0.0));\n    \n    rayPos *= 0.00002;\n\tfloat noise = calculateCloudShape(rayPos, vec3(1.0));\n    \n    noise *= heightAttenuation;\n    \n    return clamp01(noise * 2.0 - (0.6 * heightAttenuation + normalizedHeight * 0.5 + 0.3)) * 0.035;\n}\n\nfloat calculateScatterIntergral(float stepTransmittance, const float coeff){\n    float a = -1.0 / coeff;\n\n    return stepTransmittance * a - a;\n}\n\nfloat calculateSunLightAbsorptionDepth(vec3 rayPos, vec3 direction){\n\tconst int steps = 10;\n    const float rSteps = 1.0 / float(steps);\n    \n    const float rayLength = cloudThickness * rSteps;\n    \n    vec3 increment = direction * rayLength;\n    \n    float od = 0.0;\n    \n    for (int i = 0; i < steps; ++i, rayPos += increment){\n\t\tod += calcCloudOD(rayPos);\n    }\n    \n    return od * rayLength * rLOG2 * 1.11;\n}\n\nfloat calculateSunlightAbsorption(float depth, float b){\n\treturn exp2(-depth * b);\n}\n\nvoid doScattering(vec3 position, float transmittance, float stepTransmittance, float od, vec3 worldVector, float VoL, inout float sunlightScattering){\n\tfloat sunlightAbsorbtionDepth = calculateSunLightAbsorptionDepth(position, lightVector);\n    float integral = calculateScatterIntergral(stepTransmittance, 1.11);\n    \n    for (int i = 0; i < multiScatterSteps; ++i){\n        float n = float(i);\n        \n\t\tfloat an = pow(a, n);\n        float bn = pow(b, n);\n        float cn = pow(c, n);\n        \n        float sunLightAbsorption = calculateSunlightAbsorption(sunlightAbsorbtionDepth, bn);\n        float phase = twoLobePhase(VoL * cn);\n        \n        sunlightScattering += phase * sunLightAbsorption * integral * an * transmittance;\n    }\n}\n\nvec3 calculateVolumetricClouds(vec3 backGround, vec3 worldVector, float VoL, float dither){\n    float dist0 = cloudHeight / max(0.0, worldVector.y);\n    float dist1 = maxCloudHeight / max(0.0, worldVector.y);\n    \n    vec3 increment = (dist1 - dist0) * worldVector * rVSteps;\n    vec3 rayPos = increment * dither + dist0 * worldVector;\n    \n    float rayLength = length(increment);\n    \n    float sunlightScattering = 0.0;\n    float transmittance = 1.0;\n    \n    float phase = twoLobePhase(VoL);\n    \n    for (int i = 0; i < vSteps; ++i, rayPos += increment){\n\t\tfloat od = calcCloudOD(rayPos) * rayLength;\n        if (od <= 0.0) continue;\n        \n        float stepTransmittance = exp2(-od * rLOG2 * 1.11);\n        doScattering(rayPos, transmittance, stepTransmittance, od, worldVector, VoL, sunlightScattering);\n        \n        transmittance *= stepTransmittance;\n    }\n    \n    vec3 sunLighting = sunlightScattering * vec3(2.0);\n    float fog =  exp2(-dist0 * 0.00003);\n    \n    return backGround * transmittance + sunLighting * fog;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    vec2 texcoord = fragCoord / iResolution.xy;\n    vec2 wvecPos = (texcoord * 2.0 - 1.0) * vec2(1.0, iResolution.y / iResolution.x);\n    vec3 worldVector = normalize(vec3(wvecPos, 1.0));\n    \n    float VoL = dot(worldVector, lightVector);\n    \n    float dither = calculateDither(fragCoord);\n          dither = fract(iTime * (1.0 / 8.0) + dither);\n\n    vec3 color = vec3(0.0);\n         color = calculateVolumetricClouds(color, worldVector, VoL, dither);\n    \n    color = max0(color);\n    \n    vec3 backBuffer = texture(iChannel2, texcoord).rgb;\n    color = mix(color, backBuffer, 0.95);\n\n    fragColor = vec4(color,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

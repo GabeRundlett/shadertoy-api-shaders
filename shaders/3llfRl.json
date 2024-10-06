@@ -1,0 +1,71 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1597469877",
+            "description": "a way to bend space that (kinda) preserves distances",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3llfRl",
+            "likes": 38,
+            "name": "Bending an SDF",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "curve",
+                "angle",
+                "bend",
+                "bending",
+                "spacefolding",
+                "kink"
+            ],
+            "usePreview": 0,
+            "username": "blackle",
+            "viewed": 1357
+        },
+        "renderpass": [
+            {
+                "code": "//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\nfloat super(vec3 p) {\n    return sqrt(length(p*p));\n}\n\nfloat box(vec3 p, vec3 d, float k) {\n    vec3 q = abs(p)-d;\n    vec3 e = max(vec3(0), q);\n    return mix(super(e),length(e),k) + min(0., max(q.x, max(q.y, q.z)));\n}\n\nvec2 kink(vec2 p, vec2 c, float k) {\n    p -= c;\n    //to polar coordinates\n    float ang = atan(p.x, p.y);\n    float len = length(p);\n    //warp angle with sigmoid function\n    ang -= ang/sqrt(1.+ang*ang)*(1.-k);\n    //to cartesian coordiantes\n    return vec2(sin(ang),cos(ang))*len + c;\n}\n\n\nfloat linedist(vec3 p, vec3 a, vec3 b) {\n    float k = dot(p-a,b-a)/dot(b-a,b-a);\n    return distance(p, mix(a,b,clamp(k,0.,1.)));\n}\n\nvec3 erot(vec3 p, vec3 ax, float ro) {\n    return mix(dot(ax,p)*ax, p, cos(ro))+sin(ro)*cross(ax,p);\n}\n\n//smin modified to expose the \"h\" variable so we can use it to texture the place where the objects meet differently\nvec2 smin(float a, float b, float k) {\n    float h = max(0., k-abs(b-a))/k;\n    return vec2(min(a,b)-h*h*h*k/6., h);\n}\n\nvec3 local_coords;\nfloat edges;\nfloat scene(vec3 p) {\n    p.z -= 2.;\n    p.yz = kink(p.yz, vec2(0,-.4), mix(1.,.0,sin(iTime)*.5+.5));\n    local_coords = p;\n    \n    float warp = dot(sin(erot(p,vec3(1,0,0),.5)*20.),cos(p*15.));\n    warp += dot(sin(erot(p,vec3(0,1,0),.5)*40.),cos(p*35.))*.5;\n    warp = smoothstep(-.5,.5,warp);\n    \n    float bar = linedist(p,vec3(0,4,0),vec3(0,-4,0))-.1;\n    float bar2 = linedist(p,vec3(0.3,4,.15),vec3(-.2,-2,.15))-.035;\n    float knob = box(p-vec3(0,4,0),vec3(.35,.9,.2), warp)-.05;\n    float knob2 = box(p-vec3(.5,4,0),vec3(.35,.35,.5), warp)-.05;\n    vec3 bc = abs(p-vec3(0,-3,0))-vec3(0,.8,0);\n    float bob = mix(length(bc), super(bc),length(sin(bc*32.)*.5+.5)*.1)-.5;\n    float sm = .05+warp*warp*.05;\n    vec2 boxes = smin(knob,knob2,sm);\n    vec2 obj = smin(min(bar,bar2),min(boxes.x,bob),sm);\n    edges = max(boxes.y, obj.y);\n    return obj.x;\n}\n\nvec3 norm(vec3 p) {\n    mat3 k = mat3(p,p,p)-mat3(0.001);\n    return normalize(scene(p) - vec3(scene(k[0]),scene(k[1]),scene(k[2])) );\n}\n\n\nvec3 fancy_mapping(vec3 p) {\n    vec3 d1 = textureLod(iChannel0,p.xz*.5, 4.).xyz;\n    vec3 d2 = textureLod(iChannel0,p.yz*.5, 3.).xyz;\n    return textureLod(iChannel0,p.xy + d2.yz*3. + d1.xy*2.,1.).xyz;\n}\n\nfloat bayer(vec2 fragCoord) {\n    return texelFetch(iChannel1, ivec2(fragCoord) % 8, 0).x;\n}\n\n#define AO(p,n,k) smoothstep(-k,k,scene(p+n*k))\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-0.5*iResolution.xy)/iResolution.y;\n    vec2 mouse = (iMouse.xy - 0.5*iResolution.xy)/iResolution.y;\n\n    vec3 cam = normalize(vec3(1.5,uv));\n    vec3 init = vec3(-10,0,0);\n\n   \tfloat yrot = 0.1;\n    float zrot = iTime*.25;\n    if (iMouse.z > 0.) {\n        yrot = -4.*mouse.y;\n        zrot = 4.*mouse.x;\n    }\n    cam = erot(cam, vec3(0,1,0), yrot);\n    init = erot(init, vec3(0,1,0), yrot);\n    cam = erot(cam, vec3(0,0,1), zrot);\n    init = erot(init, vec3(0,0,1), zrot);\n\n    vec3 p = init;\n    bool hit = false;\n    for (int i = 0; i < 500 && !hit; i++) {\n        float dist = scene(p);\n        hit = dist*dist < 1e-6;\n        p+=dist*cam;\n        if (distance(p, init) > 50.) break;\n    }\n    vec3 lcrd = local_coords;\n    float ledg = edges;\n\tvec3 n = norm(p);\n    vec3 r = reflect(cam, n);\n    vec3 tex = fancy_mapping(lcrd*.8) + fancy_mapping(lcrd*.5) + fancy_mapping(lcrd*.3);\n    ledg = smoothstep(0.,.5,ledg);\n\n    float ao = AO(p,n,.1) * AO(p,n,.3) * AO(p,n,.7);\n    float specao = AO(p,r,.1) * AO(p,r,.3) * AO(p,r,.7);\n    float spec = length(sin(r*vec3(3,2,2))*0.4+0.6)/sqrt(3.);\n    float diff = length(sin(n*vec3(2,1,1))*0.4+0.6)/sqrt(3.);\n    float specex = mix(20.+sin(tex.x*14.)*12., 3., ledg);\n  \n    tex = smoothstep(0.,1.,tex*.25);\n    vec3 col = pow(spec, specex)*specao + mix(spec,diff,ledg*.5)*ao*tex;\n    float bg = pow(length(sin(cam*vec3(3,2,2))*0.4+0.6)/sqrt(3.), 10.);\n    bg = smoothstep(-0.05,1.5,bg);\n    fragColor.xyz = hit ? col : vec3(bg);\n    fragColor.xyz = sqrt(fragColor.xyz) + bayer(fragCoord)/128.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

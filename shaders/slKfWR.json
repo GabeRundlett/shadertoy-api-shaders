@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1664376769",
+            "description": "Simulation for Mach cone: imagine a boat dropping stones at sea regularly behind her!\n\nEach produces a wave train that accumulates.\nHit 'space' to see the total waves.\n\nmouse-x controls the interval between 'stones'.\nmouse-y changes the boat speed.",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "slKfWR",
+            "likes": 7,
+            "name": "Mach cone visualisation",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "shockwave",
+                "shipwake",
+                "machcone"
+            ],
+            "usePreview": 0,
+            "username": "skal",
+            "viewed": 271
+        },
+        "renderpass": [
+            {
+                "code": "// Mach cone visualisation\n//\n// boat is moving left to right at constant speed (mouse-y)\n// She drops 'stones' at regular interval (mouse-x), each stone\n// producing a wave of wavelength L0, decaying in amplitude (Phi0).\n// The accumulated result is either a move-ahead planar wave in\n// the sub-sonic case, or a lagging-behind Mach cone for supersonic.\n//\n//   Hope the vizualisation is telling!\n//   See also:  https://www.shadertoy.com/view/stGBWh\n//\n// skal/ (Pascal Massimino)\n// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0\n\n// Some physics\nconst float WS = 10.0;   // [m/px] world scale (px -> m)\nconst float V0 = 0.10;   // min boat speed [m/s]\nconst float V1 = 1.00;   // max boat speed [m/s]\nconst float g  = 9.81;   // gravity\nconst float dE = 0.5;    // max distance between emitters [m]\nconst float L0 = 30.;    // wavelength of emitter [m]\nconst float A0 = 0.5;    // global wave amplitude factor (mostly esthetic)\nconst float Phi0 = 9.0;  // phase-based decay length for emitter's amp\n\n// Boat\nconst vec2 boat_pos0 = vec2(0.00, -0.08);        // initial boat position [m]\nconst vec2 boat_dir  = normalize(vec2(1., 0.0));   // direction of the boat [m/s]\n\n// Color\nconst vec3 ocean_col = vec3(.3, .5, .9);   // ocean background color\nconst vec3 boat_col  = vec3(.3, .7, .2);   // boat color (~green)\nconst vec3 emit_col  = vec3(.5, .9, .2);   // emitter color\nconst vec3 shock_col = vec3(.6, .6, .1);   // shock-wave color (~yellow)\nconst vec3 mach1_col = vec3(.8, .3, .3);   // faint line materializing Mach=1\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  bool show_waves = (texelFetch(iChannel0, ivec2(32, 0),0 ).x > 0.5);\n  vec2 uv = 2. * fragCoord / iResolution.yy - vec2(0.0, 1.0);  // y-screen = [-1, 1]\n  vec2 M = iMouse.xy / iResolution.xy;\n  if (length(iMouse.xy) < 4.) M = vec2(0.2, 0.3);\n\n  // boat speed\n  float V = mix(V0, V1, M.y);\n  // emitter interval\n  float dt = (dE / V) * mix(0.01, 1.12, M.x);\n\n  // boat position and speed\n  float screen_period = 2. * iResolution.x / iResolution.y;\n  float cur_t = mod(iTime, 1.5 * screen_period / V);\n  vec2 boat_v = V * boat_dir;\n  vec2 boat_pos = boat_pos0 + cur_t * boat_v;\n\n  // monochromatic emitter with wavelength L0\n  float L = L0 / WS;\n  float k = 6.2831 / L;\n  float w = sqrt(g * k);\n\n  // color mixing factors\n  float emitter_mix = 0.;\n  float shock_mix = 0.;\n  float mach1_mix = 0.;\n  float boat_mix = 1. - smoothstep(0.02, 0.03, length(uv - boat_pos));\n\n  // draw a faint line at the Mach1 transition, for the mouse-y\n  float dy = abs(2. * (sqrt(g / k) / WS - V0) / (V1 - V0) - 1. - uv.y);\n  mach1_mix = 1. - step(0.005, dy);\n  mach1_mix *= .4 * step(3., mod(fragCoord.x, 10.));  // dotted\n\n  // Accumulate emitter's amplitude\n  float acc = 0.;\n  for (float t = -10. * dt; t <= cur_t; t += dt) {\n    vec2 emitter = boat_pos0 + t * boat_v;\n    float r = length(emitter - uv) * WS;  // distance to emitter\n    float phi = w * (cur_t - t) - k * r;\n    float base_wave = (phi >= 0.) ? cos(phi) : 0.;\n    float amp = exp(-phi / Phi0);  // emitter strength decay\n    float wave = amp * base_wave;\n    if (show_waves) {\n      acc += A0 * wave;  // accumulate wave trains\n    } else {\n      // represent waves with circles:\n      wave = smoothstep(0.98, 1.00, base_wave) * amp;\n      acc = max(acc, wave);\n      // and draw spots at emitters' location:\n      float emitter_strength = amp * (1. - smoothstep(0.15, 0.5, r));\n      emitter_mix = max(emitter_mix, emitter_strength);\n    }\n  }\n\n  // Draw the shock-wave for Mach >= 1\n  float c_Mach = sqrt(g / k) / (V * WS);\n  if (c_Mach <= 1.) {\n     vec2 r = uv - boat_pos;\n     // rotate along the boat's direction\n     r = mat2(boat_dir.x, -boat_dir.y, boat_dir.y, boat_dir.x) * r;\n     // fold\n     r = vec2(r.x, abs(r.y));\n     // and get the distance to the Mach cone\n     vec2 shock_n = vec2(c_Mach, sqrt(1. - c_Mach * c_Mach));\n     float d = abs(dot(r, shock_n));\n     shock_mix = 1. - smoothstep(0.001, .005, d);\n  }\n \n\n  // final mix\n  acc = 0.5 + 0.5 * acc;\n\n  vec3 col = acc * ocean_col;\n  col = mix(col, mach1_col, mach1_mix);\n  col = mix(col, emit_col, emitter_mix);\n  col = mix(col, shock_col, shock_mix);\n  col = mix(col, boat_col, boat_mix);\n  \n  fragColor = vec4(col, 1.0);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

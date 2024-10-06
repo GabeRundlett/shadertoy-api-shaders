@@ -1,0 +1,172 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1632501223",
+            "description": "Implicit equation plotter v2!!!\nCONTROLS:\n* Mouse\n* Space\n* Keys 1 - 3\n\n(x + iy)^p + (z + iw)^q = 0",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ss33Rj",
+            "likes": 13,
+            "name": "Seifert surface (implicit)",
+            "published": 3,
+            "tags": [
+                "implicitequation",
+                "seifertsurface"
+            ],
+            "usePreview": 0,
+            "username": "arifr123",
+            "viewed": 249
+        },
+        "renderpass": [
+            {
+                "code": "vec3 normal(vec3 p, vec3 camera)\n{\n    vec3 normal = normalize(vec3(R(transpose(mat2x3(p, vec3(1, 0, 0))), iTime).y,\n                                 R(transpose(mat2x3(p, vec3(0, 1, 0))), iTime).y,\n                                 R(transpose(mat2x3(p, vec3(0, 0, 1))), iTime).y));\n                                 \n    normal *= sign(dot(normal, p - camera));\n    \n    return normal;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 coord = ivec2(fragCoord);\n    vec4 state = texelFetch(iChannel0, coord, 0);\n    \n    CastParams params = to_params(state);\n    \n    vec3 col = vec3(1, 0, 0);\n    \n    if(params.best_t >= 0.)\n    {\n        GLOBALS;\n    \n        const vec3 light = normalize(vec3(1, 2, 0));\n        \n        vec3 intersection = camera + ray * params.best_t;\n    \n        col = vec3(0.5 * dot(normal(intersection, camera), light) + 0.5);        \n    }\n    \n    \n    #if 0\n    \n    int lod = 4;\n    float min_best_t = neighbors_best_t(coord, ivec2(0, 0), lod);\n    \n    col = vec3(min_best_t / 15.);\n    \n    #endif\n\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "struct CastResult\n{\n    bool zero;\n    bool out_of_range;\n    bool local_min;\n    vec3 p;\n    int iterations;\n    AdamParams adam;\n};\n\n\n#define zero_threshold 0.05\n// 0.1 0.05 0.01\n\nCastResult cast_ray(CastParams params, vec3 origin, vec3 ray, int iterations, float alpha, bool adam, bool min_fail)\n{\n    // R(camera + t * ray) = 0\n    //\n    // MIN R(camera + t * ray)^2\n    // 2 * R * dR/dt\n    //\n    // MIN abs(R(camera + t * ray))\n    // sign(R) * dR/dt\n    //\n    // MIN abs(R(camera + t * ray))^n\n    // n * abs(R)^(n-1) * sign(R) * dR/dt\n    // n = 1.5\n    // 1.5 * abs(R)^0.5 * sign(R) * dR/dt\\\n    \n    /////////// ADAM ///////////\n    const float b1 = 0.9;\n    const float b2 = 0.999;\n    ////////////////////////////\n    \n    const float min_delta = 0.01;  // 0.001 0.05 Too big? may cause fail before zero.\n    \n    float t = 0.;\n    vec3 p = vec3(0.);\n    \n    float next_t = params.adam.t;\n    vec3 next_p = origin + next_t * ray;\n    \n    origin += next_t * ray;\n    // origin = next_p;\n    \n    float m = params.adam.m;\n    float v = params.adam.v;\n    \n    bool out_of_range = false;\n    bool zero = false;\n    bool local_min = false;\n    \n    for(; 0 <= iterations && !out_of_range && (!min_fail || !local_min) && !zero; iterations--)\n    {\n        p = next_p;\n        t = next_t;\n        \n        vec2 res = R(transpose(mat2x3(p, ray)), iTime);\n        \n        float r_value = res.x;\n        float dr_dt = res.y;\n        \n        float grad = sign(r_value) * dr_dt;  // 2. * res.x * res.y;\n        \n        m = b1 * m + (1. - b1) * grad;\n        v = b2 * v + (1. - b2) * sq(grad);\n        \n        float m_hat = m / (1. - b1);\n        float v_hat = v / (1. - b2);\n        \n        float delta = alpha * m_hat / (sqrt(v) + 1e-8);\n        if(!adam) delta = alpha * grad;\n                \n        next_t = t - delta;\n        next_p = p - ray * delta;\n        \n        local_min = abs(delta) < abs(r_value) * min_delta;\n        out_of_range = next_t < 0. || (0. <= params.best_t && params.best_t < next_t);\n        zero = abs(res.x) <= zero_threshold;\n    }\n    \n    return CastResult(zero, out_of_range, local_min, p, iterations, AdamParams(t, m, v));\n}\n\nCastResult cast_ray(CastParams params, vec3 origin, vec3 ray, int iterations)\n{\n    const float alpha = 0.001;  // 0.01 0.001\n    const bool adam = true;\n    const bool min_fail = true;\n    return cast_ray(params, origin, ray, iterations, alpha, adam, min_fail);\n}\n\n\nivec2 rand_shift(float rand, float r, bool center)\n{\n    float angle = rand * TWO_PI;\n    vec2 f_shift = hash11(500. * rand) * r * cis(angle);\n    \n    if(center) return ivec2(f_shift);\n    else return ivec2(ceil(abs(f_shift)) * sign(f_shift));\n}\n\n//float avg_neighbors_best_t(ivec2 coord, ivec2 shift, int lod)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if(iFrame == 0)\n    {\n        fragColor = to_vec4(CastParams(AdamParams(0., 0., 0.), -1.));\n        return;\n    }\n\n    GLOBALS;\n    \n    \n    ivec2 coord = ivec2(fragCoord);\n    CastParams params = accessState(coord);\n    \n    /*if(isnan(params.adam.t) || isinf(params.adam.t))\n    {\n        params.adam = AdamParams(0., 0., 0.);\n        params.\n    }*/\n    \n    \n    ///////////////// BEST OPTIMIZATION /////////////////\n    \n    CastResult best_res = cast_ray(CastParams(AdamParams(params.best_t, 0., 2.), -1.), camera, ray, 500, 0.01, true, false);\n    \n    if(best_res.zero)\n    {\n        params.best_t = best_res.adam.t;\n    }\n    else\n    {\n        params.best_t = -1.;\n    }\n    \n    /*if(abs(R(transpose(mat2x3(camera + params.best_t * ray, ray))).x) > zero_threshold)\n    {\n        params.best_t = -1.;\n    }*/\n    \n    /////////////////////////////////////////////////////\n    \n    \n    int iterations = 10;\n    \n    while(0 <= iterations)\n    {\n        CastResult res = cast_ray(params, camera, ray, iterations);\n        iterations = res.iterations;\n        params.adam = res.adam;\n\n        if(res.out_of_range || res.local_min || res.zero)\n        {\n            if(res.zero)\n            {\n                params.best_t = params.adam.t;  // = res.t\n            }\n\n            params.adam.m = 0.;\n            params.adam.v = 0.;\n\n            float rand = RAND();\n            \n            \n            //if(!res.zero)  // If fail\n            \n            \n\n            bool set_t = true;\n\n            #if 1\n            \n            if(!res.zero) \n            {\n                for(int lod = 0; 0 <= lod && lod <= 4; lod++)\n                {\n                    float other_best_t = neighbors_best_t(coord, rand_shift(rand, 5., false), lod);\n                    //other_best_t += 2. * (rand - 0.5);\n\n                    if(0. <= other_best_t && (other_best_t < params.best_t || params.best_t < 0.))\n                    {\n                        params.adam.t = other_best_t;\n\n                        set_t = false;\n                        break;\n                    }\n                }\n            }\n\n            #endif\n            \n            #if 0\n            \n            \n            float other_best_t = -1.;\n            if(0. < uv.x)\n            {\n                other_best_t = neighbors_best_t(coord, rand_shift(rand, 2., true), 3);\n            }\n            else\n            {\n                CastParams other = accessState(coord + rand_shift(rand, 2., false));\n                other_best_t = other.best_t;\n            }\n            //other_best_t += 2. * (rand - 0.5);\n\n            if(0. <= other_best_t && (other_best_t < params.best_t || params.best_t < 0.))\n            {\n                params.adam.t = other_best_t;\n\n                set_t = false;\n                break;\n            }\n            \n            #endif\n            \n            if(set_t)\n            {\n                if(params.best_t < 0.)\n                {\n                    params.adam.t = 15. * rand;\n                }\n                else\n                {\n                    params.adam.t = rand * params.best_t;\n                }\n            }\n        }\n    }\n    \n    fragColor = to_vec4(params);\n    return;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define sq(x) dot(x, x)\n#define PI 3.14159265359\n#define TWO_PI 6.28318530718\n#define cis(a) vec2(cos(a), sin(a))\n\n\nvec2 Mul(vec2 a, vec2 b) { return vec2(a.x * b.x, a.y * b.x + b.y * a.x); }\nmat2x2 Mul(vec2 a, mat2x2 b) { return mat2x2(Mul(a, b[0]), Mul(a, b[1])); }\nvec2 Sq(vec2 a) { return vec2(sq(a.x), 2. * a.x * a.y); }\nvec2 Sqrt(vec2 a) { return vec2(sqrt(a.x), 0.5 * a.y * inversesqrt(a.x)); }\nvec2 Div(vec2 a, vec2 b) { return vec2(a.x / b.x, (a.y * b.x - b.y * a.x) / sq(b.x)); }\nmat2x2 Div(mat2x2 a, vec2 b) { return mat2x2(Div(a[0], b), Div(a[1], b)); }\nmat4x2 Div(mat4x2 a, vec2 b) { return mat4x2(Div(a[0], b), Div(a[1], b), Div(a[2], b), Div(a[3], b)); }\nvec2 Exp(vec2 a) { return exp(a.x) * vec2(1., a.y); }\nvec2 Log(vec2 a) { return vec2(log(a.x), a.y / a.x); }\n\n\n// Complex:\nvec2 mul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }\nmat2x2 Mul(mat2x2 a, mat2x2 b)\n{\n    return mat2x2(Mul(a[0], b[0]) - Mul(a[1], b[1]), Mul(a[0], b[1]) + Mul(a[1], b[0]));\n}\nmat2x2 Sq(mat2x2 z) { return mat2x2(Sq(z[0]) - Sq(z[1]), 2. * Mul(z[0], z[1])); }\nvec2 AbsSq(mat2x2 z) { return Sq(z[0]) + Sq(z[1]); }\nmat2x2 Conj(mat2x2 z) { return matrixCompMult(z, mat2x2(vec2(1.), vec2(-1.))); }\nmat2x2 Inverse(mat2x2 z) { return Div(Conj(z), AbsSq(z)); }\nmat2x2 Div(mat2x2 a, mat2x2 b) { return Mul(a, Inverse(b)); }\nvec2 Abs(mat2x2 z) { return Sqrt(AbsSq(z)); }\nmat2x2 Normalize(mat2x2 z) { return Div(z, Abs(z)); }\nmat2x2 Cis(vec2 a)\n{\n    return mat2x2(cos(a.x), -sin(a.x) * a.y,\n                  sin(a.x), cos(a.x) * a.y);\n}\nvec2 Atan(mat2x2 z)\n{\n    // (-y*x' + x*y') / (x**2 + y**2)\n    return vec2(atan(z[1].x, z[0].x), dot(vec2(-z[1].x, z[0].x), vec2(z[0].y, z[1].y)) / (sq(z[0].x) + sq(z[1].x)));\n}\nmat2x2 Exp(mat2x2 z) { return Mul(Exp(z[0]), Cis(z[1])); }\nmat2x2 Log(mat2x2 z) { return mat2x2(0.5 * Log(AbsSq(z)), Atan(z)); }\nmat2x2 Pow(mat2x2 z, float n)  { return Exp(    n * Log(z)); }\nmat2x2 Pow(mat2x2 z, vec2 n)   { return Exp(Mul(n, Log(z))); }\nmat2x2 Pow(mat2x2 z, mat2x2 n) { return Exp(Mul(n, Log(z))); }\n\n\n#define c(x) vec2(x, 0)\n\n#define SPACE 32\n#define ZERO 48\n\nvec2 R4(mat4x2 p, float t, sampler2D keys)\n{\n    mat2x2 z = mat2x2(p[0], p[1]);  // Complex\n    mat2x2 w = mat2x2(p[2], p[3]);  // Complex\n    \n    float period = 12.;\n    \n    float p_param = 4.;\n    float q_param = 4.;\n    \n    if(texelFetch(keys, ivec2(ZERO + 1, 2), 0).x > 0.)\n    {\n        p_param = 5.;\n        q_param = 3.;\n    }\n    else if(texelFetch(keys, ivec2(ZERO + 2, 2), 0).x > 0.)\n    {\n        p_param = 3.;\n        q_param = 5.;\n    }\n    else if(texelFetch(keys, ivec2(ZERO + 3, 2), 0).x > 0.)\n    {\n        p_param = 3.;\n        q_param = 2.;\n    }\n    \n        \n    mat2x2 pol = Pow(w, p_param) + Pow(z, q_param);  // Complex\n    \n    float angle = (0.5 * sin(TWO_PI / period * round(t)) + 1.) * PI;\n    angle = mix(PI, angle, texelFetch(keys, ivec2(SPACE, 2), 0).x);\n    \n    return AbsSq(Normalize(pol) - mat2x2(c(cos(angle)), c(sin(angle))));\n}\n\n#define R(p, t) _R(p, t, iChannel2)\nvec2 _R(mat3x2 p, float t, sampler2D keys)  // R(p) == 0\n{\n    //return Sq(p[2]) + Sq(Sqrt(Sq(p[0]) + Sq(p[1])) - c(1.)) - c(sq(0.5));\n    \n    vec2 s = Sq(p[0]) + Sq(p[1]) + Sq(p[2]);\n    \n    return R4(Div(mat4x2(s - c(1.), 2.*p[2], 2.*p[0], 2.*p[1]), s + c(1.)), t, keys);\n}\n\n#define GLOBALS  \\\n    vec2 rots = vec2(-1, 1) * 2. * PI * iMouse.xy / iResolution.xy;  \\\n      \\\n    vec3 forward = vec3(cos(rots.y) * vec2(cos(rots.x), sin(rots.x)), sin(rots.y));  \\\n    vec3 right = vec3(-sin(rots.x), cos(rots.x), 0);  \\\n    vec3 up = cross(forward, right);  \\\n      \\\n    vec3 camera = -10. * forward;  \\\n      \\\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / max(iResolution.x, iResolution.y);  \\\n      \\\n    float zoom = 1.;  \\\n    vec3 ray = mat3x3(right, up, forward) * vec3(uv, zoom);  \\\n    ray = normalize(ray);\n\n\n////// Hash functions from https://www.shadertoy.com/view/4djSRW //////\n// Copyright (c)2014 David Hoskins.\n// https://www.shadertoy.com/view/4djSRW\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash11(float p)\n{\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\n///////////////////////////////////////////////////////////////////////\n\n#define RAND() hash13(vec3(fragCoord.xy, iTime*.3) + iTime * 500. + 50.0)\n\n\n\n\nstruct AdamParams\n{\n    float t;\n    float m;\n    float v;\n};\n\nstruct CastParams\n{\n    AdamParams adam;\n    float best_t;\n};\n\n// Format:\n//     vec4(t, m, v, best_t);\nvec4 to_vec4(CastParams params)\n{ \n    return vec4(params.adam.t, params.adam.m, params.adam.v, params.best_t);\n}\nCastParams to_params(vec4 state)\n{\n    return CastParams(AdamParams(state.x, state.y, state.z), state.w);\n}\n\n#define accessState(coord) to_params(texelFetch(iChannel0, coord, 0));\n\n#define MIN 0\n#define AVG 1\n#define NEIGHBORS_BEST_TYPE MIN\n#define L_EXP 30.\n\n\n#define neighbors_best_t(coord, shift, lod) _neighbors_best_t(coord, shift, lod, iChannel1)\n\nfloat _neighbors_best_t(ivec2 coord, ivec2 shift, int lod, sampler2D iChannel1)\n{\n    int two_to_lod = (1 << lod);\n\n    vec4 state = texelFetch(iChannel1, (coord - two_to_lod / 2) / two_to_lod + shift, lod);\n    \n    state *= sq(float(two_to_lod));\n    \n    float sum = state.x;\n    float count = state.y;\n    \n    #if NEIGHBORS_BEST_TYPE == AVG\n    \n    if(count < 0.5) return -1.;\n    sum /= count;\n    return sum;\n    \n    #else\n    \n    if(0. < sum) return pow(sum, 1. / L_EXP);\n    else return -1.;\n        \n    #endif\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    CastParams params = accessState(ivec2(fragCoord));\n    \n    if(0. <= params.best_t)\n    {\n        #if NEIGHBORS_BEST_TYPE == AVG\n        fragColor = vec4(params.best_t, 1., 0., 0.);\n        #else\n        fragColor = vec4(pow(params.best_t, L_EXP), 1., 0., 0.);\n        #endif\n    }\n    else\n    {\n        fragColor = vec4(0.);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

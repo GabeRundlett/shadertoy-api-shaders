@@ -1,0 +1,158 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1696687283",
+            "description": "Exact SDF for Wythoffian polyhedra. See code header for controls etc.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "mdl3RN",
+            "likes": 29,
+            "name": "Exact Polyhedron SDF",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "polyhedra",
+                "exact"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 295
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Wythoff construction for convex polyhedra, with an exact SDF.\n// Matthew Arcus, mla, 2023\n//\n// https://en.wikipedia.org/wiki/Wythoff_construction\n//\n// Controls:\n// Mouse changes orientation\n// up/down: zoom\n// 1-3: show face types 1-3\n// a: AA\n// e: just show edges\n// m: mirror faces\n// r: rotation\n// t: texture faces\n// z: slice at z = 0\n//\n// Uses exact distance to triangular faces (or subdivisions of faces) \n// rather than distance to face planes, enabling, eg. SDF rounding\n// to work.\n//\n// Snubs can be done in the same way, but omitted here as this\n// considerably complicates the code.\n//\n////////////////////////////////////////////////////////////////////////////////\n\nconst float precis = 0.0001; // Ray marching precision, scaled by distance\nconst float attenuation = 0.75; // Ray marching fiddle factor\nfloat maxdistance = 5.0;\n\n// Any P,Q,R with 1/P + 1/Q + 1/R > 1, which means:\n// 2:2:2, 3:2:2, 4:2:2, ...\n// 3:3:2, 4:3:2, 5:3:2\n\nfloat P = 2.0, Q = 3.0, R = 5.0;\n//float P = 10.0, Q = 2.0, R = 2.0;\n\n// Number of iterations of folding loop\n// 5 iterations is enough to get up to (5 3 2) or (10 2 2)\nint NFOLDS = 5;\n\n// Types of feature\nint FACE0 = 1;\nint FACE1 = 2;\nint FACE2 = 3;\nint EDGE = 4;\n\n// 3 mirror planes (passing through origin) define a fundamental\n// region, which intersects the unit sphere in a spherical\n// triangle with angles PI/P, PI/Q, PI/R.\n// The normal polyhedron has a vertex in the fundamental region,\n// edges from the vertex perpendicular to the mirror planes, and\n// faces perpendicular to the lines of intersection of the mirror\n// planes.\n// The dual polyhedron has faces perpendicular to the vector to\n// the region vertex, and vertices on the mirror plane intersections.\n\nvec3 A,B,C;    // normal vectors for mirror planes\nvec3 D,E,F;    // face centre axes of normal faces\nvec3 X;        // the vertex point & face centre of dual\nvec3 G,H,I; // vertices of the dual\nvec3 trilinear = vec3(1);\n\nvoid initgeometry() {\n  // Setup folding planes\n  float p = PI/P, q = PI/Q, r = PI/R;\n  // |A| = |B| = |C| = 1\n  // A.B = -cos(p)\n  // A.C = -cos(r)\n  // B.C = -cos(q) = cos(p)cos(r) + y sin(p)\n  // It's more convenient to make A,B,C point _out_ of\n  // the fundamental region (away from the region vertex)\n  A = vec3(-1,0,0);\n  B = vec3(cos(p),-sin(p),0);\n  float x = cos(r);\n  float y = (cos(p)*cos(r)+cos(q))/sin(p);\n  float z = -sqrt(1.0-x*x-y*y);\n  C = vec3(x,y,z);\n\n  // Convert trilinear to normal coordinates\n  D = cross(B,C), E = cross(C,A), F = cross(A,B);\n  X = mat3(D,E,F)*trilinear;\n  X = normalize(X); // vertex at unit distance\n\n  // Scale so edge centres (for both normal and dual) are on unit sphere.\n  float scale = min3(edgedistance(X,A),\n                     edgedistance(X,B),\n                     edgedistance(X,C));\n  X /= scale;\n\n  D = normalize(D);\n  E = normalize(E);\n  F = normalize(F);\n\n  // Dual vertices\n  G = D/dot(X,D);\n  H = E/dot(X,E);\n  I = F/dot(X,F);\n}\n\nvec3 fold(vec3 pos,out int parity) {\n  parity = 0;\n  if (key(CHAR_F)) return pos;\n  for (int i = 0; i < NFOLDS; i++) {\n    float k;\n    k = dot(pos,A);\n    parity += int(k > 0.0);\n    pos -= 2.0*max(0.0,k)*A;\n    k = dot(pos,B);\n    parity += int(k > 0.0);\n    pos -= 2.0*max(0.0,k)*B;\n    k = dot(pos,C);\n    parity += int(k > 0.0);\n    pos -= 2.0*max(0.0,k)*C;\n  }\n  return pos;\n}\n\n// Distance to triangular wedge,vertex at origin, sides (normalized) vectors s,t,\n// n is normalized normal (ie. normalize(cross(s,t)))\nfloat wedgeDistance(const vec3 p, vec3 s, vec3 t, vec3 n, out bool isedge, vec2 uv) {\n  float edgeradius = 0.03;\n  isedge = true;\n  bool justedges = key(CHAR_E);\n  // If p not directly above the wedge, return the distance to edges\n  float d = sqrt(min(ray2(p,s),ray2(p,t)))-edgeradius;\n  if (justedges || dot(p,cross(s,n)) > 0.0 ||  dot(p,cross(t,n)) < 0.0) return d;\n  float d0 = dot(n,p); // Projection onto wedge\n  if (!key(CHAR_T)) d0 += 0.01*cos(100.0*uv.x)*cos(100.0*uv.y); // Displacement\n  d0 = abs(d0) - 0.005; // Thickness\n  if (d0 < d) {\n    d = d0; isedge = false;\n  }\n  return d;\n}\n\nfloat scene(vec3 pos, int parity, out int type, out vec2 uv) {\n  float d = 1e8, d0;\n  vec2 uv0 = pos.xy;\n  bool isedge,isedge0;\n  float off = 0.2; //0.5-0.5*cos(0.5*iTime);\n  if (!key(CHAR_0+1)) {\n    d0 = wedgeDistance(pos-X-off*F,A,B,F,isedge0,uv0);\n    if (d0 < d) { d = d0; isedge = isedge0; type = FACE0; uv = uv0; }\n  }\n  if (!key(CHAR_0+2)) {\n    d0 = wedgeDistance(pos-X-off*D,B,C,D,isedge0,uv0);\n    if (d0 < d) { d = d0; isedge = isedge0; type = FACE1; uv = uv0; }\n  }\n  if (!key(CHAR_0+3)) {\n    d0 = wedgeDistance(pos-X-off*E,C,A,E,isedge0,uv0);\n    if (d0 < d) { d = d0; isedge = isedge0; type = FACE2; uv = uv0; }\n  }\n  if (isedge) type = EDGE;\n  return d;\n}\n\nfloat map(vec3 pos, out int type, out vec2 uv) {\n  float d = -1e8;\n  if (key(CHAR_Z)) d = pos.z-0.1;\n  int parity;\n  pos = fold(pos,parity);\n  return max(d,scene(pos,parity,type,uv));\n}\n\nfloat map(vec3 pos) {\n  int type; vec2 uv;\n  return map(pos,type,uv);\n}\n\n// Tetrahedron technique, from:\n// https://iquilezles.org/www/articles/normalsSDF/normalsSDF.htm\nvec3 calcNormal(vec3 p) {\n  float h = 0.0002;\n  vec2 k = vec2(1,-1);\n  return normalize( k.xyy*map( p + k.xyy*h ) + \n                    k.yyx*map( p + k.yyx*h ) + \n                    k.yxy*map( p + k.yxy*h ) + \n                    k.xxx*map( p + k.xxx*h ) );\n}\n\nfloat march(in vec3 ro, in vec3 rd) {\n  float t = 0.0;\n  float res = -1.0;\n  for (int i = 0; i < 200; i++) {\n    //assert(i < 10);\n    if (t > maxdistance) break;\n    float h = map(ro+rd*t);\n    t += attenuation*h;\n    if (h < t*precis) break;\n  }\n  return t;\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  if (!key(CHAR_R)) {\n    p.yz = rotate(p.yz,iTime * 0.125);\n    p.zx = rotate(p.zx,iTime * 0.1);\n  }\n  return p;\n}\n\nvec3 circuit[] = vec3[](\n   vec3(1,1,1),vec3(1,1,1),vec3(1,0,0),vec3(1,0,0),\n   vec3(1,1,0),vec3(1,1,0),vec3(0,1,0),vec3(0,1,0),\n   vec3(0,1,1),vec3(0,1,1),vec3(0,0,1),vec3(0,0,1),\n   vec3(1,0,1),vec3(1,0,1),vec3(1,0,0),vec3(1,0,0),\n   vec3(1,1,1)\n );\n\nconst int nsteps = circuit.length();\n\nvec3 PQR[] = vec3[](\n  vec3(2,3,5), vec3(2,3,4),vec3(2,3,3),vec3(2,2,3),vec3(2,2,10)\n);\n\nvec3 gettrilinear(float t) {\n  int i = int(floor(t));\n  int cycle = (i/nsteps)%PQR.length();\n  i %= nsteps;\n  P = PQR[cycle][0], Q = PQR[cycle][1], R = PQR[cycle][2];\n  return mix(circuit[i],circuit[(i+1)%nsteps],mod(t,1.0));\n}\n\nvec3 speccolor(int type) {\n  if (type == FACE0) return vec3(1,0,0);\n  if (type == FACE1) return vec3(1,1,0);\n  if (type == FACE2) return vec3(0,0,1);\n  return vec3(1);\n}\n\n// softshadow from iq.\nfloat softshadow(vec3 ro, vec3 rd, float mint, float tmax, float w) {\n  float t = mint;\n  float res = 1.0;\n  for (int i = 0; i < 200; i++) {\n    float h = map(ro + t*rd);\n    res = min(res, h/(w*t));\n    t += clamp(h, 0.0, max(0.5,0.1*t));\n    if (res < -1.0 || t > tmax) break;\n  }\n  res = max(res,-1.0); // clamp to [-1,1]\n  res = 0.25*(1.0+res)*(1.0+res)*(2.0-res); // smoothstep\n  return res;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  // Trilinear coordinates of vertex point (ie. proportional distance\n  // from sides of fundamental region).\n  trilinear = gettrilinear(0.5*iTime);\n  initgeometry();\n  float camera = 3.0;\n  camera *= exp(0.1*float(keycount(KEY_DOWN)-keycount(KEY_UP)));\n  maxdistance = camera+5.0;\n  vec3 ro = vec3(0,0,camera);\n  vec3 light = vec3(0.5, 1.0, 2.0);\n  ro = transform(ro);\n  light = transform(light);\n  light = normalize(light);\n  vec3 aacol = vec3(0);\n  float AA = 1.0;\n  if (key(CHAR_A)) AA = 2.0;\n  for (float i = 0.0; i < AA; i++) {\n    for (float j = 0.0; j < AA; j++) {\n      vec2 z = (2.0*(fragCoord.xy+vec2(i,j)/AA) - iResolution.xy) / iResolution.y;\n      vec3 rd = vec3(z,-2);\n      rd = transform(rd);\n      rd = normalize(rd);\n      vec3 col = 0.75+0.25*rd; //texture(iChannel0,rd).xyz;\n      col = pow(col,vec3(2.2));\n      float t = march(ro, rd);\n      if (t < maxdistance) {\n        vec3 pos = ro + t * rd;\n        vec3 n = calcNormal(pos);\n        int type;\n        vec2 uv;\n        map(pos,type,uv); // Get type and uv\n        float specpow, specval;\n        if (type == EDGE) {\n          col = vec3(0);\n          specpow = 2.0;\n          specval = 0.1;\n        } else {\n          col = vec3(0.5);\n          specpow = 10.0;\n          specval = 1.0;\n        }\n        //col = vec3(0.5);\n        if (key(CHAR_M) && type < EDGE) {\n          col = texture(iChannel1,reflect(rd,n)).xyz;\n        } else {\n          float diffuse = clamp(dot(n, light), 0.0, 1.0);\n          float shadow = softshadow(pos,light,0.1,4.0,0.1);\n          diffuse *= shadow;\n          col *= 0.2 + 0.8*diffuse;\n          float specular = pow(max(0.0,dot(reflect(light,n),rd)),specpow);\n          col += specval*specular*speccolor(type);\n        }\n      }\n      aacol += col;\n    }\n  }\n  //assert(keystate(KEY_ALT,0).x == 0.0);\n  aacol /= AA*AA;\n  aacol = 2.0*aacol/(1.0+aacol);\n  aacol = clamp(aacol,0.0,1.0);\n  aacol = pow(aacol,vec3(0.4545));\n  if (alert) aacol.x = 1.0;\n  fragColor = vec4(aacol, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    // Ray direction as color\n    vec3 col = 0.75 + 0.25*rayDir;\n\n    //col = 0.5*mix(vec3(1),col,0.8);\n    // Output to cubemap\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "#if !defined(key)\n#define key(code) (texelFetch(iChannel3, ivec2((code),2),0).x != 0.0)\n#endif\n#define store(i,j) (texelFetch(iChannel2, ivec2((i),(j)),0))\n#define keycount(key) (int(store((key),0).x))\n#define keystate(code,n) ( texelFetch(iChannel3,ivec2(code,n),0) )\n\nconst int KEY_ALT = 18;\n// const int KEY_PAGE_UP = 33;\n// const int KEY_PAGE_DOWN = 34;\n// const int KEY_LEFT = 37;\n// const int KEY_RIGHT = 39;\nconst int KEY_UP = 38;\nconst int KEY_DOWN = 40;\n\nconst int CHAR_0 = 48;\nconst int CHAR_A = 65;\nconst int CHAR_B = 66;\nconst int CHAR_C = 67;\nconst int CHAR_D = 68;\nconst int CHAR_E = 69;\nconst int CHAR_F = 70;\nconst int CHAR_G = 71;\nconst int CHAR_M = 77;\nconst int CHAR_N = 78;\nconst int CHAR_O = 79;\nconst int CHAR_P = 80;\nconst int CHAR_Q = 81;\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\nconst int CHAR_V = 86;\nconst int CHAR_X = 88;\nconst int CHAR_Z = 90; // rotation\n\nconst float PI\t= 3.14159265359;\n\nbool alert = false;\nvoid assert(bool test) {\n  if (!test) alert = true;\n}\n\n//-------------------------------------------------\n//From https://www.shadertoy.com/view/XtXGRS#\nvec2 rotate(in vec2 p, in float t) {\n  return p * cos(-t) + vec2(p.y, -p.x) * sin(-t);\n}\n\nfloat dot2( in vec3 v ) { return dot(v,v); }\n\nfloat edgedistance(vec3 pos, vec3 X) {\n  return length(pos-dot(pos,X)*X);\n}\n\nfloat min3(float a, float b, float c) {\n  return min(a,min(b,c));\n}\n\n// Perpendicular distance from p to segment ab\nfloat segment(vec3 p, vec3 a, vec3 b) {\n  vec3 pa = p - a;\n  vec3 ba = b - a;\n  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);\n  float d = length(pa - ba * h);\n  return d;\n}\n\n// Distance of p from ray in direction dir from origin\n// dir assumed normalized\nfloat ray2(vec3 p, vec3 dir) {\n  float h = dot(p,dir);\n  h = max(0.0,h);\n  p -= h*dir;\n  return dot(p,p);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage(out vec4 t, vec2 uv) {\n  int i = int(uv.x); // Column number\n  int j = int(uv.y); // Row\n  if (iFrame == 0) {\n    t = vec4(0);\n  } else {\n    t = texelFetch(iChannel2,ivec2(i,j),0); // Get current state   \n  }  \n  if (j == 0) {\n    // First row - key count\n    // Do key repeat here as well?\n    float w1 = keystate(i,0).x;\n    if (w1 != t.w) {\n      t.w = w1;\n      // Don't count key changes when ALT pressed\n      if (keystate(KEY_ALT,0).x == 0.0 && w1 != 0.0) {\n        t.x++; t.y = iTime;\n      }\n    }\n    // Key repeat - only when shader is running!\n    // Should have longer pause after first key press.\n    if (t.w != 0.0 && keystate(KEY_ALT,0).x == 0.0 && iTime-t.y > 0.25) {\n      t.x++; t.y = iTime;\n    }\n  }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

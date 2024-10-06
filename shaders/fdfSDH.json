@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1618532799",
+            "description": "A quick demo of the transformation used in my animation, Inside, the new Outside! [url]https://twitter.com/tdhooper/status/1378746948136624128[/url]",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "fdfSDH",
+            "likes": 57,
+            "name": "Turning space inside out",
+            "published": 3,
+            "tags": [
+                "4d",
+                "inversion"
+            ],
+            "usePreview": 0,
+            "username": "tdhooper",
+            "viewed": 1603
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\n    Turning space inside out\n    ------------------------\n\n    A quick demo of the transformation used in my animation,\n    Inside, the new Outside!\n    \n    https://twitter.com/tdhooper/status/1378746948136624128\n    \n    This is a bit like sphere inversion, but we can transition\n    from un-warped, to warped. It works by doing a stereographic\n    projection to and from 4d, and performing a rotation in 4d.\n    \n    I think this is called a möbius transformation, there are\n    some similar examples by Daniel Piker, along with code for\n    other environments:\n    \n    https://twitter.com/KangarooPhysics/status/1292180181185179648\n    https://spacesymmetrystructure.wordpress.com/2008/12/11/4-dimensional-rotations/\n\n    I got the stereographic projection code, and the general\n    approach for this from Matthew Arcus, who's made a lot of\n    amazing 4d shaders:\n    \n    https://www.shadertoy.com/view/lsGyzm\n    \n*/\n\n//#define SHOW_DISTANCE\n#define FIX_DISTANCE\n\n#define PI 3.14159265359\n\n// HG_SDF\nvoid pR(inout vec2 p, float a) {\n    p = cos(a)*p + sin(a)*vec2(p.y, -p.x);\n}\n\n// https://iquilezles.org/articles/distfunctions/distfunctions.htm\nfloat sdBoundingBox( vec3 p, vec3 b, float e )\n{\n       p = abs(p  )-b;\n  vec3 q = abs(p+e)-e;\n  return min(min(\n      length(max(vec3(p.x,q.y,q.z),0.0))+min(max(p.x,max(q.y,q.z)),0.0),\n      length(max(vec3(q.x,p.y,q.z),0.0))+min(max(q.x,max(p.y,q.z)),0.0)),\n      length(max(vec3(q.x,q.y,p.z),0.0))+min(max(q.x,max(q.y,p.z)),0.0));\n}\n\n// mla https://www.shadertoy.com/view/lsGyzm\nvec4 inverseStereographic(vec3 p) {\n  float k = 2.0/(1.0+dot(p,p));\n  return vec4(k*p,k-1.0);\n}\nvec3 stereographic(vec4 p4) {\n  float k = 1.0/(1.0+p4.w);\n  return k*p4.xyz;\n}\n\nstruct Model {\n    float d;\n    vec3 col;\n};\n\nModel scene(vec3 p) {\n    vec3 col = normalize(p) * .5 + .5;\n    float d = sdBoundingBox(p, vec3(.9), .2);\n    return Model(d, col);\n}\n\nModel sceneWarped(vec3 p) {\n\n    float f = length(p);\n\n    // Project to 4d\n    vec4 p4 = inverseStereographic(p);\n    \n    // Rotate in the 4th dimension\n    pR(p4.zw, -iTime);\n    \n    // Project back to 3d\n    p = stereographic(p4);\n    \n    Model model = scene(p);\n    \n    // When we're inside out, the entire universe gets collapsed\n    // into the middle of the scene, causing a lot of raymarching\n    // understepping and overstepping.\n    // This ia a rough attempt at fixing this, there's still a bit\n    // of overestimation in places so the raymarch loop is hacked\n    // to accommodate it.\n    #ifdef FIX_DISTANCE\n        float e = length(p.xyz);\n        model.d *= min(1., 1. / e) * max(1., f);\n    #endif\n    \n    return model;\n}\n\nModel map(vec3 p) {\n    Model model = sceneWarped(p);\n\n    #ifdef SHOW_DISTANCE\n        float d = abs(p.y);\n        if (d < model.d) {\n            model.col = min(vec3(0, 1. / model.d, model.d), 1.) * fract(model.d * 10.);\n            model.d = d;\n        }\n    #endif\n\n    return model;\n}\n\n// compile speed optim from IQ https://www.shadertoy.com/view/Xds3zN\nvec3 calcNormal(vec3 pos){\n    vec3 n = vec3(0.0);\n    for( int i=0; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*map(pos+0.0005*e).d;\n    }\n    return normalize(n);\n}\n\nmat3 calcLookAtMatrix(vec3 ro, vec3 ta, vec3 up) {\n    vec3 ww = normalize(ta - ro);\n    vec3 uu = normalize(cross(ww,up));\n    vec3 vv = normalize(cross(uu,ww));\n    return mat3(uu, vv, ww);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 p = (-iResolution.xy + 2. * fragCoord.xy) / iResolution.y;\n    \n    vec3 camPos = vec3(0,0,8);\n    \n    vec2 im = iMouse.xy / iResolution.xy;\n    \n    if (iMouse.x <= 0.) {\n        im = vec2(.6,.3);\n    }\n    \n    pR(camPos.yz, (.5 - im.y) * PI / 2.);\n    pR(camPos.xz, (.5 - im.x) * PI * 2.5);\n    \n    mat3 camMat = calcLookAtMatrix(camPos, vec3(0), vec3(0,1,0));\n    \n    float focalLength = 3.;\n    vec3 rayDirection = normalize(camMat * vec3(p.xy, focalLength));\n    \n    vec3 rayPosition = camPos;\n    float rayLength = 0.;\n    Model model;\n    float dist = 0.;\n    bool bg = false;\n    vec3 bgcol = vec3(.014,.01,.02);\n    vec3 col = bgcol;\n\n    for (int i = 0; i < 100; i++) {\n        rayLength += dist * .8; // fix overstepping\n        rayPosition = camPos + rayDirection * rayLength;\n        model = map(rayPosition);\n        dist = model.d;\n\n        if (abs(dist) < .001) {\n        \tbreak;\n        }\n        \n        if (rayLength > 15.) {\n            bg = true;\n            break;\n        }\n    }\n    \n    if ( ! bg) {\n        col = model.col;\n        vec3 nor = calcNormal(rayPosition);\n        col *= dot(vec3(0,1,0), nor) * .5 + 1.;\n        float fog = 1. - exp((rayLength - 6.) * -.5);\n        col = mix(col, bgcol, clamp(fog, 0., 1.));\n    }\n\n    col = pow(col, vec3(1./2.2));\n\n    fragColor = vec4(col,1);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

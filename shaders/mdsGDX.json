@@ -1,0 +1,63 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667893331",
+            "description": "Drawing graphs by locally fitting a parabola & solving a cubic for the distance to the parabola.",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "mdsGDX",
+            "likes": 10,
+            "name": "Parabolic Graph Drawing",
+            "published": 3,
+            "tags": [
+                "line",
+                "curve",
+                "cubic",
+                "parabola",
+                "parabolic"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 260
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Parabolic Graph Drawing, mla, 2022\n//\n// Drawing a y = f(x) graph by finding the distance from (a,b) to the tangent\n// at (a,f(a)) is simple and effective for graphs that don't bend too sharply,\n// but if they do we get ugly artefacts at the bends. Using a quadratic\n// approximation to the curve at (a,f(a) works better, though it involves\n// solving a cubic to find the distance to the approximating parabola.\n//\n// The cubic solver is analytic and uses ideas from other solvers, particularly\n// by @iq and @spalmer (as well as papers by Jim Blinn & others). The solver\n// works pretty well, though it is improved, particularly on devices with \n// low-quality trig functions, by one round of Newton-Raphson (this does have\n// the potential for making the root accuracy worse, but most of the time\n// it's an improvement).\n//\n// I haven't tried to deal with discontinuous or linear functions and there is\n// a point at which the parabolic approximation has artefacts (this graph is\n// about at the limit in fact).\n//\n// <mouse>: set the position of the fitting parabola (and interpolation\n//          points) that is shown.\n// 'x': use linear fitting\n// 'a': SSAA\n//\n////////////////////////////////////////////////////////////////////////////////\n\n\nint curve = 1;\nfloat F(float x, float t) {\n  switch (curve) {\n  case 0: return 1.0/sin(x+t);\n  case 1: return 4.0*cos(0.3*(x+t))*sin(10.0*cos(x+0.382*t)+t); // The curve\n  case 2: return 8.0*abs(fract(0.43*(x+t))-0.5)-2.0; // Triangle wave from @spalmer\n  return 0.0;\n  }\n}\n\nfloat scale = 6.0;\nfloat linewidth = 0.02;\n\n// Plots a function of x based on three consecutive values.\n// This is basically (y-f(x))/|(f'(x),1)|, using an approximate derivative.\nfloat graphdist(vec2 p,float eps, float f0, float f1, float f2){\n  assert(f1 == 0.0);\n  vec2 base = vec2(0), dir = vec2(2.0*eps,f2-f0);\n  return line(p,base,dir);\n}\n\n// Match a circle - nice, except there are serious artefacts where p is close\n// to the other side of the circle.\nfloat graphdist0(vec2 p,float eps, float f0, float f1, float f2){\n  vec2 c0 = vec2(-eps,f0), c2 = vec2(eps,f2);\n  vec3 circle = cross(vec3(c0,dot(c0,c0)), vec3(c2,dot(c2,c2)));\n  circle /= length(circle.xy);\n  return abs(dot(circle.xy,p)+circle.z*dot(p,p));\n}\n\n// sgn is not sign\nfloat sgn(float p) { return p < 0.0 ? -1.0 : 1.0; }\nfloat cuberoot(float x) { return sgn(x)*pow(abs(x),1.0/3.0); }\n\n// Solve the reduced cubic x³+px+q = 0 and return the largest real root.\nfloat solvecubic(float p, float q) {\n  p /= 3.0, q /= -2.0;    // Simplifies the algebra\n  float h = q*q + p*p*p;  // Discriminant\n  float r = sqrt(abs(h));\n  if (h >= 0.0) {\n    float u = q+sgn(q)*r; // Largest magnitude root\n    float t = cuberoot(u);\n    return t - p/t;\n  } else {\n    // Find real part of 'principal' cube root of -q+ir\n    float theta = atan(r,q);               // 0 <= theta < PI since r >= 0 - could use -r\n    float k = 2.0*sqrt(abs(p));\n    //return k*cos((theta+vec3(0,2,4)*PI)/3.0); // All roots\n    return k*cos(theta/3.0); // Largest root wanted here\n  }\n}\n\n// sdParabola based on a function by @iq\nfloat sdParabola(vec2 pos, in float k ) {\n  pos.x = abs(pos.x); // Ensure largest root is nearest\n  float ik = 1.0/k;\n  float p = -ik*(pos.y - 0.5*ik);\n  float q = -0.5*ik*ik*pos.x;\n  float x = solvecubic(p,q);\n  for (int i = 0; i < 1; i++) {\n    // A quick polishing for the root. This makes hardly any difference in\n    // this shader, except very slightly when the graph is nearly linear.\n    float fx = q+x*(p+x*x);\n    float dx = p+3.0*x*x;\n    x -= fx/dx;\n  } \n  return length(pos-vec2(x,k*x*x));\n}\n\nfloat graphdist2(vec2 p, float eps, float y0, float y1, float y2) { \n  assert(y1 == 0.0);\n  if (key(CHAR_X) || abs(y0+y2)<1e-4) return graphdist(p,eps,y0,y1,y2);\n  // Parabolic approximation: y = Ax²+ Bx\n  // so y0 = A.eps²-B.eps, y2 = A.eps²+B.eps\n  float A = 0.5*(y2+y0)/(eps*eps);\n  float B = 0.5*(y2-y0)/eps; // For reference\n  // Change of variable\n  float k = 0.5*(y2-y0)/(y2+y0);\n  float d = abs(sdParabola(p+vec2(eps*k,0.25*(y2-y0)*k),A));\n  return d;\n}\n\nvec2 map(vec2 coords) {\n  vec2 uv = (2.0*coords - iResolution.xy)/iResolution.y;\n  uv *= scale;\n  return uv;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n  float t = iTime;\n  vec2 uv = map(fragCoord);\n  vec2 mouse = vec2(0);\n  bool domouse = true; //iMouse.x > 10.0;\n  if (iMouse.x > 0.0) mouse = map(iMouse.xy);\n  float x = uv.x, y = uv.y;\n  float px = fwidth(x);\n  assert(px >0.);\n  float a = mouse.x;\n\n  //col = mix(vec3(0.1),col,smoothstep(0.0,px,abs(y)-0.25*lwidth)); // Axes\n  float eps = 4.0*scale/iResolution.y; // Power of 2 may be better\n  vec3 aacol = vec3(0);\n  int N = 2; // SSAA\n  if (key(CHAR_A)) N = 1;\n  for (int i = 0; i < N; i++) {\n    for (int j = 0; j < N; j++) {\n      vec3 col = vec3(0.5);\n      vec2 uv = map(fragCoord+vec2(i,j)/float(N)); // Remap fragCoord\n      float x = uv.x, y = uv.y;\n      float y0 = F(x-eps,t), y1 = F(x,t), y2 = F(x+eps,t);\n      float d = graphdist2(vec2(0,y-y1),eps,y0-y1,0.0,y2-y1);\n      //col *= 0.5+0.5*cos(4.0*PI*d);\n      col = mix(vec3(0),col,smoothstep(0.0,px,d-1.5*linewidth));\n      col = mix(vec3(1,0,0),col,smoothstep(0.0,px,d-1.5*linewidth));\n      col = mix(vec3(1),col,smoothstep(0.0,px,d));\n      if (domouse) {\n        float y0 = F(a-eps,t), y1 = F(a,t), y2 = F(a+eps,t);\n        vec2 p = vec2(x-a,y-y1);\n        float d = graphdist2(p,eps,y0-y1,y1-y1,y2-y1);\n        col = mix(vec3(0.0),col,smoothstep(0.0,px,d-0.5*linewidth));\n        d = 1e8;\n        d = min(d,distance(p,vec2(-eps,y0-y1)));\n        d = min(d,distance(p,vec2(0)));\n        d = min(d,distance(p,vec2(eps,y2-y1)));\n        col = mix(vec3(1),col,smoothstep(0.0,px,d-1.5*linewidth));\n      }\n      aacol += col;\n    }\n  }\n  aacol /= float(N*N);\n  aacol = pow(aacol,vec3(0.4545));\n  if (alert) aacol.g = 1.0;\n  fragColor = vec4(aacol,1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n\nbool alert = false;\nvoid assert(bool b) {\n  if (!b) alert = true;\n}\n\nconst float PI = 3.1415927;\n\nfloat segment(vec2 p, vec2 a, vec2 b) {\n  p -= a; b -= a;\n  float h = dot(p,b)/dot(b,b);\n  h = clamp(h, 0.0, 1.0);\n  return length(p-b*h);\n}\n\nfloat line(vec2 p, vec2 a, vec2 b) {\n  p -= a; b -= a;\n  float h = dot(p,b)/dot(b,b);\n  //h = clamp(h, 0.0, 1.0);\n  return length(p-b*h);\n}\n\n// const int KEY_ALT = 18;\n// const int KEY_PAGE_UP = 33;\n// const int KEY_PAGE_DOWN = 34;\n// const int KEY_LEFT = 37;\n// const int KEY_RIGHT = 39;\n// const int KEY_UP = 38;\n// const int KEY_DOWN = 40;\n\n// const int CHAR_0 = 48;\n\nconst int CHAR_A = 65;\n// const int CHAR_B = 66;\n// const int CHAR_C = 67;\n// const int CHAR_D = 68;\nconst int CHAR_E = 69;\n// const int CHAR_F = 70;\n// const int CHAR_G = 71;\n// const int CHAR_H = 72;\n// const int CHAR_I = 73;\n// const int CHAR_J = 74;\n// const int CHAR_K = 75;\n// const int CHAR_L = 76;\n// const int CHAR_M = 77;\n// const int CHAR_N = 78;\n// const int CHAR_O = 79;\n// const int CHAR_P = 80;\n// const int CHAR_Q = 81;\n// const int CHAR_R = 82;\n// const int CHAR_S = 83;\n// const int CHAR_T = 84;\n// const int CHAR_U = 85;\n// const int CHAR_V = 86;\n// const int CHAR_W = 87;\nconst int CHAR_X = 88;\n// const int CHAR_Y = 89;\n// const int CHAR_Z = 90;\n\n#if !defined(key)\n#define key(code) (texelFetch(iChannel3, ivec2((code),2),0).x != 0.0)\n#endif\n#define store(i,j) (texelFetch(iChannel2, ivec2((i),(j)),0))\n#define keycount(code) (int(store((code),0).x))",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

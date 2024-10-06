@@ -1,0 +1,79 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1496225000",
+            "description": "Use the mouse to draw & the rewind button to start over.\n\nThis is an experiment in rasterising stored mouse movements. The Buf A shader records mouse input & the main Image shader rasterises them.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4slBD4",
+            "likes": 4,
+            "name": "Rasterising strokes",
+            "published": 3,
+            "tags": [
+                "2d"
+            ],
+            "usePreview": 0,
+            "username": "Vil",
+            "viewed": 815
+        },
+        "renderpass": [
+            {
+                "code": "// Image\n\n#define TILE_W 32\n#define TILE_H 32\n\n#define PEN_RADIUS 10.0\n\n\nvec3 hsv2rgb(vec3 c)\n{\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\n\nfloat sdCapsule(in vec3 pos, in vec3 start, in vec3 end, in float radius)\n{\n    vec3 line = end - start;\n    vec3 toPos = pos - start;\n    float len = clamp(dot(line, toPos) / dot(line, line), 0.0, 1.0);\n    return length(toPos - line * len) - radius;\n}\n\n\nint numStrokes(in ivec2 tileCorner)\n{\n    return int(texelFetch(iChannel0, tileCorner, 0).x);\n}\n\n\nvec4 getStroke(in ivec2 tileCorner, int index)\n{\n    ivec2 tileCoord = ivec2((index + 1) % TILE_W, (index + 1) / TILE_W);\n    return texelFetch(iChannel0, tileCorner + tileCoord, 0);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    ivec2 iCoord = ivec2(fragCoord);\n    \n    if (iCoord == ivec2(iResolution) - 1) {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    if (iFrame == 0) {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    ivec2 tileSize = ivec2(TILE_W, TILE_H);\n    ivec2 tileCorner = (iCoord / tileSize) * tileSize;\n\n    float minD = 1e20;\n    int n = numStrokes(tileCorner);\n    for (int i = 0; i < n; i++) {\n        vec4 stroke = getStroke(tileCorner, i);\n        float d = sdCapsule(vec3(fragCoord, 0.0), vec3(stroke.zw, 0.0), vec3(stroke.xy, 0.0), PEN_RADIUS);\n        if (d < minD) {\n            minD = d;\n        }\n    }\n    \n    float rolloff = PEN_RADIUS;\n    float level = (minD <= 0.0) ? clamp(1.0 + minD / rolloff, 0.0, 1.0) : 0.0;\n    vec3 rgb = (minD <= 0.0) ? hsv2rgb(vec3(level, 1.0, 1.0)) : vec3(0.0);\n    rgb *= smoothstep(1.0, 0.85, level);\n    fragColor = vec4(rgb, level);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Handle mouse input.\n\n// The output image is divided into tiles.\n// The pixel at 0,0 in each tile is the count of stroke segments overlapping the tile.\n// Each subsequent pixel has the start and end point of a stroke segment.\n\n#define TILE_W 32\n#define TILE_H 32\n\n#define PEN_RADIUS 10.0\n\n\nivec2 lastMousePos()\n{\n    return ivec2(texelFetch(iChannel0, ivec2(iResolution) - 1, 0).xy);\n}\n\n\nbool strokeInTile(in ivec2 tileCorner, in ivec2 tileSize, in ivec2 start, in ivec2 end)\n{\n    vec2 tileLo = vec2(tileCorner) - PEN_RADIUS;\n    vec2 tileHi = vec2(tileCorner + tileSize) + PEN_RADIUS;\n    vec2 dir = vec2(end - start);\n    vec2 near = vec2( (dir.x >= 0.0) ? tileLo.x : tileHi.x,\n                      (dir.y >= 0.0) ? tileLo.y : tileHi.y );\n    vec2 far = vec2( (dir.x >= 0.0) ? tileHi.x : tileLo.x,\n                     (dir.y >= 0.0) ? tileHi.y : tileLo.y );\n  \n    vec2 tNear = (near - vec2(start)) / dir;\n    vec2 tFar = (far - vec2(start)) / dir;\n  \n    float t0 = max(tNear.x, tNear.y);\n    float t1 = min(tFar.x, tFar.y);\n  \n    return (t0 < 1.0 && t1 >= 0.0 && t0 <= t1);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iCoord = ivec2(fragCoord);\n    \n    if (iCoord == ivec2(iResolution) - 1) {\n        fragColor = iMouse;\n        return;\n    }\n    \n    if (iFrame == 0) {\n        fragColor = vec4(0.0);\n        return;\n    }\n    \n    ivec2 prevMouse = lastMousePos();\n    ivec2 currMouse = ivec2(iMouse.xy);\n    \n    if (iMouse.xy == iMouse.zw || currMouse == prevMouse) {\n        fragColor = texelFetch(iChannel0, iCoord, 0);\n        return;\n    }\n    \n    ivec2 tileSize = ivec2(TILE_W, TILE_H);\n    ivec2 tileCorner = (iCoord / tileSize) * tileSize;\n        \n    if (!strokeInTile(tileCorner, tileSize, prevMouse, currMouse)) {\n        fragColor = texelFetch(iChannel0, iCoord, 0);\n        return;\n    }\n        \n    ivec2 coordInTile = iCoord - tileCorner;\n  int index = coordInTile.y * TILE_W + coordInTile.x;\n    int numStrokes = int(texelFetch(iChannel0, tileCorner, 0).x);\n    \n    if (index == 0) {\n        fragColor = vec4(float(numStrokes + 1), 0.0, 0.0, 0.0);\n        return;\n    }\n    \n    int activeIndex = numStrokes + 1;\n    if (index == activeIndex) {\n        fragColor = vec4(vec2(currMouse), vec2(prevMouse));\n        return;\n    }\n    \n    fragColor = texelFetch(iChannel0, iCoord, 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

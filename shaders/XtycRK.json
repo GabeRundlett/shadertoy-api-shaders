@@ -1,0 +1,107 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1537529189",
+            "description": "Clouds and sunrays. And a really very flat ground.",
+            "flags": 33,
+            "hasliked": 0,
+            "id": "XtycRK",
+            "likes": 42,
+            "name": "Clouds And Sunrays",
+            "published": 3,
+            "tags": [
+                "ray",
+                "sunset",
+                "clouds",
+                "marching",
+                "volumetric",
+                "godray",
+                "sunray"
+            ],
+            "usePreview": 0,
+            "username": "Kushulain",
+            "viewed": 1744
+        },
+        "renderpass": [
+            {
+                "code": "// Kush 2018\n// I grabbed some pieces of code from inigo 'iq' quilez : https://www.shadertoy.com/view/XslGRr\n// It renders moving clouds with sunrays, with a buffer rendered from the sun POV.\n\nmat2 rz2(float a){float c=cos(a),s=sin(a);return mat2(c,s,-s,c);}\n\nvec2 camYawPitch = vec2(0,0);\nfloat camFOV = 1.5;\nmat3 sunMat;\n\n\nvec2 noise( in vec3 x )\n{\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n    \n\tvec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;\n    vec4 textureResults = textureLod( iChannel0, (uv+ 0.5)/256.0, 0. ).rgba;\n    vec2 rg = textureResults.yx;\n    vec2 ba = textureResults.wz;\n    \n\treturn vec2(-1.0+2.0*mix( rg.x, rg.y, f.z ), mix( ba.x, ba.y, f.z ));\n}\n\nvec2 GetNoise(vec3 p)\n{\n\tvec3 q = p - vec3(0.2,-0.1,0.0)*iTime;\n\tvec2 f;\n    f  = 0.50000*noise( q ); q = q*2.02 + f.y * f.y * f.x * 30.0 * CIRCLE_AMOUNT;\n    f += 0.25000*noise( q ); q = q*2.03 + f.y * f.y * f.x * 10.0 * CIRCLE_AMOUNT;\n    f += 0.12500*noise( q ); q = q*2.01;\n    f += 0.08250*noise( q ); q = q*2.04;\n    f += 0.08500*noise( q ); q = q*2.07;\n    f += 0.05250*noise( q );\n    return f;\n}\n\nfloat HardenAndLimit(vec2 noise, vec3 p)\n{\n    float altitudeFactor = clamp((p.y-1.0)*10.0,0.0,1.0) * clamp(2.0-p.y,0.0,1.0);    \n    noise.x *= HARDNESS;\n    noise.x += AMOUNT;\n    return max(noise.x * altitudeFactor,0.0);\n}\n\nvec2 Cloud(vec3 p)\n{    \n    float density = HardenAndLimit(GetNoise(p),p);\n    float densityBottom = 0.0;\n    if (density > 0.1)\n    \tdensityBottom = HardenAndLimit(GetNoise(p+SUNDIR*0.08),p+SUNDIR*0.08);\n    \n    float facingbottom = densityBottom - density;\n    return vec2(density,facingbottom);\n}\n\n\nvec3 viewDir = vec3(0.0,0.0,1.0);\n\nvec3 WorldToSunProj(vec3 p)\n{    \n    p -= SUNDIR * RAYS_AREA_SIZE * 8.0;\n    p -= viewDir * RAYS_AREA_SIZE * 0.5;\n    \n    p = vec3(dot(p,sunMat[0]),dot(p,sunMat[1]),dot(p,sunMat[2]));\n    \n    p.xy /= RAYS_AREA_SIZE;\n    p.x /=iResolution.x/iResolution.y;\n    p.xy += 0.5;\n    \n    return p;\n}\n\nfloat GetShadow(vec3 distances)\n{\n    distances = clamp((distances+0.5)*5.0,0.0,1.0);\n    float shadowAtten = distances.r * 0.33 + distances.g * 0.33 + distances.b * 0.33;\n    \n    return shadowAtten;\n}\n\nvoid mainVR( out vec4 fragColor, in vec2 fragCoord, in vec3 fragRayOri, in vec3 fragRayDir )\n{\n    vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/ iResolution.y;\n    camYawPitch = 6.0 * iMouse.xy / iResolution.y;\n    camYawPitch.y *= 0.2;\n    camYawPitch.y += 0.3;\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    uv-=.5;\n    uv.x*=iResolution.x/iResolution.y;\n    uv *= camFOV;\n    \n    vec3 ro=vec3(uv,0.0),rd=fragRayDir;\n    \n    viewDir.yz*=rz2(camYawPitch.y);\n    viewDir.xz*=rz2(camYawPitch.x);\n    viewDir.y= 0.0;\n    \n    sunMat = Dir2Matrix(-SUNDIR);\n    \n    \n    ro.yz*=rz2(camYawPitch.y);\n    ro.xz*=rz2(camYawPitch.x);\n    rd.yz*=rz2(camYawPitch.y);\n    rd.xz*=rz2(camYawPitch.x);\n    \n    float den = 0.0;\n    float facingSun = 0.0;\n    float rays = 0.0;\n    float SSS = 0.0;\n    vec3 cloudStart =  ro; //rd * 1.0/rd.y;\n    vec3 cloudEnd = rd * 2.0/rd.y;\n    vec3 stepCloud = (cloudEnd-cloudStart) / vec3(minStep);\n    vec3 mp=cloudStart;\n    float stepLength = length(stepCloud);\n    \n    \n    vec3 sunSpacePos;\n    float dist = 0.0;\n    vec4 colors;\n    float shadowAtten = 0.0;\n    float nextStepSize;\n    float weight;\n    float curDen;\n    \n    if (rd.y > 0.02)\n    {\n        for (int i=0;i<maxStep;++i){\n            vec2 cloudInfos = vec2(0.0,0.0);\n            \n            //Get Clouds Density (density, and diff to the sun to make lighting)\n            if (mp.y > 1.0)\n                cloudInfos = Cloud(mp);\n            \n            curDen = cloudInfos.x;\n            weight = (1.0-(curDen*0.90));\n            den += 2.5*curDen*weight/float(minStep);\n            \n            nextStepSize = pow(1.0-curDen,5.0);\n            \n            \n            shadowAtten = 0.0;\n            \n            // samples shadow map (Buffer A) the more steps the smoother\n            for (float j = 0.0; j<1.1; j+=0.3)\n            {\n                sunSpacePos = WorldToSunProj(mp+stepCloud*nextStepSize*j);\n                colors = texture(iChannel1, sunSpacePos.xy);\n                shadowAtten += 0.33 * GetShadow(colors.xyz - vec3(sunSpacePos.z,sunSpacePos.z,sunSpacePos.z));\n            }\n            \n            shadowAtten *= clamp((2.0-mp.y) * 4.0,0.0,1.0);\n            \n            // displays the shadow map on the sky\n            //if(mp.y > 1.0)\n            //{\n            //    sunSpacePos = WorldToSunProj(mp+stepCloud*nextStepSize);\n            //    colors = texture(iChannel1, sunSpacePos.xy);\n            //    fragColor = colors * 0.1;\n            //    return;\n            //}\n            \n            //quit ray marching if out of clouds area or density > 1\n            if(mp.y > 2.0 || abs(den)>1.0)\n            {\n                break;\n            }\n            \n            // gather light, flatten on the botom\n            facingSun +=  mix(0.0,( (-cloudInfos.y)) * curDen * weight/float(minStep), 1.0*min(1.0,(mp.y-1.05)*2.0));            \n            \n            // Set the factor for SSS & rays\n            float fogFactor = nextStepSize * stepLength;\n            // alpha of the shadow map give a gradient to 0.0, so that I can do a soft grandient when sampling to the outside of the shadow map\n            fogFactor *= ((shadowAtten) * colors.a + (1.0-colors.a));\n            // the lower & further, the less fog\n            fogFactor *= clamp(mp.y*4.0,0.0,1.0) *  (4.0/(dist+4.0)) *  weight/float(minStep);\n\n            SSS += (1.0-den) * curDen * fogFactor;\n            rays += (1.0-den) * fogFactor;\n            \n            mp+=stepCloud*nextStepSize;\n            dist+=stepLength*nextStepSize;\n            \n        }\n    }\n    else\n    {\n        vec3 pos = ro + rd * (-0.5-ro.y)/rd.y;\n        sunSpacePos = WorldToSunProj(pos);\n        colors = texture(iChannel1, sunSpacePos.xy);\n        shadowAtten += GetShadow(colors.xyz - vec3(sunSpacePos.z,sunSpacePos.z,sunSpacePos.z));\n        SSS = ((shadowAtten) * colors.a + (1.0-colors.a));\n        SSS /= 80.0;\n        den = 0.02;\n    }\n    \n    facingSun =  facingSun * 25.0 + 0.4;\n    rays *= 7.0 ;\n    SSS = SSS * 80.0;\n    \n    \n    \n    vec3 pixelDir = normalize(rd);\n    vec3 sundir = SUNDIR;\n    vec3 sunColor = mix(vec3(0.99,0.3,0.1),vec3(1.0,1.0,0.8),sundir.y);\n    vec3 bg = vec3(0.2,0.4,0.8) * max(0.2,sundir.y);\n    vec3 ambient = vec3(bg+0.5)*0.4*sundir.y;\n \n    // sun\n    bg += clamp(2.0*pow(clamp(dot(sundir,normalize(pixelDir)),0.0,1.0),800.0),0.0,1.0) * (sunColor+vec3(0.4));\n    // sun halo\n    bg += mix(max(0.0,(1.0-max(0.0,(1.0-sundir.y*3.0))*pixelDir.y*4.0)),0.0,sundir.y) * clamp(pow(0.5*(dot(sundir,normalize(pixelDir)))+0.5,(8.0-sundir.y*5.0)),0.0,1.0) * sunColor;\n    // horizon\n\tbg += sunColor*(1.0-pixelDir.y)*(1.0-pixelDir.y)*0.5;\n    \n    vec3 c;\n    \n    //ground color\n    if (pixelDir.y < 0.02)\n        bg = ambient;\n    \n    // lighting\n    c = mix(ambient,sunColor,SSS);\n    vec3 fs = mix(ambient,sunColor,facingSun);\n    c = mix((c+fs*0.5)*0.7,c*fs*4.0,SSS*1.0);\n    \n    // alternative lighting\n    //vec3 c = mix(ambient,sunColor,facingSun*facingSun*1.5);// vec3(1.0) * SSS * sunColor;\n    //c += sunColor*SSS;\n    \n    // adds background\n    c = mix(bg,c*0.8,den);\n    \n    \n    // adds rays\n    c += (1.0-c) * clamp(rays * rays * sunColor *(0.5+rd.y*0.5),0.0,1.0);\n    \n    \n    \n    fragColor = vec4(c,0.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/ iResolution.y;\n    camYawPitch = 6.0 * iMouse.xy / iResolution.y;\n    camYawPitch.y *= 0.2;\n    camYawPitch.y += 0.3;\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    uv-=.5;\n    uv.x*=iResolution.x/iResolution.y;\n    uv *= camFOV;\n    \n    vec3 ro=vec3(uv,0.0),rd=vec3(uv,1.);\n    \n    viewDir.yz*=rz2(camYawPitch.y);\n    viewDir.xz*=rz2(camYawPitch.x);\n    viewDir.y= 0.0;\n    \n    sunMat = Dir2Matrix(-SUNDIR);\n    \n    \n    ro.yz*=rz2(camYawPitch.y);\n    ro.xz*=rz2(camYawPitch.x);\n    rd.yz*=rz2(camYawPitch.y);\n    rd.xz*=rz2(camYawPitch.x);\n    \n    float den = 0.0;\n    float facingSun = 0.0;\n    float rays = 0.0;\n    float SSS = 0.0;\n    vec3 cloudStart =  ro; //rd * 1.0/rd.y;\n    vec3 cloudEnd = rd * 2.0/rd.y;\n    vec3 stepCloud = (cloudEnd-cloudStart) / vec3(minStep);\n    vec3 mp=cloudStart;\n    float stepLength = length(stepCloud);\n    \n    \n    vec3 sunSpacePos;\n    float dist = 0.0;\n    vec4 colors;\n    float shadowAtten = 0.0;\n    float nextStepSize;\n    float weight;\n    float curDen;\n    \n    if (rd.y > 0.02)\n    {\n        for (int i=0;i<maxStep;++i){\n            vec2 cloudInfos = vec2(0.0,0.0);\n            \n            //Get Clouds Density (density, and diff to the sun to make lighting)\n            if (mp.y > 1.0)\n                cloudInfos = Cloud(mp);\n            \n            curDen = cloudInfos.x;\n            weight = (1.0-(curDen*0.90));\n            den += 2.5*curDen*weight/float(minStep);\n            \n            nextStepSize = pow(1.0-curDen,5.0);\n            \n            \n            shadowAtten = 0.0;\n            \n            // samples shadow map (Buffer A) the more steps the smoother\n            for (float j = 0.0; j<1.1; j+=0.3)\n            {\n                sunSpacePos = WorldToSunProj(mp+stepCloud*nextStepSize*j);\n                colors = texture(iChannel1, sunSpacePos.xy);\n                shadowAtten += 0.33 * GetShadow(colors.xyz - vec3(sunSpacePos.z,sunSpacePos.z,sunSpacePos.z));\n            }\n            \n            shadowAtten *= clamp((2.0-mp.y) * 4.0,0.0,1.0);\n            \n            // displays the shadow map on the sky\n            //if(mp.y > 1.0)\n            //{\n            //    sunSpacePos = WorldToSunProj(mp+stepCloud*nextStepSize);\n            //    colors = texture(iChannel1, sunSpacePos.xy);\n            //    fragColor = colors * 0.1;\n            //    return;\n            //}\n            \n            //quit ray marching if out of clouds area or density > 1\n            if(mp.y > 2.0 || abs(den)>1.0)\n            {\n                break;\n            }\n            \n            // gather light, flatten on the botom\n            facingSun +=  mix(0.0,( (-cloudInfos.y)) * curDen * weight/float(minStep), 1.0*min(1.0,(mp.y-1.05)*2.0));            \n            \n            // Set the factor for SSS & rays\n            float fogFactor = nextStepSize * stepLength;\n            // alpha of the shadow map give a gradient to 0.0, so that I can do a soft grandient when sampling to the outside of the shadow map\n            fogFactor *= ((shadowAtten) * colors.a + (1.0-colors.a));\n            // the lower & further, the less fog\n            fogFactor *= clamp(mp.y*4.0,0.0,1.0) *  (4.0/(dist+4.0)) *  weight/float(minStep);\n\n            SSS += (1.0-den) * curDen * fogFactor;\n            rays += (1.0-den) * fogFactor;\n            \n            mp+=stepCloud*nextStepSize;\n            dist+=stepLength*nextStepSize;\n            \n        }\n    }\n    else\n    {\n        vec3 pos = ro + rd * (-0.5-ro.y)/rd.y;\n        sunSpacePos = WorldToSunProj(pos);\n        colors = texture(iChannel1, sunSpacePos.xy);\n        shadowAtten += GetShadow(colors.xyz - vec3(sunSpacePos.z,sunSpacePos.z,sunSpacePos.z));\n        SSS = ((shadowAtten) * colors.a + (1.0-colors.a));\n        SSS /= 80.0;\n        den = 0.02;\n    }\n    \n    facingSun =  facingSun * 25.0 + 0.4;\n    rays *= 7.0 ;\n    SSS = SSS * 80.0;\n    \n    \n    \n    vec3 pixelDir = normalize(rd);\n    vec3 sundir = SUNDIR;\n    vec3 sunColor = mix(vec3(0.99,0.3,0.1),vec3(1.0,1.0,0.8),sundir.y);\n    vec3 bg = vec3(0.2,0.4,0.8) * max(0.2,sundir.y);\n    vec3 ambient = vec3(bg+0.5)*0.4*sundir.y;\n \n    // sun\n    bg += clamp(2.0*pow(clamp(dot(sundir,normalize(pixelDir)),0.0,1.0),800.0),0.0,1.0) * (sunColor+vec3(0.4));\n    // sun halo\n    bg += mix(max(0.0,(1.0-max(0.0,(1.0-sundir.y*3.0))*pixelDir.y*4.0)),0.0,sundir.y) * clamp(pow(0.5*(dot(sundir,normalize(pixelDir)))+0.5,(8.0-sundir.y*5.0)),0.0,1.0) * sunColor;\n    // horizon\n\tbg += sunColor*(1.0-pixelDir.y)*(1.0-pixelDir.y)*0.5;\n    \n    vec3 c;\n    \n    //ground color\n    if (pixelDir.y < 0.02)\n        bg = ambient;\n    \n    // lighting\n    c = mix(ambient,sunColor,SSS);\n    vec3 fs = mix(ambient,sunColor,facingSun);\n    c = mix((c+fs*0.5)*0.7,c*fs*4.0,SSS*1.0);\n    \n    // alternative lighting\n    //vec3 c = mix(ambient,sunColor,facingSun*facingSun*1.5);// vec3(1.0) * SSS * sunColor;\n    //c += sunColor*SSS;\n    \n    // adds background\n    c = mix(bg,c*0.8,den);\n    \n    \n    // adds rays\n    c += (1.0-c) * clamp(rays * rays * sunColor *(0.5+rd.y*0.5),0.0,1.0);\n    \n    \n    \n    fragColor = vec4(c,0.0);\n    \n    //// shows density\n    //fragColor = vec4(den);\n    \n    //// shows light\n    //fragColor = vec4(facingSun);\n    \n    //// shows fake \"Sub surface scaterring\" (distance to the occluding object)\n    //fragColor = vec4(SSS);\n    \n    //// shows rays\n    //fragColor = vec4(rays);\n    \n    //// shows shadow map\n    //fragColor = (texture(iChannel1,fragCoord/iResolution.xy).rgba ) / 1000.0;\n    \n    //// checks if ray marching reachs limits\n    //if (k==maxStep && fract(uv.x * 40.0) < 0.2)\n    //   fragColor = vec4(1.0,0.0,0.0,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Kush 2018\n// I grabbed some pieces of code from inigo 'iq' quilez : https://www.shadertoy.com/view/XslGRr\n// It renders moving clouds with sunrays, with a buffer rendered from the sun POV.\n\n#define CIRCLE_AMOUNT 1.0\n#define HARDNESS 1.3\n#define AMOUNT 0.3\n\n#define SUNDIR (vec3(0.0,abs(sin(iTime*0.1+0.05)),cos(iTime*0.1+0.05))) //vec3(0.707,0.707,0.0)\n#define RAYS_AREA_SIZE 7.0\n\n#define minStep 20\n#define maxStep 50\n\nmat3 Dir2Matrix(vec3 dir)\n{\n    vec3 Z = dir;\n    vec3 X = normalize(cross(vec3(0.0,1.0,0.0),Z));\n    vec3 Y = normalize(cross(Z,X));\n    return mat3(X,Y,Z);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Kush 2018\n// I grabbed some pieces of code from inigo 'iq' quilez : https://www.shadertoy.com/view/XslGRr\n// It renders moving clouds with sunrays, with a buffer rendered from the sun POV.\n\nmat2 rz2(float a){float c=cos(a),s=sin(a);return mat2(c,s,-s,c);}\n\nvec2 camYawPitch = vec2(0,0);\n\n\nvec2 noise( in vec3 x )\n{\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n    \n\tvec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;\n    vec4 textureResults = textureLod( iChannel0, (uv+ 0.5)/256.0, 0. ).rgba;\n    vec2 rg = textureResults.yx;\n    vec2 ba = textureResults.wz;\n    \n\treturn vec2(-1.0+2.0*mix( rg.x, rg.y, f.z ), mix( ba.x, ba.y, f.z ));\n}\n\nvec2 GetNoise(vec3 p)\n{\n\tvec3 q = p - vec3(0.2,-0.1,0.0)*iTime;\n\tvec2 f;\n    f  = 0.50000*noise( q ); q = q*2.02 + f.y * f.y * f.x * 30.0 * CIRCLE_AMOUNT;\n    f += 0.25000*noise( q ); q = q*2.03 + f.y * f.y * f.x * 10.0 * CIRCLE_AMOUNT;\n    f += 0.12500*noise( q ); q = q*2.01;\n    f += 0.08250*noise( q );\n    //f = f*f*f;\n    return f;\n}\n\nfloat HardenAndLimit(vec2 noise, vec3 p)\n{\n    float altitudeFactor = clamp((p.y-1.0)*10.0,0.0,1.0) * clamp(2.0-p.y,0.0,1.0); \n    noise.x *= HARDNESS;\n    noise.x += AMOUNT;\n    return max(noise.x * altitudeFactor,0.0);\n}\n\nvec2 Cloud(vec3 p)\n{    \n    float density = HardenAndLimit(GetNoise(p),p);\n    float densityBottom = 0.0;\n    //if (density > 0.1)\n    //\tdensityBottom = HardenAndLimit(GetNoise(p+SUNDIR*0.03),p+SUNDIR*0.03);\n    \n    float facingbottom = densityBottom - density;\n    return vec2(density,facingbottom);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 p = (-iResolution.xy + 2.0*fragCoord.xy)/ iResolution.y;\n    camYawPitch = 6.0 * iMouse.xy / iResolution.y;\n    camYawPitch.y *= 0.2;\n    camYawPitch.y += 0.3;\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    uv-=.5;\n    uv.x*=iResolution.x/iResolution.y;\n    \n    \n    vec3 viewDir = vec3(0.0,0.0,1.0);\n    viewDir.yz*=rz2(camYawPitch.y);\n    viewDir.xz*=rz2(camYawPitch.x);\n    viewDir.y= 0.0;\n    \n    vec3 sundir = SUNDIR;\n    \n    mat3 sunMat = Dir2Matrix(-sundir);\n    \n    \n    vec3 ro=vec3(uv,0.0);\n    ro *= RAYS_AREA_SIZE;\n    ro = sunMat * ro;\n    ro += viewDir * RAYS_AREA_SIZE * 0.5;\n    ro += sundir * RAYS_AREA_SIZE * 8.0;\n    \n    vec3 rd=-sundir;\n    \n    \n    \n    float den = 0.0;\n    float facingSun = 0.0;\n    \n    \n    vec3 cloudStart = ro + rd * (2.0-ro.y)/rd.y;\n    vec3 cloudEnd = ro + rd * (1.0-ro.y)/rd.y;\n    vec3 stepCloud = (cloudEnd-cloudStart) / vec3(minStep);\n    \n    vec3 mp=cloudStart;\n    fragColor = vec4(1000.0,1000.0,1000.0,0.0);\n    \n    int k = 0;\n    \n    \n        for (int i=0;i<maxStep;++i){\n            k++;\n            vec2 cloudInfos = Cloud(mp);\n            float curDen = clamp(cloudInfos.x,0.0,1.0);\n            float weight = (1.0-(curDen*0.90));\n            float nextStepSize = pow(1.0-curDen,5.0);\n            den += 2.0*curDen*weight/float(minStep);\n            \n            if (den > 0.8)\n                fragColor.x = min(fragColor.x,length(mp-ro));\n            if (den > 0.85)\n                fragColor.y = min(fragColor.y,length(mp-ro));\n            if (den > 0.9)\n                fragColor.z = min(fragColor.z,length(mp-ro));\n            \n            if(abs(den)>1.0 || mp.y < 1.0)\n                break;\n\n            mp+=stepCloud*nextStepSize;\n        }\n    \n    vec2 uv2 = fragCoord.xy / iResolution.xy;\n    fragColor.a = max(0.0,4.5*(uv2.x-0.05)*(0.9-(uv2.x-0.05))) * max(0.0,4.5*(uv2.y-0.05)*(0.9-(uv2.y-0.05)));\n    fragColor.a = pow(fragColor.a,0.05);\n    \n    //if (k==maxStep && fract(uv.x * 40.0) < 0.5)\n       //fragColor = vec4(1.0,0.0,0.0,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

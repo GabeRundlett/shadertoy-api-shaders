@@ -1,0 +1,144 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1602924035",
+            "description": "Mouse click generates a vortex. Reset time to reset simulation.\n\nThe fluid has the following properties:\n\n- x, y: Velocity\n- z: Rotation in rad/s\n- w: Density > 0",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "tdGyzz",
+            "likes": 7,
+            "name": "Fluid Experiment",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "particle"
+            ],
+            "usePreview": 0,
+            "username": "laube",
+            "viewed": 650
+        },
+        "renderpass": [
+            {
+                "code": "#define PARTICLE_COUNT 100\n#define ARROWS 1\n#define ARROW_REPEAT 20.\n#define S(a, b, p) smoothstep(a, b, p)\n\nfloat drawArrow(vec2 a, vec2 b, vec2 p, float w, float h) {\n    vec2 pa = p - a;\n    vec2 ba = b - a;\n    \n    float x = clamp(dot(pa, ba) / dot(ba, ba), 0., 1.);\n    \n    return max(\n        S(\n            w, \n            0., \n            length(p - (a + x * ba))\n        ),\n        S(w * h, w * (h - 1.), length(p - b))\n\t);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Output to screen\n    fragColor =  texture(iChannel0, fragCoord / iResolution.xy);\n    fragColor.xy = fragColor.xy * 0.5 + .5;\n    //fragColor.xy = vec2(0.);\n    //fragColor.z = fragColor.z * .5 + .5;\n    fragColor.z = fragColor.w;\n    //fragColor.xy = vec2(fragColor.z);\n    \n    for (int particle = 0; particle < PARTICLE_COUNT; particle++) {\n        vec2 particleCoord = floor(hash21(float(particle)) * vec2(20.));\n        vec4 pos = texture(iChannel1, (particleCoord + vec2(0.5)) / iResolution.xy);\n        \n        vec2 delta = fragCoord.xy - pos.xy;\n        delta = mod(delta + iResolution.xy * .5, iResolution.xy) - iResolution.xy * .5;\n        \n        fragColor.xyz = mix(\n            fragColor.xyz,\n            vec3(.4, 1., 1.),\n            clamp(3. / (10. * max(length(delta) - 1., 0.01)), 0., .9)\n        );\n    }\n    \n#if ARROWS\n    vec2 uv = (fragCoord / iResolution.x) * ARROW_REPEAT;\n    vec2 id = floor(uv);\n    uv = fract(uv);\n    \n    vec4 boxField = texture(iChannel0, (id + vec2(.5)) * iResolution.x / ARROW_REPEAT / iResolution.xy);\n    \n    fragColor.xyz = mix(\n        fragColor.xyz, \n        vec3(.8, .9, 1.),\n        drawArrow(\n            vec2(0.5) - boxField.xy * .5, \n            vec2(0.5) + boxField.xy * .5, \n            //vec2(.2, .2),\n            //vec2(.8, .8),\n            uv,\n            .5 / iResolution.x * ARROW_REPEAT + 0.002 * ARROW_REPEAT,\n            2.\n        ) * .8\n    );\n    \n    //if (uv.y < .01) fragColor.y = 1.;\n#endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Inspiration: https://www.gamasutra.com/view/feature/1549/practical_fluid_dynamics_part_1.php?print=1\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    /*\n    vec4 neighbors[9];\n    for (int i = 0; i < 3; ++i) {\n        for (int j = 0; j < 3; ++j) {\n    \t\tneighbors[3 * i + j] = texture(iChannel0, (fragCoord + vec2(i - 1, j - 1)) / iResolution.xy);\n        }\n    }\n    */\n    fragColor = vec4(0.);\n    \n    // x = Vx, y = Vy, z = rot, w = density\n    \n    vec4 last = texture(iChannel0, fragCoord / iResolution.xy);\n    \n    if (iFrame == 0) {\n        // Initialize\n        fragColor.xyzw = hash42(floor(fragCoord / 20.)+iMouse.zw);\n        fragColor.xyz = fragColor.xyz * 2. - 1.;\n    } else if (iFrame % 1 == 0) {\n        // Calculate next generation\n        \n        //   -> Vx\n        // |  a----a\n        // v  |    |\n        //    |-b--+-b\n        // Vy | |  | |   X = Vx * Vy\n        //    a-+--a-|\n        //      |  |X|\n        //      b----b\n        \n        //   -> Vx\n        // |  a----a\n        // v  |    |\n        //    |-b--+-b\n        // Vy | |  | |   X = -Vx * Vy\n        //    a-+--a-|\n        //  X   |  | |\n        //      b----b\n        \n        //   -> Vx\n        // |  a----a\n        // v  |    |\n        //    |-b--+-b\n        // Vy | |  |X|   X = Vx * (1 - Vy)\n        //    a-+--a-|\n        //      |    |\n        //      b----b\n        \n        //   -> Vx\n        // |  a----a\n        // v  |    |\n        //    |-b--+-b\n        // Vy | |  | |   X = (1 - Vx) * Vy\n        //    a-+--a-|\n        //      |X | |\n        //      b----b\n        \n        //\n        // +-----------+---------------+------------+\n        // |>Vx *  >Vy | 1|Vx| *  >Vy  |-<Vx *  >Vy |\n        // +-----------+---------------+------------+\n        // |>Vx * 1|Vy|| (1|Vx|*1|Vy|) |-<Vx * 1|Vy||\n        // +-----------+---------------+------------+\n        // |>Vx * -<Vy | 1|Vx| * -<Vy  |-<Vx * -<Vy |\n        // +-----------+---------------+------------+\n        \n        // Vx * Vy + (1 - Vx) * Vy + Vx * (1 - Vy) + (1 - Vx) * (1 - Vy)\n        // Vx * Vy + Vy - Vx * Vy + Vx - Vx * Vy + 1 - Vy - Vx + Vx * Vy\n        // -------   --   -------   --   -------       --   --   -------\n        //  --> 1\n        \n        vec4 a = vec4(0.);\n        float weight = 0.;\n        \n        for (int x = -1; x < 2; x++) {\n            for (int y = -1; y < 2; y++) {\n                vec4 value = texture(iChannel0, (fragCoord + vec2(x, y)) / iResolution.xy);\n                value.xy = rotationMatrix(value.z) * value.xy;\n\t\t\t\tfloat p;\n                if (x == -1) {\n                    p = clamp(value.x, 0., 1.);\n                } else if (x == 0) {\n                    p = max(1. - abs(value.x), 0.);\n                } else {\n                    p = clamp(-value.x, 0., 1.);\n                }\n                if (y == -1) {\n                    p *= clamp(value.y, 0., 1.);\n                } else if (y == 0) {\n                    p *= max(1. - abs(value.y), 0.);\n                } else {\n                    p *= clamp(-value.y, 0., 1.);\n                }\n                p *= .5  + value.w;\t// Weight according to density\n                a += p * value;\n                weight += p;\n            }\n        }\n        \n        if (weight != 0.) {\n        \tfragColor = a / weight;\n        } else {\n            fragColor = last;\n        }\n        // Dissipate some of the movement energy\n        fragColor.xyz *= .9999;\n        \n        // vec2 v = last.xy;\n        \n    \t// fragColor = (last + texture(iChannel0, (fragCoord - v) / iResolution.xy)) / 2.;\n        \n        \n        /*\n        vec2 v = neighbors[3 * 1 + 1].xy;\n        \n        int x = v.x < 0. ? 0 : 1;\n        int y = v.y < 0. ? 0 : 1;\n        \n        // A - B\n        // |   |\n        // C - D\n        \n        vec2 fv = fract(v);\n        float ia = (1. - fv.y) * (1. - fv.x);\n        float ib = (1. - fv.y) * (fv.x)     ;\n        float ic = (fv.y)      * (1.0f-fv.x);\n        float id = (fv.y)      * (fv.x)     ;\n        \n        vec4 A = neighbors[3 * x + y];\n        vec4 B = neighbors[3 * (x + 1) + y];\n        vec4 C = neighbors[3 * x + (y + 1)];\n        vec4 D = neighbors[3 * (x + 1) + (y + 1)];\n        \n    \tfragColor = ia * A + ib * B + ic * C + id * D;\n\t\t*/\n        //fragColor = last;\n    } else {\n        fragColor = last;\n    }\n    if (iMouse.z >= 0.) {\n        vec2 mouseDir = fragCoord - iMouse.xy;\n        mouseDir = mouseDir / 40.;\n        if (length(mouseDir) < 1.) {\n        \tmouseDir = vec2(mouseDir.y, -mouseDir.x);\n            //\n            //   + ---> v = 0.02\n            //   |\n            //   | r = 1\n            //   |\n            //   *\n            //\n            // D = 2 pi r\n            // T_rot = D / v = 2 * pi * r / v = 2 * pi / 0.02 = 314.\n            // Rot [rad/s] = 2 * pi / T_rot = v / r = 0.02\n            fragColor.xy = fragColor.xy + mouseDir * 0.02;\n            fragColor.z -= 0.02;\n        }   \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "mat2 rotationMatrix(float rotation) {\n    float rotM = -1. / 60.;\t// 60 FPS\n    return  mat2(cos(rotation * rotM), -sin(rotation * rotM),\n                 sin(rotation * rotM), cos(rotation * rotM));\n}\n\n// Source: https://www.shadertoy.com/view/4djSRW\n\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n//----------------------------------------------------------------------------------------\n//  2 out, 1 in...\nvec2 hash21(float p)\n{\n\tvec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n\tp3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n\n}\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\nvec3 hash32(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy+p3.yzz)*p3.zyx);\n}\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n\n}\n\n//----------------------------------------------------------------------------------------\n// 4 out, 2 in...\nvec4 hash42(vec2 p)\n{\n\tvec4 p4 = fract(vec4(p.xyxy) * vec4(.1031, .1030, .0973, .1099));\n    p4 += dot(p4, p4.wzxy+33.33);\n    return fract((p4.xxyz+p4.yzzw)*p4.zywx);\n\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Particle simulation\n\n#define P_STEPS 3\n#define RESPAWN 1\n#define RESPAWN_FREQ (10 * 60)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0.);\n    \n    if (fragCoord.x > 20. || fragCoord.y > 20.) {\n        return;\n    }\n    \n    vec4 last = texture(iChannel0, fragCoord / iResolution.xy);\n    \n    if (iFrame == 0\n#if RESPAWN\n        || (iFrame + int(floor(hash12(fragCoord) * float(RESPAWN_FREQ)))) % RESPAWN_FREQ  == 0\n#endif\n\t) {\n        // Initialize\n        fragColor.xy = hash22(fragCoord+iMouse.zw + iTime) * iResolution.xy;\n        fragColor.zw = texture(iChannel1, fragColor.xy / iResolution.xy).xy;\n    } else {\n        vec2 pos = last.xy;\n        vec2 v = last.zw;\n        for (int i = 0; i < P_STEPS; i++) {\n            vec4 field = texture(iChannel1, pos / iResolution.xy);\n            // Simulate some mass of the particle\n            v = mix(v, field.xy, clamp(0.2 * field.w, 0., 1.));\n            v = rotationMatrix(2.5 * field.z * field.w / float(P_STEPS)) * v;\n            pos = mod(pos + v, iResolution.xy);\n        }\n        fragColor.xy = pos;\n        fragColor.zw = v;\n        // Add some random noise to the position:\n        fragColor.xy += (hash22(fragCoord + vec2(iTime)) - vec2(0.5)) * .1;\n        //fragColor.x = mod(fragColor.x, iResolution.x);\n        \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,159 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1664568862",
+            "description": "Phong distribution for the specular highlights. Now with ACES tonemapping from https://www.shadertoy.com/view/XsGfWV. Still working on adding a sky. Mouse, WASD, Space and Shift to move\nSkybox reflections!",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "NtyfRR",
+            "likes": 2,
+            "name": "Raymarcher with movement",
+            "published": 3,
+            "tags": [
+                "shadow",
+                "raymarcher",
+                "penumbra",
+                "diffuse"
+            ],
+            "usePreview": 0,
+            "username": "fishy",
+            "viewed": 260
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.1415926535\n\n#define AMBIENT 0.2\n#define SHADOW_STRENGTH 0.5\n#define SHADOW_K 4.0\n#define AO_DIST 0.03\n#define AO_STRENGTH 0.5\n\n#define FRESNEL_IOR 2.0\n#define FRESNEL_BASE 0.2\n\nstruct material\n{\n    vec3 baseColor;\n    float roughness;\n    float reflectivity;\n    int matOverride;\n};\n\nmat2 rotMat(float r){ return  mat2(cos(r), -sin(r), sin(r), cos(r)); }\n\n\nvec3 rotX(vec3 p, float r)\n{\n    return vec3(p.x, p.yz * rotMat(r));\n}\n\nvec3 rotY(vec3 p, float r)\n{\n    vec2 t = p.xz * rotMat(r);\n    return vec3(t.x, p.y, t.y);\n}\n\nvec3 rotZ(vec3 p, float r)\n{\n    return vec3(p.xy * rotMat(r), p.z);\n}\n\nvec3 lightingDir = normalize(vec3(0.0, 1.0, 1.0));\n\nvec3 evaluateMatOverride(int i, vec3 p, vec3 n, vec3 vDir, material mat)\n{\n    vec3 c;\n    switch (i)\n    {\n        case 0:\n            c = mix(skyTex(reflect(vDir, n), lightingDir).rgb, mat.baseColor, FRESNEL_BASE+pow(abs(dot(normalize(vDir), n)), FRESNEL_IOR)*(1.-FRESNEL_BASE));\n            break;\n        case 1:\n            c = texture(iChannel3, vec2(p.x+p.y, p.z)).rgb;\n            break;\n        case 2:\n            c = pow(texture(iChannel1, n).rgb, vec3(1./2.2));\n            break;\n    }\n    return c;\n}\n\n\nfloat hash11(float p)\n{\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat erp(float x, float k)\n{\n    return x < 0.5 ? pow(2.0*x, k)*0.5  : 1. - pow(2.0*(1.0-x), k) / 2.;\n}\n\nfloat perlinNoise1(float x)\n{\n    return mix(hash11(floor(x)), hash11(floor(x) + 1.0), erp(fract(x), 2.0)) - 0.5;\n}\n\n\n\n\nvec3 aces_tonemap(vec3 color) // https://www.shadertoy.com/view/XsGfWV\n{\t\n\tmat3 m1 = mat3(\n        0.59719, 0.07600, 0.02840,\n        0.35458, 0.90834, 0.13383,\n        0.04823, 0.01566, 0.83777\n\t);\n\tmat3 m2 = mat3(\n        1.60475, -0.10208, -0.00327,\n        -0.53108,  1.10813, -0.07276,\n        -0.07367, -0.00605,  1.07602\n\t);\n\tvec3 v = m1 * color;    \n\tvec3 a = v * (v + 0.0245786) - 0.000090537;\n\tvec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;\n\treturn pow(clamp(m2 * (a / b), 0.0, 1.0), vec3(1.0 / 2.2));\t\n}\n\nfloat calcSpecular(vec3 e, vec3 n, vec3 l, float p)\n{\n    return pow(clamp(dot(l, reflect(e, n)), 0.0, 1.0), p);\n}\n\nfloat join(inout float a, float b, material bm, inout material m)\n{\n    if(a < b)\n    {\n        return a;\n    }\n    else\n    {\n        m = bm;\n        return b;\n    }\n    \n}\n\nfloat sdPlane(vec3 p, float y)\n{\n    return (p.y - y);\n}\n\nfloat sdSphere(vec3 p, vec3 pos, float r)\n{\n    return length(p - pos) - r;\n}\n\nfloat sdBox( vec3 p, vec3 b )\n{\n    vec3 q = abs(p) - b;\n    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat sdBox( vec3 p, vec3 b, vec3 bPos )\n{\n    return sdBox(p - bPos, b);\n}\nfloat sdCross( in vec3 p )\n{\n    float da = sdBox(p.xyz,vec3(100000.0,1.0,1.0));\n    float db = sdBox(p.yzx,vec3(1.0,100000.0,1.0));\n    float dc = sdBox(p.zxy,vec3(1.0,1.0,100000.0));\n    return min(da,min(db,dc));\n}\n\nfloat sdMenger(vec3 p)\n{\n    float d = sdBox(p,vec3(1.0));\n\n    float s = 1.0;\n    \n    for( int m=0; m<4; m++ )\n    {\n        vec3 a = mod( p*s, 2.0 )-1.0;\n        s *= 3.0;\n        vec3 r = 1.0 - 3.0*abs(a);\n\n        float c = sdCross(r)/s;\n        d = max(d,c);\n    }\n\n    return d;\n}\n\nfloat sceneDist(vec3 p, out material m)\n{\n    p.y -= 0.3;\n    m = material(vec3(0.0, 0.0, 1.0), 1.0, 1.0, 0);\n    float dist = sdSphere(p, vec3(0.3, cos(iTime)*0.1, 2.0), 0.2);\n    \n    dist = join(dist, sdSphere(p, vec3(-0.3, sin(iTime)*0.1, 2.0), 0.2),\n                material(vec3(0.0, 0.5, 1.0), 8.0, 0.0, 2), m);\n    \n    dist = join(dist, sdBox(p, vec3(0.5, 0.06, 0.5), vec3(0.0,-0.3, 2.0)) - 0.02,\n                material(vec3(1.0, 0.0, 0.0), 8.0, 1.0, -1), m);\n    \n    dist = join(dist, sdMenger(p / 0.5 - vec3(0.5, 0.4, 8.0)) * 0.5,\n                material(vec3(1.0, 1.0, 1.0), 8.0, 1.0, 0), m);\n    p.y += 0.3;\n    dist = join(dist, sdPlane(p, 0.0),\n                material(vec3(0.2, 0.5, 0.05), 1.0, 0.0, -1), m);\n    \n    return dist;\n}\n\nvec3 calcNormal( in vec3 p ) // for function f(p)\n{\n    material m;\n    const float h = 0.0001;      // replace by an appropriate value\n    #define ZERO (min(iFrame,0)) // non-constant zero\n    vec3 n = vec3(0.0);\n    for( int i=ZERO; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*sceneDist(p+e*h, m);\n    }\n    return normalize(n);\n}\n\nfloat calcAO(vec3 p, float dist)\n{\n    material m;\n    return 1.0 - sceneDist(p + dist*calcNormal(p), m) / dist;\n}\n\nvoid march(vec3 dir, inout vec3 p, int maxSteps, float minDist, out bool hit, out float depth, out vec3 normal, out material m)\n{\n    vec3 oldP = p;\n    depth = 0.0;\n    for(int i = 0; i < maxSteps; i++)\n    {\n        depth = sceneDist(p, m);\n        p += depth*dir;\n        hit = depth < minDist;\n        if(hit)\n        {\n            normal = calcNormal(p);\n            depth = distance(oldP, p);\n            return;\n        }\n    }\n    normal = calcNormal(p);\n}\n\nvoid marchShadow(vec3 dir, vec3 p, int maxSteps, float minDist, out float inShadow, float k)\n{\n    vec3 oldP = p;\n    float dist = 0.002;\n    float totalDist = dist;\n\n    p += dist*dir;\n    inShadow = 1.0;\n    material m = material(vec3(0.0, 0.0, 0.0), 0.0, 0.0, 0);\n    for(int i = 0; i < maxSteps; i++)\n    {\n        dist = sceneDist(p, m);\n        totalDist += dist;\n\n        if(dist < minDist)\n        {\n            inShadow = 1.0;\n            return;\n        }\n        \n        p += dist*dir;\n        inShadow = min(inShadow, k*dist/totalDist);\n    }\n    inShadow = 1.0-inShadow;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    uv -= 0.5;\n    uv.y *= iResolution.y/iResolution.x;\n    \n    vec3 c = texture(iChannel0, vec2(0.0)).rgb;\n\n    vec3 eyeDir = normalize(vec3(uv * vec2(1.0, 1.0), 1.0));\n    vec2 mouse = iMouse.z > 0.0?iMouse.xy/iResolution.xy * 8.0 - 4. : vec2(perlinNoise1(iTime*1.0 + 100.0), perlinNoise1(iTime*1.0)) * 0.0;\n    eyeDir = rotX(eyeDir, -mouse.y);\n    eyeDir = rotY(eyeDir, -mouse.x);\n    vec3 eyePos = vec3(c.y, -c.z, c.x);\n\n    lightingDir = normalize(rotX(vec3(0.0, 0.0, -1.0), (sin(iTime*0.2)+1.)*PI*0.5));\n\n    \n    bool hit = false;\n    float depth = 0.0;\n    vec3 normal = vec3(0.0);\n    material hitMat;\n    march(eyeDir, eyePos, 512, 0.0001, hit, depth, normal, hitMat);\n    float ao = calcAO(eyePos, AO_DIST);\n    if(hitMat.matOverride > -1)\n    {\n        hitMat.baseColor = evaluateMatOverride(hitMat.matOverride, eyePos, normal, eyeDir, hitMat);\n    }\n    float fresnel = FRESNEL_BASE+pow(abs(dot(normalize(eyeDir), normal)), FRESNEL_IOR)*(1.-FRESNEL_BASE);\n    hitMat.baseColor = mix(hitMat.baseColor, mix(skyTex(reflect(eyeDir, normal), lightingDir).rgb, hitMat.baseColor, fresnel), hitMat.reflectivity);\n    \n    float inShadow = 0.0;\n    marchShadow(lightingDir, eyePos, 32, 0.00001, inShadow, SHADOW_K);\n    \n    //lightingDir = vec3(0.0, 1.0, 0.0);\n    float lighting = max(0.0, dot(normal, lightingDir));\n    float specular = calcSpecular(eyeDir, normal, lightingDir, 8.0 * hitMat.roughness);\n    specular = clamp(specular, 0.0, 1.0);\n    inShadow *= float(hit);\n    inShadow = mix(0.0, inShadow, SHADOW_STRENGTH);\n\n    vec3 color = (vec3(lighting + specular) * hitMat.baseColor) * (1.0-inShadow);\n    color = mix(color, vec3(0.0), pow(min(1.0, depth / 16.0), 1.3));\n    color = mix(color, hitMat.baseColor, AMBIENT);\n    \n    color *= 1.0 - ao*AO_STRENGTH;\n    color = hit? color : skyTex(eyeDir, lightingDir).rgb;\n    color = aces_tonemap(color);\n\n    //fragColor = vec4(vec3(pow(ao, 1.0)),1.0);\n    fragColor = vec4(color,1.0);\n    //fragColor = vec4(eyeDir.xy,0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 15,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0a40562379b63dfb89227e6d172f39fdce9022cba76623f1054a2c83d6c0ba5d.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const int keyW = 87;\nconst int keyA = 65;\nconst int keyS = 83;\nconst int keyD = 68;\n\nconst int keySpace = 16;\nconst int keyShift = 32;\n\n\n\nfloat keyPressed(int keyCode)\n{\n    return texelFetch(iChannel0, ivec2(keyCode, 0), 0).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec4 keyVec = texture(iChannel1, uv);\n    \n    if(iTime < 0.1)\n    {\n        keyVec = vec4(0.0, 0.0, -0.3, 0.0);\n    }\n    \n    keyVec.x += (keyPressed(keyW) - keyPressed(keyS)) * iTimeDelta;\n    keyVec.y += (keyPressed(keyD) - keyPressed(keyA)) * iTimeDelta;\n    keyVec.z += (keyPressed(keySpace) - keyPressed(keyShift)) * iTimeDelta;\n    \n    fragColor = keyVec;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec3 skyTex(vec3 ray, vec3 sun)\n{\n    ray.y = abs(ray.y);\n    float raySun = dot(ray,sun);\n    \n    vec3 col = exp2(-(ray.y-raySun*0.5)/vec3(.1,.3,.6)); // Base gradient\n    col *= sqrt(max(0.00001, dot(vec3(sun.x, sun.y+0.3, sun.z), vec3(0.0, 1.0, 0.0)))); //Darken the sky the lower the sun is\n    return mix(col, vec3(10.0, 3.0, 0.2), smoothstep(0.9995, 1.0, max(0.0, raySun))) * sqrt(max(0.0, (dot(abs(ray+0.03), vec3(0.0, 1.0, 0.0))))); // Sun disc\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "vec3 SkyColour( vec3 ray )\n{\n    return exp2(-ray.y/vec3(.1,.3,.6)); // blue\n//    return exp2(-ray.y/vec3(.18,.2,.28))*vec3(1,.95,.8); // overcast\n//    return exp2(-ray.y/vec3(.1,.2,.8))*vec3(1,.75,.5); // dusk\n//    return exp2(-ray.y/vec3(.03,.2,.9)); // tropical blue\n//    return exp2(-ray.y/vec3(.4,.06,.01)); // orange-red\n//    return exp2(-ray.y/vec3(.1,.2,.01)); // green\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    rayDir.y = abs(rayDir.y);\n    fragColor = vec4(SkyColour(rayDir),1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

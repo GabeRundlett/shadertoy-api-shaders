@@ -1,0 +1,144 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1718559821",
+            "description": "Tried rewriting the trivial water algo for better physical correctness, but no luck, seems like a local optimum there. So now I tried to apply reintegration for moving the water.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MXdXRr",
+            "likes": 17,
+            "name": "Trivial Water (reintegration)",
+            "published": 3,
+            "tags": [
+                "particles",
+                "ca"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 260
+        },
+        "renderpass": [
+            {
+                "code": "//After messing around it seems that a ideal gas equation of state inside of the\n//terrain shaped potential is actually equivalent to (incompressible) water in that same terrain\n\n//It can be derived by stating that the heigh of the fluid + terrain must be constant\n//H = h + rho = const\n//-> grad(H) = 0 -> grad(h + rho) = 0\n//-> grad(h) = -grad(rho)\n\n//So if the gradient of the density (which is our force here) is equal to the \n//negative gradient of the terrain height then their sum should be flat\n//This can be done by adding the negative of the terrain gradient to the SPH \n//estimate of the density gradient\n\n//Since the simulation will tend to 0 net force, the surface will tend to flatness\n\n//Note that in this case mass is exactly proportional to water height\n\n\nvoid mainImage( out vec4 col, in vec2 pos )\n{\n    float dx = texel(ch0, pos+vec2(1,0)).w-texel(ch0, pos+vec2(-1,0)).w;\n    float dy = texel(ch0, pos+vec2(0,1)).w-texel(ch0, pos+vec2(0,-1)).w;\n    vec2 grad = vec2(dx, dy);\n\tcol = texel(ch0, pos);\n    //check fluid surface flatness\n    //black patches are lakes\n    //col = 10.0*abs(grad.xyxy); \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define Bf(p) mod(p,R)\n#define Bi(p) ivec2(mod(p,R))\n#define texel(a, p) texelFetch(a, Bi(p), 0)\n#define pixel(a, p) texture(a, Bf(p)/R)\n#define ch0 iChannel0\n#define ch1 iChannel1\n#define ch2 iChannel2\n#define ch3 iChannel3\n\n#define PI 3.14159265\n\n#define loop(i,x) for(int i = 0; i < x; i++)\n#define range(i,a,b) for(int i = a; i <= b; i++)\n\n#define dt 1.0\n//gravity\n#define GRAV 6.0 \n\n\n//distribution diameter\n// 0 - completely particle like\n// >1.0 - field-like\n#define dist 1.05\n//diffusion\n#define dif 0.2\n//estimation str\n#define difd 1.0\n\n//initial mass\n#define mass 0.2\n\n\n// implementation of MurmurHash (https://sites.google.com/site/murmurhash/) for a \n// single unsigned integer.\n\nuint hash(uint x, uint seed) {\n    const uint m = 0x5bd1e995U;\n    uint hash = seed;\n    // process input\n    uint k = x;\n    k *= m;\n    k ^= k >> 24;\n    k *= m;\n    hash *= m;\n    hash ^= k;\n    // some final mixing\n    hash ^= hash >> 13;\n    hash *= m;\n    hash ^= hash >> 15;\n    return hash;\n}\n\n// implementation of MurmurHash (https://sites.google.com/site/murmurhash/) for a  \n// 2-dimensional unsigned integer input vector.\n\nuint hash(uvec2 x, uint seed){\n    const uint m = 0x5bd1e995U;\n    uint hash = seed;\n    // process first vector element\n    uint k = x.x; \n    k *= m;\n    k ^= k >> 24;\n    k *= m;\n    hash *= m;\n    hash ^= k;\n    // process second vector element\n    k = x.y; \n    k *= m;\n    k ^= k >> 24;\n    k *= m;\n    hash *= m;\n    hash ^= k;\n\t// some final mixing\n    hash ^= hash >> 13;\n    hash *= m;\n    hash ^= hash >> 15;\n    return hash;\n}\n\n\nvec2 gradientDirection(uint hash) {\n    switch (int(hash) & 3) { // look at the last two bits to pick a gradient direction\n    case 0:\n        return vec2(1.0, 1.0);\n    case 1:\n        return vec2(-1.0, 1.0);\n    case 2:\n        return vec2(1.0, -1.0);\n    case 3:\n        return vec2(-1.0, -1.0);\n    }\n}\n\nfloat interpolate(float value1, float value2, float value3, float value4, vec2 t) {\n    return mix(mix(value1, value2, t.x), mix(value3, value4, t.x), t.y);\n}\n\nvec2 fade(vec2 t) {\n    // 6t^5 - 15t^4 + 10t^3\n\treturn t * t * t * (t * (t * 6.0 - 15.0) + 10.0);\n}\n\nfloat perlinNoise(vec2 position, uint seed) {\n    vec2 floorPosition = floor(position);\n    vec2 fractPosition = position - floorPosition;\n    uvec2 cellCoordinates = uvec2(floorPosition);\n    float value1 = dot(gradientDirection(hash(cellCoordinates, seed)), fractPosition);\n    float value2 = dot(gradientDirection(hash((cellCoordinates + uvec2(1, 0)), seed)), fractPosition - vec2(1.0, 0.0));\n    float value3 = dot(gradientDirection(hash((cellCoordinates + uvec2(0, 1)), seed)), fractPosition - vec2(0.0, 1.0));\n    float value4 = dot(gradientDirection(hash((cellCoordinates + uvec2(1, 1)), seed)), fractPosition - vec2(1.0, 1.0));\n    return interpolate(value1, value2, value3, value4, fade(fractPosition));\n}\n\nfloat perlinNoise(vec2 position, int frequency, int octaveCount, float persistence, float lacunarity, uint seed) {\n    float value = 0.0;\n    float amplitude = 1.0;\n    float currentFrequency = float(frequency);\n    uint currentSeed = seed;\n    for (int i = 0; i < octaveCount; i++) {\n        currentSeed = hash(currentSeed, 0x0U); // create a new seed for each octave\n        value += perlinNoise(position * currentFrequency, currentSeed) * amplitude;\n        amplitude *= persistence;\n        currentFrequency *= lacunarity;\n    }\n    return value;\n}\n\n\nfloat terrainHeight(vec2 pos)\n{\n    float h = perlinNoise(pos / 100.0, 1, 6, 0.4, 2.0, 3541u) * 1.0 + 2.0;\n    h -= 2.0*exp(-dot(pos - vec2(250),pos - vec2(250))/(150.0*150.0));\n    return h;\n}\n\nvec2 terrainGrad(vec2 pos)\n{\n    const float eps = 0.5;\n    vec2 n = vec2(terrainHeight(pos + vec2(eps, 0.0)) - terrainHeight(pos - vec2(eps, 0.0)),\n                  terrainHeight(pos + vec2(0.0, eps)) - terrainHeight(pos - vec2(0.0, eps))) / (2.0*eps);\n    return n;\n}\n\nvec3 terrainNormal(vec2 pos)\n{\n    return normalize(vec3(terrainGrad(pos), 0.5));\n}\n\n\n\n//estimating the in-cell distribution size\nvec2 destimator(vec2 dx, float M)\n{\n    //size estimate by in-cell location\n    return dist*clamp(1.0 - difd*abs(dx), 0.002, 1.0) + dif*dt;\n}\n\n#define border_h 5.\nvec2 R;\nvec4 Mouse;\nfloat time;\n\n\nmat2 Rot(float ang)\n{\n    return mat2(cos(ang), -sin(ang), sin(ang), cos(ang)); \n}\n\nvec2 Dir(float ang)\n{\n    return vec2(cos(ang), sin(ang));\n}\n\n\nfloat sdBox( in vec2 p, in vec2 b )\n{\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\n\nfloat sdCircle( vec2 p, float r )\n{\n    return length(p) - r;\n}\n\nfloat sdSegment( in vec2 p, in vec2 a, in vec2 b )\n{\n    vec2 pa = p-a, ba = b-a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat sdArrow( in vec2 p, in vec2 a, in vec2 b )\n{\n    float sdl = sdSegment(p,a,b);\n    vec2 delta = normalize(b-a);\n    sdl = min(sdl, sdSegment(p,b,b-delta*0.05 + 0.05*delta.yx*vec2(-1,1)));\n    sdl = min(sdl, sdSegment(p,b,b-delta*0.05 - 0.05*delta.yx*vec2(-1,1)));\n    return sdl;\n}\n\nfloat border(vec2 p)\n{\n    float bound = -sdBox(p - R*0.5, R*vec2(0.5, 0.5)); \n    float box = sdBox(Rot(0.*time)*(p - R*vec2(0.5, 0.6)) , R*vec2(0.05, 0.01));\n    float drain = -sdBox(p - R*vec2(0.5, 0.7), R*vec2(1.5, 0.5));\n    return max(drain,min(bound, box));\n}\n\n#define h 1.\nvec3 bN(vec2 p)\n{\n    vec3 dx = vec3(-h,0,h);\n    vec4 idx = vec4(-1./h, 0., 1./h, 0.25);\n    vec3 r = idx.zyw*border(p + dx.zy)\n           + idx.xyw*border(p + dx.xy)\n           + idx.yzw*border(p + dx.yz)\n           + idx.yxw*border(p + dx.yx);\n    return vec3(normalize(r.xy), r.z + 1e-4);\n}\n\nvec2 decode(float x)\n{\n    uint X = floatBitsToUint(x);\n    return unpackSnorm2x16(X); \n}\n\nfloat encode(vec2 x)\n{\n    uint X = packSnorm2x16(clamp(x, vec2(-1.), vec2(1.)));\n    return uintBitsToFloat(X); \n}\n\nstruct particle\n{\n    vec2 X;\n    vec2 V;\n    vec2 M;\n};\n    \nparticle getParticle(vec4 data, vec2 pos)\n{\n    particle P; \n    P.X = decode(data.x) + pos;\n    P.V = decode(data.y);\n    P.M = data.zw;\n    return P;\n}\n\nvec4 saveParticle(particle P, vec2 pos)\n{\n    P.X = clamp(P.X - pos, vec2(-0.5), vec2(0.5));\n    return vec4(encode(P.X), encode(P.V), P.M);\n}\n\nvec3 hash32(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy+p3.yzz)*p3.zyx);\n}\n\nfloat G(vec2 x)\n{\n    return exp(-dot(x,x));\n}\n\nfloat G0(vec2 x)\n{\n    return exp(-length(x));\n}\n\n\nvec3 distribution(vec2 x, vec2 p, vec2 K)\n{\n    vec4 aabb0 = vec4(p - 0.5, p + 0.5);\n    vec4 aabb1 = vec4(x - K*0.5, x + K*0.5);\n    vec4 aabbX = vec4(max(aabb0.xy, aabb1.xy), min(aabb0.zw, aabb1.zw));\n    vec2 center = 0.5*(aabbX.xy + aabbX.zw); //center of mass\n    vec2 size = max(aabbX.zw - aabbX.xy, 0.); //only positive\n    float m = size.x*size.y/(K.x*K.y); //relative amount\n    //if any of the dimensions are 0 then the mass is 0\n    return vec3(center, m);\n}\n\n//diffusion and advection basically\nvoid Reintegration(sampler2D ch, inout particle P, vec2 pos)\n{\n    //basically integral over all updated neighbor distributions\n    //that fall inside of this pixel\n    //this makes the tracking conservative\n    range(i, -2, 2) range(j, -2, 2)\n    {\n        vec2 tpos = pos + vec2(i,j);\n        vec4 data = texel(ch, tpos);\n       \n        particle P0 = getParticle(data, tpos);\n       \n        vec2 dx0 = P0.X - tpos;\n        vec2 difR = destimator(dx0, P0.M.x);\n        P0.X += P0.V*dt; //integrate position\n\t    \n        vec3 D = distribution(P0.X, pos, difR);\n        //the deposited mass into this cell\n        float m = P0.M.x*D.z;\n        \n        //add weighted by mass\n        P.X += D.xy*m;\n        P.V += P0.V*m;\n        P.M.y += P0.M.y*m;\n        \n        //add mass\n        P.M.x += m;\n    }\n    \n    //normalization\n    if(P.M.x != 0.)\n    {\n        P.X /= P.M.x;\n        P.V /= P.M.x;\n        P.M.y /= P.M.x;\n    }\n}\n\n//force calculation and integration\nvoid Simulation(sampler2D ch, inout particle P, vec2 pos)\n{\n    //Compute the SPH force\n    vec2 F = vec2(0.);\n    vec3 avgV = vec3(0.);\n    range(i, -2, 2) range(j, -2, 2)\n    {\n        vec2 tpos = pos + vec2(i,j);\n        vec4 data = texel(ch, tpos);\n        particle P0 = getParticle(data, tpos);\n        vec2 dx = P0.X - P.X;\n        vec2 dx0 = P0.X - tpos;\n        float avgP = GRAV*0.1*P0.M.x*(P.M.x+P0.M.x); \n        F -= 0.5*G(1.*dx)*avgP*dx;\n        avgV += P0.M.x*G(1.*dx)*vec3(P0.V,1.);\n    }\n    //the condition of grad(terrain_heigh) = - grad(water_height) produces a flat surface\n    F -= GRAV*0.23*P.M.x*terrainGrad(pos); //magic number tuned to make mass == height\n    avgV.xy /= avgV.z;\n\n    //viscosity\n   // F += 1.5*P.M.x*(avgV.xy - P.V);\n\n    if(Mouse.z > 0.)\n    {\n        vec2 dm =(Mouse.xy - Mouse.zw)/10.; \n        float d = distance(Mouse.xy, P.X)/20.;\n        F += 0.001*dm*exp(-d*d);\n       // P.M.y += 0.1*exp(-40.*d*d);\n    }\n    \n    //integrate\n    F -= P.V*0.0005; //friction with the ground\n    P.V += F*dt/P.M.x;\n   \n\n    //border \n    vec3 N = bN(P.X);\n    float vdotN = step(N.z, border_h)*dot(-N.xy, P.V);\n    P.V += 0.5*(N.xy*vdotN + N.xy*abs(vdotN));\n    P.V += 0.*P.M.x*N.xy*step(abs(N.z), border_h)*exp(-N.z);\n    \n    if(N.z < 0.) P.V = vec2(0.);\n    \n    \n    //velocity limit\n    float v = length(P.V);\n    P.V /= (v > 1.)?v:1.;\n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\nvoid mainImage( out vec4 U, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    ivec2 p = ivec2(pos);\n\n    vec4 data = texel(ch0, pos); \n    \n    particle P;\n    \n   \tReintegration(ch0, P, pos);\n    \n   \t//initial condition\n    if(iFrame < 1)\n    {\n        //random\n        vec3 rand = hash32(pos + vec2(0., 1.0)+0.28);\n        if(rand.z < 0.6) \n        {\n            P.X = pos + 0.3*(rand.yz-0.5);\n            P.V = 0.65*(rand.xy-0.5) + vec2(0., 0.);\n            P.M = vec2(mass, 0.);\n        }\n        else\n        {\n            P.X = pos;\n            P.V = vec2(0.);\n            P.M = vec2(1e-6);\n        }\n    }\n    \n    U = saveParticle(P, pos);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 U, in vec2 pos )\n{\n    R = iResolution.xy; time = iTime; Mouse = iMouse;\n    ivec2 p = ivec2(pos);\n        \n    vec4 data = texel(ch0, pos); \n    \n    particle P = getParticle(data, pos);\n    \n    \n    if(P.M.x != 0.) //not vacuum\n    {\n        Simulation(ch0, P, pos);\n    }\n\n    U = saveParticle(P, pos);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 col, in vec2 pos )\n{\n\tR = iResolution.xy; time = iTime;\n    //pos = R*0.495 + pos*0.4; //zoom in\n    ivec2 p = ivec2(pos + 0.5);\n    \n    float rho = 0.;\n    float weight = 0.0;\n    vec2 grad = vec2(0.0);\n    range(i, -1, 1) range(j, -1, 1)\n    {\n        vec2 pos0 = pos + vec2(i,j);\n        vec4 data = texel(ch0, pos0);\n        particle P0 = getParticle(data, pos0);\n        vec2 dx = pos - pos0;\n        float w = G(0.5*dx);\n        weight += w;\n        rho += (getParticle(texel(ch0, pos0), pos0).M.x + terrainHeight(pos0)) * w;\n    }\n    \n    float wdepth = getParticle(texel(ch0, pos), pos).M.x;\n    \n    float terrh = terrainHeight(pos);\n    vec3 normal = terrainNormal(pos);\n    float d = max(0.0, dot(normalize(vec3(1,1,1)), normal));\n    vec4 terrain = 1.5*vec4(1,1,1,1) * d * (1.0 - 0.75*exp(-terrh));\n    col = terrain * exp(-8.0*wdepth * vec4(1.000,0.302,0.000,1.0));\n    col.w = rho / weight;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

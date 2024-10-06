@@ -1,0 +1,276 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1585915249",
+            "description": "My first attempt at volumetric clouds based on Horizon Zero Dawn clouds. Most of the logic for the clouds is in buffer C. Use the mouse to drag around the sun for different times of the day, or click at the bottom for an automated day/night cycle.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ttcSD8",
+            "likes": 229,
+            "name": "Swiss Alps",
+            "published": 3,
+            "tags": [
+                "noise",
+                "terrain",
+                "volume",
+                "clouds",
+                "perlin",
+                "volumetric",
+                "worley",
+                "scattering"
+            ],
+            "usePreview": 1,
+            "username": "piyushslayer",
+            "viewed": 10570
+        },
+        "renderpass": [
+            {
+                "code": "/**\n  My first attempt at rendering volumetric clouds and ray marched terrain. Terrain is\n  rendered based on ray marching techniques by iq, and the clouds are rendered based\n  on techniques by Nathan Vos and Andrew Schneider(Guerrilla), and Sébastien Hillaire\n  (Epic), see buffer C for more details. \n\n  This main image tab mostly apples some post-process effects to the terrain and cloud\n  textures, including a gaussian blue for the clouds to hide noise/ray marching\n  artifacts, and some lens flares and light scattering effects, along with a\n  luminance based reinhard tonemapper. \n*/\n\n//-------------------------------------------------------------------------------------\n// Gaussian Blur\n//-------------------------------------------------------------------------------------\n\n#define texelOffset vec2(1.75 / iResolution.xy)\n\nconst float kernel[9] = float[]\n(\n\t.0625, .125, .0625,\n    .125,  .25,  .125,\n    .0625, .125, .0625  \n);\n\nvec4 gaussianBlur(sampler2D buffer, vec2 uv)\n{\n    vec4 col = vec4(0.);\n    \n \tvec2 offsets[9] = vec2[](\n        vec2(-texelOffset.x,  texelOffset.y),  // top-left\n        vec2( \t\t\t0.,   texelOffset.y),  // top-center\n        vec2( texelOffset.x,  texelOffset.y),  // top-right\n        vec2(-texelOffset.x,  \t\t\t 0.),  // center-left\n        vec2( \t\t\t0.,\t\t\t \t 0.),  // center-center\n        vec2( texelOffset.x,  \t \t\t 0.),  // center-right\n        vec2(-texelOffset.x,  -texelOffset.y), // bottom-left\n        vec2( \t\t\t0.,   -texelOffset.y), // bottom-center\n        vec2( texelOffset.x,  -texelOffset.y)  // bottom-right    \n    );\n    \n    for(int i = 0; i < 9; i++)\n    {\n        col += textureLod(buffer, uv + offsets[i], 0.) * kernel[i];\n    }\n    \n    return col;\n}\n\n//-------------------------------------------------------------------------------------\n// Lens Flare (from shadertoy.com/view/XdfXRX)\n//-------------------------------------------------------------------------------------\n\n#define ORB_FLARE_COUNT\t8\n#define DISTORTION_BARREL 1.3\n\nvec2 GetDistOffset(vec2 uv, vec2 pxoffset)\n{\n    vec2 tocenter = uv.xy;\n    vec3 prep = normalize(vec3(tocenter.y, -tocenter.x, 0.0));\n    \n    float angle = length(tocenter.xy) * 2.221 * DISTORTION_BARREL;\n    vec3 oldoffset = vec3(pxoffset, 0.);\n    \n    vec3 rotated = oldoffset * cos(angle) + cross(prep, oldoffset)\n        * sin(angle) + prep * dot(prep, oldoffset) * (1. - cos(angle));\n    \n    return rotated.xy;\n}\n\nvec3 flare(vec2 uv, vec2 pos, float dist, float size)\n{\n    pos = GetDistOffset(uv, pos);\n    \n    float r = max(.01 - pow(length(uv + (dist - .05)*pos), 2.4) \n                  *(1. / (size * 2.)), 0.) * 6.0;\n\tfloat g = max(.01 - pow(length(uv +  dist       *pos), 2.4) \n                  *(1. / (size * 2.)), 0.) * 6.0;\n\tfloat b = max(.01 - pow(length(uv + (dist + .05)*pos), 2.4) \n                  *(1. / (size * 2.)), 0.) * 6.0;\n    \n    return vec3(r, g, b);\n}\n\nvec3 ring(vec2 uv, vec2 pos, float dist)\n{\n    vec2 uvd = uv*(length(uv));\n    \n    float r = max(1. / (1. + 32. * pow(length(uvd + (dist - .05)\n\t\t\t\t  * pos), 2.)), 0.) * .25;\n\tfloat g = max(1. / (1. + 32. * pow(length(uvd +  dist       \n\t\t\t\t  * pos), 2.)), 0.) * .23;\n\tfloat b = max(1. / (1. + 32. * pow(length(uvd + (dist + .05)\n\t\t\t\t  * pos), 2.)), 0.) * .21;\n    \n    return vec3(r,g,b);\n}\n\nvec3 lensflare(vec2 uv,vec2 pos, float brightness, float size)\n{\n\t\n    vec3 c = flare(uv, pos, -1., size) * 3.;\n    c += flare(uv, pos, .5, .8 * size) * 2.;\n    c += flare(uv, pos, -.4, .8 * size);\n    \n    c += ring(uv, pos, -1.) * .5 * size;\n    c += ring(uv, pos, 1.) * .5 * size;\n    \n    return c * brightness;\n}\n\n//-------------------------------------------------------------------------------------\n// Light Scattering\n//-------------------------------------------------------------------------------------\n\n#define NUM_SAMPLES 48\n#define DENSITY .768\n#define WEIGHT .14\n#define DECAY .97\n\nvec3 lightScattering(vec2 uv, vec2 lightPos, vec3 sun)\n{    \n    vec2 deltauv = vec2(uv - lightPos);\n    vec2 st = uv;\n    uv = uv * 2. - 1.;\n    uv.x *= iResolution.x / iResolution.y;\n    deltauv *= 1. /  float(NUM_SAMPLES) * DENSITY;\n    float illuminationDecay = 1.;\n    vec3 result = vec3(0.);\n\n    for(int i = 0; i < NUM_SAMPLES; i++)\n    {\n        st -= deltauv;\n        float lightStep = textureLod(iChannel1, st, 0.).a\n            \t\t* smoothstep(2.5, -1., length(uv-sun.xy));\n\n        lightStep *= illuminationDecay * WEIGHT;\n\n        result += lightStep;\n\n        illuminationDecay *= DECAY;\n    }\n    \n    return result * (SUN_COLOR) * .2;\n}\n\n//-------------------------------------------------------------------------------------\n// Tone mapping\n//-------------------------------------------------------------------------------------\n\nvec3 luminanceReinhard(vec3 color)\n{\n\tfloat lum = dot(color, vec3(.2126, .7152, .0722));\n\tfloat toneMappedLum = lum / (1. + lum);\n\tcolor *= toneMappedLum / lum;\n\treturn color;\n}\n\n//-------------------------------------------------------------------------------------\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 st = fragCoord/iResolution.xy;\n    vec2 uv = (2. * fragCoord - iResolution.xy) / iResolution.y;\n    vec2 mouse = (2. * iMouse.xy - iResolution.xy) / iResolution.y;\n    vec3 sun = getSun(mouse, iTime);\n\n\tvec4 terrain = textureLod(iChannel0, vec2(st.x, st.y - 1. / iResolution.y), 0.);\n    vec4 clouds = gaussianBlur(iChannel1, st);\n    float cloudsAlphaMask = clouds.a + (terrain.a > CAMERA_FAR ? 0. : 1.);\n    \n    vec2 lightPosScreenSpace = vec2(sun.x * iResolution.y/iResolution.x, sun.y) * .5 + .5;\n    float lensflareMask = textureLod(iChannel1, lightPosScreenSpace, 0.).a;\n    \n    vec3 col = vec3(0.);\n    col = vec3(clouds.rgb + terrain.rgb * cloudsAlphaMask);\n    col += lightScattering(st, lightPosScreenSpace, sun) * smoothstep(.01, .16, sun.z)\n        \t\t* smoothstep(.3, 1.5, terrain.a);\n\tcol += lensflare(uv, sun.xy, .8, 4.) * vec3(1.4, 1.2, 1.) * lensflareMask;\n    col = mix(col, pow(luminanceReinhard(col), vec3(.4545)), .75);\n    col += hash12(fragCoord) * .004;\n\n    fragColor = vec4(col, 1.);\n    \n    // hide the ugly red pixel\n    if (fragCoord.y < 2. && fragCoord.x < 2.)\n        fragColor = vec4(.6) * sun.z;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/**\n  Common tab contains all the control values for the terrain, clouds, sky etc, along\n  with all the helper functions used in multiple buffers. \n*/\n\n\n#define PI 3.1415926535\n\n#define SAT(x) clamp(x, 0., 1.)\n\n#define TERRAIN_FREQ .1\n#define TERRAIN_HEIGHT 3.\n#define HQ_OCTAVES 12\n#define MQ_OCTAVES 7\n\n#define CAMERA_NEAR .001\n#define CAMERA_FAR 200.\n#define CAMERA_FOV 75.\n#define CAMERA_HEIGHT 1.6\n#define CAMERA_PITCH .15\n#define CAMERA_ZOOM -2.\n#define CAMERA_DEPTH -1125.\n\n#define FOG_B .3\n#define FOG_C .1\n\n#define SUN_INTENSITY 6.66\n#define SUN_COLOR vec3(1.2, 1., .6)\n#define SKY_COLOR vec3(.25, .5, 1.75)\n#define SUN_SPEED .04\n\n#define EARTH_RADIUS 6378100. \n#define CLOUD_BOTTOM 3200.\n#define CLOUD_TOP 4800.\n#define CLOUD_COVERAGE .48 // lower means more cloud coverage, and vice versa\n#define CLOUD_BASE_FREQ .00005\n#define CLOUD_DETAIL_FREQ .0015\n#define CLOUD_STEPS 18\n#define CLOUD_LIGHT_STEPS 6\n#define CLOUD_TOP_OFFSET 250.\n#define CLOUD_ABSORPTION_TOP 1.8\n#define CLOUD_ABSORPTION_BOTTOM 3.6\n\n#define WIND_DIR vec3(.4, .1, 1.)\n#define WIND_SPEED 75.\n\n#define CLOUDS_AMBIENT_TOP vec3(1., 1.2, 1.6)\n#define CLOUDS_AMBIENT_BOTTOM vec3(.6, .4, .8)\n\n#define BAYER_LIMIT 16\n#define BAYER_LIMIT_H 4\n\n// 4 x 4 Bayer matrix\nconst int bayerFilter[BAYER_LIMIT] = int[]\n(\n\t 0,  8,  2, 10,\n\t12,  4, 14,  6,\n\t 3, 11,  1,  9,\n\t15,  7, 13,  5\n);\n\nstruct Ray\n{\n\tvec3 origin, direction;   \n};\n    \n//-------------------------------------------------------------------------------------\n//  Helper functions\n//-------------------------------------------------------------------------------------\n    \nfloat remap(float x, float a, float b, float c, float d)\n{\n    return (((x - a) / (b - a)) * (d - c)) + c;\n}\n\nfloat remap01(float x, float a, float b)\n{\n\treturn ((x - a) / (b - a));   \n}\n\nbool writeToPixel(vec2 fragCoord, int iFrame)\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFrame % BAYER_LIMIT;\n    return (((iFragCoord.x + BAYER_LIMIT_H * iFragCoord.y) % BAYER_LIMIT)\n            == bayerFilter[index]);\n\t\t\n}\n\n//-------------------------------------------------------------------------------------\n//  Camera stuff\n//-------------------------------------------------------------------------------------\n\nmat3 getCameraMatrix(vec3 origin, vec3 target)\n{\n    vec3 lookAt = normalize(target - origin);\n    vec3 right = normalize(cross(lookAt, vec3(0., 1., 0.)));\n    vec3 up = normalize(cross(right, lookAt));\n    return mat3(right, up, -lookAt);\n}\n\nRay getCameraRay(vec2 uv, float t)\n{\n    uv *= (CAMERA_FOV / 360.) * PI; // fov\n    vec3 origin = vec3(0., CAMERA_HEIGHT, CAMERA_DEPTH);\n    vec3 target = vec3(0., origin.y + CAMERA_PITCH,  CAMERA_DEPTH - 1.2);\n    mat3 camera = getCameraMatrix(origin, target);\n    vec3 direction = normalize(camera * vec3(uv, CAMERA_ZOOM));\n    return Ray(origin, direction);\n}\n\nvec3 getSun(vec2 mouse, float iTime)\n{\n    vec2 sunPos = mouse;\n    \n    if (mouse.y < -.95)\n    {\n        sunPos = vec2(cos(mod(iTime * SUN_SPEED, PI)) * .7, 0.);\n    \tsunPos.y = 1. - 3.05 * sunPos.x * sunPos.x;\n    }\n    \n    float sunHeight = (max(0., sunPos.y * .75 + .25));\n    \n    return vec3(sunPos, sunHeight);\n}\n\n//-------------------------------------------------------------------------------------\n//  Atmospheric Scattering\n//-------------------------------------------------------------------------------------\n\n/** Slightly modified version of robobo1221's fake atmospheric scattering\n \t(https://www.shadertoy.com/view/4tVSRt)\n*/\nvec3 miePhase(float dist, vec3 sunL)\n{\n    return max(exp(-pow(dist, .3)) * sunL - .4, 0.);\n}\n\nvec3 atmosphericScattering(vec2 uv, vec2 sunPos, bool isSun)\n{\n    \n    float sunDistance = distance(uv, sunPos);\n\tfloat scatterMult = SAT(sunDistance);\n\tfloat dist = uv.y;\n\tdist = (.5 * mix(scatterMult, 1., dist)) / dist;\n    vec3 mieScatter = miePhase(sunDistance, vec3(1.)) * SUN_COLOR;\n\tvec3 color = dist * SKY_COLOR;\n    color = max(color, 0.);\n    vec3 sun = .0002 / pow(length(uv-sunPos), 1.7) * SUN_COLOR;\n    \n\tcolor = max(mix(pow(color, .8 - color),\n\tcolor / (2. * color + .5 - color * 1.3),\n\tSAT(sunPos.y * 2.5)), 0.)\n\t+ (isSun ? (sun + mieScatter) : vec3(0.));\n    \n\tcolor *=  (pow(1. - scatterMult, 5.) * 10. * SAT(.666 - sunPos.y)) + 1.5;\n\tfloat underscatter = distance(sunPos.y, 1.);\n\tcolor = mix(color, vec3(0.), SAT(underscatter));\n\t\n\treturn color;\t\n}\n\n//-------------------------------------------------------------------------------------\n//  Hash Functions\n//-------------------------------------------------------------------------------------\n    \n// Hash functions by Dave_Hoskins\n#define UI0 1597334673U\n#define UI1 3812015801U\n#define UI2 uvec2(UI0, UI1)\n#define UI3 uvec3(UI0, UI1, 2798796415U)\n#define UIF (1. / float(0xffffffffU))\n\nvec3 hash33(vec3 p)\n{\n\tuvec3 q = uvec3(ivec3(p)) * UI3;\n\tq = (q.x ^ q.y ^ q.z)*UI3;\n\treturn -1. + 2. * vec3(q) * UIF;\n}\n\nfloat hash13(vec3 p)\n{\n\tuvec3 q = uvec3(ivec3(p)) * UI3;\n\tq *= UI3;\n\tuint n = (q.x ^ q.y ^ q.z) * UI0;\n\treturn float(n) * UIF;\n}\n\nfloat hash12(vec2 p)\n{\n\tuvec2 q = uvec2(ivec2(p)) * UI2;\n\tuint n = (q.x ^ q.y) * UI0;\n\treturn float(n) * UIF;\n}\n\n//-------------------------------------------------------------------------------------\n// Noise generation\n//-------------------------------------------------------------------------------------\n\n// Iq's value noise, and its analytical derivatives\nvec3 valueNoiseDerivative(vec2 x, sampler2D smp)\n{\n    vec2 f = fract(x);\n    vec2 u = f * f * (3. - 2. * f);\n\n#if 1\n    // texel fetch version\n    ivec2 p = ivec2(floor(x));\n    float a = texelFetch(smp, (p + ivec2(0, 0)) & 255, 0).x;\n\tfloat b = texelFetch(smp, (p + ivec2(1, 0)) & 255, 0).x;\n\tfloat c = texelFetch(smp, (p + ivec2(0, 1)) & 255, 0).x;\n\tfloat d = texelFetch(smp, (p + ivec2(1, 1)) & 255, 0).x;\n#else    \n    // texture version    \n    vec2 p = floor(x);\n\tfloat a = textureLod(smp, (p + vec2(.5, .5)) / 256., 0.).x;\n\tfloat b = textureLod(smp, (p + vec2(1.5, .5)) / 256., 0.).x;\n\tfloat c = textureLod(smp, (p + vec2(.5, 1.5)) / 256., 0.).x;\n\tfloat d = textureLod(smp, (p + vec2(1.5, 1.5)) / 256., 0.).x;\n#endif\n    \n\treturn vec3(a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y,\n\t\t\t\t6. * f * (1. - f) * (vec2(b - a, c - a) + (a - b - c + d) * u.yx));\n}\n\nfloat valueNoise(vec3 x, float freq)\n{\n    vec3 i = floor(x);\n    vec3 f = fract(x);\n    f = f * f * (3. - 2. * f);\n\t\n    return mix(mix(mix(hash13(mod(i + vec3(0, 0, 0), freq)),  \n                       hash13(mod(i + vec3(1, 0, 0), freq)), f.x),\n                   mix(hash13(mod(i + vec3(0, 1, 0), freq)),  \n                       hash13(mod(i + vec3(1, 1, 0), freq)), f.x), f.y),\n               mix(mix(hash13(mod(i + vec3(0, 0, 1), freq)),  \n                       hash13(mod(i + vec3(1, 0, 1), freq)), f.x),\n                   mix(hash13(mod(i + vec3(0, 1, 1), freq)),  \n                       hash13(mod(i + vec3(1, 1, 1), freq)), f.x), f.y), f.z);\n}\n\n// Tileable 3D worley noise\nfloat worleyNoise(vec3 uv, float freq, bool tileable)\n{    \n    vec3 id = floor(uv);\n    vec3 p = fract(uv);\n    float minDist = 10000.;\n    \n    for (float x = -1.; x <= 1.; ++x)\n    {\n        for(float y = -1.; y <= 1.; ++y)\n        {\n            for(float z = -1.; z <= 1.; ++z)\n            {\n                vec3 offset = vec3(x, y, z);\n                vec3 h = vec3(0.);\n                if (tileable)\n                    h = hash33(mod(id + offset, vec3(freq))) * .4 + .3; // [.3, .7]\n\t\t\t\telse\n                    h = hash33(id + offset) * .4 + .3; // [.3, .7]\n    \t\t\th += offset;\n            \tvec3 d = p - h;\n           \t\tminDist = min(minDist, dot(d, d));\n            }\n        }\n    }\n    \n    // inverted worley noise\n    return 1. - minDist;\n}\n\n// Fbm for Perlin noise based on iq's blog\nfloat perlinFbm(vec3 p, float freq, int octaves)\n{\n    float G = exp2(-.85);\n    float amp = 1.;\n    float noise = 0.;\n    for (int i = 0; i < octaves; ++i)\n    {\n        noise += amp * valueNoise(p * freq, freq);\n        freq *= 2.;\n        amp *= G;\n    }\n    \n    return noise;\n}\n\n// Tileable Worley fbm inspired by Andrew Schneider's Real-Time Volumetric Cloudscapes\n// chapter in GPU Pro 7.\nfloat worleyFbm(vec3 p, float freq, bool tileable)\n{\n    float fbm = worleyNoise(p * freq, freq, tileable) * .625 +\n        \t \tworleyNoise(p * freq * 2., freq * 2., tileable) * .25 +\n        \t \tworleyNoise(p * freq * 4., freq * 4., tileable) * .125;\n    return max(0., fbm * 1.1 - .1);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/**\n  Buffer A generates Perlin-Worley and Worley fbm noises used for modeling clouds\n  in buffer C. This buffer only writes to texture at the beginning or whenever the\n  viewport resolution is changed.\n*/\n\nbool resolutionChanged() {\n    return int(texelFetch(iChannel1, ivec2(0), 0).r) != int(iResolution.x);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (resolutionChanged())\n    {\n        vec2 uv = fragCoord / iResolution.xy;\n        vec4 col = vec4(0.);\n        col.r += perlinFbm(vec3(uv, .4), 4., 15) * .5;\n        col.r = abs(col.r * 2. - 1.);\n        col.r = remap(col.r,  worleyFbm(vec3(uv, .2), 4., true) - 1., 1., 0., 1.);\n        col.g += worleyFbm(vec3(uv, .5), 8., true) * .625 + \n            \t worleyFbm(vec3(uv, .5), 16., true) * .25  +\n            \t worleyFbm(vec3(uv, .5), 32., true) * .125;\n        col.b = 1. - col.g;\n        fragColor = col;\n    }\n    else\n    {\n\t\tfragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);   \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n  Buffer B ray marches and shades the terrain using iq's 3 light model and improved\n  height fog. This buffer only updates 1 pixel in a 4x4 grid per frame, and the rest\n  are reprojected.\n*/\n\n// Iq's slightly modified terrain fbm\nconst mat2 m2 = mat2(.8, -.6, .6, .8);\n\nfloat terrainFbm(vec2 uv, int octaves, sampler2D smp)\n{\n    vec2  p = uv * TERRAIN_FREQ;\n    float a = 0.;\n    float b = 1.;\n\tvec2  d = vec2(0.);\n    \n    for (int i = 0; i < octaves; ++i)\n    {\n        vec3 n = valueNoiseDerivative(p, smp);\n        d += n.yz;\n        a += b * n.x / (1. + dot(d, d));\n\t\tb *= .5;\n        p = m2 * p * 2.;\n    }\n    \n    a = abs(a) * 2. - 1.;\n    \n    return smoothstep(-.95, .5, a) * a * TERRAIN_HEIGHT;\n}\n\nvec3 calcNormal(vec3 pos, float freq, float t)\n{\n    vec2 eps = vec2( 0.002 * t, 0.0 );\n    int norLod = int(max(5., float(HQ_OCTAVES) - (float(HQ_OCTAVES) - 1.)\n                         * t / CAMERA_FAR));\n    return normalize( \n        vec3(terrainFbm(pos.xz - eps.xy, norLod, iChannel0) - terrainFbm(pos.xz\n\t\t\t\t\t+ eps.xy, norLod, iChannel0),\n             2.0 * eps.x,\n             terrainFbm(pos.xz - eps.yx, norLod, iChannel0) - terrainFbm(pos.xz\n\t\t\t\t\t+ eps.yx, norLod, iChannel0)));\n}\n\nfloat raymarchShadow(Ray ray)\n{\n    float shadow = 1.;\n\tfloat t = CAMERA_NEAR;\n    vec3 p = vec3(0.);\n    float h = 0.;\n    for(int i = 0; i < 80; ++i)\n\t{\n\t    p = ray.origin + t * ray.direction;\n        h = p.y - terrainFbm(p.xz, MQ_OCTAVES, iChannel0);\n\t\tshadow = min(shadow, 8. * h / t);\n\t\tt += h;\n\t\tif (shadow < 0.001 || p.z > CAMERA_FAR) break;\n\t}\n\treturn SAT(shadow);\n}\n\nfloat raymarchTerrain(Ray ray)\n{\n\tfloat t = CAMERA_NEAR, h = 0.;\n    for (int i = 0; i < 200; ++i)\n    {\n    \tvec3 pos = ray.origin + ray.direction * t;\n        h = pos.y - terrainFbm(pos.xz, MQ_OCTAVES, iChannel0);\n        if (abs(h) < (t * .002) || t > CAMERA_FAR)\n            break;\n        t += h * .5;\n    }\n    return t;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 st = fragCoord / iResolution.xy;\n    vec2 uv = (2. * fragCoord - iResolution.xy) / iResolution.y;\n    vec2 mouse = (2. * iMouse.xy - iResolution.xy) / iResolution.y;\n    \n    bool updatePixel = writeToPixel(fragCoord, iFrame);\n    \n    vec4 col = textureLod(iChannel1, st, 0.);\n    \n    if(updatePixel) // only draw 1/16th resolution per frame\n    {\n        Ray ray = getCameraRay(uv, iTime);\n    \n        float terrainDist = raymarchTerrain(ray);\n\n        vec3 sun = getSun(mouse, iTime);\n        vec3 sunDir = normalize(vec3(sun.x, sun.z, -1.));\n        vec3 sunHalf = normalize(sunDir+ray.direction);\n        float sunDot = max(0., dot(ray.direction, sunDir));\n        \n\t\tvec3 terrainNormal = vec3(0.);\n        \n        col *= 0.;\n        \n        if (terrainDist > CAMERA_FAR)\n        {\n            // sky\n            col.rgb += atmosphericScattering(uv * .5 + .225, sun.xy * .5 + .225, true);\n            col.gb += .006 - uv.y * .0048; // slight night time blue-green tint\n\n            // stars\n            float t = iTime * .15;\n            float stars = pow(hash12(fragCoord), 4. * iResolution.x);\n            float twinkle = sin(t * 3.7 + uv.x - sin(uv.y * 20. + t) * 10.) * 2.;\n            twinkle *= cos(uv.y + t * 4.4 - sin(uv.x * 15. + t) * 7.) * 1.5;\n            twinkle = twinkle * .5 + .5;\n            col += max(0., stars * twinkle * smoothstep(.075, 0., sun.z) * 2.);\n        }\n        else\n        {\n            vec3 marchPos = ray.origin + ray.direction * terrainDist;\n            terrainNormal += calcNormal(marchPos, TERRAIN_FREQ, terrainDist); \n\t\t\t\n            // terrain colors\n            vec3 rock = vec3(.1, .1, .08);\n            vec3 snow = vec3(.9);\n            vec3 grass = vec3(.02, .1, .05);\n\n            vec3 albedo = mix(grass, rock, smoothstep(0., .1 * TERRAIN_HEIGHT,\n\t\t\t\t\t\t\t\tmarchPos.y)); \n            albedo = mix(albedo, snow, smoothstep(.4 * TERRAIN_HEIGHT,\n\t\t\t\t\t\t\t1.4 * TERRAIN_HEIGHT, marchPos.y));\n            albedo = mix(rock, albedo, smoothstep(.4, .7, terrainNormal.y));\n\n            float terrainShadow = clamp(raymarchShadow(Ray(marchPos - sunDir * .001, \n\t\t\t\t\t\t\t\t\t\tsunDir)), 0., 8.) + .2;\n\n            float diffuse = max(dot(sunDir, terrainNormal), 0.) * terrainShadow;\n            float specular = SAT(dot(sunHalf, ray.direction));\n            float skyAmbient = SAT(.5 + .5 * terrainNormal.y);\n\n            col.rgb += SUN_INTENSITY * SUN_COLOR * diffuse; // sun diffuse\n            // sky ambient\n            col.rgb += vec3(.5, .7, 1.2) * skyAmbient;\n            // backlight ambient\n            col.rgb += SUN_COLOR * (SAT(.5 + .5 * dot(\n                normalize(vec3(-sunDir.x, sunDir.y, sunDir.z)), terrainNormal)));\n            // terrain tex color\n            col.rgb *= albedo;\n\n            // specular\n            col.rgb += SUN_INTENSITY * .4 * SUN_COLOR * diffuse \n                \t\t\t* pow(SAT(specular), 16.);\n\n            // Iq's height based density fog\n            float fogMask = FOG_C * exp(-ray.origin.y * FOG_B) *\n                (1. - exp(-pow(terrainDist * FOG_B, 1.5) * ray.direction.y))\n                / ray.direction.y;\n            vec3 fogCol = mix(atmosphericScattering(uv * .5 + .75, sun.xy * .5 + .225,\n\t\t\t\t\t\t\t\tfalse) * .75, vec3(.8, .6, .3), pow(sunDot, 8.));\n            // shitty night time fog hack\n            fogCol = mix(vec3(.4, .5, .6), fogCol, smoothstep(0., .1, sun.z));\n            col.rgb = mix(col.rgb, fogCol, SAT(fogMask));\n\n            col.rgb *= max(.0, sun.z)\n                + mix(vec3(smoothstep(.1, 0., sun.z)) * terrainNormal.y, fogCol, \n                      SAT(fogMask)) * (.012, .024, .048);\n        }\n        col.a = terrainDist;\n    }\n    \n    fragColor = col;\n    \n    if (fragCoord.x < 1. && fragCoord.y < 1.)\n    {\n    \tfragColor = vec4(iResolution.x, vec3(0.));   \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n  Buffer C draws the clouds in the sky. The texture from buffer A is used to model the\n  clouds in the ray march and the light march loops. Just like buffer B, only 1 out 16\n  pixels are processed per frame and the rest are reprojected. If anyone's interested,\n  I've compiled a useful list of resources for rendering realtime volumetric clouds\n  here: https://gist.github.com/pxv8270/e3904c49cbd8ff52cb53d95ceda3980e\n*/\n\nconst vec3 noiseKernel[6u] = vec3[] \n(\n\tvec3( .38051305,  .92453449, -.02111345),\n\tvec3(-.50625799, -.03590792, -.86163418),\n\tvec3(-.32509218, -.94557439,  .01428793),\n\tvec3( .09026238, -.27376545,  .95755165),\n\tvec3( .28128598,  .42443639, -.86065785),\n\tvec3(-.16852403,  .14748697,  .97460106)\n);\n\n//-------------------------------------------------------------------------------------\n// Clouds modeling\n//-------------------------------------------------------------------------------------\n\nfloat raySphereIntersect(Ray ray, float radius)\n{\n    // note to future me: don't need \"a\" bcuz rd is normalized and dot(rd, rd) = 1\n \tfloat b = 2. * dot(ray.origin, ray.direction);\n    float c = dot(ray.origin, ray.origin) - radius * radius;\n    float d = sqrt(b * b - 4. * c);\n    return (-b + d) * .5;\n}\n\nfloat cloudGradient(float h)\n{\n    return smoothstep(0., .05, h) * smoothstep(1.25, .5, h);\n}\n\nfloat cloudHeightFract(float p)\n{\n\treturn (p - EARTH_RADIUS - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM);\n}\n\nfloat cloudBase(vec3 p, float y)\n{\n    vec3 noise = textureLod(iChannel2, (p.xz - (WIND_DIR.xz * iTime * WIND_SPEED))\n                            * CLOUD_BASE_FREQ, 0.).rgb;\n    float n = y * y * noise.b + pow(1. - y, 12.);\n    float cloud = remap01(noise.r - n, noise.g - 1., 1.);\n    return cloud;\n}\n\nfloat cloudDetail(vec3 p, float c, float y)\n{\n    p -= WIND_DIR * 3. * iTime * WIND_SPEED;\n    // this is super expensive :(\n    float hf = worleyFbm(p, CLOUD_DETAIL_FREQ, false) * .625 +\n        \t   worleyFbm(p, CLOUD_DETAIL_FREQ*2., false) * .25 +\n        \t   worleyFbm(p, CLOUD_DETAIL_FREQ*4., false) * .125;\n    hf = mix(hf, 1. - hf, y * 4.);\n    return remap01(c, hf * .5, 1.);\n}\n\nfloat getCloudDensity(vec3 p, float y, bool detail)\n{\n    p.xz -= WIND_DIR.xz * y * CLOUD_TOP_OFFSET;\n    float d = cloudBase(p, y);\n    d = remap01(d, CLOUD_COVERAGE, 1.) * (CLOUD_COVERAGE);\n    d *= cloudGradient(y);\n    bool cloudDetailTest = (d > 0. && d < .3) && detail; \n    return ((cloudDetailTest) ? cloudDetail(p, d, y) : d);\n}\n\n//-------------------------------------------------------------------------------------\n// Clouds lighting\n//-------------------------------------------------------------------------------------\n\nfloat henyeyGreenstein( float sunDot, float g) {\n\tfloat g2 = g * g;\n\treturn (.25 / PI) * ((1. - g2) / pow( 1. + g2 - 2. * g * sunDot, 1.5));\n}\n\nfloat marchToLight(vec3 p, vec3 sunDir, float sunDot, float scatterHeight)\n{\n    float lightRayStepSize = 11.;\n\tvec3 lightRayDir = sunDir * lightRayStepSize;\n    vec3 lightRayDist = lightRayDir * .5;\n    float coneSpread = length(lightRayDir);\n    float totalDensity = 0.;\n    for(int i = 0; i < CLOUD_LIGHT_STEPS; ++i)\n    {\n        // cone sampling as explained in GPU Pro 7 article\n     \tvec3 cp = p + lightRayDist + coneSpread * noiseKernel[i] * float(i);\n        float y = cloudHeightFract(length(p));\n        if (y > .95 || totalDensity > .95) break; // early exit\n        totalDensity += getCloudDensity(cp, y, false) * lightRayStepSize;\n        lightRayDist += lightRayDir;\n    }\n    \n    return 32. * exp(-totalDensity * mix(CLOUD_ABSORPTION_BOTTOM,\n\t\t\t\tCLOUD_ABSORPTION_TOP, scatterHeight)) * (1. - exp(-totalDensity * 2.));\n}\n\n//-------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 st = fragCoord / iResolution.xy;\n    vec2 uv = (2. * fragCoord - iResolution.xy) / iResolution.y;\n    vec2 mouse = (2. * iMouse.xy - iResolution.xy) / iResolution.y;\n    float terrainDist = texelFetch(iChannel0, ivec2(fragCoord), 0).w;\n    vec4 prevCol = textureLod(iChannel1, st, 0.);\n    vec4 col = vec4(0.);\n    \n    bool updatePixel = writeToPixel(fragCoord, iFrame);\n    \n    if (updatePixel) // only draw 1/16th resolution per frame\n    {\n        \n        Ray ray = getCameraRay(uv, iTime);\n        vec3 sun = getSun(mouse, iTime);\n        // clouds don't get blindingly bright with sun at zenith\n        sun.z = clamp(sun.z, 0., .8);\n        vec3 sunDir = normalize(vec3(sun.x, sun.z, -1.));\n        float sunDot = max(0., dot(ray.direction, sunDir));\n        float sunHeight = smoothstep(.01, .1, sun.z + .025);\n        \n        if (terrainDist > CAMERA_FAR)\n        {\n\n            // clouds\n            ray.origin.y = EARTH_RADIUS;\n            float start = raySphereIntersect(ray, EARTH_RADIUS + CLOUD_BOTTOM);\n            float end = raySphereIntersect(ray, EARTH_RADIUS + CLOUD_TOP);\n            float cameraRayDist = start;\n            float cameraRayStepSize = (end - start) / float(CLOUD_STEPS);\n            \n            // blue noise offset\n            cameraRayDist += cameraRayStepSize * texelFetch(iChannel3,\n\t\t\t\t\t\t\t(ivec2(fragCoord) + iFrame * ivec2(113, 127)) & 1023, 0).r;\n            vec3 skyCol = atmosphericScattering(vec2(0.15, 0.05),\n                                vec2(.5, sun.y*.5+.25), false);\n            skyCol.r *= 1.1;\n\t\t\tskyCol = SAT(pow(skyCol * 2.1, vec3(4.2)));\n            float sunScatterHeight = smoothstep(.15, .4, sun.z);\n            float hgPhase = mix(henyeyGreenstein(sunDot, .4),\n                                henyeyGreenstein(sunDot, -.1), .5);\n            // sunrise/sunset hack\n            hgPhase = max(hgPhase, 1.6 * henyeyGreenstein(sqrt(sunDot),\n\t\t\t\t\t\t\tSAT(.8 - sunScatterHeight)));\n            // shitty night time hack\n            hgPhase = mix(pow(sunDot, .25), hgPhase, sunHeight);\n            \n            vec4 intScatterTrans = vec4(0., 0., 0., 1.);\n            vec3 ambient = vec3(0.);\n            for (int i = 0; i < CLOUD_STEPS; ++i)\n            {\n                vec3 p = ray.origin + cameraRayDist * ray.direction;\n                float heightFract = cloudHeightFract(length(p));\n                float density = getCloudDensity(p, heightFract, true);\n                if (density > 0.)\n                {\n                    ambient = mix(CLOUDS_AMBIENT_BOTTOM, CLOUDS_AMBIENT_TOP, \n                                  \theightFract);\n\t\t\t\t\t\n                    // cloud illumination\n                    vec3 luminance = (ambient * SAT(pow(sun.z + .04, 1.4))\n\t\t\t\t\t\t+ skyCol * .125 + (sunHeight * skyCol + vec3(.0075, .015, .03))\n\t\t\t\t\t\t* SUN_COLOR * hgPhase\n\t\t\t\t\t\t* marchToLight(p, sunDir, sunDot, sunScatterHeight)) * density;\n\n                    // improved scatter integral by Sébastien Hillaire\n                    float transmittance = exp(-density * cameraRayStepSize);\n                    vec3 integScatter = (luminance - luminance * transmittance)\n                        * (1. / density);\n                    intScatterTrans.rgb += intScatterTrans.a * integScatter; \n                    intScatterTrans.a *= transmittance;\n\n                }\n\n                if (intScatterTrans.a < .05)\n                    break;\n                cameraRayDist += cameraRayStepSize;\n            }\n\n            // blend clouds with sky at a distance near the horizon (again super hacky)\n            float fogMask = 1. - exp(-smoothstep(.15, 0., ray.direction.y) * 2.);\n            vec3 fogCol = atmosphericScattering(uv * .5 + .2, sun.xy * .5 + .2, false);\n            intScatterTrans.rgb = mix(intScatterTrans.rgb,\n                                      fogCol * sunHeight, fogMask);\n            intScatterTrans.a = mix(intScatterTrans.a, 0., fogMask);\n\n            col = vec4(max(vec3(intScatterTrans.rgb), 0.), intScatterTrans.a);\n            \n            //temporal reprojection\n    \t\tcol = mix(prevCol, col, .5);\n        }\n    }\n    else\n    {\n\t\tcol = prevCol;\n    }\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/**\n  Buffer D performs TXAA on the clouds from buffer C to hide some blue noise and\n  ghosting artifacts.\n*/\n\nconst ivec2 offsets[8u] = ivec2[]\n(\n    ivec2(-1,-1), ivec2(-1, 1), \n\tivec2(1, -1), ivec2(1, 1), \n\tivec2(1, 0), ivec2(0, -1), \n\tivec2(0, 1), ivec2(-1, 0)\n);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec4 currentBuffer = textureLod(iChannel0, uv, 0.);\n    vec4 historyBuffer = textureLod(iChannel1, uv, 0.);\n\n    vec4 colorAvg = currentBuffer;\n    vec4 colorVar = currentBuffer * currentBuffer;\n    \n    // Marco Salvi's Implementation (by Chris Wyman)\n    for(int i = 0; i < 8; i++)\n    {\n        vec4 neighborTexel = texelFetch(iChannel0, ivec2(fragCoord.xy) + offsets[i], 0);\n        colorAvg += neighborTexel;\n        colorVar += neighborTexel * neighborTexel;\n    }\n    colorAvg /= 9.;\n    colorVar /= 9.;\n    float gColorBoxSigma = .75;\n\tvec4 sigma = sqrt(max(vec4(0.), colorVar - colorAvg * colorAvg));\n\tvec4 colorMin = colorAvg - gColorBoxSigma * sigma;\n\tvec4 colorMax = colorAvg + gColorBoxSigma * sigma;\n    \n    historyBuffer = clamp(historyBuffer, colorMin, colorMax);\n\n\tfragColor = mix(currentBuffer, historyBuffer, 0.95);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,107 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1680809085",
+            "description": "Raytracer with some material properties.\nClick and drag to move camera.\nModify variables at Common.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ddyXRh",
+            "likes": 2,
+            "name": "RayTracing Material Properties",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "reflection",
+                "light",
+                "sphere",
+                "lightning",
+                "metal",
+                "material"
+            ],
+            "usePreview": 0,
+            "username": "Txoka",
+            "viewed": 277
+        },
+        "renderpass": [
+            {
+                "code": "float ACES(float x) {\n    // Narkowicz 2015, \"ACES Filmic Tone Mapping Curve\"\n    const float a = 2.51;\n    const float b = 0.03;\n    const float c = 2.43;\n    const float d = 0.59;\n    const float e = 0.14;\n    return (x * (a * x + b)) / (x * (c * x + d) + e);\n}\n\nvec3 ACES(vec3 x){\n    return vec3(ACES(x.r),ACES(x.g),ACES(x.b));\n}\n\nvoid mainImage( out vec4 O, in vec2 U ){\n    vec4 light=texelFetch(iChannel0,ivec2(U),0);\n    vec3 l=light.rgb/light.w;\n    O.rgb=pow(l,vec3(1./gamma));\n    #ifdef TONEMAP\n    O.rgb=ACES(O.rgb);\n    #endif\n    O.w=1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec3 random_normal(inout uvec3 x){\n    vec3 theta = tau * hash(x);\n    vec3 rho = sqrt( -2. * log(hash(x)) );\n    return rho * cos(theta);\n}\n\nvec2 random_in_circle(inout uvec3 x){\n    vec2 r = hash(x).xy;\n    r.x*=tau;\n    return vec2(sin(r.x),cos(r.x))*sqrt(r.y);\n}\n\nvec3 point_in_sphere(inout uvec3 x){\n    return normalize(random_normal(x));\n}\n\nRay getRayFromCamera(Cam camera, vec2 screenPos, float dis, uvec3 seed, float dx, float dof) {\n    vec3 p = vec3(camera.dir.x,0,camera.dir.z);\n    vec3 right = normalize(cross(p,vec3(0,1,0)));\n    vec3 up = normalize(cross(right, camera.dir));\n\n    float tanFovHalf = tan(radians(camera.fov) * 0.5);\n    vec3 screenCenter = camera.pos + camera.dir * dis;\n    vec2 screenSize = vec2(2.0 * tanFovHalf, 2.0 * tanFovHalf) * dis;\n    \n    screenPos+=random_in_circle(seed)*dx;\n    screenPos*=screenSize;\n    \n    vec2 jitter=random_in_circle(seed)*dof;\n    \n    vec3 screenPosWorld = screenCenter +  (screenPos.y*up+screenPos.x*right);\n    vec3 startpos=camera.pos + jitter.x*up+jitter.y*right;\n    \n    vec3 rayDirection = normalize(screenPosWorld - startpos);\n    \n    \n    \n    Ray ray;\n    ray.ro = startpos;\n    ray.rd = rayDirection;\n\n    return ray;\n}\n\nHitInfo hit_sphere(Ray r, Sphere s, float n){\n\tvec3 rc = r.ro-s.center;\n\tfloat c = dot(rc, rc) - (s.radius*s.radius);\n\tfloat b = dot(r.rd, rc);\n\tfloat d = b*b - c;\n\tfloat t = -b - n*sqrt(abs(d));\n\tfloat st = step(0.0, min(t,d));\n\tfloat dist = mix(-1.,t,st);\n    \n    vec3 pos = r.ro + dist * r.rd;\n    vec3 dir = r.rd;\n    vec3 normal = normalize(pos - s.center);\n    Material m = s.material;\n    \n    bool hit=false;\n    \n    if(dist>=0.)hit=true;\n    \n    return HitInfo(hit,pos,dir,normal,dist,m);\n}\n\nfloat dp = 1e-4;\nRay bounce(inout HitInfo h, inout uvec3 seed){\n    if(!h.hit)return Ray(h.position,h.direction);\n    vec3 p = h.position + h.normal * dp;\n    vec3 specular = reflect(h.direction,h.normal);\n    \n    vec3 diffuse = normalize(h.normal+point_in_sphere(seed));\n    //vec3 diffuse = point_in_sphere(seed);\n    //if(dot(diffuse,h.normal)<0.)diffuse=-diffuse;\n    \n    bool isSpecular = hash(seed).x<h.material.specularprob;\n    h.material.specularprob=isSpecular?1.:0.;\n    vec3 newdir;\n    if(isSpecular){\n        newdir=normalize(mix(diffuse,specular,h.material.specularsmoothness));\n    }else{\n        newdir = normalize(mix(diffuse,specular,h.material.smoothness));\n    }\n    return Ray(p,newdir);\n}\n\n\nHitInfo next_hit(Ray r){\n    HitInfo h=HitInfo(false,r.ro,r.rd,vec3(0),0.,Material(0.,vec3(1),vec3(1),1.,vec3(0.),0.,false));\n    float dis=1e38;\n    for(int i=0;i<N;i++){\n        HitInfo z=hit_sphere(r,list[i],1.);\n        \n        \n        //if(i==2)z.material.emission=vec3(sin(iTime)*0.5+0.5);\n        \n        \n        if(z.dis<dis && z.hit){\n            h=z;\n            dis=z.dis;\n        }\n    }\n    return h;\n}\n\nvec3 skylight(vec3 dir){\n    return pow(texture(iChannel1,dir,0.).rgb,vec3(gamma));\n}\n\nvec3 calc_light(Ray r, int bounces, inout uvec3 seed){\n    HitInfo h = HitInfo(true,vec3(0),vec3(0),vec3(0),0.,Material(0.,vec3(1),vec3(0),1.,vec3(0),0.,false));\n    int n=bounces+1;\n    \n    vec3 raycol=vec3(1.);\n    vec3 light=vec3(0.);\n    \n    while(h.hit){\n        n--;\n        if(n<0)break;\n        \n        light+=h.material.emission*raycol;\n\n        raycol*=h.material.specularprob==0.?h.material.color:h.material.specularcolor;\n\n        \n        h=next_hit(r);\n        \n        r=bounce(h,seed);\n    }\n    if(!h.hit)light+=skylight(r.rd) * raycol;\n    \n    return light;\n}\n\nvoid mainImage( out vec4 O, in vec2 U ){\n    vec2 pos=(iMouse.xy*2.-R.xy)/R.xy*0.5*tau;\n    if(iMouse.x==0.&&iMouse.y==0.)pos=vec2(-.4,-.5);\n    \n    pos*=vec2(-1,1);\n    uvec3 seed=uvec3(U,iFrame);\n    \n    vec3 camdir=vec3(sin(pos.x)*cos(pos.y/2.),sin(pos.y/2.),cos(pos.x)*cos(pos.y/2.));\n    \n    Cam c=Cam(CAM_POS,normalize(camdir),FOV);\n\n    vec2 uv = (U*2.-R.xy)/R.y;\n    \n    \n    float dx=2./R.y;\n\n    \n    vec3 light=vec3(0);\n    \n    for(int i=0;i<RAYS;i++){\n        Ray r = getRayFromCamera(c,uv,focus_distance,seed,dx,dof_intensity);\n        light+=calc_light(r,8,seed);\n    }\n    light/=float(RAYS);\n    O.rgb=light;\n    O.w=1.;\n    \n    vec4 lastframe=texelFetch(iChannel0,ivec2(U),0);\n    #ifdef REFINE\n    if(iMouse.z>0.){\n        lastframe*=0.;\n    }\n    O=lastframe+O;\n    #else\n    O.rgb=O.rgb*0.1+lastframe.rgb*0.9;\n    O.w=1.;\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float gamma=2.2;\nconst float tau=8.*atan(1.);\nconst uint k = 1103515245U;\nint RAYS=16;\n\nfloat focus_distance=1.;\nfloat dof_intensity=0.035;\nfloat FOV=60.;\nvec3 CAM_POS=vec3(0);\n\n#define REFINE\n#define TONEMAP\n\n\nstruct Material{\n    float smoothness;\n    vec3 color;\n    vec3 emission;\n    float specularsmoothness;\n    vec3 specularcolor;\n    float specularprob;\n    bool finish;\n};\n\nstruct HitInfo{\n    bool hit;\n    vec3 position;\n    vec3 direction;\n    vec3 normal;\n    float dis;\n    Material material;\n};\n\nstruct Sphere{\n    vec3 center;\n    float radius;\n    Material material;\n};\n\nstruct Plane{\n    vec3 normal;\n    float pos;\n    Material material;\n};\n\nstruct Triangle{\n    vec3 p1;\n    vec3 p2;\n    vec3 p3;\n    Material material;\n};\n\n\nstruct Ray{\n    vec3 ro;\n    vec3 rd;\n};\n\nstruct Cam{\n    vec3 pos;\n    vec3 dir;\n    float fov;\n};\n\nvec3 hash( inout uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\nconst Material tomato=Material(0.,vec3(1,0,0),vec3(0),0.85,vec3(0.6),0.3,false);\nconst Material lightsource=Material(0.,vec3(1),vec3(10),1.,vec3(0),0.,false);\nconst Material white_metal=Material(0.4,vec3(1),vec3(0),0.,vec3(0.),0.,false);\nconst Material white_mate=Material(0.,vec3(1),vec3(0),0.,vec3(0.),0.,false);\nconst Material blue_mate=Material(0.,vec3(0,0,1),vec3(0),0.,vec3(0.),0.,false);\nconst Material green_mate=Material(0.,vec3(0,1,0),vec3(0),0.,vec3(0.),0.,false);\nconst Material red_mate=Material(0.,vec3(1,0,0),vec3(0),0.,vec3(0.),0.,false);\nconst Material black_tomato=Material(0.,vec3(0),vec3(0),0.9,vec3(0.6),0.3,false);\nconst Material mirror=Material(1.,vec3(1),vec3(0),0.,vec3(0.),0.,false);\n\nconst int N=10;\nSphere list[N]=Sphere[N](\n    Sphere(vec3(0,0,1),0.3,tomato),\n    Sphere(vec3(1,0,2),1.,white_metal),\n    Sphere(vec3(1,-1,0),0.5,lightsource),\n    Sphere(vec3(-5,0,10),1.,tomato),\n    Sphere(vec3(0,0,1010),1000.,green_mate),\n    Sphere(vec3(0,0,-1010),1000.,green_mate),\n    Sphere(vec3(1010,0,0),1000.,red_mate),\n    Sphere(vec3(-1010,0,0),1000.,blue_mate),\n    Sphere(vec3(0,-1010,0),1000.,black_tomato),\n    Sphere(vec3(0,1010,0),1000.,black_tomato)\n);\n\n#define R iResolution",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,132 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1667670817",
+            "description": "Koch curves but with an arbitrary path, set by the mouse (drag the three inner red points). See code for other controls.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "mdB3Wz",
+            "likes": 23,
+            "name": "Metakoch II",
+            "published": 3,
+            "tags": [
+                "lsystem",
+                "stack",
+                "recursion",
+                "koch"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 266
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Metakoch II, mla, 2022.\n//\n// Koch curves but with an arbitrary path, set by the mouse (drag the three inner\n// red points). There is a counter limiting the number iterations eg. for\n// heavily overlapping curves - place where this happens are coloured a lurid green.\n// Draws two copies of the curve, rotated by 180°, filling the region in between.\n//\n// Code should generalize to more than 4 segments, or using a diffent path at\n// each level of recursion - I've not experimented with this.\n//\n// Controls:\n//\n// <mouse>: set path\n// <up>/<down>: zoom\n// 'c': hide controls\n// 'a': adaptive mode where we iterate down to a minimum segment length\n// 'x': show segments actually drawn around mouse position\n// 'f': fill shape\n// 'm': show moving point\n// 'p': progressive depth\n//\n////////////////////////////////////////////////////////////////////////////////\n\n\nconst int MAXDEPTH = 16;       // Maximum stack depth\nconst vec2 initp = vec2(-1,0); // Initial drawing point\n\nvec2 p = initp;                // The drawing point\nvec2 point = vec2(0);          // The moving point\nbool gotpoint = false;\nfloat plen = 0.0;              // Cumulative path length\nint wind = 0; // Compute winding number here\n\nvoid polywind(vec2 p, vec2 q, vec2 r) {\n  // NR winding number computation\n  q -= p; r -= p; // Relative to p\n  float t = determinant(mat2(q,r));\n  if (q.x <= 0.0) {\n    if (r.x > 0.0 && t > 0.0) wind++;\n  } else {\n    if (r.x <= 0.0 && t < 0.0) wind--;\n  }\n}\n\nfloat drawsegment(vec2 pos, float seglen, float theta, float t) {\n  vec2 seg = seglen*vec2(cos(theta),sin(theta));\n  if (t < plen+seglen && !gotpoint) {\n    gotpoint = true;\n    point = p + (t-plen)/seglen*seg;\n  }\n  vec2 q = p + seg;\n  float d = segment(pos,p,q);\n  polywind(pos,p,q);\n  plen += seglen;\n  p = q;\n  return d;\n}\n\n// Map screen coordinates\nvec2 map(vec2 pos) {\n  pos = scale*(2.0*pos - iResolution.xy)/iResolution.y;\n  return pos;\n}\n\n// This should get something from a buffer so we can set all three points\nvec2 getpoint(int i) {\n  vec2 p = getselection(i-1);\n  p *= 0.5;\n  p.x += 0.5;\n  return p;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  int maxdepth = 8;\n  bool adaptive = key(CHAR_A);\n  if (adaptive) maxdepth = MAXDEPTH;\n  else if (key(CHAR_P)) maxdepth = 1+int(iTime)%maxdepth;\n  scale = exp(0.1*float(keycount(KEY_DOWN)-keycount(KEY_UP)));\n  vec2 pos = map(fragCoord);\n  vec2 pos2 = pos;\n  if (key(CHAR_X)) pos2 = map(iMouse.xy);\n  float pwidth = fwidth(pos.x);\n  vec2 program[5];\n  float radius = 0.0;\n  float pathlen = 0.0;\n  {\n    #define C(a,b) (vec2(a,b))\n    vec2 p[] =\n      vec2[](vec2(0,0),\n             getpoint(1),\n             getpoint(2),\n             getpoint(3),\n             vec2(1,0));\n    float theta = 0.0;\n    float seglen = 1.0;\n    for (int i = 0; i < 4; i++) {\n      radius = max(radius,distance(vec2(0.5,0),p[i]));\n      assert(p[i] != p[i+1]);\n      float theta1 = arg(p[i+1]-p[i]);\n      float seglen1 = length(p[i+1]-p[i]);\n      pathlen += seglen1;\n      program[i] = C(seglen1/seglen,theta1-theta);\n      theta = theta1;\n      seglen = seglen1;\n    }\n    program[4] = C(1.0/seglen,-theta);\n    #undef C\n  }\n  int stack[MAXDEPTH];\n  float d = 1e8;\n  float seglen = 2.0;\n  float theta = 0.0;    // Cumulative angle\n  float t = mod(iTime,2.0*seglen*pow(pathlen,float(maxdepth))); // Moving point\n  for (int i = 0; i < 2; i++,theta += PI) {\n  int depth = 0;\n  stack[depth++] = 0;\n  int check = 1000;\n  while (depth > 0 && check-- > 0) {\n    assert(check > 1);\n    vec2 instr = program[stack[depth-1]++];\n    float lenfact = instr[0];\n    float angle = instr[1];\n    theta += angle; // Apply turn\n    seglen *= lenfact;\n    if (stack[depth-1] == program.length()) {\n      depth--;    // Terminate level & unwind\n    } else if (depth == maxdepth || seglen < 3.0*pwidth) {\n      d = min(d,drawsegment(pos,seglen,theta,t)); // Segment\n    } else {\n      vec2 seg = seglen*vec2(cos(theta),sin(theta));\n      vec2 next = p+seg; // Where we end up\n      if (distance(pos2,p+0.5*seg) > seglen) {\n        polywind(pos,p,next);\n        // Show actuall path taken to mouse position.\n        if (key(CHAR_X)) d = min(d,segment(pos,p,next));\n        p = next;\n        plen += seglen*pow(pathlen,float(maxdepth-depth));\n      } else {\n        stack[depth++] = 0;  // Recurse\n      }\n    }\n  }\n  }\n  polywind(pos,p,initp);\n  float px = fwidth(pos.x);\n  vec3 col = vec3(1,1,0.8);\n  if (!key(CHAR_F) && (wind&1) != 0) {\n     col = texture(iChannel0,pos).xyz;\n     if (d > 1.0) col *= 0.75; \n  }\n  col *= vec3(smoothstep(0.0,px,d));\n  if (key(CHAR_M) && gotpoint) col = mix(vec3(1,0,0), col,smoothstep(0.0,px,distance(pos,point)-0.01));\n  if (key(CHAR_R)) col = mix(vec3(1,0,0), col,smoothstep(0.0,px,abs(distance(pos,vec2(0))-2.0*radius)));\n  if (!key(CHAR_C)) {\n    float px = fwidth(pos.x);\n    vec2 points[] = vec2[](vec2(-1,0),\n                           getselection(0),\n                           getselection(1),\n                           getselection(2),\n                           vec2(1,0));\n    float d = 1e8, d1 = 1e8;\n    for (int i = 0; i < 5; i++) {\n      d1 = min(d1,distance(pos,points[i]));\n      if (i < 4) d = min(d,segment(pos,points[i],points[i+1]));\n    }\n    col = mix(vec3(0),col,smoothstep(0.0,px,d-0.008));\n    col = mix(vec3(1,0,0),col,smoothstep(0.0,px,d1-0.025));\n  }\n  col = pow(col,vec3(0.4545));\n  if (alert) col.g = 1.0;\n  fragColor = vec4(col,1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 45,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "bool alert = false;\nvoid assert(bool b) {\n  if (!b) alert = true;\n}\n\nfloat scale = 1.0;\n\nconst float PI = 3.1415927;\n\nint nselections = 3;\nvec2 initselection(int i) {\n  if (i == 0) return vec2(-0.25,0);\n  if (i == 1) return vec2(0.25,0.8);\n  if (i == 2) return vec2(+0.25,0);\n  return vec2(0);\n}\n\n#define getselection(i) (texelFetch(iChannel2,ivec2((i)+1,3),0).xy)\n\nfloat segment(vec2 p, vec2 a, vec2 b) {\n  p -= a; b -= a;\n  float h = dot(p,b)/dot(b,b);\n  h = clamp(h, 0.0, 1.0);\n  return length(p-b*h);\n}\n\n// Complex argument\nfloat arg(vec2 z) {\n  return atan(z.y,z.x);\n}\n\nconst int KEY_ALT = 18;\n// const int KEY_PAGE_UP = 33;\n// const int KEY_PAGE_DOWN = 34;\n// const int KEY_LEFT = 37;\n// const int KEY_RIGHT = 39;\nconst int KEY_UP = 38;\nconst int KEY_DOWN = 40;\n\n// const int CHAR_0 = 48;\n\nconst int CHAR_A = 65;\n// const int CHAR_B = 66;\nconst int CHAR_C = 67;\n// const int CHAR_D = 68;\n// const int CHAR_E = 69;\nconst int CHAR_F = 70;\n// const int CHAR_G = 71;\nconst int CHAR_H = 72;\n// const int CHAR_I = 73;\n// const int CHAR_J = 74;\nconst int CHAR_K = 75;\n// const int CHAR_L = 76;\nconst int CHAR_M = 77;\n// const int CHAR_N = 78;\nconst int CHAR_O = 79;\nconst int CHAR_P = 80;\n// const int CHAR_Q = 81;\nconst int CHAR_R = 82;\n// const int CHAR_S = 83;\n// const int CHAR_T = 84;\n// const int CHAR_U = 85;\n// const int CHAR_V = 86;\nconst int CHAR_W = 87;\nconst int CHAR_X = 88;\n// const int CHAR_Y = 89;\n// const int CHAR_Z = 90;\n\n#if !defined(key)\n#define key(code) (texelFetch(iChannel3, ivec2((code),2),0).x != 0.0)\n#endif\n#define store(i,j) (texelFetch(iChannel2, ivec2((i),(j)),0))\n#define keycount(code) (int(store((code),0).x))",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define keystate(code,n) ( texelFetch(iChannel3,ivec2(code,n),0) )\n\nvec2 map(vec2 screen) {\n    return scale*(2.0*screen-iResolution.xy)/iResolution.y;\n}\n\nvoid mainImage(out vec4 t, vec2 uv) {\n  scale = exp(0.1*float(keycount(KEY_DOWN)-keycount(KEY_UP)));\n  int i = int(uv.x); // Column number\n  int j = int(uv.y); // Row\n  if (iFrame == 0) {\n    t = vec4(0);\n  } else {\n    t = texelFetch(iChannel2,ivec2(i,j),0); // Get current state   \n  }  \n  if (j == 0) {\n    // First row - key count\n    // Do key repeat here as well?\n    float w1 = keystate(i,0).x;\n    if (w1 != t.w) {\n      t.w = w1;\n      // Don't count key changes when ALT pressed\n      if (keystate(KEY_ALT,0).x == 0.0 && w1 != 0.0) {\n        t.x++; t.y = iTime;\n      }\n    }\n    // Key repeat - only when shader is running!\n    // Should have longer pause after first key press.\n    if (t.w != 0.0 && keystate(KEY_ALT,0).x == 0.0 && iTime-t.y > 0.25) {\n      t.x++; t.y = iTime;\n    }\n  } else if (j == 1) {\n    if (i == 0 && iMouse.z != 0.0) t.xy = iMouse.xy;\n    if (i == 1 && iMouse.z == 0.0) t.xy = iMouse.xy;\n  } else if (j == 2 && key(i)) {\n    // Record mouse position when key pressed\n    t = vec4(iMouse.xy,0,iTime);\n  } else if (j == 3) {\n      // Cell 0 holds currently selected item, 0 = no selection\n    if (i == 0) {\n      if (t.x == 0.0 && iMouse.z > 0.0) {\n        vec2 mouse = map(iMouse.xy);\n        // No selection, but mouse now down\n        for (int i = nselections; i >= 1; i--) {\n          // Select topmost item (assume drawn 1..N)\n          vec2 p = texelFetch(iChannel2,ivec2(i,3),0).xy; // Get current state\n          if (distance(mouse,p) < scale*0.05) {\n            t.x = float(i);\n            break;\n          }\n        }\n      } else if (t.x != 0.0 && iMouse.z <= 0.0) {\n        // Clear selection if mouse up.\n        t.x = 0.0;\n      }\n    } else if (iFrame == 0 || t.z != 1234.0) {\n      t.xyz = vec3(initselection(i-1),1234); // Current coordinates\n    } else {\n      vec4 t0 = texelFetch(iChannel2,ivec2(0,3),0); // Get current state\n      if (int(t0.x) == i && iMouse.z > 0.0) {\n        // If currently selected, copy mouse position\n        t.xy = map(iMouse.xy);\n      }\n    }\n  }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

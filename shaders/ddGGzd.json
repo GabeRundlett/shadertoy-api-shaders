@@ -1,0 +1,252 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1679176738",
+            "description": "A ring of changing-color smoke pots, animated with 3D curl noise and rendered via voxel traversal. Voxel shadows are precomputed.\n\n*WASD/QE to control camera*\n*mouse to move light*\n*Left/right arrows to change voxel resolution*\n*space to reset*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ddGGzd",
+            "likes": 43,
+            "name": "Smoke of Many Colors",
+            "published": 3,
+            "tags": [
+                "3d",
+                "noise",
+                "noise",
+                "light",
+                "voxel",
+                "curl",
+                "volumetric",
+                "shadows",
+                "transparent",
+                "smoke",
+                "translucent",
+                "curlnoise"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 537
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2023\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  A ring of changing-color smoke pots, animated with 3D curl noise and rendered via\n//  voxel traversal. Voxel shadows are precomputed. The voxel engine was used in my\n//  previous shader\n//\n//      Cloudy Volumetric Torus           https://shadertoy.com/view/ds3Gz8\n//  \n//  The smoke is advected according to 3D curl noise. The curl noise computation is from\n//\n//      https://raw.githubusercontent.com/petewerner/misc/master/Curl%20Noise%20Slides.pdf\n//\n//  Buffer A simulates the voxel density while Buffer B computes the light reaching\n//  each voxel. By default, the voxel buffer size is the maximum possible NxNxN that\n//  will fit in your buffer; press left arrow to reduce it (and right arrow to increase\n//  it back again).\n//\n//  Move the light around with the mouse, and take control of the camera with WASD/QE.\n//\n// ---------------------------------------------------------------------------------------\n\n// light scattering\nconst vec3 LIGHT_BLOCK = vec3(1, .8, .3) * 1.;\nconst vec3 LIGHT_BOUNCE = vec3(.8, .8, 1) * 1.;\n\n// voxel traversal loop from mhnewman's Cube Falls: https://shadertoy.com/view/dtSGWd\nvoid castRay(vec3 eye, vec3 ray, int maxIter, float maxDist, inout vec3 color)\n{\n    float totalD = 1.;\n    vec3 totalL = vec3(0);\n\n    vec3 pos = floor(eye);\n    vec3 ri = 1.0 / ray;\n    vec3 rs = sign(ray);\n    vec3 ris = ri * rs;\n    vec3 dis = (pos - eye + 0.5 + rs * 0.5) * ri;\n    \n    vec3 dim = vec3(0);\n    float dist = 0.;\n    for (int i = 0; i < maxIter && dist < maxDist; ++i)\n    {\n        vec4 voxelD = voxelDensity(pos);\n        if (voxelD.w > MIN_DENS)\n        {\n            voxelD *= .5;\n            \n            totalD -= voxelD.w;\n            \n            ivec3 addr = ivec3(pos + vec3(g_VoxelSide / 2., 0, g_VoxelSide / 2.));\n            ivec2 coords = coordFromAddr(addr, int(iResolution.x));\n            float light = fxIsStatePixel(coords) ? 0. : texelFetch(iChannel1, ivec2(coords), 0).x; // get bounced/trasmitted light from buffer\n\n            totalL += pow(LIGHT_BLOCK, vec3(1. - totalD)) * voxelD.w * voxelD.xyz * light * LIGHT_BOUNCE; // add light contribution from bounced light\n\n            if (totalD <= 0.)\n            {\n                totalD = 0.; // cloud is dense enough to be opaque; abort\n                break;\n            }\n\n        }\n    \n        dim = step(dis, dis.yzx);\n\t\tdim *= (1.0 - dim.zxy);\n        \n        dis += dim * ris;\n        pos += dim * rs;\n        \n        dist = dot(dis - ris, dim);\n    }\n    \n\tcolor = color * totalD + totalL;\n}\n\n// From https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0., 1.);\n}\n\nfloat boxDist(vec2 a, vec2 b) { return max(abs(a.x - b.x), abs(a.y - b.y)); }\n\n// generates a checkerboard pattern\n// aa allows reduction of aliasing at steep angles\nfloat checker(vec2 p, float aa)\n{\n    vec2 m = mod(p, vec2(2.));\n    float sd = min(boxDist(vec2(.5, 1.5), m), boxDist(vec2(1.5, .5), m));\n    return smoothstep(-aa, aa, .5 - sd) * .5 + .5;\n}\n\nvoid mainImage( out vec4 fragColor, vec2 u )\n{\n    fxGetState();\n    computeVoxelSide();\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n    vec3 rayDir = fxCalcRay(u, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    // noise to reduce visible voxel boundaries\n    float dth = textureLod(iChannel2,(floor(iTime*1024.0)+u)/1024.0,0.0).x*1.0;\n    vec3 dth3 = vec3(dth, fract(dth + .666), fract(dth * .333)) * 2. - 1.;\n\n    if (rayDir.y > 0. || cameraPos.y < 0.)\n    {\n        fragColor.rgb = vec3(.01, .01, .1) + rayDir.y * .02; // sky\n    }\n    else\n    {\n        // ground\n        vec3 hit = cameraPos - rayDir * (cameraPos.y / rayDir.y); // ground hit position\n        vec3 ld = g_State.lightPos - hit; // light direction\n        float light = 1e2 * ld.y / dot(ld, ld); // light intensity\n        \n        // compute shadows\n        ld = normalize(ld);\n        float block = integrateDensityAlongRay(hit + .5 + ld + dth3, ld, int(g_VoxelSide));\n        \n        // checkerboard pattern\n        float check = checker(hit.xz * 10. / g_VoxelSide, .3 * length(hit.xz - cameraPos.xz) / iResolution.y);\n        \n        // compute color\n        fragColor = vec4(block * light * check);\n\n    }\n    \n    // check for ray hitting voxel bounding box\n    vec2 ts = boxIntersection(cameraPos - vec3(0, g_VoxelSide / 2., 0), rayDir, vec3(g_VoxelSide / 2.));\n    \n    if (ts.x != -1.)\n    {\n        // if the ray hits the box, cast against the voxels\n        castRay(cameraPos + rayDir * ts.x + dth3, rayDir, int(g_VoxelSide) * 4, ts.y - ts.x, fragColor.rgb);\n    }\n    \n    fragColor.xyz = pow(ACESFilm(fragColor.xyz), vec3(1./2.2));\n    fragColor.a = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float LIGHT_INTENS = .06; // light intensity\nconst float MIN_DENS = 6e-2; // miminum density\nconst float DENSITY_LIGHT_BLOCK = .15; // how much light is blocked by some amount of density\n\n// UTILITY\n\nmat2 rotate(float a)\n{\n    vec2 sc = vec2(sin(a), cos(a));\n    return mat2(sc.y, -sc.x, sc.x, sc.y);\n}\n\nfloat length2(vec3 v) { return dot(v, v); }\n\nconst float PI = 3.141592653589793;\n\n#define keyClick(ascii)   ( texelFetch(iChannel3,ivec2(ascii,1),0).x > 0.)\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SHIFT 16\n#define KEY_SPACE 32\n\n#define KEY_LEFT 37\n#define KEY_RIGHT 39\n\n#define KEY_W 87\n#define KEY_A 65\n#define KEY_S 83\n#define KEY_D 68\n#define KEY_Q 81\n#define KEY_E 69\n\n// https://iquilezles.org/articles/boxfunctions/\nvec2 boxIntersection( in vec3 ro, in vec3 rd, in vec3 rad )\n{\n    vec3 m = 1.0/rd;\n    vec3 n = m*ro;\n    vec3 k = abs(m)*rad;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n\n    float tN = max( max( t1.x, t1.y ), t1.z );\n    float tF = min( min( t2.x, t2.y ), t2.z );\n\t\n    if( tN>tF || tF<0.0) return vec2(-1.0); // no intersection\n\n    return vec2( tN, tF );\n}\n\n// STATE MANAGEMENT\n\nstruct fxState\n{\n    vec3 lightPos;\n    float camAngle;\n    float camPitch;\n    float camOrbit;\n    float resolution;\n    float bufferScale;\n    float attractPause;\n    float camPitchVel;\n} g_State;\n\nvoid fxGetStateImpl(sampler2D sampler)\n{\n    vec4 data0 = texelFetch(sampler, ivec2(0), 0);\n    vec4 data1 = texelFetch(sampler, ivec2(0, 1), 0);\n    vec4 data2 = texelFetch(sampler, ivec2(0, 2), 0);\n    \n    g_State.camAngle = data0.x;\n    g_State.camPitch = data0.y;\n    g_State.camOrbit = data0.z;\n    g_State.resolution = data0.w;\n    g_State.bufferScale = data1.x;\n    g_State.camPitchVel = data1.y;\n    g_State.attractPause = data1.z;\n    g_State.lightPos = data2.xyz;\n}\n\n#define fxGetState() fxGetStateImpl(iChannel1)\n\nvec4 fxPutState(ivec2 ifc)\n{\n    if (ifc == ivec2(0, 2))\n        return vec4(g_State.lightPos, 0);\n    else if (ifc == ivec2(0, 1))\n        return vec4(g_State.bufferScale, g_State.camPitchVel, g_State.attractPause, 0);\n    \n    return vec4(g_State.camAngle, g_State.camPitch, g_State.camOrbit, g_State.resolution);\n}\n\nbool fxIsStatePixel(ivec2 ifc)\n{\n    return ifc == ivec2(0) || ifc == ivec2(0, 1) || ifc == ivec2(0, 2);\n}\n\nconst int NUM_STATE_PIXELS = 3; // used to move voxels over so they do not overlap with state pixels\n\n// VOXELS\n\n// the length of the side of the voxel cube\nfloat g_VoxelSide = 0.;\n\n// compute the largest voxel side length that will fit in our buffer\nvoid computeVoxelSideImpl(vec2 res)\n{\n    float pixels = res.x * res.y * g_State.bufferScale;\n    g_VoxelSide = trunc(pow(pixels, 1./3.));\n}\n\n#define computeVoxelSide() computeVoxelSideImpl(iResolution.xy)\n\n// compute the voxel address from the buffer coordinates where its data is stored\nivec3 addrFromCoord(ivec2 p, int width)\n{\n    int id = p.y * width + p.x - NUM_STATE_PIXELS;\n    int y = id / int(g_VoxelSide * g_VoxelSide);\n    int xz = id - y * int(g_VoxelSide * g_VoxelSide);\n    int x = xz / int(g_VoxelSide);\n    int z = xz - x * int(g_VoxelSide);\n    return ivec3(x, y, z);\n}\n\n// compute the buffer coordinates for a particular voxel\nivec2 coordFromAddr(ivec3 p, int width)\n{\n    int id = p.z + int(g_VoxelSide) * p.x + int(g_VoxelSide) * int(g_VoxelSide) * p.y + NUM_STATE_PIXELS;\n    int y = id / width;\n    int x = id - y * width;\n    return ivec2(x, y);\n}\n\n// CAMERA\n\nvoid fxCalcCamera(out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraPos = vec3(0, 0, g_State.camOrbit * float(g_VoxelSide));\n    cameraPos.yz *= rotate(g_State.camPitch);\n    cameraPos.xz *= rotate(g_State.camAngle);\n    cameraPos.y += g_VoxelSide / 8.;\n    cameraLookAt = vec3(0, g_VoxelSide / 8., 0);\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    vec3 up = vec3(0,1,0);\n    cameraLeft = -normalize(cross(cameraFwd, up));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\n// DENSITY MAP\n\nfloat map(vec3 p, sampler3D noiseSampler)\n{\n    return .45 * textureLod(noiseSampler, p, 0.).x\n         + .22 * textureLod(noiseSampler, 2.3 * p, 0.).x\n         + .2  * textureLod(noiseSampler, 4.4 * p, 0.).x\n         + .05 * textureLod(noiseSampler, 6.3 * p, 0.).x\n         - .5;\n}\n\n// https://iquilezles.org/articles/boxfunctions/\nfloat boxDistance( in vec3 p, in vec3 rad ) \n{\n    vec3 d = abs(p)-rad;\n    return length(max(d,0.0)) + min(max(max(d.x, d.y), d.z),0.0);\n}\n\nvec4 voxelDensityImpl(ivec3 addr, sampler2D density, int width)\n{\n    if (addr.x < 0 || addr.y < 0 || addr.z < 0) return vec4(0);\n    if (addr.x >= int(g_VoxelSide) || addr.y >= int(g_VoxelSide) || addr.z >= int(g_VoxelSide)) return vec4(0);\n    ivec2 coords = coordFromAddr(addr, width);\n    return texelFetch(density, ivec2(coords), 0);\n}\n\nvec4 voxelDensityImpl(vec3 pos, sampler2D density, int width)\n{\n    ivec3 addr = ivec3(pos + vec3(g_VoxelSide / 2., 0, g_VoxelSide / 2.));\n    return voxelDensityImpl(addr, density, width);\n}\n\n#define voxelDensity(X) voxelDensityImpl(X, iChannel0, int(iResolution.x))\n\n// voxel traversal loop from mhnewman's Cube Falls: https://shadertoy.com/view/dtSGWd\nfloat integrateDensityAlongRayImpl(vec3 eye, vec3 ray, int maxIter, sampler2D density, int width, float iTime)\n{\n    // does ray intersect voxel box?\n    vec2 ts = boxIntersection(eye - vec3(0, g_VoxelSide / 2., 0), ray, vec3(g_VoxelSide / 2.));\n    \n    if (ts.x == -1.) return 1.;\n\n    // start at box side if we're not side it\n    if (ts.x > 0.) eye += ray * ts.x;\n    \n    // don't go past the back of the box\n    float maxDist = ts.y - ts.x;\n        \n    vec3 pos = floor(eye);\n    vec3 ri = 1. / ray;\n    vec3 rs = sign(ray);\n    vec3 ris = ri * rs;\n    vec3 dis = (pos - eye + .5 + rs * .5) * ri;\n    \n    vec3 dim = vec3(0);\n    \n    float dist = 0.;\n    float totalD = 1.;\n    for (int i = 0; i < maxIter && dist < maxDist && totalD > 0.; ++i)\n    {    \n        totalD -= voxelDensityImpl(pos, density, width).w * DENSITY_LIGHT_BLOCK;\n        \n        dim = step(dis, dis.yzx);\n\t\tdim *= (1. - dim.zxy);\n        \n        dis += dim * ris;\n        pos += dim * rs;\n        \n        dist = dot(dis - ris, dim);\n    }\n\n\treturn max(0., totalD);\n}\n\n#define integrateDensityAlongRay(X, Y, Z) integrateDensityAlongRayImpl(X, Y, Z, iChannel0, int(iResolution.x), iTime)",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the color (rgb) and density (a) of each voxel\n// ---------------------------------------------------------------------------------------\n\nconst float SPAWN_DENSITY = .006; // how thick the smoke is when created\nconst float COLOR_RES = 2.; // how close together are the colors\nconst float COLOR_SPEED = .002; // how fast do the colors change\nconst float FADE_RATE = .99; // controls how fast the smoke fades as it rises\nconst float CURL_RATE = 12.; // how much curl to apply\nconst float UPDRAFT_SPEED = -.6; // how much upwards bias to smoke motion\n\nfloat noise(vec3 p)\n{\n    p *= .005; // scale\n    p += iTime * .002; // motion\n\n    return .45 * textureLod(iChannel2, p, 0.).x\n         + .22 * textureLod(iChannel2, 2.3 * p, 0.).x\n         + .2  * textureLod(iChannel2, 4.4 * p, 0.).x\n         + .05 * textureLod(iChannel2, 6.3 * p, 0.).x\n         - .5;\n}\n\n// originally from https://raw.githubusercontent.com/petewerner/misc/master/Curl%20Noise%20Slides.pdf\nvec3 curl(vec3 pos)\n{\n    vec2 eps = vec2(0, .4);\n\n    float nxp = noise(pos + eps.yxx);\n    float nxm = noise(pos - eps.yxx);\n    float dx = (nxp - nxm)/(2. * eps.y);\n    \n    float nyp = noise(pos + eps.xyx);\n    float nym = noise(pos - eps.xyx);\n    float dy = (nyp - nym)/(2. * eps.y);\n    \n    float nzp = noise(pos + eps.xxy);\n    float nzm = noise(pos - eps.xxy);\n    float dz = (nzp - nzm)/(2. * eps.y);\n    \n    return vec3(dy - dz, dz - dx, dx - dy);    \n}\n\n// trilinear interpolation of 8 nearest voxels\nvec4 trilinear(vec3 pos)\n{\n    const ivec2 diff = ivec2(0, 1);\n    vec3 f = fract(pos);\n\n    vec4 dens000 = voxelDensity(ivec3(pos));\n    vec4 dens001 = voxelDensity(ivec3(pos) + diff.xxy);\n    vec4 dens00x = dens000 * (1. - f.z) + dens001 * f.z;\n\n    vec4 dens010 = voxelDensity(ivec3(pos) + diff.xyx);\n    vec4 dens011 = voxelDensity(ivec3(pos) + diff.xyy);\n    vec4 dens01x = dens010 * (1. - f.z) + dens011 * f.z;\n    vec4 dens0xx = dens00x * (1. - f.y) + dens01x * f.y;\n\n    vec4 dens100 = voxelDensity(ivec3(pos) + diff.yxx);\n    vec4 dens101 = voxelDensity(ivec3(pos) + diff.yxy);\n    vec4 dens10x = dens100 * (1. - f.z) + dens101 * f.z;\n\n    vec4 dens110 = voxelDensity(ivec3(pos) + diff.yyx);\n    vec4 dens111 = voxelDensity(ivec3(pos) + diff.yyy);\n    vec4 dens11x = dens110 * (1. - f.z) + dens111 * f.z;\n    vec4 dens1xx = dens10x * (1. - f.y) + dens11x * f.y;\n\n    return dens0xx * (1. - f.x) + dens1xx * f.x;\n}\n\n// palette from phreax's https://shadertoy.com/view/cdlSzB\n// see also https://www.alanzucconi.com/2017/07/15/improving-the-rainbow-2/\nvec3 bump3y (vec3 x, vec3 yoffset)\n{\n    vec3 y = 1. - x * x;\n    y = clamp((y-yoffset), vec3(0), vec3(1));\n    return y;\n}\n\nvec3 spectral_zucconi (float x)\n{\n    x = fract(x);\n    const vec3 cs = vec3(3.54541723, 2.86670055, 2.29421995);\n    const vec3 xs = vec3(0.69548916, 0.49416934, 0.28269708);\n    const vec3 ys = vec3(0.02320775, 0.15936245, 0.53520021);\n    return bump3y (cs * (x - xs), ys);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord )\n{\n    fxGetState();\n    computeVoxelSide();\n\n    ivec2 ifc = ivec2(fragCoord);\n    ivec3 addr = addrFromCoord(ifc, int(iResolution.x));\n    vec3 pos = vec3(addr);\n\n    fragColor = vec4(0);\n    \n    if (addr.y >= int(g_VoxelSide) || iFrame == 0 || g_State.resolution < 0.) return;\n    \n    // spawn smoke...\n    if (addr.y <= 1)\n    {\n        float l = length(pos.xz - g_VoxelSide / 2.);\n        if (l > g_VoxelSide * .25 && l < g_VoxelSide * .35) // ...in a ring...\n        {\n            float a = atan(float(addr.y) - g_VoxelSide / 2., float(addr.x) - g_VoxelSide / 2.);\n            \n            if (mod(a, .2) < .1) // ...and only at some angles\n            {\n                float f = COLOR_SPEED * float(iFrame) + a * COLOR_RES;\n\n                fragColor.rgb = spectral_zucconi(f);\n                fragColor.a = SPAWN_DENSITY / sqrt(g_State.bufferScale);\n            }\n        }\n    }\n    \n    // compute curl noise at voxel position\n    vec3 off = curl(pos) * vec3(1, 0, 1) * CURL_RATE + vec3(0, UPDRAFT_SPEED, 0);\n    \n    // advect smoke based on curl noise\n    fragColor += trilinear(pos + off) * FADE_RATE;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the light reaching each voxel\n// ---------------------------------------------------------------------------------------\n\nconst float ATTRACT_PAUSE_TIME = 10.;\n\nvoid updateCamera()\n{\n    if (keyDown(KEY_W)) { g_State.camPitch -= .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    if (keyDown(KEY_S)) { g_State.camPitch += .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    g_State.camPitch = clamp(g_State.camPitch, -1.5, 1.5);\n    if (keyDown(KEY_A)) { g_State.camAngle -= .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    if (keyDown(KEY_D)) { g_State.camAngle += .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    if (keyDown(KEY_Q)) { g_State.camOrbit += .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    if (keyDown(KEY_E)) { g_State.camOrbit -= .1; g_State.attractPause = ATTRACT_PAUSE_TIME; }\n    g_State.camOrbit = max(.1, g_State.camOrbit);\n    \n    if (g_State.attractPause > 0.)\n    {\n        g_State.attractPause -= iTimeDelta;\n        g_State.camPitchVel = 0.;\n    }\n    else\n    {\n        g_State.attractPause = 0.;\n        \n        g_State.camAngle += .001;\n        g_State.camPitch += g_State.camPitchVel * 1e-5;\n        g_State.camPitchVel -= sin(g_State.camPitch * 2.) + .7;\n    }\n}\n\nvoid updateLightPos()\n{\n    vec2 m = (iMouse.xy - .5 * iResolution.xy) / iResolution.y;\n    if (iMouse.z > 0.)\n    {\n        g_State.lightPos = vec3(m.x * 300., m.y * 300. + 150., 200);\n        g_State.lightPos = floor(g_State.lightPos) + vec3(0, .5, 0);\n    }\n}\n\nbool updateState(ivec2 ifc)\n{\n    if (iFrame == 0 || keyClick(KEY_SPACE) || iResolution.x * iResolution.y != abs(g_State.resolution))\n    {\n        g_State.lightPos = vec3(-300, 100, 200);\n        g_State.resolution = -iResolution.x * iResolution.y;\n        g_State.camAngle = .001;\n        g_State.camPitch = -.7;\n        g_State.camOrbit = .9;\n        g_State.bufferScale = 1.;\n        g_State.attractPause = 0.;\n    }\n    else\n    {\n        g_State.resolution = abs(g_State.resolution);\n\n        updateCamera();\n        updateLightPos();\n\n        if (keyDown(KEY_LEFT)) { g_State.bufferScale *= .9; g_State.resolution = -abs(g_State.resolution); }\n        if (keyDown(KEY_RIGHT)) { g_State.bufferScale /= .9; g_State.resolution = -abs(g_State.resolution); }\n        \n        g_State.bufferScale = min(1., g_State.bufferScale);\n    }\n\n    return fxIsStatePixel(ifc);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord )\n{\n    fxGetState();\n    \n    ivec2 ifc = ivec2(fragCoord);\n    if (updateState(ifc))\n    {\n\n        fragColor = fxPutState(ifc);\n        return;\n    }\n\n    computeVoxelSide();\n\n    ivec3 addr = addrFromCoord(ifc, int(iResolution.x));\n    \n    if (addr.y >= int(g_VoxelSide)) return;\n    \n    vec3 pos = vec3(addr) - vec3(g_VoxelSide / 2., 0, g_VoxelSide / 2.);\n    vec4 dens = voxelDensity(pos);\n\n    if (dens.w < MIN_DENS)\n    {\n        fragColor.x = 0.; // skip voxels with no density...we'll never query them\n        return;\n    }\n    \n    // compute light reaching this voxel\n    vec3 delta = pos - g_State.lightPos;\n    vec3 lightDir = -normalize(delta);\n    float block = integrateDensityAlongRay(pos + .5 + lightDir, lightDir, int(g_VoxelSide));\n    fragColor.x = block * LIGHT_INTENS * length2(g_State.lightPos) / length2(delta);\n\n#if 0 // second light source could go here\n    vec3 delta2 = pos - g_State.lightPos * vec3(-1);\n    vec3 lightDir2 = -normalize(delta2);\n    float block2 = integrateDensityAlongRay(pos + .5 + lightDir2, lightDir2, int(g_VoxelSide), iChannel0, int(iResolution.x), iTime);\n    fragColor.y = max(AMBIENT_LIGHT, block2 * LIGHT_INTENS * length2(g_State.lightPos) / length2(delta));\n#endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

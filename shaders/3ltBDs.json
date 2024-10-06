@@ -1,0 +1,308 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1616447560",
+            "description": "Cabin in the woods. This was going to be an ambitious ghostly trek to a spooky cabin. But the woods turned out far too neat and well kempt, so it got less scary as writing continued. So, now there's Rhododendrons in the forest, not ghosts! 😁\n",
+            "flags": 120,
+            "hasliked": 0,
+            "id": "3ltBDs",
+            "likes": 33,
+            "name": "Cabin in the woods",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "sound",
+                "cabin",
+                "woods"
+            ],
+            "usePreview": 0,
+            "username": "Dave_Hoskins",
+            "viewed": 1006
+        },
+        "renderpass": [
+            {
+                "code": "// Cabin in the Woods 👻\n// This tab does all the 2D screen affects...\n// (C) 2021 David Hoskins.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\n\n// The Voronoi distance field was the fun part (in Buffer B). Each tree is a symetrical lathed object,\n// with a diffrerent sinewave tilt for each one, giving a more natural look.\n// Also, amazingly, my ray-march distances are accurate, for a change :)\n\n// I think it's slow because of using an full screen buffer to do a map.\n// ** Hello, 'Beautypi' If you're still developing, can we please have buffer size options?\n// Thanks!!!\n\n// All ray marching is done in B and all information is then passed to be rendered in C, with:\n//     .xy = normal\n//     .z  = object ID for material lookup table.\n//     .w  = Occlusion shadow amount.\n//     .zw = could be compressed more but I didn't need it in the end.\n\n//  D Holds the map.\n//  Main does the overlay effects like fog and lense flare.\n\nvec3 sunLight;\nfloat distLight;\n\n\n//--------------------------------------------------------------------------\n// Thanks to Inigo, for doing a spherical fogging area, it saved me a lot of time...\n// https://iquilezles.org/articles/spheredensity\n\nfloat sphereFog( vec3  ro, vec3  rd,   // ray origin, ray direction\n                  vec3  sc, float sr,   // sphere center, sphere radius\n                  float dbuffer )       // depth buffer\n{\n    // normalize the problem to the canonical sphere\n    float ndbuffer = dbuffer / sr;\n    vec3  rc = (ro - sc)/sr;\n\t\n    // find intersection with sphere\n    float b = dot(rd,rc);\n    float c = dot(rc,rc) - 1.0;\n    float h = b*b - c;\n\n    // not intersecting\n    if( h<0.0 ) return 0.0;\n\t\n    h = sqrt( h );\n    \n    \n\n    float t1 = -b - h;\n    float t2 = -b + h;\n\n    // not visible (behind camera or behind ndbuffer)\n    if( t2 < 0.0 || t1 > ndbuffer ) return 0.0;\n\n    //return h*h*h*h;\n    // clip integration segment from camera to ndbuffer\n    t1 = max( t1, 0.0 );\n    t2 = min( t2, ndbuffer );\n\n    // analytical integration of an inverse squared density\n    float i1 = -(c*t1 + b*t1*t1 + t1*t1*t1/3.0);\n    float i2 = -(c*t2 + b*t2*t2 + t2*t2*t2/3.0);\n    return (i2-i1)*(3.0/4.0);\n}\n\n\n//----------------------------------------------------------------------------------------\nvec3 lenseFlare(vec2 uv,vec3 dir, mat3 camMat, float dist)\n{\n\n    vec3 col = vec3(0);\n    float bri = max(dot(dir, sunLight), 0.);\n\n    if (bri > 0.0)\n\t{\n\n        bri *= smoothstep(400.,0.,dist);\n        mat3 inv = transpose(camMat);\n        vec3 cp = inv * (- sunLight * FAR*2.);\n        vec2 sun2d = 1. * cp.xy / cp.z;\n        //if (sun2d.x < -2.5) return col;\n         bri *= smoothstep(1.2, .5,length(sun2d)*.5);\n    \tvec2 texUV = .5+.5*sun2d*vec2(iResolution.y/iResolution.x,1.0);\n    \tfloat z = texture(iChannel0, texUV).w;\n        if (z > dist)\n        {\n            vec2 uvT = uv - sun2d;\n            //bri = pow(bri, 1.0)*10.;\n\n        \n            float glare1 = max(dot(dir,sunLight),0.0);\n            uvT = uvT*(length(uvT));\n            float glare3 = max(1.-pow(length(uvT+sun2d*2.)*1., 1.), 0.0)*1.5;\n            uvT = mix (uvT, uv, -4.2);\n            float glare2 = max(2.0-length(uvT+sun2d*8.0)*2.2, 0.0) *.5;\n\n\n            col += bri * vec3(1.)  * pow(glare1, 200.);\n            float dim = bri * bri*.2;\n            col += bri * vec3(1.,1.,1.0) * pow(glare2, 3.)*dim;\n            col += bri * vec3(.5, .4, .3) * pow(glare3, 3.2)*dim;\n        }\n\t}\n    return col;\n}\n\n//----------------------------------------------------------------------------------------\n//==========================================================================\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    vec2 uv = (-iResolution.xy + 2.0 * fragCoord ) / iResolution.y;\n    fragColour = texelFetch(iChannel0, ivec2(fragCoord), 0);\n\n    vec4 lightData = texelFetch( iChannel1, ivec2(C_LIGHTDIR, 0),0 );\n    distLight = lightData.w;\n    sunLight = lightData.xyz;\n    \n    vec3 spot = SPOT_POS;\n    float dist = fragColour.w;\n    \n    float t  = getTime(iTime);\n    camera = getCameraPos(t);\n    \n            \n    vec2 camRot = texelFetch( iChannel1, ivec2(C_CAMROT,0),0 ).xy;\n    mat3 camMat = getCamFromRots(camRot, t);\n    vec3 rayDir = normalize( vec3(uv, 1.));\n    rayDir = camMat * rayDir;\n\n    vec3 col = vec3(0);\n    float fog = sphereFog(camera, rayDir, spot, 200., dist);    \n    col = mix(col, FOG_COLOUR, fog*3.);\n    \n    fog = sphereFog(camera, rayDir, spot, 45., dist);    \n    col = mix(col, FOG_COLOUR*3., min(fog*fog*3.5, 1.0));\n\n    col  = fragColour.xyz+col;\n    col += lenseFlare(uv, rayDir, camMat, distLight);    \n\n    // Clamp 0 to 1 range for addition screen effects.\n    col = clamp(col, 0.0, 1.0);\n    \n    // Contrast then desaturate the colours, there's an artistic method in the madness...\n    col = col*col*(3.0-2.*col);\n    col = mix( col, vec3(dot(col,vec3(0.33))), 0.2);\n    // Vignette\n    vec2 q = fragCoord  / iResolution.xy;\n\tcol *= 0.5 + 0.6*pow( 16.0*q.x*q.y*(1.0-q.x)*(1.0-q.y), 0.3 );\n    \n\n    col = mix(col, vec3(0), smoothstep(-400.,-500.,t) + smoothstep(450.,500.,t));\n    fragColour = vec4(sqrt(col), 1.0);\n    \n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "musicstream",
+                        "id": 28016,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/big-sauce-491221177/the-caretaker-an-empty-bliss-beyond-this-world"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Cabin in the Woods 👻\n// (C) 2021 David Hoskins.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\n//--------------------------------------------------------------------------\n#define EXPORTED 0\n\n#define PI 3.14159265\n#define TAU (2.*PI)\n#define PHI (sqrt(5.)*0.5 + 0.5)\n#define ZERO min(0,iFrame)\n#define FAR 1000.0\n\n\n#define SPOT_POS vec3(40,30,70)\n#define MOON_POS normalize(vec3(1,1,1))\n#define TREE1_SPACING 23.\n#define TREE2_SPACING 30.5\n#define TREE_LEAVES 55.\n#define SUN_COLOUR vec3(1., .9, .8)\n#define FOG_COLOUR vec3(.03, .04, .03)\n\n#define ID_BLACK     0\n#define ID_CABIN     1\n#define ID_WINDOW    2\n#define ID_PLANEWOOD 3\n#define ID_LAMPPOST  4\n#define ID_GROUND    5 \n#define ID_TREES     16\n#define ID_BUSHES    20\n#define ID_STUMP     24\n#define ID_RHODA     25\n\n        \n\n// Bump map defines...\n#define BM_FLAT   0\n#define BM_BARK   1\n#define BM_GROUND 2\n#define BM_CABIN  3\n\n\n#define C_CAMROT    1\n#define C_TORPOS    2\n#define C_TORDIR    4\n#define C_LIGHTDIR   5\n\n//--------------------------------------------------------------------------\nstruct Materials\n{\n    vec4 colour; // Specular in w.\n    int bumpID;\n    int tex;\n};\n// There 4 different coloured trees and bushes...\nMaterials materials[] = Materials[](\n    Materials(vec4 (0,0,0,0), BM_FLAT, 0), // default\n    Materials(vec4 (.1,.05,.03,0), BM_CABIN, 1),   // 1 Cabin\n    Materials(vec4 (.0,.01,.03,.5), BM_FLAT, 0),   // 2 Window\n    \n\n\n    Materials(vec4 (.1,.05,.0,.05), BM_FLAT, 0),    // 3 Wood\n    Materials(vec4 (.05,.02,.0,.0), BM_FLAT, 0),     // 4 Lamp post\n    Materials(vec4 (.2,.4,.1,.0), BM_GROUND, 0),     // 5 Ground\n    Materials(vec4 (1.), BM_FLAT, 0), // 6 temp..\n    Materials(vec4 (1.), BM_FLAT, 0), // 7 temp..    \n    Materials(vec4 (1.), BM_FLAT, 0), // 8 temp..    \n    Materials(vec4 (1.), BM_FLAT, 0), // 9 temp..\n    Materials(vec4 (1.), BM_FLAT, 0), // 10 temp..\n    Materials(vec4 (1.), BM_FLAT, 0), // 11 temp..\n    \n    Materials(vec4 (1.), BM_FLAT, 0), // 12 temp..    \n    Materials(vec4 (1.), BM_FLAT, 0), // 13 temp..\n    Materials(vec4 (1.), BM_FLAT, 0), // 14 temp..\n    Materials(vec4 (1.), BM_FLAT, 0), // 15 temp..\n\n\n    \n    Materials(vec4 (.1,.07,.05,.05), BM_BARK, 1),      // 16 Trees\n    Materials(vec4 (.075,.06,.05,.05), BM_BARK, 1),    // 17   \"\n    Materials(vec4 (.07,.04,.01,.05), BM_BARK, 1),     // 18   \"\n    Materials(vec4 (.025,.01,.0,.05), BM_BARK, 1),     // 19   \"\n    \n    \n    Materials(vec4 (.1,.2,.05,.0), BM_BARK, 1),       // 20 Bushes\n    Materials(vec4 (.03,.05,.0,.0), BM_BARK, 1),      // 21   \"\n    Materials(vec4 (.01,.02,.01,.0), BM_BARK, 1),     // 22   \"\n    Materials(vec4 (.015,.015,.0,.0), BM_BARK, 1),    // 23   \"\n    Materials(vec4 (.06,.05,.05,.0), BM_BARK, 1),     // 24   Stump\n    Materials(vec4 (.06,.08,.02,.0), BM_FLAT, 1)      // 25   Tuffs\n  \n);\n\n\nvec3 camera;\n\n// Can't use iTime in the common buffer, which his a disappointment.\n//--------------------------------------------------------------------------\nfloat getTime(float t)\n{\n    t = mod(t*10.,1000.0);\n    return t-500.;\n}\n\n//--------------------------------------------------------------------------\nvec3 getPath(float t)\n{\n\n    return vec3(t,6.,-sin(t*.008)*120.+150.);\n}\n\n//--------------------------------------------------------------------------\nmat3 getCamMat( in vec3 dir, float cr )\n{\n\tvec3 cw = normalize(dir);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(-cw,cp) );\n\tvec3 cv = normalize( cross(cu, -cw) );\n    return mat3( cu, cv, cw );\n}\n\nmat3 getCamFromRots(vec2 camRot, float t)\n{\n\n    float roll = .01 * sin(t*.3);\n    vec3 rayDir = vec3(0, 0, 1);\n    rayDir.zy = rayDir.zy*cos(camRot.x) + sin(camRot.x)*vec2(1,-1)*rayDir.yz;\n    rayDir.xz = rayDir.xz*cos(camRot.y) + sin(camRot.y)*vec2(1,-1)*rayDir.zx;\n\n    mat3 camMat = getCamMat(rayDir, roll);\n\n    return camMat;\n }\n//--------------------------------------------------------------------------\nfloat roundBox( vec3 p, vec3 b, float r )\n{\n\treturn length(max(abs(p)-b,0.0))-r;\n}\n\n//--------------------------------------------------------------------------\nfloat roundBox2D( vec2 p, vec2 b, float r )\n{\n\treturn length(max(abs(p)-b,0.0))-r;\n}\n\nvec3 getCameraPos(float t)\n{\n    vec3 p =  getPath(t);\n    float s = abs(sin(t*.3));\n\n    p.y += s*s;\n\n    return p;\n }\n//--------------------------------------------------------------------------\nfloat doClearing(vec2 p)\n{\n    float d = (length(p+vec2(-12,-20)))-55.;\n    vec2 path = getPath(p.x).xz;\n    \n    float f = length(path-p)-30.;\n    d = min(d, roundBox2D(p, vec2 (2.,105.0), .1)-10.);\n    //return max(-d,-f);\n    return min(d, f);\n}\n\n//--------------------------------------------------------------------------\n//  1 out, 2 in...\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n//--------------------------------------------------------------------------\n//  2 out, 2 in...\nvec2 hash22(vec2 p)\n{\n    p*= 100.;\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\n//--------------------------------------------------------------------------\nfloat sMin( float a, float b, float k )\n{\n    float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0 );\n\treturn mix( b, a, h ) - k*h*(1.-h);\n}\n//--------------------------------------------------------------------------\nfloat sMax( in float a, in float b, in float s )\n{\n    float h = clamp( 0.5 + 0.5*(a-b)/s, 0.0, 1.0 );\n    return mix(b, a, h) + h*(1.0-h)*s;\n}\n\n//--------------------------------------------------------------------------\nint treeType(vec2 p, float block)\n{\n    p = floor((p)/block)*block;\n    return int(hash12(p*103.5)*4.);\n}\n\n//--------------------------------------------------------------------------\nuint convertUint(float value)\n{\n    value = (value + 1.0) * 0.5;\n    return uint((value*255.0));\n}\n\n\n//--------------------------------------------------------------------------\nvec2 packData(vec4 nor)\n{\n    uint x = convertUint(nor.x);\n    uint y = convertUint(nor.y);\n    uint z = convertUint(nor.z);\n    uint w = uint(nor.w);\n    return vec2(x + (y << 8), z + (w << 8));\n} \n\n//--------------------------------------------------------------------------\nvec4 unpackData(vec2 src)\n{\n  vec4 o;\n  \n  src /= 256.0; \n  o.x = fract(src.x);\n  \n  o.y = fract(src.x / 256.0f);\n  o.z = fract(src.y);\n  o.w = src.y;\n\n  //Unpack to the -1..1 range\n  o.xyz = (o.xyz*2.0)-1.0;\n  \n  return o;\n}\n\n\n//--------------------------------------------------------------------------\nfloat fPlane(vec3 p, vec3 n, float distanceFromOrigin)\n{\n\treturn dot(p, n) + distanceFromOrigin;\n}\n\n\nfloat cylinder(vec3 p, vec2 h)\n{\n    float d = length(p.xz);\n    d = max(d - h.x,   (p.y) - h.y);\n    return d;\n}\n\n\n//--------------------------------------------------------------------------\nvec4 tex3D( sampler2D sam, in vec3 p, in vec3 n )\n{\n\tvec4 x = texture(sam, p.yz);\n\tvec4 y = texture(sam, p.zx);\n\tvec4 z = texture(sam, p.xy);\n\treturn (x*abs(n.x) + y*abs(n.y) + z*abs(n.z))/(abs(n.x)+abs(n.y)+abs(n.z));\n}\n\n\n//--------------------------------------------------------------------------",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// (C) 2021 David Hoskins.\n// This is the movement tab, it started off as manual control, but that's all gone now.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\n#define NUM_POINTS 61\n\n#define INVERT_Y 0\n#define ACCEL .1\n#define DECAY  .8 // how much velocity is preserved per frame (proportionally)\n#define MAX_SPEED  10.\n\n#define WALKING\n\n#if INVERT_Y\nconst float yMul = 1.0;\n#else\nconst float yMul = -1.0;\n#endif\nconst int KEY_W\t\t= 87;\nconst int KEY_A\t\t= 65;\nconst int KEY_S\t\t= 83;\nconst int KEY_D\t\t= 68;\nconst int KEY_LEFT  = 37;\nconst int KEY_UP    = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN  = 40;\n\nconst int KEY_SPACE\t= 32;\nconst int KEY_SHIFT\t= 16;\n\n//vec3 camPos[NUM_POINTS];\n\n\n         \n//----------------------------------------------------------------------------------------\nfloat ReadKey( int key )\n{\n   \treturn step(.5,texelFetch( iChannel1, ivec2(key, 0), 0).x);\n}\n\n//-----------------------------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    fragColour = vec4(0.0,0.0,0.0,1.0);\n\n\n    \n    int ctrl = int(fragCoord.x);\n    if (fragCoord.y > 1.0 && iFrame == 0)\n    {\n         fragColour = vec4(0);\n         return;\n    }\n    \n    float travelTime =  getTime(iTime);\n    vec3 pos = getCameraPos(travelTime);\n    if ( int(fragCoord.y) == 0 )\n    {\n\n        switch (ctrl)\n        {\n        case C_CAMROT:\n            vec3 at = getPath(travelTime+2.1);\n            vec3 at2 = vec3(50,5.,0);\n            float m = smoothstep(400., 0.0, length(pos-SPOT_POS));\n            at = mix(at, at2, m);\n            at = pos - at;\n            float r = -atan(at.z, at.x);\n            vec2 camRot = vec2(0.0, r-PI*.5);\n            //camRot.x = sin(travelTime*.6)*.5;\n            float ti = mod(travelTime*.06-3., 20.0);\n            float t2 = smoothstep(8.0, 13.0, ti) *  smoothstep(16.0, 13.0, ti);\n            float t = smoothstep(0.0, 3.0, ti) *  smoothstep(6.0, 3.0, ti);\n            \n            camRot.y+=sin(t)*1.5 - sin(t2)*1.5;\n            \n            ti = mod(travelTime*.04, 13.0);\n            t = smoothstep(0.0, 3.0, ti) *  smoothstep(6.0, 3.0, ti);\n            camRot.x-=sin(t)*.7;\n            \n            \n            t = smoothstep(0.0, 3.0, t) *  smoothstep(6.0, 3.0, t);\n            fragColour.xy = camRot;\n    \n        break;\n        case C_TORDIR:\n            float spe = iTime;\n            vec3 torchDir = normalize(vec3(+sin(spe)*.2-.2, .05, -1.));\n            camRot = texelFetch( iChannel0, ivec2(C_CAMROT,0),0 ).xy;\n            torchDir.zy = torchDir.zy*cos(camRot.x) + sin(camRot.x)*vec2(1,-1)*torchDir.yz;\n            torchDir.xz = torchDir.xz*cos(camRot.y) + sin(camRot.y)*vec2(1,-1)*torchDir.zx;\n            vec3 oldDir = texelFetch( iChannel0, ivec2(C_TORDIR,0),0 ).xyz; \n            t = getTime(iTime);\n            if (t > .5)\n                torchDir = oldDir *.8 + torchDir *.2;\n            fragColour = vec4(normalize(torchDir), 0);\n        break;\n        case C_TORPOS:\n            \n            spe = length(pos);\n            vec3 camPos = vec3(.8,-2.4,1.);\n            camRot = texelFetch( iChannel0, ivec2(C_CAMROT,0),0 ).xy;\n            camPos.zy = camPos.zy*cos(camRot.x) + sin(camRot.x)*vec2(1,-1)*camPos.yz;\n            camPos.xz = camPos.xz*cos(camRot.y) + sin(camRot.y)*vec2(1,-1)*camPos.zx;        \n            fragColour = vec4(camPos, 0);\n     \n        break;\n        case C_LIGHTDIR:\n        \n            //pos =  texelFetch( iChannel0, ivec2(C_CAMPOS,0),0 ).xyz;\n            pos = SPOT_POS - pos;\n            fragColour = vec4(normalize(pos), length(pos));\n        \n        break;\n    }\n    }\n        \n\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Cabin in the Woods \n// (C) 2021 David Hoskins.\n// This tab does all the ray marching. 🕺\n// And puts information into a makeshift G-Buffer.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\nfloat time;\nvec3 lightDir;\nvec3 lightDiff;\nvec3 spot;\nvec2 camRot;\nvec3 rayDir;\n\n//--------------------------------------------------------------------------\nvec4 inClearing(vec2 p)\n{\n    vec4 dat = texelFetch(iChannel1, ivec2(p)+128, 0);\n    return dat;\n}\n\n//--------------------------------------------------------------------------\nfloat noise( in vec3 x )\n{\n    // Use 2D texture...\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n\n\tvec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;\n\tvec2 rg = texture( iChannel0, (uv+ 0.5)/256.0, -99.0).yx;\n\treturn mix( rg.x, rg.y, f.z );\n}\n\n//--------------------------------------------------------------------------\nfloat noise( in vec2 x )\n{\n    // Use 2D texture...\n\n\treturn texture( iChannel0, (x + .5)/256.0, -99.0).x;\n\n}\n\n//--------------------------------------------------------------------------\nvoid rot45(inout vec2 p)\n{\n\tp = (p + vec2(p.y, -p.x))*sqrt(0.5);\n}\n\n//--------------------------------------------------------------------------\n// Tree distance functions.\n// Uses the distance to the naerest cell from a voronoi function...\n// It allows quite handy lathed distance fields.\nfloat tree(vec3 p, in float d, in vec4 dat)\n{\n    int id = int(dat.x);\n    float treeSize = dat.y;\n    if (id >= ID_TREES && id < ID_TREES+4)\n    {\n        treeSize += smoothstep(TREE_LEAVES-15.0, TREE_LEAVES+15., p.y)*treeSize*2.;//(blockSize*.5-treeSize);\n        float d2 = d - treeSize;\n        if ( d2 > 5.0) return d2;\n        \n        float w = noise(p*vec3(.8,.3,.8))*(.5+smoothstep(TREE_LEAVES-20.,TREE_LEAVES+20.,p.y)*10.);\n        //treeSize -= w;\n        d2 -= w;\n        return d2;\n    }\n    else\n    if (id >= ID_BUSHES && id < ID_BUSHES+4)\n    {\n        float d2 = d - smoothstep(-8.3, 5., p.y)*smoothstep(40., 2., p.y) * treeSize;\n        if ( d2 > 1.0) return d2;\n        \n        float w = noise(p*2.3);\n        d2 = d2 + w;\n        \n        return d2;\n    }else\n    if (id == ID_STUMP)\n    {\n    \n        float d2 = max(d - dat.y,   p.y-dat.z);\n        d = min(d+.1, d2);\n        if (d2 > 3.) return d; \n        float w =noise(p*vec3(2,1,2));\n\n        return (d2-w);\n    }else\n     if (id == ID_RHODA)\n    {\n        \n        float d2 = length(vec2(p.y-1., d))-dat.y;\n        if (d2 > 3.) return min(d+.1, d2); \n        //vec2 loc = vec2(atan(p.z,p.x)*40., p.y*.3)*3.;\n        float w =tex3D(iChannel0, p.yxz*.01, normalize(p)).x*1.;\n        w += tex3D(iChannel0, p*.02, normalize(p)).x*.5;\n \n        return d2-w;\n    }\n\n    return d;\n\n}\n\n\n//--------------------------------------------------------------------------\nfloat windows(vec3 p)\n{\n    p.x = abs(p.x);\n    return roundBox(p - vec3(25, 12, 39.25), vec3(7.5, 6.5, .2),1.);\n}\n\n//--------------------------------------------------------------------------\nfloat ground(vec3 p)\n{\n    float l = length(getPath(p.x) - p);\n    l = min(l, roundBox2D(p.xz, vec2 (.1,150.0), .1)+20.);\n \n \n    float n = texture(iChannel2, p.xz*.01).y;//(noise(p)+ noise(p*2.1)*.6)*smoothstep(80.0, 0.0, l);\n    \n    return p.y += smoothstep(50.0, 30.0, l)*4.+n*l*.04;\n}\n\nfloat lampPost(vec3 p)\n{\n    //return fPlane(p, vec3(0,1,0), 0.0);\n    return p.y;\n}\n\n\n//--------------------------------------------------------------------------\nfloat flatWoodBits(vec3 p)\n{\n    float d =0.0;\n    d = roundBox(p - vec3(0,6.2, 39.5), vec3(5.8, 8., 1.), .2);\n    p.x = abs(p.x);\n    d = min(d, roundBox(p - vec3(25, 12, 40.0), vec3(8.0, .1, .3),.2));\n    d = min(d, roundBox(p - vec3(25, 12, 40.0), vec3(.1, 8.0, .3),.2));\n    return d;\n}\n   \n//--------------------------------------------------------------------------\nfloat cabin(vec3 p)\n{\n    float d = roundBox(p, vec3(40., 70, 40.), 1.2);// + abs(sin(p.z*PI/2.)*.5) + abs(sin(p.x*PI/2.)*.5));\n    // Doors and window holes...\n    p.x = abs(p.x);\n    d = max(d, -roundBox(p - vec3(25, 12, 42.5), vec3(8., 7, 3.), .4));\n    d = max(d, -roundBox(p - vec3(3,6, 42.5), vec3(3., 8, 3.), .3));\n    float ch = roundBox(p - vec3(39,15, 0.), vec3(3., 40, 6.), .8);  // Chimney\n    \n    // Do a mirror then a 45 degres rotation...\n    p.x = -abs(p.x);\n    rot45(p.xy);\n  \n    // Cut roof off from the box...\n    d = max(d, -fPlane(p,vec3(0, -1.,0), 50.7 ));\n    // Do roof also using the transformed point...\n    d = min(d, roundBox(p-vec3(40,52,0), vec3(50., 1, 60.), .15));\n    d = min(d, ch);\n    \n   \n    return d;\n}\n\n//--------------------------------------------------------------------------------------------------\nvec4 voronoi( vec3 p)\n{\n    \n    vec2 f = fract(p.xz);\n    p.xz = floor(p.xz);\n    float d = 1000.7, d2;\n    vec4 ret = vec4(0.0,.7,0,0);\n    vec2 tp;\n    \n    \n\tfor (int xo = -1; xo <= 1; xo++)\n\t{\n\t\tfor (int yo = -1; yo <= 1; yo++)\n\t\t{\n            vec2 g = vec2(xo, yo);\n            vec2 q = g + p.xz;\n            \n\n            vec4 dat = inClearing(q);\n \n            if (dat.x == 0.0)\n            {\n                d2 = .7;\n            }else\n            {\n                vec2 n = textureLod(iChannel0,(q)/256.0, -100.0).xy;\n                tp = g + n  - f + sin(p.y-n.y*37.)*.2;\n                d2 = dot(tp, tp);\n            }\n            \n            if (d2 < d)\n            {\n                d = d2;\n                ret = vec4(dat.xyz, sqrt(d));\n            }\n\n\t\t}\n\t}\n \n    return ret;\n}\n\n\n//--------------------------------------------------------------------------\nfloat map(in vec3 p, float ds)\n{\n    float d= 10000.;\n    float size = 8.0, cl;\n\n\n    vec4 res = voronoi(p/TREE1_SPACING);\n    if (res.x != 0.0)\n    {\n         d = min(d, tree(p, res.w * TREE1_SPACING, res));\n    }\n    else   d = min(d, .8 * TREE1_SPACING);\n        \n    d = min(d, ground(p));\n    d = min(d, cabin(p));\n    d = min(d, windows(p));\n    d = min(d, ground(p));\n    d = min(d, cylinder(p- vec3(SPOT_POS.x,0,SPOT_POS.z), vec2(.5,SPOT_POS.y-2.)));\n\n//d = min(d, flatWoodBits(p));\n\n\n    \n\treturn d;\n}\n\n//------------------------------------------------------------------------------\nint  mapMaterial(in vec3 p)\n{\n    int mat = 0;\n\n    if (ground(p) < .1)\n    {\n        mat = ID_GROUND;\n    }\n\n \n    if (cabin(p) < .1)\n    {\n        mat = ID_CABIN;\n    }\n    if ( windows(p) < 0.1)\n    {\n        mat = ID_WINDOW;\n    }\n    if (flatWoodBits(p) < .1)\n    {\n        mat = ID_PLANEWOOD;\n    }\n    \n    vec4 res = voronoi(p/TREE1_SPACING);\n    if (res.x > 0.1)\n    {\n        float d = tree(p, res.w * TREE1_SPACING, res);\n        if (d < .1)\n        {\n           mat = int(res.x);\n        }\n    }\n        \n   \n\n    return mat;\n}\n/*\n//------------------------------------------------------------------------------\nfloat getShadow( in vec3 ro)\n{\n\tfloat res = 1.0;\n    float t = 1.;\n\tfloat h;\n    \n    lightDiff = (spot-ro);\n    float disToLight = length(lightDiff);\n    lightDir = normalize(lightDiff);\n    if (disToLight > 1000.0) return res;\n    for (int i =ZERO; i < 15; i++)\n\t{\n        vec3 p =  ro + lightDir*t;\n\t\th = map(p, t);\n        res = min(6.*h / t*t, res);\n\t\tt += h*1.3;\n        if (t > disToLight || res< .1) break;\n\t}\n    return clamp(res,.3, 8.0);\n}\n*/\n//--------------------------------------------------------------------------\nfloat raymarchScene(vec2 coord, vec3 ro, vec3 rd)\n{\n    float l = hash12(coord)*10., d;\n    int i;\n#if EXPORTED\n    for (int i = 0; i < 150; i++)\n#else\n    for (int i = 0; i < 80; i++)\n#endif\n\n    {\n        vec3 p = ro + rd * l;\n        d = map(p, l);\n        if (abs(d) < 0.03 || l >= FAR || p.y > 200.) break;\n        l += d;\n\t}\n    vec3 p = ro + rd * l;\n    \n\n    return l;\n}\n\n//--------------------------------------------------------------------------\nvec3 getNormal(vec3 pos, float ds)\n{\n\n    ds = clamp(ds*ds*.0001, 0.1,10.5);\n    //ds = .01;\n\n    float c = map(pos, .1);\n    // Use offset samples to compute gradient / normal\n    vec2 eps_zero = vec2(ds, 0.0);\n    return normalize(vec3(map(pos + eps_zero.xyy, ds), map(pos + eps_zero.yxy, ds),\n                          map(pos + eps_zero.yyx, ds) - c));\n}\n\n//--------------------------------------------------------------------------\nfloat calcOcc( in vec3 pos, in vec3 nor, float di)\n{\n\tfloat occ = 0.0;\n    float sca = 1.0;\n    for(float h= .2; h < 4.; h+= 1.)\n    {\n\t\tvec3 opos = pos + h*nor;\n        float d = map(opos, di);\n        occ += (h-d)*sca;\n        sca *= 0.5;\n    }\n    return clamp( 1. - occ, 0.2, 1.0 );\n}\n\n//--------------------------------------------------------------------------\n\n//==========================================================================\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n\n    vec2 uv = (-iResolution.xy + 2.0 * fragCoord ) / iResolution.y;\n    spot = SPOT_POS;\n    time = iTime;\n\n\n    // Camera stuff...\n\n//    camera = texelFetch( iChannel3, ivec2(C_CAMPOS,0), 0 ).xyz;\n//    camera = getCameraPos(iTime);\n    float time =  getTime(iTime);\n    camera = getCameraPos(time);\n    rayDir = normalize( vec3(uv, 1.));\n        \n    vec2 camRot = texelFetch( iChannel3, ivec2(C_CAMROT,0),0 ).xy;\n    mat3 camMat = getCamFromRots(camRot, time);\n    rayDir = camMat * rayDir;\n\n\n\n    // March the scene....\n    float dist = raymarchScene(fragCoord, camera, rayDir);\n    vec4 mat;\n    \n    vec3 col = vec3(0.);\n    \n    if (dist < FAR)\n    {\n        vec3 pos = camera + dist * rayDir;\n        vec3 nor = getNormal(pos, dist);\n        float id = float(mapMaterial(pos));\n        // Pack Normal and material ID into 2 floats..\n        col.xy = packData(vec4(nor, id+.5));\n        // Just put shadow influence into z...\n        col.z = calcOcc(pos, nor, dist);\n    }else\n    {\n       col = vec3(0,0,0);\n       dist = 2000.0;\n    }\n    \n    \n    // Distance goes into w....\n    fragColour = vec4(col, dist);\n}\n//==========================================================================\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// (C) 2021 David Hoskins.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\n// This buffer renders the tiny G-Buffer created in 'B'\n//     .xy = normal\n//     .z  = object ID for material lookup table.\n//     .w  = Occlusion shadow amount.\n//     .zw = could be compressed more but I didn't need it in the end.\n// Material reference data in 'Common' tab\n\nfloat time;\nvec3 lightDir;\nvec3 lightDiff;\nvec3 spot;\n\nvec2 camRot;\nvec3 rayDir;\nvec3 torPos;\nvec3 torchDir;\n\n\n//--------------------------------------------------------------------------\n// Ray-cone intersection nabbed from iq, and hacked to make just it non-capped:\n// https://iquilezles.org/articles/intersectors\n\n\n\nfloat dot2(vec3 v)\n{\n    return dot(v, v);\n}\n\n// Thanks Inigo, I used most of this...\n// cone defined by extremes pa and pb, and radious ra and rb.\nfloat coneIntersect( in vec3  ro, in vec3  rd, in vec3  pa, in vec3  pb, in float ra, in float rb )\n{\n    vec3  ba = pb - pa;\n    vec3  oa = ro - pa;\n    vec3  ob = ro - pb;\n    \n    float m0 = dot(ba,ba);\n    float m1 = dot(oa,ba);\n    float m2 = dot(ob,ba); \n    float m3 = dot(rd,ba);\n\n    //caps\n         //if( m1<0.0 ) { if( dot2(oa*m3-rd*m1)<(ra*ra*m3*m3) ) return vec4(-m1/m3,-ba*inversesqrt(m0)); }\n    //else if( m2>0.0 ) { if( dot2(ob*m3-rd*m2)<(rb*rb*m3*m3) ) return vec4(-m2/m3, ba*inversesqrt(m0)); }\n    \n    // body\n    float m4 = dot(rd,oa);\n    float m5 = dot(oa,oa);\n    float rr = ra - rb;\n    float hy = m0 + rr*rr;\n    \n    float k2 = m0*m0    - m3*m3*hy;\n    float k1 = m0*m0*m4 - m1*m3*hy + m0*ra*(rr*m3*1.0        );\n    float k0 = m0*m0*m5 - m1*m1*hy + m0*ra*(rr*m1*2.0 - m0*ra);\n    \n    float h = k1*k1 - k2*k0;\n    if( h<0.0 ) return -1.0;\n\n    float t = (-k1-sqrt(h))/k2;\n\n    float y = m1 + t*m3;\n    if( y>0.0 && y<m0 ) \n    {\n        return t;\n    }\n    \n    return -1.0;\n}\n\n\n//--------------------------------------------------------------------------\nvec3 doSky(vec3 dir)\n{\n    vec3 col = FOG_COLOUR;\n    //if (dir.y > 0.0) col = mix(vec3(FOG_COLOUR), vec3(.0, 0.1,0.1),sqrt(dir.y));\n    return col;\n}\n\n\n//--------------------------------------------------------------------------\nfloat noise( in vec3 x )\n{\n    // Use 2D texture...\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n\n\tvec2 uv = (p.xy+vec2(37.0,17.0)*p.z) + f.xy;\n\tvec2 rg = texture( iChannel0, (uv+ 0.5)/256.0, -99.0).yx;\n\treturn mix( rg.x, rg.y, f.z );\n}\n\n\n//--------------------------------------------------------------------------\nvec3 textureBump( sampler2D tx, in vec3 p, in vec3 nor, float f)\n{\n    \n    const vec2 e = vec2(.002, 0);\n    float ref = tex3D(tx, p, nor).x;                 \n    vec3 grad = (vec3(tex3D(tx, p - e.xyy, nor).x,\n                      tex3D(tx, p - e.yxy, nor).x,\n                      tex3D(tx, p - e.yyx, nor).x )-ref)/e.x;                     \n          \n    grad -= nor*dot(nor, grad);          \n                      \n    return normalize( nor + grad*f );\n}\n\n//--------------------------------------------------------------------------\nvec3 treeBump( sampler2D tx, in vec3 p, in vec3 nor, float f)\n{\n    \n   //const vec2 e = vec2(.003, 0);\n    \n    vec3 grad = (tex3D(tx, p*vec3(.5,.2,.5), nor).xyz)-.5;  \n    grad = grad*grad*grad*grad*10000.*f;\n    grad -= nor*dot(nor, grad);          \n                      \n    return normalize( nor + grad );\n}\n\n\n//--------------------------------------------------------------------------\nvec3 torchLight(vec3 p, vec3 eyeDir, vec4 dif, vec3 nor, float sh)\n{\n\n    lightDiff = (torPos-p);\n    float disToLight = length(lightDiff);\n    lightDir = normalize(lightDiff);\n\n    vec3 col = vec3(0);\n    float bri = 0.0;\n       \n    //lightDiff = torPos-p;\n    float str = 2.0/pow(disToLight, 1.2);\n    lightDiff = lightDiff * str;\n    float ang = dot(lightDiff, torchDir);\n    ang = smoothstep(.7,.9, ang);\n    bri  = (max(dot(lightDiff, nor), 0.0))*ang*7.*sh;\n    //bri *= smoothstep(140.0, 0.0, length(disToLight));\n    col  = dif.xyz* bri;\n    nor = reflect(eyeDir, nor); // Specular...\n    col += pow(max(dot(lightDir, nor), 0.0), 18.0)*ang*dif.w*4.;\n    \n    return col;\n }\n \n\n//--------------------------------------------------------------------------\nvec3 getLighting(vec3 pos, vec3 eyeDir, vec4 dif, vec3 nor, float sh)\n{\n\n    lightDiff = (spot-pos);\n    float disToLight = length(lightDiff);\n    lightDir = lightDiff / disToLight;\n\n    float ang = dot(lightDiff, torchDir);\n    ang = smoothstep(.7,.9, ang);\n    float bri = (max(dot(lightDir, nor), 0.0));\n    float d = length(disToLight);\n    bri *= (10000. / (d*d)) * sh;\n    //bri *= smoothstep(10.0, 0.0, sqrt(pos.y));\n\tvec3 col = dif.xyz * SUN_COLOUR * bri;\n  \n        \n    nor = reflect(eyeDir, nor); // Specular...\n    col += pow(max(dot(lightDir, nor), 0.0), 8.0)  * sh * dif.w;\n\n    \n    \n    return col;\n}\n\n//--------------------------------------------------------------------------\nfloat fogmap(in vec3 q)\n{\n    q = q*.04;\n\tq += time * .1;\n    \n\tfloat f = clamp(noise(q)+noise(q*2.3)*.55+noise(q*5.)*.4, 0.0, 1.)*.2+  noise(q*10.0)*.1;\n    \n    return f;\n}\n\n//--------------------------------------------------------------------------\nvec3 fogClouds(in vec3 col, in vec3 ro, in vec3 rd, in float mt, float cone)\n{\n    float d = .4;\n    vec3 fCol = vec3(.0);\n    float f = 0.0;\n    for(int i = 0; i < 10; i++)\n    {\n        vec3  pos = ro + rd*d;\n        float rz = fogmap(pos);\n        vec3 lDir = normalize(pos - spot );\n        f += clamp(rz*smoothstep(d,d*1.8,mt),0.,1.) * .6 * smoothstep(1.0, 15.0, pos.y);\n        \n        d *= 1.8;\n        if (d>mt)break;\n    }\n\n    col = mix (col, FOG_COLOUR, f);\n    \n    return col;\n}\n\n//--------------------------------------------------------------------------\nvec4 getDiffuse(vec3 p, int id, vec3 nor)\n{\n    vec4 diff  = materials[id].colour;\n    \n    if (id == ID_GROUND)\n    {\n        // See if the point is on a path...\n\n        float l = length(getPath(p.x) - p);\n        l = min(l, roundBox2D(p.xz, vec2 (.01,135.0), .01)+14.);\n        diff = mix(diff, vec4(.15, .1,.1,.1), smoothstep(35., 20., l));\n        \n        float n = noise(p*.5)+ noise(p*1.)*.5+ noise(p*2.)*.25;\n        diff = diff * mix(vec4(.6,.3, .0, .0), vec4(.2, .15, .0, .8), n);\n        diff.xyz = mix(diff.xyz, texture(iChannel1, p.xz*.08).xyz, .5);\n\n        // Tyre tracks with a clamped cosine wave....\n        l*= .2;\n        l = clamp(l, -TAU, TAU);\n        l *= ((cos(l+PI)))*.04;\n        l = clamp(l, 0.,.3);\n\n        diff -= l;\n        return diff;\n    }else\n    if (id >= ID_TREES && id <= ID_TREES + 4)\n    {\n        vec3 te = tex3D(iChannel1, p*vec3(.3, .1, .3), nor).xyz;\n        //diff = mix(diff, vec4(te, .4), .1);\n        diff.xyz *= te;\n        diff = mix(diff, vec4(0.0,.02,0,0), smoothstep(TREE_LEAVES-20., TREE_LEAVES+10., p.y));\n    }else\n    if (id == ID_CABIN)\n    {\n        diff = mix(diff, tex3D(iChannel1, p*vec3(.01, .05, .01), nor)* .3, .7);\n    }\n    if (id == ID_RHODA)\n    {\n        vec4 te = tex3D(iChannel0, p*.0023, nor);\n        float n = noise(p);\n        float v = sin(p.y)+sin(p.z+p.x*1.);\n     \n        diff = mix(diff, te, max(v*.1,0.0));\n        \n    }\n        \n\n    \n    return diff;\n}\n\n//--------------------------------------------------------------------------\nvec3 getBumpMap(in vec3 p, in int id, in vec3 nor, float f)\n{\nf = max(.5/f, .02);\n   if (id == BM_FLAT) return nor;\n\n    if (id == BM_BARK)\n    {\n        nor =  treeBump( iChannel0, p*.02*vec3(1.5, .3, 1.5), nor, f*3.);\n    }\n    else if (id == BM_GROUND)\n    {\n//const vec2 e = vec2(.001, 0);\n\n        \n        float l = length(getPath(p.x) - p);\n\n        vec3 grad = texture(iChannel1, p.xz*.03).xyz*2.-.5;\n        grad += (texture(iChannel1, p.xz*.06).zyx-.5)-.5;\n\n        l = clamp(l, -TAU, TAU);\n        l *= ((cos(l+PI)))*.04;\n        l = clamp(l, 0.,1.);\n        nor = normalize( nor + grad*f*100.*l);\n    }\n    else if (id == BM_CABIN)\n    {\n        nor.z += (abs(sin(p.y*PI*.5))-1.)*f*32.;\n        nor.y += (abs(sin(p.y*PI*.5))-1.)*f*32.;\n        //nor.x += tex3D(iChannel0, p*.5, nor).x-.5; \n        nor = normalize(nor);\n    }                  \n    return nor;\n}\n\n\n\n//==========================================================================\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    vec2 uv = (-iResolution.xy + 2.0 * fragCoord ) / iResolution.y;\n    spot = SPOT_POS;\n    time = iTime;\n\n\n    // Camera stuff...\n\n    float time =  getTime(iTime);\n    camera = getCameraPos(time);\n    rayDir = normalize( vec3(uv, 1.));\n        \n    //mat3 camMat = getStoreMat33(iChannel3);\n    vec2 camRot = texelFetch( iChannel2, ivec2(C_CAMROT,0),0 ).xy;\n    mat3 camMat = getCamFromRots(camRot, time);\n    rayDir = camMat * rayDir;\n \n\n    //torPos  = camera + texture( iChannel2, vec2(6.5,.5)/iResolution.xy, -100.0 ).xyz;\n    torPos  = camera + texelFetch( iChannel2, ivec2(C_TORPOS, 0), 0 ).xyz;\n    // Fetch the marched scene....\n    vec4 fetch = texelFetch( iChannel3, ivec2(fragCoord), 0);\n    vec4 mat;\n    \n    vec3 col = vec3(0.);\n    torchDir = texelFetch( iChannel2, ivec2(C_TORDIR, 0), 0 ).xyz;\n\n    float dist = fetch.w;\n    float shad = 1.0;\n\n    \n    if (dist < FAR)\n    {\n        vec3 pos = camera + dist * rayDir;\n\n        \n        // Unpack data from buffer B...\n        vec4 data = unpackData(fetch.xy);        \n        vec3 nor = data.xyz;\n        int id = int(data.w);\n        shad = fetch.z;\n\n        // Get diffuse colour from ID...\n        vec4 diff = getDiffuse(pos, id, nor);\n        \n        // Get bump map from ID...\n        nor = getBumpMap(pos, materials[id].bumpID, nor, dist);\n        \n        col = getLighting(pos, rayDir, diff, nor, shad);\n        col += torchLight(pos, rayDir, diff, nor, shad);\n        //col = clamp(col, 0.0, 1.0);\n        col = mix(col,FOG_COLOUR, smoothstep(20.0, 90.0, pos.y));\n        \n     }else\n     dist = FAR;\n    \n    \n    float ret;\n    //float cone = infCone(camera, rayDir, torPos, torPos+torchDir*282.0, .2, 195.0, ret);\n    float cone = coneIntersect(camera, rayDir, torPos, torPos-torchDir*10.0, .4, 12.0);\n\n    //else \n\n    //cone = cone*0.004;\n    \n  if (cone > 0.0 && cone < dist)\n  {\n      //cone = max(0.0, (15.-pow(cone, 3.3)*.01))*.02;\n      //cone = smoothstep(12.0, 0.0, cone)*.8;\n      cone = 1.9/cone;\n  }else cone = .0;\n    \n    cone = pow(cone, 10.0);\n    col = mix(FOG_COLOUR, col,  min(1.0, exp(-dist *.015)));\n\n    col = clamp(cone+col, 0.0, 1.0);\n    fragColour = vec4(col, dist);\n}\n//==========================================================================\n\n\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// A simple map layout with path and clearing for cabin.  📌\n// (C) 2021 David Hoskins.\n// The Voronoi function uses this a tree reference. \n\n// 🤔 It may have been a lot faster if I could use different sized buffers.\n// As it is the code indexes into a massive full screen sized buffer, which can't be fast.\n\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License\n// Contact the author for other licence options\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    //if (iFrame > 3 || (fragCoord.x >= 256. || fragCoord.y >= 256.)) discard;\n    \n    int id;\n    float size, height;\n    \n    float d = doClearing((fragCoord-128.)*TREE1_SPACING);\n    if (d <= 0.0)\n        fragColour = vec4(0);\n    else \n    {\n        id = int(hash12(fragCoord*3.5+40.)*10.)+ID_TREES;\n        \n        if (id >= ID_TREES && id < ID_TREES+4)\n        {\n            size = floor(hash12(fragCoord*4.5)*4.0+1.);\n        }else\n        if (id >= ID_BUSHES && id < ID_BUSHES+4) // Bushes have a bigger foot print.\n        {\n            size = floor(hash12(fragCoord*3.5)*6.0+4.);\n        }else\n        if (id == ID_STUMP) // Bushes have a bigger foot print.\n        {\n            size = floor(hash12(fragCoord*3.5)*6.0+1.);\n            height = hash12(fragCoord*30.0)*20.0 + 1.;\n            \n        }else\n        if (id == ID_RHODA) // Rhodoendron\n        {\n            size = floor(hash12(fragCoord*3.5)*7.0+4.);\n            height = hash12(fragCoord*30.0)*4.0 + 2.;\n        }\n       \n        fragColour = vec4( float(id),     // X = type ID\n                           size,          // Y = size\n                           height,\n                           0);\n\n     }\n\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Cabin in the Woods 🎧🔊\n// Audio tab. Some quiet wind and crunchy foot steps.\n// Edited version from Frozen Wasteland:\n// https://www.shadertoy.com/view/Xls3D2\n\n// (C) 2021 David Hoskins.\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n// Contact the author for other licence options\n\n\nvec2 add = vec2(1.0, 0.0);\n#define MOD2 vec2(.16632,.17369)\n#define MOD3 vec3(.16532,.17369,.15787)\n\nfloat tri(in float x){return abs(fract(x)-.5)*2.0;}\n//----------------------------------------------------------------------------------------\n//  1 out, 1 in ...\nfloat hash11(float p)\n{\n\tvec2 p2 = fract(vec2(p) * MOD2);\n    p2 += dot(p2.yx, p2.xy+19.19);\n\treturn fract(p2.x * p2.y);\n}\n//----------------------------------------------------------------------------------------\n//  2 out, 1 in...\nvec2 hash21(float p)\n{\n\t//p  = fract(p * MOD3);\n    vec3 p3 = fract(vec3(p) * MOD3);\n    p3 += dot(p3.xyz, p3.yzx + 19.19);\n   return fract(vec2(p3.x * p3.y, p3.z*p3.x));\n}\n\n//----------------------------------------------------------------------------------------\n//----------------------------------------------------------------------------------------\n///  2 out, 2 in...\nvec2 shash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * MOD3);\n    p3 += dot(p3.zxy, p3.yxz+19.19);\n    return fract(vec2(p3.x * p3.y, p3.z*p3.x));\n}\n\n\n//----------------------------------------------------------------------------------------\n//  2 out, 1 in...\nvec2 Noise21(float x)\n{\n    float p = floor(x);\n    float f = fract(x);\n    f = f*f*(3.0-2.0*f);\n    return  mix( hash21(p), hash21(p + 1.0), f)-.5;\n    \n}\n\n//----------------------------------------------------------------------------------------\n//  2 out, 1 in...\nfloat Noise11(float x)\n{\n    float p = floor(x);\n    float f = fract(x);\n    f = f*f*(3.0-2.0*f);\n    return mix( hash11(p), hash11(p + 1.0), f)-.5;\n\n}\n\n\n//----------------------------------------------------------------------------------------\n//  2 out, 2 in...\nvec2 Noise22(vec2 x)\n{\n    vec2 p = floor(x);\n    vec2 f = fract(x);\n    f = f*f*(3.0-2.0*f);\n    \n    vec2 res = mix(mix( shash22(p),          shash22(p + add.xy),f.x),\n                   mix( shash22(p + add.yx), shash22(p + add.xx),f.x),f.y);\n    return res-.5;\n}\n\n//----------------------------------------------------------------------------------------\n// Fractal Brownian Motion...\nvec2 FBM22(vec2 x)\n{\n    vec2 r = vec2(0.0);\n    \n    float a = .6;\n    \n    for (int i = 0; i < 8; i++)\n    {\n        r += Noise22(x * a) / a;\n        a += a;\n    }\n     \n    return r;\n}\n\n\n//----------------------------------------------------------------------------------------\nvec2 mainSound( in int samp,float time)\n{\n    vec2 audio = vec2(.0);\n    time = mod(time, 100.0);\n    vec2 n1 =  FBM22( vec2(time*850.+Noise21(time*12.25)))*.2;\n    vec2 n2 = FBM22( time*(Noise21(time*.4)*100.+40.0))*abs(Noise21(time*1.5))*.5;\n\n    vec2 s1 = sin(time*(200.+(Noise21(time*.033)*100.)*(Noise21(-time*.01)*30.2)))*.1;\n    audio += (n1+n2+s1)/5.0;\n\n    float t = getTime(time);\n    //audio = vec2(0);\n    float foot = abs(sin(t*.3-.5));\n    audio += (Noise11(time*100.0)+Noise11(time*1800.)*Noise11(time*3000.0))* (smoothstep(0.96,1.,foot) * .8 );// + smoothstep(.0, .5, foot)*.4);\n\n    audio =  clamp(audio, -1.0, 1.0) * smoothstep(0.0, 3.0, time) * smoothstep(99.0, 90.0, time);\n#if EXPORTED\n    audio += sin(time*220.*PI)* smoothstep(.1, .0, time); // For easy audio sync in separate frame video recording.\n#endif\n    return audio;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Sound",
+                "outputs": [],
+                "type": "sound"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

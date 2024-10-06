@@ -1,0 +1,104 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1663657813",
+            "description": "Another experiment with particles-in-cells, this time adding collision between particles. The particles seem to organize into similar-colored regions since they can move freely through their own color.\n*space to reset*\n*mouse to erase particles*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "fttfWj",
+            "likes": 10,
+            "name": "Colliding Scribbles",
+            "published": 3,
+            "tags": [
+                "2d",
+                "collision",
+                "particles",
+                "abstract"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 279
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  Another experiment with particles-in-cells, this time adding collision\n//  between particles. The particles seem to organize into similar-colored\n//  regions since they can move freely through their own color. Since laying\n//  down trails of their own color protects them and similar colored particles,\n//  the particles establish zones of the same color, fighting for dominance\n//  along region boundaries.\n//\n//  Each region also seems to have a primary direction, which reminds me of\n//  crystal growth, the the resulting patterns have a crystal-like quality.\n//\n//  The mouse allows you to delete areas when they are getting too boring.\n//\n// ---------------------------------------------------------------------------------------\n\nvec3 floatToColor(float f)\n{\n    return normalize(sin((f + iTime * .01) * vec3(3,4,5)) * 0.5 + 0.5);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    cellData d = unpackCell(texelFetch(iChannel0, ivec2(fragCoord), 0));\n    \n    fragColor = vec4(mix(vec3(1), floatToColor(d.color), d.trailDensity), 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buffer A updates a compressed cellData per pixel\n\n// Particles die after this many frames\nconst float MAX_AGE = 4000.0;\n\n// Particles are created each frame on each pixel with this probability\nconst float SPAWN_PROBABILITY = 2e-6;\n\n// Bigger RANGE makes larger velocities possible, but starts to be prohibitively expensive\nconst int RANGE = 5;\n\n// Control particle rendering into the trail buffer\nconst float MIN_SIZE = 0.0;\nconst float MAX_SIZE = 1.6;\n\nbool collides(vec2 fragCoord, vec2 from, vec2 to, float color, out vec2 normal)\n{\n    vec2 delta = to - from;\n    if (abs(delta.x) > abs(delta.y))\n    {\n        float f = delta.y / delta.x;\n        float s = sign(delta.x);\n        for (vec2 x = from; x.x * s <= to.x * s; x += vec2(s, f))\n        {\n            cellData d = unpackCell(texelFetch(iChannel0, ivec2(fragCoord + x), 0));\n            if (d.trailDensity > 0.25 && d.color != color)\n            {\n                normal = vec2(sin(d.trailDir), cos(d.trailDir));\n                return true;\n            }\n        }\n    }\n    else if (abs(delta.y) > 0.)\n    {\n        float f = delta.x / delta.y;\n        float s = sign(delta.y);\n        for (vec2 y = from; y.y * s <= to.y * s; y += vec2(f, sign(delta.y)))\n        {\n            cellData d = unpackCell(texelFetch(iChannel0, ivec2(fragCoord + y), 0));\n            if (d.trailDensity > 0.25 && d.color != color)\n            {\n                normal = vec2(sin(d.trailDir), cos(d.trailDir));\n                return true;\n            }\n        }\n    }\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ifc = ivec2(fragCoord);\n    vec4 state = texelFetch(iChannel0, ivec2(0), 0);\n    \n    if (ifc == ivec2(0))\n    {\n        // Reset if resolution doesn't match\n        if ((iFrame % 2000) == 0 || abs(state.xy) != iResolution.xy || keyDown(KEY_SPACE))\n        {\n            fragColor = vec4(-iResolution.xy, vec2(.5));\n        }\n        else\n        {\n            if (iMouse.z > 0.)\n            {\n                state.zw = iMouse.xy / iResolution.xy;\n            }\n            \n            fragColor = vec4(abs(state.xy), state.zw);\n        }\n        return;\n    }\n    \n    float h = hash(\n        ifc.x + \n        ifc.y*int(iResolution.x) + \n        iFrame*int(iResolution.x*iResolution.y)\n    );\n    \n    if (iFrame == 0 || state.x < 0.)\n    {\n        // Clear buffer\n        cellData init;\n        init.pos = vec2(0.5, 0.5);\n        init.vel = vec2(0);\n        init.density = 0.0;\n        init.trailDensity = 0.0;\n        init.color = 0.0;\n        init.trailDir = 0.0;\n        \n        fragColor = packCell(init);\n\n        return;\n    }\n    \n    if (h > 1. - SPAWN_PROBABILITY)\n    {\n        // Spawn new particle\n        float h1 = hash(\n            ifc.x*int(iResolution.x) + \n            ifc.y*int(iResolution.y) + \n            iFrame*int(iResolution.x*iResolution.y)\n        );\n\n        float h2 = hash(int(h1*994888228.));\n        float h3 = hash(int(h2*4343555.));\n        float h4 = hash(int(h3*84999223.));\n\n        cellData newParticle;\n        newParticle.pos = vec2(0.5, 0.5); // Start in the middle of the cell\n        newParticle.vel = normalize(vec2(h2 - 0.5, h3 - 0.5));\n        newParticle.density = 1.0;\n        newParticle.trailDensity = 1.0;\n        newParticle.color = h1;\n        newParticle.trailDir = atan(newParticle.vel.y, newParticle.vel.x);\n        \n        fragColor = packCell(newParticle);\n    }\n    else\n    {\n        float newDensity = 0.;\n        vec2 newVel = vec2(0);\n        cellData d = unpackCell(texelFetch(iChannel0, ivec2(fragCoord), 0));\n\n        // Search the nearest NxN cells to find any that has density that wants to move into our cell\n        for (int x = -RANGE; x <= RANGE; ++x)\n        {\n            for (int y = -RANGE; y <= RANGE; ++y)\n            {\n                if (ifc.x + x < 0 || ifc.x + x >= int(iResolution.x)) continue;\n                if (ifc.y + y < 0 || ifc.y + y >= int(iResolution.y)) continue;\n\n                cellData nb = unpackCell(texelFetch(iChannel0, ivec2(fragCoord) + ivec2(x, y), 0));\n\n                vec2 nbPos = nb.pos + vec2(x, y);\n                vec2 newNbPos = nbPos + nb.vel * float(RANGE);\n                \n                if (nb.density > 0.)\n                {\n                    vec2 normal;\n                    if (collides(fragCoord, nbPos, newNbPos, nb.color, normal))\n                    {\n                        nb.vel = reflect(nb.vel, normal);\n                        //float temp = nb.vel.x;\n                       // nb.vel.x = -nb.vel.y;\n                        //nb.vel.y = temp;\n                        \n                        newNbPos = nbPos + nb.vel * float(RANGE);\n                    }\n                    else\n                    {\n                        // Apply some rotation to make the spirals\n                        nb.vel = rot2((nb.color - 0.5) * 0.5) * nb.vel;\n                    }\n\n                    // Draw smooth line from old position to new, even if it jumped past our position\n                    float aa = smoothstep(MAX_SIZE, MIN_SIZE, linePointDist(fragCoord + newNbPos, fragCoord + nbPos, fragCoord));\n                    \n                    // Use full color if we're drawing on black\n                    d.color = d.trailDensity < .2 || aa > .2 ? nb.color : d.color;\n                    d.trailDensity += aa;\n                    d.trailDir = nb.trailDir;\n                    \n                    if (all(greaterThan(newNbPos, vec2(0))) && all(lessThan(newNbPos, vec2(1))))\n                    {\n                        d.pos = newNbPos;\n                        newVel = nb.vel;\n                        newDensity = 1.;\n                    \n                        d.trailDir = nb.trailDir;\n                        d.color = nb.color; // Copy over the whole color so it doesnt get lost even with thin lines\n                    }\n                }\n            }\n        }\n\n        if (iMouse.z > 0.0)\n        {\n            vec2 delta = iMouse.xy - fragCoord;\n            if (length(delta) < iResolution.y * 0.25)\n            {\n                newDensity = 0.;\n            }\n        }\n        // Record data in fragColor\n\n        d.vel = newVel;\n        d.density = min(1., newDensity);\n        d.trailDensity *= 0.95; // Fade out old density to keep the display from becoming too busy\n\n\n        fragColor = packCell(d);\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float pack2(vec2 v)\n{\n    return uintBitsToFloat(packSnorm2x16(v));\n}\n\nvec2 unpack2(float f)\n{\n    return unpackSnorm2x16(floatBitsToUint(f));\n}\n\nstruct cellData\n{\n    vec2 pos;           // 0 ... 1, position within the cell\n    vec2 vel;           // -1 ... 1, multiplied by RANGE\n    float density;      // either 0 or 1, depending on if a particle is present\n    float trailDensity; // 0 ... 1, allows particles to leave trails behind\n    float trailDir;\n    float color;        // 0 ... 1, color of trail\n};\n\ncellData unpackCell(vec4 c)\n{\n    cellData d;\n    \n    d.pos = unpack2(c.x);\n    d.vel = unpack2(c.y);\n    vec2 den = unpack2(c.z);\n    d.density = den.x;\n    d.trailDensity = den.y;\n    vec2 colorDir = unpack2(c.w);\n    d.color = colorDir.x;\n    d.trailDir = colorDir.y;\n    \n    return d;\n}\n\nvec4 packCell(cellData d)\n{\n    float x = pack2(d.pos);\n    float y = pack2(d.vel);\n    float z = pack2(vec2(d.density, d.trailDensity));\n    float w = pack2(vec2(d.color, d.trailDir));\n    \n    return vec4(x, y, z, w);\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\nmat2 rot2(float a)\n{\n    float s = sin(a), c = cos(a);\n    return mat2(c, s, -s, c);\n}\n\nfloat length2(vec2 x)\n{\n    return dot(x, x);\n}\n\nfloat linePointDist(in vec2 newPos, in vec2 oldPos, in vec2 fragCoord)\n{\n    vec2 pDelta = (fragCoord - oldPos);\n    vec2 delta = newPos - oldPos;\n    float deltaLen2 = dot(delta, delta);\n\n    // Find the closest point on the line segment from old to new\n    vec2 closest;\n    if (deltaLen2 > 0.0000001)\n    {\n        float deltaInvSqrt = inversesqrt(deltaLen2);\n        vec2 deltaNorm = delta * deltaInvSqrt;\n        closest = oldPos + deltaNorm * max(0.0, min(1.0 / deltaInvSqrt, dot(deltaNorm, pDelta)));\n    }\n    else\n    {\n        // Line is very short; either end will do\n        closest = oldPos;\n    }\n\n    // Distance to closest point on line segment\n    return distance(closest, fragCoord);\n}\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SPACE 32\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

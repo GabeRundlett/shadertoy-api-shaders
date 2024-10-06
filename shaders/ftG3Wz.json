@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1637442938",
+            "description": "Method for approximating a point's distance from an ellipse for the purposes of anti-aliasing",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ftG3Wz",
+            "likes": 2,
+            "name": "Anti-aliased ellipse",
+            "published": 3,
+            "tags": [
+                "ellipse"
+            ],
+            "usePreview": 0,
+            "username": "rpmalon",
+            "viewed": 252
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================================================================================\n//\n// The MIT License\n// Copyright © 2021 Ryan Malon\n//\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"),\n// to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,\n// and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,\n// WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n//\n//=======================================================================================================================\n//\n// Rendering an ellipse implicitly with anti-aliasing using an approximation of signed distance\n//\n// note: This does not work well for highly eccentric (flat) ellipses.\n//       However, this does not require any textures, root-finding, or conditionals.\n//       What you see is what you get.\n//\n// Ellipse representation\n//\n//   names are based on conventional ellipse values A, B, and C where:\n//     A is the length of the semi-major axis\n//     B is the length of the semi-minor axis\n//     C is the distance from the center of the ellipse to either of the foci\n//     these follow a Pythagorean triple, A^2 = B^2 + C^2\n//\n//   EllipseCenter: vector from center of coordinate space to center of the ellipse\n//                  you can easily write your vertex shader such that this is always (0, 0)\n//\n//   EllipseCVec:   vector from center of ellipse to one of the foci\n//                  i.e. one focus is at (EllipseCenter + EllipseCVec), the other is at (EllipseCenter - EllipseCVec)\n//                  this determines the orientation of the ellipse, and partially defines its eccentricity\n//\n//   EllipseB:      length of the ellipse's semi-minor axis\n//\n//=======================================================================================================================\n\nfloat ApproxDistanceToEllipse(vec2 QueryPoint, vec2 EllipseCenter, vec2 EllipseCVec, float EllipseB)\n{\n    QueryPoint = QueryPoint - EllipseCenter;\n    \n    float EllipseC = length(EllipseCVec);\n    float EllipseA = sqrt(EllipseC*EllipseC + EllipseB*EllipseB);\n    \n    float QueryA = (length(QueryPoint + EllipseCVec) + length(QueryPoint - EllipseCVec)) / 2.f;\n    float QueryB = sqrt(QueryA*QueryA - EllipseC*EllipseC);\n    \n    float CosTheta = dot(QueryPoint, normalize(EllipseCVec)) / QueryA;\n    \n    // I'm not sure which of these is better for anti-aliasing purposes.\n    // Maybe there's actually a better interpolation than Lerp, and we should use neither or both.\n    // Cosine^2 is clearly better (just looking at it) as distance from ellipse increases, which is exactly the cases we don't care about for anti-aliasing.\n    // I'm too lazy right now to implement the exact distance function and collect error metrics of both methods.\n    // If anyone reading this feels like doing that for some reason, \n    // you can find David Eberly's exact distance method at https://www.geometrictools.com/Documentation/DistancePointEllipseEllipsoid.pdf section 2.9.\n    // tl;dr just because the first option for LerpValue LOOKS better, doesn't mean that it is, but it might be, I haven't checked\n    float LerpValue = CosTheta * CosTheta;\n    //float LerpValue = abs(CosTheta);\n    \n    float Distanceish = mix(QueryB - EllipseB, QueryA - EllipseA, LerpValue);\n\n    return Distanceish;\n\n}\n\nvoid mainImage(out vec4 FragColor, in vec2 FragCoord )\n{\n    // turn off to see actual anti-aliasing\n    // turn on to see contours of approximated distance\n    bool ShowContours = bool(0);\n    \n    // FragCoord -> range [-iResolution / 2, iResolution / 2]\n    vec2 P = FragCoord - (iResolution.xy * 0.5f);\n    \n    // setup ellipse params\n    float pi = radians(180.f);\n    float CAngle = mod(iTime / 1.5f, 2.f*pi);\n    float CMag = mix(100.f, 200.f, abs(mod(iTime / 2.3f, 2.f) - 1.f));\n    \n    vec2  EllipseCVec = CMag * vec2(cos(CAngle), sin(CAngle));\n    float EllipseB = 50.f;\n    vec2  EllipseCenter = vec2(100.f*cos(iTime), 50.f*sin(iTime * 1.4));\n    \n    // stationary ellipse where major axis is X axis\n    if (ShowContours)\n    {\n        EllipseCVec = vec2(200.f, 0.f);\n        EllipseB = 50.f;\n        EllipseCenter = vec2(0.f, 0.f);\n    }\n    \n    // get approximate distance in pixels\n    float Distanceish = ApproxDistanceToEllipse(P, EllipseCenter, EllipseCVec, EllipseB);\n    \n    // do antialiasing using our approximate distance\n    float Antialias = 1.5;\n    float AntialiasMin = -(Antialias/2.f), AntialiasMax = Antialias/2.f;\n    float Alpha = 1.f - smoothstep(AntialiasMin, AntialiasMax, Distanceish);\n\n    // in actual use case, just use whatever texture or color you want for the ellipse\n    // and use the value of 'Alpha' for the alpha channel of FragColor\n    vec3 ColorOutsideEllipse = vec3(0,0.5,0.5);\n    vec3 ColorInsideEllipse = vec3(0,0.2,0.2);\n    vec3 Color = mix(ColorOutsideEllipse, ColorInsideEllipse, Alpha);\n    FragColor = vec4(Color, 1.f);\n    \n    // visualize distance contours\n    // contour coloring concept from https://www.shadertoy.com/view/tlSGzG\n    if (ShowContours)\n    {\n        float D = Distanceish/6.f;\n        float Darkness = 0.3;\n        vec3 ContourColor = vec3(1.0) - sign(D)*ColorInsideEllipse;\n        ContourColor *= 1.0 - exp(-2.0*abs(D));\n        ContourColor *= (1.f - Darkness) + Darkness*cos(D);\n        FragColor = vec4(ContourColor, 1.f);\n    }\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

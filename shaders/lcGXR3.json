@@ -1,0 +1,73 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1715525746",
+            "description": "Pretty simple: linearity is important in signal processing",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lcGXR3",
+            "likes": 4,
+            "name": "resampling raw sRGB is bad",
+            "published": 3,
+            "tags": [
+                "resampling",
+                "srgb"
+            ],
+            "usePreview": 0,
+            "username": "ttg",
+            "viewed": 140
+        },
+        "renderpass": [
+            {
+                "code": "\nfloat lanczos3 (float x) {\n  float a=3.;\n  x=abs(x)*pi;\n  if (x>a*pi) return 0.;\n  return x<.001?1.:a*sin(x)*sin(x/a)/(x*x);\n}\n\nfloat lanczos3 (vec2 x) {\n  return lanczos3(x.x)*lanczos3(x.y);\n}\n\nvec3 lanczos3sample (sampler2D samp, vec2 f, int decodesrgb) {\n  ivec2 F=ivec2(floor(f)); f=fract(f);\n  int N=3;\n  ivec2 D;\n  vec3 v=vec3(0);\n  for (D.y=-N+1;D.y<=N;D.y++)\n  for (D.x=-N+1;D.x<=N;D.x++) {\n    vec3 x=texelFetch(samp,F+D,0).xyz;\n    if (1==decodesrgb) x=srgb_decode(x);\n    v+=x*lanczos3(f-vec2(D));\n  }\n  return v;\n}\n\nvoid mainImageLSRGB (out vec4 O, vec2 f) {\n  ivec2 I = ivec2(f);\n  vec2 R = iResolution.xy;\n  vec2 u = f/R.x*2.;\n  int sel=int(floor(u.x));\n  u.x=fract(u.x);\n  vec2 uv=u*32.;\n  if (sel==0) {\n    // left: resample raw sRGB data\n    vec3 s = lanczos3sample(iChannel0,uv,0);\n    O.rgb = srgb_decode(s);\n  }\n  if (sel==1) {\n    // right: resample linear samples\n    O.rgb = lanczos3sample(iChannel0,uv,1);\n  }\n}\n\n#define TRUE_SRGB_OUT\n\n#ifdef TRUE_SRGB_OUT\nIMAGE_OUT(EOTF_SRGB)\n#else\nIMAGE_OUT(EOTF_POW22)\n#endif\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\nconst float pi = acos(-1.);\nconst float _2pi = 2.*acos(-1.);\n\nuint hash_triple32(uint x) {\n  // https://nullprogram.com/blog/2018/07/31/\n  x ^= x >> 17;\n  x *= 0xED5AD4BBu;\n  x ^= x >> 11;\n  x *= 0xAC4C1B51u;\n  x ^= x >> 15;\n  x *= 0x31848BABu;\n  x ^= x >> 14;\n  return x;\n}\n#define hash hash_triple32\nint hash(int x) { return int(hash(uint(x))); }\n\nvec3 srgb_ieotf (vec3 c) {\n  // tiny\n  //return min(12.9*c,abs(1.054*pow(c,c-c+.4166)-.095)+.04);\n  // precise\n  return mix(12.92*c,1.055*pow(c,vec3(1./2.4))-.055,step(.0031308,c));\n}\n\nvec3 srgb_eotf (vec3 e) {\n  return mix(e/12.92,pow((e+.055)/1.055,vec3(2.4)),step(.04045,e));\n}\n\n#define srgb_encode srgb_ieotf\n#define srgb_decode srgb_eotf\n\n#define EOTF_SRGB 0\n#define EOTF_POW22 1\n\nvec3 ieotf (int eotfsel, vec3 c) {\n  if(eotfsel==EOTF_SRGB)return srgb_ieotf(c);\n  if(eotfsel==EOTF_POW22)return pow(c,vec3(1./2.2));\n}\n\nvec3 eotf (int eotfsel, vec3 c) {\n  if(eotfsel==EOTF_SRGB)return srgb_eotf(c);\n  if(eotfsel==EOTF_POW22)return pow(c,vec3(2.2));\n}\n\nvec3 output_ieotf_dither (int eotfsel, vec3 l) {\n#ifndef HW_PERFORMANCE\n  int iFrame=0;\n#endif\n  float bitres=1./63.;\n  ivec2 I = ivec2(gl_FragCoord.xy);\n  int seed = I.x+(I.y<<12);\n  seed = hash(seed)^iFrame;\n  vec3 rnd = unpackUnorm2x16(hash(uint(seed))).xyx;\n  vec3 Q;\n  for(int i=0;i<3;i++) {\n    vec4 O;\n    O.w = l[i];\n    float r = rnd[i];\n    float q = ieotf(eotfsel,O.www).x;\n    vec3 E = clamp(round(q/bitres)*bitres+vec3(-1,0,1)*bitres,0.,1.);\n    O.xyz=eotf(eotfsel,E);\n    float d = (eotf(eotfsel,vec3(q)+.01*bitres)-O.w).x/.01;\n    vec4 D=O-O.y;\n    float PB1 = 1.-clamp(((D.x-D.w)*(D.z-D.w)+d*d*.25)/(D.x*D.z),0.,.75);\n    float PA = (D.z*PB1-D.w)/(D.z-D.x);\n    Q[i] = r<PA?E.x:r>PB1?E.y:E.z;\n  }\n  return Q;\n}\n\n#define IMAGE_OUT(eotfsel) \\\nvoid mainImage (out vec4 srgb, vec2 f) { \\\n  vec4 O; \\\n  mainImageLSRGB(O,f); \\\n  srgb.rgb = output_ieotf_dither(eotfsel,O.rgb); \\\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\n// srgb_encode means: the texture is sRGB data, and fetching it\n// will be sRGB data, because Shadertoy does no conversions\n// and texelFetch fetches single texel from memory, no math at all.\n\nvoid mainImage (out vec4 O, vec2 f) {\n\n  // an approximately bandlimited function to sample:\n  float x = cos(1.5*length(f-vec2(16.5)))*.5+.5;\n\n  // encode to texture\n  O.xyz = srgb_encode(vec3(x));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

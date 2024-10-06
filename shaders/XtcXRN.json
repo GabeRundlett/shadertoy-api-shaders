@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1478408602",
+            "description": "Much debugging later... a hollow glass cube with a sphere in it (and many, probably not all, bugs fixed). \n\nA day late, due to bugs :D It happens.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XtcXRN",
+            "likes": 33,
+            "name": "The Daily Shade day 4/5: Glass+",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "refraction",
+                "glass",
+                "daily"
+            ],
+            "usePreview": 0,
+            "username": "psonice",
+            "viewed": 1318
+        },
+        "renderpass": [
+            {
+                "code": "/* \nDay 4: In which I discover a large number of bugs...\nThe plan: make a pretty glass and mirror city based on day 3's code. \nWhat happened: midnight passed and I was still trying to figure out wtf \nwas going on with the refraction :D\n\nDay 5: In which i fix some bugs\nTurns out the problems were all related to using signed distance fields and normals.\nWhat I was doing required stepping inside the object AND signed SDFs. A nasty mix!\nAnyway, no time to finish up that city, so here's some sexy blue glass (i.e. my test scene ;)\n*/\n\n//#define DEBUG\n\n// Rotation\n#define R(p,a) p=cos(a)*p+sin(a)*vec2(-p.y,p.x);\n#define kFLIPY vec3(1, -1, 1)\n\n#define kINFINITY 10000.0 // An unimaginably large number\n\n// maximum iteration count\n#define kMAXITERS 120\n#define kEPSILON 0.001\n#define kMAXINTERSECTIONS 4\n\n// refractive index\n#define kREFRACT 1.0/1.5\n    \n// A ray. Has origin + direction.\nstruct Ray {\n    vec3 origin;\n    vec3 dir;\n};\n\n// A camera. Has a position and a direction. \nstruct Camera {\n    vec3 pos;\n    Ray ray;\n};\n    \n// A disk. Has position, size, colour.\nstruct Disk {\n    vec3 pos;\n    float radius;\n    vec3 col;\n};\n    \nstruct Sphere {\n    vec3 pos;\n    float radius;\n};\n    \nstruct Box {\n\tvec3 pos;\n\tvec3 size;\n    float radius;\n};\n\n// Normalised random number, borrowed from Hornet's noise distributions: https://www.shadertoy.com/view/4ssXRX\nfloat nrand( vec2 n )\n{\n\treturn fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);\n}\n\n// Distance to sphere (signed)\nfloat sphereDist(in Ray ray, in Sphere sphere) {\n    return length(ray.origin - sphere.pos) - sphere.radius;\n}\n\n// Distance to sphere surface\nfloat uSphereDist(in Ray ray, in Sphere sphere) {\n    return abs(length(ray.origin - sphere.pos) - sphere.radius);\n}\n\n// Distance to box surface (signed)\nfloat boxDist(in Ray ray, in Box box) {\n    vec3 dist = abs(ray.origin - box.pos) - (box.size * 0.5);\n    vec3 cDist = max(dist, 0.0);\n    return min(max(dist.x, max(dist.y, dist.z)), 0.0) + length(cDist) - box.radius;\n}\n\n// Distance to box surface\nfloat uBoxDist(in Ray ray, in Box box) {\n    return abs(length(max(abs(ray.origin - box.pos) - (box.size * 0.5), 0.0)) - box.radius);\n}\n\n// distance to floor\nfloat floorDist(in Ray ray) {\n    // We can cheap and trace this. It's more expensive, but results in the ray intersecting the\n    // floor in 1 step, best case (huge win when ray is nearly parallel!)\n    float dist = ray.origin.y / -ray.dir.y;\n    if( dist <= 0.0001 ) { return kINFINITY; }\n    \n    return dist;\n}\n\nfloat sceneDist(in Ray ray) {\n    // Rotate the cube by rotating the ray...\n    ray.origin.xy = R(ray.origin.xy, iTime * 0.55);\n    ray.origin.xz = R(ray.origin.xz, iTime * 0.34);\n    \n    // A box, a smaller box, and a sphere...\n    Box b0 = Box(vec3(0, 0, 0), vec3(4), 0.4);\n    Box b1 = Box(vec3(0, 0, 0), vec3(3), 0.3);\n    Sphere s0 = Sphere(vec3(0, 0, 0), 1.3);\n    \n    // get the distance to each\n    float distToB0 = boxDist(ray, b0);\n    float distToB1 = boxDist(ray, b1);\n \tfloat distToS0 = sphereDist(ray, s0);\n    \n    //Find the neares of the sphere, and box0 minus box1.\n    return min(max(distToB0, -distToB1), distToS0);\n}\n\n// Gets the normal\nvec3 normal(in Ray ray) {\n    vec2 eps = vec2(0.0001, 0);\n    float baseDist = sceneDist(ray);\n \treturn normalize(vec3(\n        sceneDist(Ray(ray.origin + eps.xyy, ray.dir)) - baseDist,\n        sceneDist(Ray(ray.origin + eps.yxy, ray.dir)) - baseDist,\n        sceneDist(Ray(ray.origin + eps.yyx, ray.dir)) - baseDist\n        ));\n}\n\n// Moves the ray to the surface. Helps avoid artefacts due to ray intersection imprecision.\nvoid clampToSurface(in Ray ray, in float d, inout vec3 n) {\n \tray.origin += n * d;\n \td = sceneDist(ray);\n \tn = normal(ray);\n}\n\n// increment step counter and return true if it's abort time\nbool nextStepIsFinal(inout int steps, in int maxSteps) {\n    steps++;\n    return steps >= maxSteps;\n}\n\n// The main marching loop\nvoid marchRay(inout Ray ray, inout vec4 colour, inout int steps, in int maxSteps) {\n    bool inside = false; // are we inside or outside the glass object\n    vec4 impact = vec4(1.0); // This decreases each time the ray passes through glass, darkening colours\n    bool hit = false;\n#ifdef DEBUG   \nvec4 debugColour = vec4(1, 0, 0, 1);\n#endif\n    for (int i=0; i<kMAXITERS; i++) {\n        // Get distance to nearest surface\n        float d = sceneDist(ray);\n        \n        // Step half that distance along ray (helps reduce artefacts)\n        ray.origin += ray.dir * abs(d);  \n        \n        if (abs(d) < kEPSILON) {\n            // colision\n    \n            hit = true;\n            /*\n            if ( ray.origin.y < kEPSILON ) {\n                // ray hit floor\n                impact *= vec4(0.6,0.6,0.6,1.0);\n                ray.dir = reflect(ray.dir, vec3(0,1,0));\n            \t// Intersection count inc, break if over limit else next iteration\n                if (nextStepIsFinal(steps, maxSteps)) { break; } else { continue; }\n            }\n            */\n            // Get the normal, then clamp the intersection to the surface\n    \t\tvec3 n = normal(ray);\n            clampToSurface(ray, d, n);\n#ifdef DEBUG\ndebugColour.rgb = n;\n//break;\n#endif\n            \n            if (inside) {\n                // refract glass -> air\n            \tray.dir = refract(-n, -ray.dir, 1.0/kREFRACT);\n            \timpact *= vec4(0.4, 0.5, 0.9, 1.0);\n          \n                \n            } else {\n                // refract air -> glass\n                // Calulcate a fresnel term for reflections\n                float fresnel = min(1., dot(ray.dir, n) + 1.0);\n       \t\t\tfresnel = pow(fresnel, 2.);\n                \n                // Mix the reflection in, according to the fresnel term\n    \t\t\tcolour = mix(\n                    colour, \n                    texture(iChannel1, reflect(ray.dir, n) * kFLIPY), \n                    vec4(fresnel) * impact);\n    \t\t\t\n                // refract the ray\n            \tray.dir = refract(ray.dir, n, kREFRACT);\n            }\n            \n            // Intersection count inc, break if over limit\n            if (nextStepIsFinal(steps, maxSteps)) { break; }\n            \n            // Step 2x epsilon into object along normal to ensure we're beyond the surface\n            // (prevents multiple intersections with same surface)\n            ray.origin += (inside ? n : -n) * kEPSILON * 2.0;\n            \n            // Flip in/out status\n            inside = !inside;\n        }\n    }\n    \n    // So far we've traced the ray and accumulated reflections, now we need to add the background.\n    colour += texture(iChannel0, ray.dir * kFLIPY) * impact;// / float(steps+1);\n#ifdef DEBUG\ncolour = debugColour;\n//colour.rgb = vec3(float(steps)/8.);\n//colour.rgb = ray.dir;\n#endif\n}\n\n// Sets up a camera at a position, pointing at a target.\n// uv = fragment position (-1..1) and fov is >0 (<1 is telephoto, 1 is standard, 2 is fisheye-like)\nCamera setupCam(in vec3 pos, in vec3 target, in float fov, in vec2 uv) {\n\t\t// cam setup\n    // Create camera at pos\n\tCamera cam;\n    cam.pos = pos;\n    \n    // A ray too\n    Ray ray;\n    ray.origin = pos;\n    \n    // FOV is a simple affair...\n    uv *= fov;\n    \n    // Now we determine hte ray direction\n\tvec3 cw = normalize (target - pos );\n\tvec3 cp = vec3 (0.0, 1.0, 0.0);\n\tvec3 cu = normalize ( cross(cw,cp) );\n\tvec3 cv = normalize ( cross (cu,cw) );\n    \n\tray.dir = normalize ( uv.x*cu + uv.y*cv + 0.5 *cw);\n    \n    // Add the ray to the camera and our work here is done.\n\tcam.ray = ray;\n\treturn cam;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // We'll need a camera. And some perspective.\n    \n\t// Get some coords for the camera angle from the frag coords. Convert to -1..1 range.\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    uv = uv * 2. - 1.;\n    \n    // Aspect correction so we don't get oval bokeh\n    uv.y *= iResolution.y/iResolution.x;\n    \n    // Make a camera with ALL NEW AND IMPROVED! camera code :)\n    float camTime = iTime / 4.0;\n    float camDist = 6.0;\n    vec3 camPos = vec3(sin(camTime) * camDist, 0, cos(camTime) * camDist);\n    Camera cam = setupCam(camPos, vec3(0, 0.0, 0), 0.500, uv);\n    \n    // Let's raymarch some stuff and inject that into the scene...\n    \n    // Create an empty colour\n    vec4 col = vec4(0.0);\n    \n    // This is the number of intersections.\n    int steps = 0;\n    \n    // Trace that ray!\n    marchRay(cam.ray, col, steps, kMAXINTERSECTIONS);\n    \n\tfragColor = vec4(col.rgb,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

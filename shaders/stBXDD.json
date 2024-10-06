@@ -1,0 +1,107 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1627687428",
+            "description": "Tries to permute the pixels from one source image (iChannel0) to best fit another target image (iChannel1).\nThe respective channels are both to be found in the tab for buffer A.\n\nThe sim might have to be restarted so that the init may occur correctly.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "stBXDD",
+            "likes": 4,
+            "name": "Permuting Pixels to Target",
+            "published": 3,
+            "tags": [
+                "permutation"
+            ],
+            "usePreview": 0,
+            "username": "Gegell",
+            "viewed": 344
+        },
+        "renderpass": [
+            {
+                "code": "// See the actual shader in the tab of Buffer A.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define GET_OTHER_VERSION 1\n\n// RNG from https://de.wikipedia.org/wiki/Xorshift\nint rngSeed = 314159265;\n\nint xorshift(in int value) {\n    value ^= value << 13;\n    value ^= value >> 17;\n    value ^= value << 5;\n    return value;\n}\n\nint nextInt() {\n    rngSeed = xorshift(rngSeed);\n    return rngSeed;\n}\n\n// True only when the given position is within the view port.\nbool inView(ivec2 pos) {\n    return all(greaterThanEqual(pos, ivec2(0))) && all(lessThan(pos, ivec2(iResolution.xy)));\n}\n\n// Flatten the 2d position into a 1d index\nint flatten(ivec2 position) {\n    return position.x + position.y * int(iResolution.x);\n}\n\n// Unflatten the 1d index into a 2d position\nivec2 unflatten(int index) {\n    return ivec2(index % int(iResolution.x), index / int(iResolution.x));\n}\n\n// Get the other pixel to a specific one with set random vector.\n// Needs to be self inverse with set random value, i.e: getOther(getOther(p, r), r) = p\nivec2 getOther(ivec2 current, ivec2 random) {\n#if GET_OTHER_VERSION == 0\n    ivec2 res = ivec2(iResolution.xy);\n    random = random % res;\n    random |= 1; \n    if (((current.x ^ current.y) & 1) == 0) {\n        return (current + random) % res;\n    } else {\n        return (current - random + res) % res;\n    }\n#else\n    int res = flatten(ivec2(iResolution.xy));\n    random |= 1;\n    random %= res;\n    int index = flatten(current); \n    if ((index & 1) == 0) {\n        return unflatten((index + random.x) % res);\n    } else {\n        return unflatten((index - random.x + res) % res);\n    }\n#endif\n}\n\n// Compute this rounds random offset vector and return the pixel corresponding to the given and random vector.\nivec2 getOther(ivec2 current) {\n    ivec2 random = ivec2(nextInt(), nextInt()) & 0x7FFFFFFF;\n    ivec2 other = getOther(current, random);\n    if (inView(other) && all(equal( getOther(other, random), current )) ) {\n        return other;\n    }\n    return current;\n}\n\n// The color difference between two colors. \nfloat colorDiff(vec3 a, vec3 b) {\n    // TODO try better difference, i.e. CIE or ITU, see https://en.wikipedia.org/wiki/Color_difference\n    \n    // Currently use squared euclidean distance of RGB values.\n    return dot(a-b, a-b);\n}\n\nfloat colorDiff(vec4 a, vec4 b) {\n    return colorDiff(a.rgb, b.rgb);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Init the RNG with a *different* semi random value every pass.\n    // Thus no need to store the RNG state after each frame.\n    rngSeed = floatBitsToInt(sin(float(iFrame)) + 2.);\n\n    // Compute both the pixel and uv coords for the current pixel\n    // and the potential swap partner.\n    ivec2 pos = ivec2(fragCoord);\n    ivec2 posOther = getOther(pos);\n    \n    vec2 uv = vec2(pos) / iResolution.xy;\n    vec2 uvOther = vec2(posOther) / iResolution.xy;\n    \n    vec4 col;\n    if (iFrame <= 20) {\n        // Init the temporally persistent buffer with the first image (source).\n        // This is done for the first 20 frames, so that initalization upon site load may occur.\n        col = texture(iChannel0, uv); \n    } else {\n        vec4 target = textureLod(iChannel1, uv, 0.);\n        vec4 targetOther = textureLod(iChannel1, uvOther, 0.);\n        \n        vec4 current = texelFetch(iChannel2, pos, 0);\n        vec4 currentOther = texelFetch(iChannel2, posOther, 0);\n        \n        // Compute the parts of the heuristic that may change upon a pixel swap. \n        float currentDiff = colorDiff(current, target) + colorDiff(currentOther, targetOther);\n        float swappedDiff = colorDiff(current, targetOther) + colorDiff(currentOther, target);\n        \n        // Swap if the heuristic impoves.\n        if (swappedDiff < currentDiff) {\n            col = currentOther;\n        } else {\n            col = current;\n        }\n    }\n    \n    // Output to buffer\n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

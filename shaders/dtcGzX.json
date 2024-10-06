@@ -1,0 +1,219 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1682886690",
+            "description": "Fast traversal of a grid of rounded pillars / rectangular prisms\nFeatures anti-aliasing using TAA (or FXAA, see Common)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "dtcGzX",
+            "likes": 14,
+            "name": "Colorful Rectangular Pillars",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "grid",
+                "box",
+                "aa",
+                "fxaa",
+                "taa"
+            ],
+            "usePreview": 0,
+            "username": "gelami",
+            "viewed": 352
+        },
+        "renderpass": [
+            {
+                "code": "\n// Colorful Pillars - gelami\n// https://www.shadertoy.com/view/dtcGzX\n\n/*\n * Fast traversal of a grid of rounded pillars / rectangular prisms\n * Features anti-aliasing using TAA (or FXAA, see Common)\n *\n * Mouse drag to look around\n * Defines in Common\n * \n * Have a few ideas to improve upon this, was thinking about doing an implicit\n * quadtree structure to speed up the traversal without storing anything in a buffer\n * \n * By have a value for each level of detail and multiply with the levels above it,\n * You could ensure the value in the LoD would not exceed values the below it\n *\n * You could also do interval arithmetic, to be able to use all sorts of functions\n * Also if you store 6 levels in the Cubemap buffer,\n * you could do a cascaded heightmap/clipmap setup, where each cubemap face is an LoD\n * \n * Traversal method is based from\n * Gaussian Weights and Fake AO - reinder\n * https://www.shadertoy.com/view/Wtj3Wc\n * \n * TAA from my old shader\n * Temporal AA Study - gelami\n * https://www.shadertoy.com/view/DsfGWX\n *\n * FXAA implementation from\n * https://mini.gmshaders.com/p/gm-shaders-mini-fxaa\n * https://www.geeks3d.com/20110405/fxaa-fast-approximate-anti-aliasing-demo-glsl-opengl-test-radeon-geforce/3/\n * \n *\n *\n */\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 px = 1.0 / iResolution.xy;\n    ivec2 fp = ivec2(fragCoord);\n    \n    #if AA == 1\n    vec3 col = FXAA(iChannel0, uv, iResolution.xy).rgb;\n    #elif AA == 2\n    vec3 col = texture(iChannel1, uv).rgb;\n    #else\n    vec3 col = texture(iChannel0, uv).rgb;\n    #endif\n        \n    //col = col / (1.0 - col);\n    col = mix(col, smoothstep(vec3(0), vec3(1), col), 0.8);\n    \n    //col = ACESFilm(col);\n    fragColor = vec4(linearTosRGB(col), 1);\n    fragColor += (dot(hash23(vec3(fragCoord, iTime)), vec2(1)) - 0.5) / 255.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define ROUNDED\n#define RADIUS 0.06\n#define MOTION\n\n// 0 = No AA\n// 1 = FXAA\n// 2 = TAA\n#define AA 2\n\n//#define NO_MOUSE\n\n#define MIN_HEIGHT 0.01\n#define MAX_HEIGHT 8.0\n\n#define STEPS 512\n#define MAX_DIST 1000.\n#define EPS 1e-4\n\n#define PI (acos(-1.))\n#define TAU (PI*2.)\n\nstruct HitInfo\n{\n    float t;\n    vec3 normal;\n    vec2 tp;\n};\n\n// Rounded box ray-intersection\n// https://www.iquilezles.org/www/articles/intersectors/intersectors.htm\nfloat roundedboxIntersect( in vec3 pos, in vec3 ro, in vec3 rd, in vec3 size, in float rad )\n{\n    vec3 s = sign(pos);\n    ro  *= s;\n    rd  *= s;\n    pos *= s;\n    \n    // Faces\n    pos -= size;\n    pos = max( pos.xyz, pos.yzx );\n    if( min(min(pos.x,pos.y),pos.z) < 0.0 ) return 0.0;\n\n    vec3 oc = ro - size;\n    vec3 dd = rd*rd;\n    vec3 oo = oc*oc;\n    vec3 od = oc*rd;\n    float ra2 = rad*rad;\n\n    float t = MAX_DIST;\n    \n    // Corner\n    {\n        float b = od.x + od.y + od.z;\n        float c = oo.x + oo.y + oo.z - ra2;\n        float h = b*b - c;\n        if( h>0.0 ) t = - b -sqrt(h);\n    }\n    \n    vec3 a = dd.yzx + dd.zxy;\n    vec3 b = od.yzx + od.zxy;\n    vec3 c = oo.yzx + oo.zxy - ra2;\n    vec3 h = b*b - a*c;\n    \n    // Edge X\n    if( h.x>0.0 )\n    {\n        float ht = (-b.x - sqrt(h.x)) / a.x;\n        if( ht>0.0 && ht<t && abs(ro.x+rd.x*ht)<size.x ) t = ht;\n    }\n    \n    // Edge Y\n    if( h.y>0.0 )\n    {\n        float ht = (-b.y - sqrt(h.y)) / a.y;\n        if( ht>0.0 && ht<t && abs(ro.y+rd.y*ht)<size.y ) t = ht;\n    }\n    \n    // Edge Z\n    if( h.z>0.0 )\n    {\n        float ht = (-b.z - sqrt(h.z)) / a.z;\n        if( ht>0.0 && ht<t && abs(ro.z+rd.z*ht)<size.z ) t = ht;\n    }\n    \n    return t;\n}\n\nvec3 roundedboxNormal( in vec3 pos, in vec3 siz, in float rad )\n{\n    return sign(pos)*normalize(max(abs(pos)-siz,0.0));\n}\n\nmat3 getCameraMatrix(vec3 ro, vec3 lo)\n{\n    vec3 cw = normalize(lo - ro);\n    vec3 cu = normalize(cross(cw, vec3(0, 1, 0)));\n    vec3 cv = cross(cu, cw);\n\n    return mat3(cu, cv, cw);\n}\n\nfloat safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }\n\nfloat saturate(float x) { return clamp(x, 0., 1.); }\nvec2 saturate(vec2 x) { return clamp(x, vec2(0), vec2(1)); }\nvec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }\n\nfloat sqr(float x) { return x*x; }\nvec2 sqr(vec2 x) { return x*x; }\nvec3 sqr(vec3 x) { return x*x; }\n\nfloat luminance(vec3 col) {\n    return dot(col, vec3(0.2126729, 0.7151522, 0.0721750));\n}\n\nmat2 rot2D(float a)\n{\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n// https://iquilezles.org/articles/smin/\nfloat smin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n    \nfloat smax( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) + k*h*(1.0-h); }\n\n// https://iquilezles.org/articles/palettes/\nvec3 palette(float t)\n{\n    return .5 + .5 * cos(TAU * (vec3(1, 1, 1) * t + vec3(0, .33, .67)));\n}\n\n// Hash without Sine\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\n#define coprimes vec2(2,3)\nvec2 halton (vec2 s)\n{\n  vec4 a = vec4(1,1,0,0);\n  while (s.x > 0. && s.y > 0.)\n  {\n    a.xy = a.xy/coprimes;\n    a.zw += a.xy*mod(vec2(s),coprimes);\n    s = floor(s/coprimes);\n  }\n  return a.zw;\n}\n\n// FXAA implementation from\n// https://mini.gmshaders.com/p/gm-shaders-mini-fxaa\n// https://www.geeks3d.com/20110405/fxaa-fast-approximate-anti-aliasing-demo-glsl-opengl-test-radeon-geforce/3/\n#define SPAN_MAX   (8.0)\n#define REDUCE_MIN (1.0/128.0)\n#define REDUCE_MUL (1.0/32.0)\n\nvec4 FXAA(sampler2D tex, vec2 uv, vec2 size)\n{\n    vec2 px = 1.0 / size;\n    vec3 col   = texture(tex, uv).rgb;\n    vec3 col00 = texture(tex, uv + vec2(-0.5) * px).rgb;\n    vec3 col11 = texture(tex, uv + vec2( 0.5) * px).rgb;\n    vec3 col10 = texture(tex, uv + vec2(0.5, -0.5) * px).rgb;\n    vec3 col01 = texture(tex, uv + vec2(-0.5, 0.5) * px).rgb;\n    \n    float lum = luminance(col);\n    float lum00 = luminance(col00);\n    float lum11 = luminance(col11);\n    float lum10 = luminance(col10);\n    float lum01 = luminance(col01);\n    \n    vec2 dir = vec2((lum01 + lum11) - (lum00 + lum10),\n                    (lum00 + lum01) - (lum10 + lum11));\n    \n    float dirReduce = max((lum00 + lum10 + lum01 + lum11) * REDUCE_MUL, REDUCE_MIN);\n    \n    float rcpDir = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);\n    \n    dir = clamp(dir * rcpDir, -SPAN_MAX, SPAN_MAX) * px;\n    \n    vec4 A = 0.5 * (\n        texture(tex, uv - dir * (1.0/6.0)) +\n        texture(tex, uv + dir * (1.0/6.0)));\n    \n    vec4 B = A * 0.5 + 0.25 * (\n        texture(tex, uv - dir * 0.5) +\n        texture(tex, uv + dir * 0.5));\n    \n    float lumMin = min(lum, min(min(lum00, lum10), min(lum01, lum11)));\n    float lumMax = max(lum, max(max(lum00, lum10), max(lum01, lum11)));\n    \n    float lumB = luminance(B.rgb);\n\t\n    return ((lumB < lumMin) || (lumB > lumMax)) ? A : B;\n}\n\n// Taken from https://www.shadertoy.com/view/MtVGWz\nvec4 SampleTextureCatmullRom(sampler2D tex, vec2 texSize, vec2 uv)\n{\n    // We're going to sample a a 4x4 grid of texels surrounding the target UV coordinate. We'll do this by rounding\n    // down the sample location to get the exact center of our \"starting\" texel. The starting texel will be at\n    // location [1, 1] in the grid, where [0, 0] is the top left corner.\n    vec2 samplePos = uv * texSize;\n    vec2 texPos1 = floor(samplePos - 0.5) + 0.5;\n\n    // Compute the fractional offset from our starting texel to our original sample location, which we'll\n    // feed into the Catmull-Rom spline function to get our filter weights.\n    vec2 f = samplePos - texPos1;\n\n    // Compute the Catmull-Rom weights using the fractional offset that we calculated earlier.\n    // These equations are pre-expanded based on our knowledge of where the texels will be located,\n    // which lets us avoid having to evaluate a piece-wise function.\n    vec2 w0 = f * ( -0.5 + f * (1.0 - 0.5*f));\n    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5*f);\n    vec2 w2 = f * ( 0.5 + f * (2.0 - 1.5*f) );\n    vec2 w3 = f * f * (-0.5 + 0.5 * f);\n    \n    // Work out weighting factors and sampling offsets that will let us use bilinear filtering to\n    // simultaneously evaluate the middle 2 samples from the 4x4 grid.\n    vec2 w12 = w1 + w2;\n    vec2 offset12 = w2 / w12;\n\n    // Compute the final UV coordinates we'll use for sampling the texture\n    vec2 texPos0 = texPos1 - vec2(1.0);\n    vec2 texPos3 = texPos1 + vec2(2.0);\n    vec2 texPos12 = texPos1 + offset12;\n\n    texPos0 /= texSize;\n    texPos3 /= texSize;\n    texPos12 /= texSize;\n\n    vec4 result = vec4(0.0);\n    result += texture(tex, vec2(texPos0.x,  texPos0.y)) * w0.x * w0.y;\n    result += texture(tex, vec2(texPos12.x, texPos0.y)) * w12.x * w0.y;\n    result += texture(tex, vec2(texPos3.x,  texPos0.y)) * w3.x * w0.y;\n\n    result += texture(tex, vec2(texPos0.x,  texPos12.y)) * w0.x * w12.y;\n    result += texture(tex, vec2(texPos12.x, texPos12.y)) * w12.x * w12.y;\n    result += texture(tex, vec2(texPos3.x,  texPos12.y)) * w3.x * w12.y;\n\n    result += texture(tex, vec2(texPos0.x,  texPos3.y)) * w0.x * w3.y;\n    result += texture(tex, vec2(texPos12.x, texPos3.y)) * w12.x * w3.y;\n    result += texture(tex, vec2(texPos3.x,  texPos3.y)) * w3.x * w3.y;\n\n    return result;\n}\n\nvec2 getJitter(vec2 pos, int frame)\n{\n    pos = floor(pos);\n    return halton(vec2(frame%8+1)) - .5;\n}\n\nvec3 getLookAtPos(float time)\n{\n    return vec3(time * 1.0, 6, time * 8.0);\n}\n\nfloat getPillarMotion(vec2 p, float time)\n{\n    return sin((time * 0.4 + hash12(p * 23.23)) * TAU)*0.1;\n}\n\nvec3 sRGBToLinear(vec3 col)\n{\n    return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));\n}\n\nvec3 linearTosRGB(vec3 col)\n{\n    return mix(1.055 * pow(col, vec3(1.0 / 2.4)) - 0.055, col * 12.92, lessThan(col, vec3(0.0031308)));\n}\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\nfloat map(vec2 p)\n{\n    float h = texture(iChannel0, 0.25 * p / iChannelResolution[0].xy).r;\n    h = smoothstep(0.3, 0.85, h)*0.8+0.1;\n    float h2 = texture(iChannel0, 0.1 * p / iChannelResolution[0].xy).r;\n    h2 = smoothstep(0.3, 0.85, h2);\n    //h *= 0.3+0.7*h2;\n    \n    #ifdef MOTION\n    h += getPillarMotion(p, iTime);\n    #endif\n    \n    //float h = hash12(p * 0.033);\n    return clamp(h * MAX_HEIGHT, MIN_HEIGHT, MAX_HEIGHT);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 sp = ivec2(fragCoord);\n    \n    vec3 ro = vec3(0, 0, 16);\n    vec3 lo = getLookAtPos(iTime);\n    \n    vec2 m = iMouse.xy / iResolution.xy;\n    \n    float ax = -PI * .7 + iTime * .3;\n    float ay = PI * 0.16;\n    \n    #ifndef NO_MOUSE\n    if (iMouse.z > 0.0 && iMouse.x > 4.0)\n        ax = -m.x * TAU;\n    \n    if (iMouse.z > 0.0 && iMouse.y > 4.0)\n        ay = -m.y * PI + PI * 0.5;\n    #endif\n    \n    ro.yz *= rot2D(ay);\n    ro.xz *= rot2D(ax);\n    ro += lo;\n    \n    float h = map(floor(ro.xz));\n    if (ro.y < h)\n    {\n        ro.y = h + 0.05;\n    }\n    \n    if (sp.y != 0) {\n        fragColor = vec4(0, 0, 0, 1);\n        return;\n    }\n    \n    if (sp.x == 0)\n        fragColor = vec4(ro, 1);\n    else if (sp.x == 1)\n        fragColor = texelFetch(iChannel1, ivec2(0, 0), 0);\n    else\n        fragColor = vec4(0, 0, 0, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n// Fork of \"Gelami Raymarching Template\" by gelami. https://shadertoy.com/view/mslGRs\n// 2023-04-29 21:51:26\n\n\n\nfloat map(vec2 p)\n{\n    float h = texture(iChannel0, 0.25 * p / iChannelResolution[0].xy).r;\n    h = smoothstep(0.3, 0.85, h)*0.8+0.1;\n    float h2 = texture(iChannel0, 0.1 * p / iChannelResolution[0].xy).r;\n    h2 = smoothstep(0.3, 0.85, h2);\n    //h *= 0.3+0.7*h2;\n    \n    #ifdef MOTION\n    h += getPillarMotion(p, iTime);\n    #endif\n    \n    //float h = hash12(p * 0.033);\n    return clamp(h * MAX_HEIGHT, MIN_HEIGHT, MAX_HEIGHT);\n}\n\nbool trace(vec3 ro, vec3 rd, out float t, out vec3 normal, out vec2 tp)\n{\n    if ((ro.y > MAX_HEIGHT && rd.y > 0.0) || (ro.y < MIN_HEIGHT && rd.y > 0.0))\n        return false;\n    \n    tp = floor(ro.xz);\n    \n    //if (ro.y < map(tp))\n    //    return false;\n    \n    vec3 ird = 1.0 / rd;\n    vec3 srd = sign(rd);\n    vec3 ard = abs(ird);\n    \n    vec3 iro = (ro - vec3(0.5, 0, 0.5)) * ird;\n    \n    t = MAX_DIST;\n    normal = vec3(-1);\n    \n    // Traversal method based from\n    // https://www.shadertoy.com/view/Wtj3Wc\n    int i = 0;\n    for (; i < STEPS; i++)\n    {\n        float d = map(tp) * 0.5;\n        \n        vec3 p = vec3(tp.x, d, tp.y);\n        vec3 s = vec3(0.5, d, 0.5);\n        vec3 n = iro - p * ird;\n        vec3 k = ard * s;\n        \n        vec3 t1 = -n - k;\n        vec3 t2 = -n + k;\n        \n        float tN = max(max(t1.x, t1.y), t1.z);\n        float tF = min(min(t2.x, t2.y), t2.z);\n        \n        vec3 pos = ro + rd * tN;\n        \n        if (pos.y > MAX_HEIGHT && rd.y > 0.0)\n            return false;\n        \n        if (tN < tF && tN >= 0.0)\n        {\n            #ifndef ROUNDED\n            t = tN;\n            normal = -srd * step(t1.yzx, t1) * step(t1.zxy, t1);\n            return true;\n            \n            #else\n            \n            const float rad = RADIUS;\n            \n            if (d < MIN_HEIGHT + rad)\n            {\n                t = tN;\n                normal = -srd * step(t1.yzx, t1) * step(t1.zxy, t1);\n                return true;\n            }\n            \n            vec3 o = p + vec3(0.5, 0, 0.5);\n            vec3 rp = ro - o;\n            float rt = roundedboxIntersect(pos - o, rp, rd, s-rad, rad);\n            if (rt != MAX_DIST)\n            {\n                t = rt == 0.0 ? tN : rt;\n                vec3 pos = rp + rd * t;\n                normal = normalize(roundedboxNormal(pos, s-rad, rad));\n                return true;\n            }\n            #endif\n        }\n        \n        tp += step(t2.xz, t2.zx) * srd.xz;\n    }\n    return false;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    #if AA == 2\n    vec2 o = getJitter(fragCoord, iFrame);\n    #else\n    vec2 o = vec2(0);\n    #endif\n    \n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec2 ndc = (2. * (fragCoord + o) - iResolution.xy) / iResolution.y;\n    \n    vec3 ro = texelFetch(iChannel1, ivec2(0, 0), 0).rgb;\n    vec3 lo = getLookAtPos(iTime);\n    \n    vec2 m = iMouse.xy / iResolution.xy;\n    \n    mat3 cmat = getCameraMatrix(ro, lo);\n\n    vec3 rd = normalize(cmat * vec3(ndc, 2));\n\n    vec3 col = vec3(0);\n    \n    float t;\n    vec3 normal;\n    vec2 tp;\n    bool hit = trace(ro, rd, t, normal, tp);\n    \n    vec3 pos = ro + rd * t;\n    \n    vec3 ref = reflect(rd, normal);\n    \n    float rt;\n    vec3 rnormal;\n    vec2 rtp;\n    bool rhit = trace(pos + normal * EPS, ref, rt, rnormal, rtp);\n    \n    float r0 = 0.08;\n    float fresnel = r0 + (1.0 - r0) * pow(1.0 - dot(-rd, normal), 5.0);\n    \n    vec3 rcol = palette(hash12(rtp));\n    rcol *= dot(abs(rnormal), vec3(0.8, 1, 0.9));\n    \n    if (!rhit)\n        rcol = palette(abs(ref.y * 0.5));\n    \n    col = palette(hash12(tp));\n    col *= dot(abs(normal), vec3(0.8, 1, 0.9));\n    \n    col = mix(col, rcol, fresnel);\n    \n    vec3 lcol = vec3(1, 0.8, 0.6) * 1.5;\n    vec3 ldir = normalize(vec3(-1, 1.5, 0.8));\n    //vec3 ldir = normalize(vec3(1, 3, 0.8));\n    \n    float lt;\n    vec3 lnormal;\n    vec2 ltp;\n    bool lhit = trace(pos + (normal + ldir) * EPS, ldir, lt, lnormal, ltp);\n    \n    float diff = max(dot(normal, ldir), 0.0);\n    \n    col *= vec3(diff * float(!lhit) * 0.75 + 0.25) * lcol;\n    col *= 0.2+0.8*smoothstep(0.0, MAX_HEIGHT*0.5, pos.y);\n    \n    float a = 0.3;\n    float b = 0.6;\n    \n    float fog = (a / b) * exp(-ro.y * b) * (1.0 - exp(-t * rd.y * b)) / rd.y;\n    //vec3 fog = 1.0 - exp(-t * (1.0-vec3(0.9, 0.8, 0.5)) * .01);\n    \n    vec3 fogCol = palette(0.5);\n    fogCol = mix(fogCol, palette(abs(-rd.y * 0.5)), 0.8)*0.8+0.2;\n    col = mix(col, fogCol, saturate(fog));\n    \n    if (!hit)\n    {\n        col = palette(abs(rd.y * 0.5));\n        t = MAX_DIST;\n    }\n    //col = normal*0.5+0.5;\n    \n    col = max(col, vec3(0));\n    \n    col = col / (1. + col);\n    fragColor = vec4(col, t);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\n// TAA implementation from\n// Temporal AA Study - gelami\n// https://www.shadertoy.com/view/DsfGWX\n\n#if 0\n#define OFFSET_COUNT 8\n\nconst ivec2 off[OFFSET_COUNT] = ivec2[OFFSET_COUNT](\n    ivec2(-1, -1), ivec2(-1,  1), \n\tivec2( 1, -1), ivec2( 1,  1), \n\tivec2( 1,  0), ivec2( 0, -1), \n\tivec2( 0,  1), ivec2(-1,  0)\n);\n\n#else\n#define OFFSET_COUNT 4\n\nconst ivec2 off[OFFSET_COUNT] = ivec2[OFFSET_COUNT](\n \tivec2( 1,  0), ivec2( 0, -1), \n\tivec2( 0,  1), ivec2(-1,  0)\n);\n#endif\n\nvec3 RGBtoYCoCg(vec3 c)\n{\n    return mat3(0.25, 0.5, -0.25, 0.5, 0, 0.5, 0.25, -0.5, -0.25) * c;\n}\n\nvec3 YCoCgToRGB(vec3 c)\n{\n    return mat3(1, 1, 1, 1, 0, -1, -1, 1, -1) * c;\n}\n\n// From https://github.com/playdeadgames/temporal/blob/master/Assets/Shaders/TemporalReprojection.shader\nvec3 clipToAABB(in vec3 cOld, in vec3 cNew, in vec3 center, in vec3 halfSize)\n{\n// Clip towards AABB center\n#if 0\n    vec3 o = cOld - center;\n    vec3 v = o / halfSize;\n    vec3 a = abs(v);\n    float t = max(a.x, max(a.y, a.z));\n    \n    if (t > 1.)\n        return cNew + o / t;\n    else\n        return cOld;\n#else\n    vec3 r = cOld - cNew;\n    vec3 m = (center + halfSize) - cNew;\n    vec3 n = (center - halfSize) - cNew;\n    \n    if (r.x > m.x + EPS)\n\t\tr *= (m.x / r.x);\n\tif (r.y > m.y + EPS)\n\t\tr *= (m.y / r.y);\n\tif (r.z > m.z + EPS)\n\t\tr *= (m.z / r.z);\n\n\tif (r.x < n.x - EPS)\n\t\tr *= (n.x / r.x);\n\tif (r.y < n.y - EPS)\n\t\tr *= (n.y / r.y);\n\tif (r.z < n.z - EPS)\n\t\tr *= (n.z / r.z);\n\n\treturn cNew + r;\n#endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float a = .1;\n    \n    ivec2 sp = ivec2(fragCoord);\n    \n    vec2 ndc = (2. * (fragCoord) - iResolution.xy) / iResolution.y;\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    vec2 o = getJitter(fragCoord, iFrame);\n\n    vec4 curr = texture(iChannel0, (fragCoord - o) / iResolution.xy);\n\n    vec3 new = RGBtoYCoCg(curr.rgb);\n    \n    vec3 ro = texelFetch(iChannel2, ivec2(0, 0), 0).rgb;\n    vec3 pro = texelFetch(iChannel2, ivec2(1, 0), 0).rgb;\n    \n    vec3 lo = getLookAtPos(iTime);\n    vec3 plo = getLookAtPos(iTime - iTimeDelta);\n    \n    mat3 cmat = getCameraMatrix(ro, lo);\n    mat3 pmat = getCameraMatrix(pro, plo);\n\n    vec3 rd = normalize(cmat * vec3(ndc, 2));\n\n    vec3 p = ro + rd * curr.a;\n    \n    #ifdef MOTION\n    float h0 = getPillarMotion(floor(p.xz), iTime);\n    float h1 = getPillarMotion(floor(p.xz), iTime - iTimeDelta);\n    \n    p.y += (h1 - h0);\n    #endif\n    \n    vec3 cp = (p - pro) * pmat;\n    vec2 np = 2. * cp.xy / cp.z;\n    vec2 puv = np * vec2(iResolution.y / iResolution.x, 1) * .5 + .5;\n    \n    //vec4 hist = texture(iChannel1, puv);\n    vec4 hist = SampleTextureCatmullRom(iChannel1, iResolution.xy, puv);\n    \n    vec3 old = RGBtoYCoCg(hist.rgb);\n    \n    vec3 avg = new;\n    vec3 var = new * new;\n    \n    for (int i = 0; i < OFFSET_COUNT; i++)\n    {\n        vec3 tex = RGBtoYCoCg(texelFetch(iChannel0, sp + off[i], 0).rgb);\n    \n        avg += tex;\n        var += tex * tex;\n    }\n    avg /= float(OFFSET_COUNT + 1);\n    var /= float(OFFSET_COUNT + 1);\n\n    vec3 sig = sqrt(max(var - avg * avg, vec3(0)));\n    \n    const float g = 0.5;\n    vec3 cmin = avg - sig * g;\n    vec3 cmax = avg + sig * g;\n    \n    vec3 clip = clipToAABB(old, clamp(avg, cmin, cmax), avg, sig);\n    \n    vec3 col = iFrame != 0 ? mix(clip, new, a) : new;\n    \n    fragColor = vec4(YCoCgToRGB(col), curr.a);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1705158512",
+            "description": "Rendering a crystal layer with voronoi pattern.\nThis shader ended up having less underlying physics than I initially expected it to have. But, it is simple and looks nice.\nThe name is from the song The Claypool Lennon Delirium - Amethyst Realm\n\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Xc23Wd",
+            "likes": 18,
+            "name": "Amethyst Realm",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "noise",
+                "raymarch",
+                "volumetric",
+                "worley",
+                "glass",
+                "transparent",
+                "translucent",
+                "gem",
+                "transmission",
+                "crystal"
+            ],
+            "usePreview": 0,
+            "username": "VPaltoDance",
+            "viewed": 312
+        },
+        "renderpass": [
+            {
+                "code": "// Nothing special shader, highly inspired by https://www.shadertoy.com/view/ldtGWj by Shane\n\n#define UV_SCALE      5.0f\n#define REFRACT_INDEX 1.5f\n#define REFLECT_COEF  0.4f\n#define LAYER_HEIGHT  1.4f\n\n#define UV_SHIFT       vec2(0.4f * iTime, 0.0f)\n#define CRYSTAL_COLOR  vec3(0.55, 0.1, 0.7)\n#define INNER_ENV_TINT vec3(2.5f, 2.5f, 1.0f)\n\n// Some 2 - 2 random func\nvec2 random2(vec2 st)\n{\n  st = vec2( dot(st,vec2(127.1,311.7)),\n             dot(st,vec2(269.5,183.3)) );\n  return fract(sin(st)*43758.5453123);\n}\n\n// Implementation of Worley noise using second-order minimum distance for a more granular cell division (by Inigo Quilez)\nfloat worley_sdf(vec2 uv)\n{\n    vec2 cell_idx = floor(uv);   // 2d cell index\n    vec2 cell_uv = fract(uv);    // in-cell coords\n    \n    vec2 dist = vec2(1.0f);    // x - min distance, y - second min distance\n    for (int i= -1; i <= 1; i++) \n    for (int j= -1; j <= 1; j++) \n    {\n        // Determining the position of the neighboring cell in the grid\n        vec2 neighbor_idx_delta = vec2(i, j);\n        vec2 neighbor_point =  random2(cell_idx + neighbor_idx_delta);\n        \n        // Calculating distances in cell space to preserve accuracy\n        vec2 relative_shift = neighbor_point + neighbor_idx_delta - cell_uv;\n        \n        // Calculating min distances\n        float dist_squared = dot(relative_shift, relative_shift);\n        dist.y = max(dist.x, min(dist.y, dist_squared));\n        dist.x = min(dist.x, dist_squared);\n    }\n    \n    // The difference yields sharper pattern\n    return dist.y - dist.x;\n}\n\n// Calculating a linear sum of multiple octaves of Worley noise to achieve a more randomized pattern\nfloat height_pattern(vec2 uv)\n{\n    float result = worley_sdf(uv) - 0.06f * worley_sdf(2.0f * uv) + 0.03f * worley_sdf(4.0f * uv);\n    result *= 0.8f;\n    return result; \n}\n\n// Mapping to the heightmap using only the vertical coordinate, full distance is not required in this context\nfloat map(vec3 pos)\n{\n    return pos.z - height_pattern(pos.xy);\n}\n\n// Trivial normal calculation\nvec3 getNormal( in vec2 pos )\n{\n    float delta = 0.001f;\n\n    float height = height_pattern(pos);    \n    float height_right = height_pattern(pos + vec2(delta, 0.0f));    \n    float height_up = height_pattern(pos + vec2(0.0f, delta));\n\n    return normalize(vec3(\n            -delta * (height_right - height),\n            -delta * (height_up - height),\n            delta * delta\n        ));\n}\n\n// Environment map is used to achieve a semblance of IBL\nvec3 env_map(vec3 vec) \n{\n   return vec3(textureLod(iChannel0, vec, 0.0));\n}\n\n// Screen-Space AO (by Inigo Quilez)\nfloat ss_ao(vec3 p, vec3 n)\n{\n   const float AO_SAMPLES = 12.0;\n   float r = 1.0, w = 1.0;\n   for (float i=1.0; i<=AO_SAMPLES; i++)\n   {\n      float d0 = i/AO_SAMPLES;\n      r += w * (map(p + n * d0) - d0);\n      w *= 0.1;\n   }\n   return clamp(r, 0.0, 1.0);\n}\n\n// This part is tricky: To avoid handling internal reflection, \n// I opted for simulating refraction at impossible angles. \n// Ensuring a smooth transition between real and fake refraction was essential, \n// so I devised this smoothing solution. \n// Although there are more optimal methods, this approach offers the most visually appealing results I've found.\nvec3 custom_refract(vec3 I, vec3 N, float eta)\n{\n    float cosi = dot(-I, N);\n    float cost2 = 1.0 - eta * eta * (1.0 - cosi * cosi);\n    vec3 refracted;\n\n    if (cost2 <= 0.0) \n    {\n        // Use reflection vector as an approximation when the angle is beyond the critical angle\n        refracted = reflect(I, N);\n    }\n    else\n    {\n        refracted = eta * I + (eta * cosi - sqrt(cost2)) * N;\n    }\n    \n    float transitionWidth = 0.15; // Adjust this to control the smoothness of the transition\n    float curr_angle = acos(cosi);\n    if(curr_angle > curr_angle) return refracted;\n\n    // Calculate the smooth transition factor\n    float criticalAngle = asin(1.0 / eta);\n    \n    float transitionFactor = smoothstep(criticalAngle - transitionWidth, criticalAngle, curr_angle);\n\n    // Create an approximate vector for 'impossible' refraction angles\n    vec3 approximateRefracted = normalize(mix(I, N, (cosi - 1.0) / eta));\n\n    // Blend between the real and approximate refraction vectors\n    vec3 smoothRefracted = mix(refracted, approximateRefracted, transitionFactor);\n\n    return smoothRefracted;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.y;\n    \n    /*\n        Raymarching crystal heightmap\n    */\n    \n    // Unit direction ray from screen coords (by user Coyote)\n    vec3 ray_dir = normalize(vec3(fragCoord - iResolution.xy * 0.5f, -min(iResolution.y * 0.9f, 600.0f)));\n    vec3 ray_orig = vec3(iTime * 0.5f, 2.5, 4.0f);\n    float r_dist, r_t = 3.0;\n    for(int i = 0; i < 32; ++i)\n    {\n        r_dist = map(ray_orig + ray_dir*r_t); // Distance to the function.\n        if(r_dist < 0.001f) break; \n        \n        r_t += r_dist * 0.3;\n    }\n    \n    /* \n        Heighmap geometry\n    */\n    \n    vec3 hm_pos = ray_orig + ray_dir*r_t;\n    vec3 hm_normal = getNormal(hm_pos.xy);\n    float height = height_pattern(hm_pos.xy);\n     \n    /*\n        Lighting\n    */\n    \n    // Really hacky IBL for transparent crystals. Nice looking was a priority. =)\n    vec3 refract_ray_start = normalize(refract(ray_dir, hm_normal, 1.0 /  REFRACT_INDEX));\n    // Projection on the vertical axis\n    float cos_with_down = -refract_ray_start.z;\n    // Calculating the path length of the ray through the material:\n    // The model assumes our crystal heightmap is positioned atop a crystal layer with height LAYER_HEIGHT.\n    // Thus, the actual height at each point is given by (height_pattern(hm_pos.xy) + LAYER_HEIGHT).\n    // The variable 'approx_path' represents the ray's path through the entire crystal medium, without \n    // considering re-entry into the crystal.\n    float approx_path = (LAYER_HEIGHT + height) / cos_with_down;\n    vec3 refract_ray_exit = custom_refract(refract_ray_start, vec3(0.0, 0.0, 1.0), REFRACT_INDEX);\n    \n    // Some hacky fresnel and the absorbtion model were peeked at https://www.shadertoy.com/view/WlcXRS (by BrunoLevy)\n    float fresnel = 1.0 + dot(refract_ray_start, hm_normal);\n    float extinction = 0.8f;\n    float absorb = exp(-approx_path * extinction);\n    \n    // We have cubemap \"under\" the crystal and around the crystal.\n    // Cubemap underneath is tinted and used for scattering.\n    vec3 inner_env = mix(env_map(refract_ray_exit), CRYSTAL_COLOR, 0.2f) * INNER_ENV_TINT;\n    vec3 refract_color = mix(CRYSTAL_COLOR, inner_env, absorb);\n    // The outter one used for reflections as is.\n    vec3 reflect_color = fresnel * env_map(reflect(ray_dir, hm_normal)); \n   \n    /*\n        Combining\n    */\n    \n    // No Gamma and tonemapping (shame on me).\n    \n    fragColor.xyz = reflect_color + refract_color;\n    fragColor.xyz *= ss_ao(hm_pos, hm_normal);\n    // Some emission\n    fragColor.xyz += CRYSTAL_COLOR * 0.08;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

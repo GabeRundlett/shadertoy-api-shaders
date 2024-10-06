@@ -1,0 +1,174 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1711761966",
+            "description": "Implements automatic labeling for connected components (CCL). I.e. find a unique id (here bbox) of a connected region of pixels.\nClick on a region to view its bounding box.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Xct3WH",
+            "likes": 7,
+            "name": "CCL - 2x2 Corner patterns",
+            "published": 3,
+            "tags": [
+                "labeling",
+                "floodfill",
+                "segmentation",
+                "connectedcomponent"
+            ],
+            "usePreview": 0,
+            "username": "Gegell",
+            "viewed": 241
+        },
+        "renderpass": [
+            {
+                "code": "// MIT License 2024 - Gegell\n//\n// Algorithm for discovering joined regions of pixels in a binary image.\n// Exponential step sizing leads to a really quick convergence time.\n//\n// Step visualization: https://www.shadertoy.com/view/lctGW7\n//\n// Buffer A: Generate binary image\n// Buffer B: Actual algorithm\n\n\nconst bool zoomEnable = true;     // Whether zooming is enabled at all.\nconst float zoomRadius = 180.0;   // Radius of zoom window (in px).\nconst float zoomStrength = 14.0;  // Factor by which is zoomed when clicked.\n\nconst bool nyanEnable   = true;   // Whether to show the rotating nyan cat.\nconst bool centerEnable = true;   // Whether to show the center dot of each cluster.\n\n\n// Nyancat sampling code adapted from https://www.shadertoy.com/view/fsXGzj\nvec4 nyan( in vec2 uv, in int index) {\n    ivec2 nyan = ivec2(40, 32);\n    ivec2 ruv = ivec2(nyan.x * index, 0.0) + ivec2(clamp(uv, 0., 1.) * vec2(nyan)); \n\treturn texelFetch(iChannel2, ruv, 0);\n}\n\n// Box SDF from iq - https://iquilezles.org/articles/distfunctions2d/\nfloat sdBox( in vec2 p, in vec2 b ) {\n    vec2 d = abs(p)-b;\n    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\n// Data used for actual rendering (for pixel color & bboxes)\nstruct componentInfo {\n    vec2 bbsize;\n    vec2 bbcenter;\n    vec2 bblocaluv;\n    vec3 color;\n    uint rngSeed;\n};\n\ncomponentInfo getInfo(vec2 pos) {\n    vec4 data = texelFetch(iChannel1, ivec2(pos), 0);\n    neighborInfo info = decode(data);\n    bbox bb = info.bounds;\n    bb.topright += 1;\n    \n    componentInfo comp;\n    comp.bbsize = vec2(bb.topright - bb.botleft);\n    comp.bbcenter = vec2(bb.botleft + bb.topright) / 2.;\n    comp.bblocaluv = (pos - vec2(bb.botleft)) / comp.bbsize;\n    \n    comp.rngSeed = murmur3(uint(comp.bbcenter.x) ^ murmur3(uint(comp.bbcenter.y)));\n    comp.color = nextVec3(comp.rngSeed);\n    \n    return comp;\n}\n\n// Make color brighter if dark, otherwise darken\nvec3 highlightColor(vec3 baseCol) {\n    float highlight = dot(baseCol, vec3(0.13, 0.79, 0.08)) > 0.8 ? -0.4 : 0.4;\n    return baseCol + highlight;\n}\n\nmat2 rot(float angle) {\n    return mat2(cos(angle), -sin(angle), sin(angle), cos(angle));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float mouseDist = distance(iMouse.xy, fragCoord);\n    bool isZooming = (iMouse.z > 0.) || false;\n    if (isZooming && mouseDist <= zoomRadius && zoomEnable) {\n        // If clicked zoom in locally.\n        vec2 pos = iMouse.xy;\n        fragCoord = vec2((fragCoord - pos) / zoomStrength + pos);\n    }\n    ivec2 ipos = ivec2(fragCoord);\n    float lineAA = length(fwidth(fragCoord)) / 2.;\n    \n    // Sample the original texture & mask stored in channel0\n    vec4 orig = texelFetch(iChannel0, ipos, 0);\n    vec3 tex = orig.rgb;\n    float mask = orig.a;\n    \n    // Get the information of the component the pixel belongs to\n    componentInfo pxComp = getInfo(fragCoord);\n    \n    // Get the information of the last clicked on component\n    componentInfo selComp = getInfo(iMouse.xy);\n    bool selValid = all(greaterThan(selComp.bbsize, vec2(1.)));\n    vec4 selOrig = texelFetch(iChannel0, ivec2(iMouse.xy), 0);\n    selValid = selValid && (selOrig.a > 0.);\n\n\n    // Backgrounds\n    vec3 background;\n    background = tex;          // The original texture\n    //background = vec3(mask); // The binary map to label - See Buffer A\n\n\n    // Fill modes of the connected components\n    vec3 fill;\n    //fill = vec3(pxComp.bbcenter / iResolution.xy, 0);    // Show the bounding box global uv coord as RG color\n    fill = pxComp.color;                                   // Show a unique color per component\n    //fill = vec3(pxComp.bblocaluv, 0);                    // Show component bounding box uv\n    //fill = texture(iChannel0, pxComp.bblocaluv).rgb;     // Example: Map image to the local uv coordinates\n    \n    // Add stripes to the selected componenet\n    if (selValid && all(equal(selComp.bbcenter, pxComp.bbcenter))) {\n        float stripeMask = abs(fract((fragCoord.x + fragCoord.y)/40. - iTime) - .5) * 2.;\n        fill = mix(fill, highlightColor(fill), smoothstep(-lineAA/80., lineAA/80., stripeMask - .5));\n    }\n    \n    // Compose both background and component fill color\n    vec3 col = mix(background, fill, mask);\n    \n    \n    // Rotating Nyancat\n    if (nyanEnable) {\n        vec2 nyanuv = (pxComp.bblocaluv - 0.5) * rot((nextFloat(pxComp.rngSeed)*2. + 0.5) * iTime) + 0.5;\n        vec4 nyancol = nyan(nyanuv, (iFrame / 15) % 6);\n        col = mix(col, nyancol.rgb, mask * nyancol.a);\n    }\n    \n    // Show center points\n    if (centerEnable) {\n        float dotMask = smoothstep(0., lineAA, 3. - length(fragCoord - pxComp.bbcenter));\n        col = mix(col, highlightColor(col), mask * dotMask);\n    }\n    \n    // Draw bbox of last clicked on component (if valid component)\n    if (selValid) {\n        float boxDist = sdBox(fragCoord - selComp.bbcenter, selComp.bbsize/2.);\n        float thick = 1. / 2.;\n        col = mix(col, vec3(0),            smoothstep(0., lineAA, lineAA*1.5 - abs(abs(boxDist - thick) - thick)));\n        col = mix(col, selComp.color + .4, smoothstep(0., lineAA, thick - abs(boxDist - thick)));\n    }\n    \n    // Border around zoom lens.\n    if (isZooming && zoomEnable) {\n        float d = abs(mouseDist - zoomRadius) - 1.5;\n        col = mix(vec3(0), col, smoothstep(-0.75, 0.75, d));\n    }\n    \n    // Draw to output channel\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buffer A handles:\n// 1. Generation of the binary bit mask to segment\n//    -> stored in alpha channel\n// 2. Tracking of texture sizes to trigger reset when resolution changes / shader first loads\n\n\n\n// Threshold the red channel of the image in iChannel0 for the mask.\n// Negative threshold inverts mask\nvec4 imageThreshold( vec2 pos, float threshold ) {\n    vec2 uv = pos / iResolution.xy;\n    vec3 col = texture(iChannel0, uv).rgb;\n    bool mask = col.r * sign(threshold) > threshold;\n    return vec4(col, mask);\n}\n\n\n// All possible bit pattern connections to test all patterns\nvec4 testPattern( vec2 pos, float size ) {\n    const uint pxPerCell = 8u;\n    \n    pos -= iResolution.xy / 2.;\n    pos /= vec2(size, -size);\n    pos += vec2(16, 8) * float(pxPerCell);\n    \n    if (clamp(pos, vec2(0), vec2(32, 16)*float(pxPerCell)) != pos) {\n        return vec4(0.);\n    }\n    \n    uvec2 ipos = uvec2(pos);\n    uvec2 cellId = (ipos / pxPerCell) % uvec2(32u, 16u);\n    uvec2 pxId = ipos - cellId * pxPerCell;\n    \n    if (any(greaterThan(pxId, uvec2(2)))) {\n        return vec4(0.);\n    }\n    \n    uint pattern = (cellId.y << 5) | cellId.x;\n    uint flatPx = pxId.y * 3u + pxId.x;\n    int bit = int[](\n        0,1,2,3,4,5,6,7,8\n    )[flatPx];\n    return vec4((pattern >> bit) & 1u);\n}\n\n//\n// Some patterns which had worst case performance with other algorithms\n//\nvec4 worstCaseDiagonals( vec2 pos, float size ) {\n    // Worstcase only diagonals - No longer worst case for this variant\n    float mask = float(dot(vec2(1,1), vec2(ivec2(pos / size) & 1)) == 1.);\n    return vec4(mask);\n}\n\nvec4 worstCaseLines( vec2 pos, float size ) {\n    ivec2 ipos = ivec2(pos / size);\n    return vec4(ipos.y & 1);\n}\n\nvec4 worstCaseSnake( vec2 pos, float size ) {\n    // Worst case I can think of for this algorithm, unrolls the texture into a line\n    // -> requires O(log2(width * height)) steps\n    ivec2 ipos = ivec2(pos / size);\n    bool hori = !bool(ipos.y & 1);\n    bool vert =  ( bool(ipos.y & 2) && bool(ipos.x <= 1))\n              || (!bool(ipos.y & 2) && bool(pos.x >= iResolution.x - size));\n    return vec4((hori || vert) && all(greaterThan(pos, vec2(size))));\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    // The mask to be segmented is stored within the alpha channel, rgb is for background color\n\n    fragColor = imageThreshold(fragCoord, 0.3);\n    //fragColor = testPattern(fragCoord, 1.);\n    //fragColor = worstCaseDiagonals(fragCoord, 1.);\n    //fragColor = worstCaseLines(fragCoord, 1.);\n    //fragColor = worstCaseSnake(fragCoord, 1.);\n    \n    // Trigger reset when texture in iChannel0 has loaded (when first loading the shader)\n    // or when the resolution changes (entering / exiting fullscreen)\n    if (ivec2(fragCoord) == ivec2(0)) {\n        metaInfo prev = loadMeta(iChannel1);\n        metaInfo next;\n        next.texRes = ivec2(iChannelResolution[0].xy);\n        next.viewRes = ivec2(iResolution.xy);\n        next.shouldReset = prev.texRes != next.texRes || prev.viewRes != next.viewRes;\n        fragColor.rgb = encodeMeta(next);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Bounding box - fit tightly around components\nstruct bbox {\n    ivec2 botleft;\n    ivec2 topright;\n};\n\nbbox mergeBB(bbox a, bbox b) {\n    return bbox(min(a.botleft, b.botleft), max(a.topright, b.topright));\n}\n\n// Neighbor info for sequential merging\nstruct neighborInfo {\n    bbox bounds;\n    ivec2 next;\n};\n\nivec2 unpackCoord(int packed) {\n    return ivec2(packed, packed >> 16) & 0xFFFF;\n}\n\nint packCoord(ivec2 coord) {\n    coord &= 0xFFFF;\n    return coord.x | (coord.y << 16);\n}\n\nneighborInfo decode(vec4 data) {\n    ivec4 idata = floatBitsToInt(data);\n    \n    neighborInfo info;\n    info.bounds.topright = unpackCoord(idata.x);\n    info.bounds.botleft  = unpackCoord(idata.y);\n    info.next            = unpackCoord(idata.z);\n    \n    return info;\n}\n\nvec4 encode(neighborInfo info) {\n    ivec4 data;\n    data.x = packCoord(info.bounds.topright);\n    data.y = packCoord(info.bounds.botleft);\n    data.z = packCoord(info.next);\n    \n    return intBitsToFloat(data);\n}\n\n// Meta information - detecting initial load & resizing\nstruct metaInfo {\n    ivec2 texRes;\n    ivec2 viewRes;\n    bool shouldReset;\n};\n\nmetaInfo decodeMeta(vec3 data) {\n    ivec3 idata = floatBitsToInt(data);\n    return metaInfo(unpackCoord(idata.x), unpackCoord(idata.y), idata.z != 0);\n}\n\nvec3 encodeMeta(metaInfo info) {\n    ivec3 data;\n    data.x = packCoord(info.texRes);\n    data.y = packCoord(info.viewRes);\n    data.z = info.shouldReset ? -1 : 0;\n    return intBitsToFloat(data);\n}\n\nmetaInfo loadMeta(sampler2D maskChannel) {\n    return decodeMeta(texelFetch(maskChannel, ivec2(0), 0).rgb);\n}\n\n// Randomization and hashes\nuint murmur3( in uint u )\n{\n  u ^= ( u >> 16 ); u *= 0x85EBCA6Bu;\n  u ^= ( u >> 13 ); u *= 0xC2B2AE35u;\n  u ^= ( u >> 16 );\n\n  return u;\n}\n\n// RNG from https://de.wikipedia.org/wiki/Xorshift\nuint xorshift(in uint value) {\n    value ^= value << 13;\n    value ^= value >> 17;\n    value ^= value << 5;\n    return value;\n}\n\nuint nextUint(inout uint seed) {\n    seed = xorshift(seed);\n    return seed;\n}\n\nfloat nextFloat(inout uint seed) {\n    return float(nextUint(seed)) / float(uint(-1));\n}\n\nvec3 nextVec3(inout uint seed) {\n    return vec3(nextFloat(seed), nextFloat(seed), nextFloat(seed));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Buffer B is the actual floodfill implementation\n//\n// Basic idea:\n//   We walk around the border of each component in the clockwise direction.\n//   Each iteration we write the pixel to consider in the next iteration back to the texture.\n//   The next iteration can then skip previously explored pixels along the edge (doubling stepsize each step).\n\nneighborInfo load(ivec2 pos) {\n    vec4 data = texelFetch(iChannel1, pos, 0);\n    return decode(data);\n}\n\nbool mask(ivec2 pos) {\n    if (any(lessThanEqual(pos, ivec2(0)))) {\n        return false;  // FIXME: Currently the lower and left edge are not handled properly, hence we ignore them here :)\n    }\n    return texelFetch(iChannel0, pos, 0).a > 0.;\n}\n\nint maskNeighbors(ivec2 pos) {\n    int val;\n\n    val |= int(mask(pos + ivec2(1, 1))) << 0;\n    val |= int(mask(pos + ivec2(0, 1))) << 1;\n    val |= int(mask(pos + ivec2(0, 0))) << 2;\n    val |= int(mask(pos + ivec2(1, 0))) << 3;\n\n    return val;\n}\n\nneighborInfo initNeighbors(ivec2 pos) {\n    // Consider only the top right corner of the pixel.\n    // This turns the problem which edge to follow to 16 different cases\n    // At worst we require 2 directions to be traversed (when we have a diagonal connection only)\n    // Index is created in the following bit order:\n    //     1 | 0\n    //     --X--\n    //     2 | 3\n    ivec3 o = ivec3(0, -1, 1);\n    ivec2[] offsets = ivec2[16](\n        o.xz, // 0000 ~> up\n        o.xz, // 0001 ~> up\n        o.yx, // 0010 ~> left\n        o.yx, // 0011 ~> left\n\n        o.xy, // 0100 ~> down\n        o.xy, // 0101 ~> down\n        o.xy, // 0110 ~> down\n        o.xy, // 0111 ~> down\n\n        o.zx, // 1000 ~> right\n        o.xz, // 1001 ~> up\n        o.zx, // 1010 ~> right\n        o.yx, // 1011 ~> left\n\n        o.zx, // 1100 ~> right\n        o.xz, // 1101 ~> up\n        o.zx, // 1110 ~> right\n        o.xz  // 1111 ~> up\n    );\n    \n    neighborInfo info;\n    int masks = maskNeighbors(pos);\n    \n    // Set the bounds to the union of the active neighbors of the vertex.\n    ivec4 inDir = ((ivec4(masks) >> ivec4(1, 3, 3, 1)) | (ivec4(masks) >> ivec4(2, 2, 0, 0))) & 1;\n    info.bounds.botleft  = pos + (1 - inDir.xy);\n    info.bounds.topright = pos + inDir.zw;\n\n    // Initialize with single step.\n    ivec2 offset = offsets[masks];\n    info.next = pos + offset;\n    \n    // Check special cases which would require 2 different next directions, resolve immediately by doing another step.\n    // These are 0101 and 1010, i.e. where we have a pixel wide corner connection.\n    // Currently this turns into a 8-connected segmentation (i.e. single diagonals are counted as connected)\n    // To turn this into a 4-connected segmentation simply flip the sign of the offset directions below.\n    masks = maskNeighbors(info.next);\n    if (masks == 0x5) {\n        info.next.y += offset.x;\n    } if (masks == 0xA) {\n        info.next.x += -offset.y;\n    }\n    \n    return info;\n}\n\nvoid mergeNeighborCell(ivec2 pos, inout bbox bounds) {\n    if (mask(pos)) {\n        neighborInfo info = load(pos);\n        bounds = mergeBB(bounds, info.bounds);\n    }\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Check meta information (whether to reset due to buffer size change)\n    metaInfo meta = loadMeta(iChannel0);\n\n    ivec2 ipos = ivec2(fragCoord);\n\n    neighborInfo cur = load(ipos);\n    neighborInfo new = cur;\n    \n    if (cur.next == ivec2(0) || meta.shouldReset) {\n        new = initNeighbors(ipos);\n    } else {\n        // Take multiple steps in along the edge.\n        // Each doubling represents 1 fewer iteration write/read to/from the buffer == should approx half total iteration count.\n        const int STEPS = 32;\n        \n        neighborInfo next;\n        for (int i = 0; i < STEPS; i++) {\n            next = load(new.next);\n            new.bounds = mergeBB(new.bounds, next.bounds);\n            new.next = next.next;\n        }\n        \n        // Currently the fallback is still necessary for the \"pillars\" occuring when there are holes in the region\n        // This is the one side where we could obtain quite bad performance, but not really relevant for practical examples\n        // according to my testing.\n#define FALLBACK_FLOODFILL\n#ifdef FALLBACK_FLOODFILL\n        if (mask(ipos)) {\n            mergeNeighborCell(ipos + ivec2(-1, 0), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 1, 0), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 0,-1), new.bounds);\n            mergeNeighborCell(ipos + ivec2( 0, 1), new.bounds);\n        }\n#endif\n    }\n    \n    fragColor = encode(new);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

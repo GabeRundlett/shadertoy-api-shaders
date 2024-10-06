@@ -1,0 +1,56 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1580087488",
+            "description": "Inktober, but with shaders\n\nWanted to try some subsurface scattering stuff, https://www.alanzucconi.com/2017/08/30/fast-subsurface-scattering-1/ has a good guide!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wscSWf",
+            "likes": 0,
+            "name": "shadetober #30 (catch)",
+            "published": 3,
+            "tags": [
+                "subsurfacescattering",
+                "sss",
+                "inktober",
+                "shadertober",
+                "shadetober",
+                "inktober2019"
+            ],
+            "usePreview": 0,
+            "username": "percentcer",
+            "viewed": 305
+        },
+        "renderpass": [
+            {
+                "code": "#define MAXD 30.\n#define PI 3.141\n#define TAU 6.283\n\n#define REPETITION_PERIOD 4.\n#define HALF_PERIOD REPETITION_PERIOD * .5\n\n#define DEBUG_LIGHT_SOURCE 0\n\nmat3 roty(float a)\n{\n    return mat3(cos(a), 0., sin(a), 0., 1., 0., -sin(a), 0., cos(a));\n}\nmat3 rotx(float a)\n{\n    return mat3(1., 0., 0., 0., cos(a), sin(a), 0., -sin(a), cos(a));\n}\n\nvec3 spherical(vec3 cart)\n{\n    float rho = length(cart);\n    float theta = atan(cart.y, cart.x); // [-pi, pi]\n    float phi = acos(cart.z / rho);     // [0, pi]\n    return vec3(rho, theta, phi);\n}\n\nfloat expStep(float x, float k, float n) { return exp(-k * pow(x, n)); }\n\nfloat sphere(vec3 p, float rad) { return length(p) - rad; }\n\n\nfloat shape(vec3 p)\n{\n#if 1\n    // da experiment zone\n    //p = p.zxy;\n    mat3 rot = roty((iMouse.x / iResolution.x - .5) * 10.);\n    // mat3 rot = roty(iTime);\n    p *= rot;\n#endif\n#if 1\n    vec3 sp = spherical(p);\n\n    const float latPeaks = 5.;\n    const float latMin = .7;\n    float lateralRadius = mix(latMin, 1.0, cos(sp.y * latPeaks) * .5 + .5);\n\n    const float longPeaks = 6.;\n    const float longSpeed = 8.;\n    const float longDamp = 0.1;\n    float longitudinalWiggle = cos((sp.z * 2.) * longPeaks + iTime * longSpeed) * longDamp;\n\n    return length(p) - (lateralRadius + longitudinalWiggle);\n#else\n    return sphere(p, 1.);\n#endif\n}\n\nvec2 map(vec3 p)\n{\n    // return a distance and a material id\n    vec2 cur = vec2(MAXD, 0.);\n\n    vec2 shp = vec2(shape(p), 1.);\n    if (shp.x < cur.x)\n    {\n        cur = shp;\n    }\n\n#if DEBUG_LIGHT_SOURCE\n    vec2 dbg = vec2(sphere(p - vec3(0., 1., 3.) * roty(iTime), .01), 2.);\n    if (dbg.x < cur.x)\n    {\n        cur = dbg;\n    }\n#endif\n\n    return cur;\n}\n\nvec3 norm(vec3 p)\n{\n    vec2 ep = vec2(0.001, 0.0);\n    return normalize(\n        map(p).r - vec3(map(p - ep.xyy).r, map(p - ep.yxy).r, map(p - ep.yyx).r));\n}\n\nvec3 cell(vec3 p) { return floor((p + vec3(HALF_PERIOD)) / REPETITION_PERIOD); }\n\n// https://iquilezles.org/articles/distfunctions\nvec3 opRep(in vec3 p, in vec3 c)\n{\n    vec3 localpos = mod(p + c / 2., c) - c / 2.;\n    vec3 cell = cell(p);\n    vec3 noise = texture(iChannel0, vec2(cell.x, cell.y * cell.z) * .1).rgb;\n    vec3 offs = noise - .5;\n    \n    return localpos*rotx(sin(iTime*noise.x)*noise.y) + offs*2.;\n}\n\nvec4 march(vec3 ro, vec3 rd, int invert)\n{\n    float t = 0.;\n    vec4 ret;\n\n    for (int i = 0; i < 100; i++)\n    {\n        ret.xyz = ro + rd * t;\n        vec2 d = map(opRep(ret.xyz, vec3(REPETITION_PERIOD))) * vec2(invert, 1);\n\n        if (d.x < .1)\n        {\n            ret.w = d.y;\n            break;\n        }\n\n        // only using a portion of the sphere step\n        // because I was getting a lot of errors from the\n        // shape distortion with the full step\n        t += d.x * .2f;\n\n        if (t > MAXD)\n        {\n            break;\n        }\n    }\n    return ret;\n}\n\nvec3 sss(vec3 p, vec3 rd, vec3 lp, vec3 lc)\n{\n    vec3 origP = p;\n    p = opRep(p, vec3(REPETITION_PERIOD));\n    // from https://www.alanzucconi.com/2017/08/30/fast-subsurface-scattering-1/\n    vec3 L = normalize(lp - p);\n    const float subsurfaceDistortion = .5;\n\n    // figure out if our point is the light's entry or exit\n    float inShadow = -sign(dot(norm(p), L));\n    vec3 lightEgress = march(p + (inShadow * L * .05), inShadow * L, -1).xyz;\n    vec3 lightIngress = p;\n    if (inShadow > 0.)\n    {\n        lightIngress = lightEgress;\n        lightEgress = p.xyz;\n    }\n\n    // fudging a bit but a length of 2 is about the max width of this shape\n    // todo currently unused\n    // float thickness = length(lightEgress - lightIngress) / 2.;\n    vec3 N = norm(lightEgress);\n\n    vec3 cell = cell(origP);\n    vec3 noiseOffset =\n        texture(iChannel0, vec2(cell.x, cell.y + cell.z) * .1).rgb-.5;\n    vec3 basecolor = vec3(.6, 1., .2) + noiseOffset;\n\n    float lightAlign = max(0., dot(norm(p.xyz), L));\n\n    vec3 I_sss =\n        max(0., dot(rd, normalize(L + N * subsurfaceDistortion))) * basecolor;\n    vec3 I_diff = lightAlign * basecolor;\n\n    vec3 refl = reflect(L, norm(p.xyz));\n    float specAlign = abs(dot(rd, refl)); // abs so we get shinies on both sides\n    float I_spec = pow(specAlign, 50.);\n\n    return I_sss + I_diff + I_spec;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = (fragCoord * 2. - iResolution.xy) / iResolution.y;\n\tvec3 bgcol = vec3(.4,.6, 0.);\n    vec3 col = bgcol;\n\n    vec3 ro = vec3(0., 0., -1.);\n    vec3 rd = normalize(vec3(uv.xy, -2.));\n\n    // start the march a little ahead of the\n    // actual ro to enforce a near plane\n    vec4 p = march(ro + rd * 2., rd, 1);\n\n    vec3 lp = vec3(0., 0., -3.);\n    vec3 lc = vec3(1., 1., .878);\n    lp *= roty(iTime);\n\n    if (p.w == 1.)\n    {\n        col = sss(p.xyz, rd, lp, lc);\n    }\n#if DEBUG_LIGHT_SOURCE\n    if (p.w == 2.)\n    {\n        col = lc;\n    }\n#endif\n    \n    col = mix(col, bgcol, length(p.xyz)/MAXD);\n    col *= 1.-length((uv+vec2(sin(iTime),0.))*.25);\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

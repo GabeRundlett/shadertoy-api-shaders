@@ -1,0 +1,219 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1580496061",
+            "description": "Testing reprojection for real time denoising, kinda blurry unfortunately. Looks better in fullscreen",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wtcXz4",
+            "likes": 76,
+            "name": "Real time path tracing",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "fractal",
+                "gi",
+                "globalillumination",
+                "pathtracing",
+                "depthoffield",
+                "ao",
+                "reprojection"
+            ],
+            "usePreview": 0,
+            "username": "loicvdb",
+            "viewed": 1739
+        },
+        "renderpass": [
+            {
+                "code": "//second DoF pass\n\n#define dir normalize(vec2(1.0, -1.0))\n\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    \n    Camera cam = getCam(iTime);\n    \n    vec4 col = vec4(0);\n    float samples = 0.0, dr, influence, depth;\n    vec2 d;\n    vec4 p;\n    for(int i = 0; i < DoFSamples; i++){\n        d = dir * float(2*i-DoFSamples)/float(DoFSamples) * DoFClamping;\n        p = texture(iChannel0, (fragCoord + d*iResolution.y*cam.aperture)/iResolution.xy);\n        dr = min(abs(p.a-cam.focalDistance)/p.a, DoFClamping);\n        influence = clamp((dr - length(d))*iResolution.y*cam.aperture + .5, 0.0, 1.0) / (dr*dr+.001);\n        col += influence * p;\n        samples += influence;\n    }\n    \n    col /= samples;\n    \n    fragColor = vec4(ACESFilm(col.rgb), 1.);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//increase this number for a better GI\n#define IndirectSamples 1\n\n//increase to remove more noise, but might make the result blurrier\n#define SamplesLimit 40\n\n//GI bounces\n#define Bounces 1\n\n\n#define PixelAcceptance 1.5\n#define PixelCheckDistance .5\n\n\n\n#define Pi 3.14159265359\n\n#define MaxStepsDirect 128\n#define MaxStepsIndirect 32\n#define MaxShadowSteps 32\n#define MaxDist 4.\n#define MinDist .015\n\n#define DoFClamping .3\n#define DoFSamples 32\n\nstruct Camera {\n    vec3 pos, rot;\n    float focalLength, focalDistance, aperture;\n};\n\n\nmat3 rotationMatrix(vec3 rotEuler){\n    float c = cos(rotEuler.x), s = sin(rotEuler.x);\n    mat3 rx = mat3(1, 0, 0, 0, c, -s, 0, s, c);\n    c = cos(rotEuler.y), s = sin(rotEuler.y);\n    mat3 ry = mat3(c, 0, -s, 0, 1, 0, s, 0, c);\n    c = cos(rotEuler.z), s = sin(rotEuler.z);\n    mat3 rz = mat3(c, -s, 0, s, c, 0, 0, 0, 1);\n    \n    return rz * rx * ry;\n}\n\nCamera getCam(float time){\n    vec3 rot = vec3(0., (sin(time*.75)+time*.75)/4., .3);\n    return Camera(vec3(0., 0., -20.) * rotationMatrix(rot), rot, 2., 17.5, .04);\n}\n\nvec3 uv2dir(Camera cam, vec2 uv){\n    return normalize(vec3(uv, cam.focalLength)) * rotationMatrix(cam.rot);\n}\n\nvec2 pos2uv(Camera cam, vec3 pos){\n    vec3 dir = normalize(pos - cam.pos) * inverse(rotationMatrix(cam.rot));\n    return dir.xy * cam.focalLength / dir.z;\n}\n\nvec3 dirFromUv(Camera cam, vec2 uv){\n    return normalize(vec3(uv, cam.focalLength)) * rotationMatrix(cam.rot);\n}\n\n    \n\nfloat sdf(vec3 position){\n    float Scale = 2.25;\n    float Radius = .25;\n    int Iterations = 6;\n    mat3 Rotation;\n    \n    //float time = 75.;\n    float time = 104.;\n    //float time = 120.;\n    \n    Rotation = rotationMatrix(vec3(time, time*.7, time*.4)*.2);\n    Scale += sin(time*.5)*.25;\n    Radius += cos(time) *.25;\n    \n    position *= Rotation;\n\tvec4 scalevec = vec4(Scale, Scale, Scale, abs(Scale)) / Radius;\n\tfloat C1 = abs(Scale-1.0), C2 = pow(abs(Scale), float(1-Iterations));\n\tvec4 p = vec4(position.xyz, 1.0), p0 = vec4(position.xyz, 1.0);\n\tfor (int i=0; i< Iterations; i++) {\n    \tp.xyz = clamp(p.xyz, -1.0, 1.0) * 2.0 - p.xyz;\n    \tp.xyzw *= clamp(max(Radius/dot(p.xyz, p.xyz), Radius), 0.0, 1.0);\n        if(i < 3) p.xyz *= Rotation;\n    \tp.xyzw = p*scalevec + p0;\n\t}\n\treturn (length(p.xyz) - C1) / p.w - C2;\n}\n\nvec3 normalEstimation(vec3 pos){\n  vec2 k = vec2(MinDist, 0);\n  return normalize(vec3(sdf(pos + k.xyy) - sdf(pos - k.xyy),\n\t  \t\t\t\t\tsdf(pos + k.yxy) - sdf(pos - k.yxy),\n  \t\t\t\t\t\tsdf(pos + k.yyx) - sdf(pos - k.yyx)));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage(out vec4 fragColor, in vec2 fragCoord){\n    fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "bool trace(inout vec3 pos, in vec3 dir, out vec3 normal){\n    pos += dir*sdf(pos);\n    pos += dir*sdf(pos);\n    for(int i = 0; i < MaxStepsDirect; i++){\n        float dist = sdf(pos);\n        if(dist > MaxDist) break;\n        if(dist < MinDist){\n            normal = normalEstimation(pos);\n            pos -= (2.*MinDist-dist) * dir;\n            return true;\n        }\n        pos += dir*dist;\n    }\n    return false;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n    \n    Camera cam = getCam(iTime);\n    \n    vec2 uv = (fragCoord-iResolution.xy/2.0) / iResolution.y;\n    vec3 dir = uv2dir(cam, uv);\n    fragColor = vec4(0.);\n    vec3 pos = cam.pos, normal;\n    if(trace(pos, dir, normal)) fragColor = vec4(pos, 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float seed;\n\nvec3 LightDir = vec3(.0, -1, .0);\nvec3 LightColor = vec3(.7, .5, .3) * 13.;\nfloat LightRadius = .05;\n\nfloat randomFloat(){\n    return fract(sin(seed++)*43758.54536156);\n}\n\nvec3 ortho(vec3 v) {\n  return abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0)  : vec3(0.0, -v.z, v.y);\n}\n\nvec3 getCosineWeightedSample(vec3 dir) {\n\tvec3 o1 = normalize(ortho(dir));\n\tvec3 o2 = normalize(cross(dir, o1));\n\tvec2 r = vec2(randomFloat(), randomFloat());\n\tr.x = r.x * 2.0 * Pi;\n\tr.y = pow(r.y, .5);\n\tfloat oneminus = sqrt(1.0-r.y*r.y);\n\treturn cos(r.x) * oneminus * o1 + sin(r.x) * oneminus * o2 + r.y * dir;\n}\n\nvec3 directLight(vec3 pos, vec3 normal){\n    float dotLight = -dot(normal, LightDir);\n    if(dotLight < 0.0) return vec3(0);\n    vec3 pos0 = pos;\n    float minAngle = LightRadius;\n    for(int i = 0; i < MaxShadowSteps; i++){\n        float dist = sdf(pos);\n        if(dist > MaxDist) break;\n        if(dist < MinDist) return vec3(0.0);\n        pos -= LightDir * dist * 3.0;\t//goes 3 times faster since we don't need details\n        minAngle = min(asin(dist/length(pos-pos0)), minAngle);\n    }\n    return LightColor * dotLight * clamp(minAngle/LightRadius, .0, 1.0);\n}\n\n\nvec3 background(vec3 dir){\n    vec3 col = texture(iChannel3, dir).rgb;\n    return col*col + col;\n}\n\n\n\nbool trace(inout vec3 pos, in vec3 dir, out vec3 normal){\n    for(int i = 0; i < MaxStepsIndirect; i++){\n        float dist = sdf(pos);\n        if(dist > MaxDist) break;\n        if(dist < MinDist){\n            normal = normalEstimation(pos);\n            pos -= (2.*MinDist-dist) * dir;\n            return true;\n        }\n        pos += dir*dist;\n    }\n    return false;\n}\n\nvec3 sampleIndirectLight(vec3 pos, vec3 normal){\n    vec3 dir = getCosineWeightedSample(normal);\n    vec3 light = vec3(0.);\n    for(int i = 0; i < Bounces; i++){\n        if(!trace(pos, dir, normal)) return light+background(dir);\n        else light += directLight(pos, normal);\n    }\n    return light;\n}\n\nfloat distancePixel(vec2 prevFragCoord, vec4 hit){\n    if(  min(iResolution.xy, prevFragCoord) != prevFragCoord\n      && max(vec2(0.)      , prevFragCoord) != prevFragCoord) return MaxDist;\n    vec4 prevPos = texture(iChannel2, prevFragCoord/iResolution.xy);\n    Camera cam = getCam(iTime);\n    return length(prevPos-hit);\n}\n\nvec4 previousSample(vec4 hit){\n    vec2 prevUv = pos2uv(getCam(iTime-iTimeDelta), hit.xyz);\n    vec2 prevFragCoord = prevUv * iResolution.y + iResolution.xy/2.0;\n    \n    vec2 pfc, finalpfc;\n    float dist, finaldist = MaxDist;\n    for(int x = -1; x <= 1; x++){\n        for(int y = -1; y <= 1; y++){\n            pfc = prevFragCoord + PixelCheckDistance*vec2(x, y);\n            dist = distancePixel(pfc, hit);\n            if(dist < finaldist){\n                finalpfc = pfc;\n                finaldist = dist;\n            }\n    \t}\n    }\n    \n    Camera cam = getCam(iTime);\n    if(finaldist < PixelAcceptance*length(hit.xyz-cam.pos)/cam.focalLength/iResolution.y)\n        return texture(iChannel0, finalpfc/iResolution.xy);\n    return vec4(0.);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord){\n    \n    seed = .256435865*fragCoord.x+.316548465*fragCoord.y+sin(iTime)*16886.3158915;\n    \n    Camera cam = getCam(iTime);\n    \n    vec4 hit = texelFetch(iChannel1, ivec2(fragCoord), 0);\n    if(hit.a == 0.){\n        vec2 uv = (fragCoord-iResolution.xy/2.0) / iResolution.y;\n        fragColor = vec4(background(uv2dir(cam, uv)), 1.);\n    } else {\n        \n        #if 0\n        fragColor = previousSample(hit);\n        fragColor.rgb = fragColor.a == 0. ? vec3(1., 0., 0.) : vec3(0., 1., 0.);\n        fragColor.a = 1.;\n        #else\n        vec3 normal = normalEstimation(hit.xyz);\n        \n        vec3 dLight = directLight(hit.xyz, normal);\n        vec3 iLight = vec3(0.);\n        for(int i = 0; i < IndirectSamples; i++)\n            iLight += sampleIndirectLight(hit.xyz, normal)/float(IndirectSamples);\n        \n        fragColor = previousSample(hit);\n        if(fragColor.a < 1.) iLight = clamp(iLight, vec3(.1), vec3(.4)); // clamp gi for low sample count\n        fragColor.a += fragColor.a > float(SamplesLimit) ? 0. : float(IndirectSamples);\n        fragColor.rgb = mix(fragColor.rgb, iLight + dLight, 1.0/(fragColor.a/float(IndirectSamples)));\n        #endif\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//first DoF pass\n\n#define dir normalize(vec2(1.0, 1.0))\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    \n    Camera cam = getCam(iTime);\n    \n    vec4 col = vec4(0);\n    float samples = 0.0, dr, influence, depth;\n    vec2 d, de;\n    vec4 p;\n    for(int i = 0; i < DoFSamples; i++){\n        d = dir * float(2*i-DoFSamples)/float(DoFSamples) * DoFClamping;\n        vec2 de = (fragCoord + d*iResolution.y*cam.aperture)/iResolution.xy;\n        p.rgb = texture(iChannel0, de).rgb;\n        p.a = length(texture(iChannel1, de).rgb - cam.pos);\n        dr = min(abs(p.a-cam.focalDistance)/p.a, DoFClamping);\n        influence = clamp((dr - length(d))*iResolution.y*cam.aperture + .5, 0.0, 1.0) / (dr*dr+.001);\n        col += influence * p;\n        samples += influence;\n    }\n    \n    col /= samples;\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

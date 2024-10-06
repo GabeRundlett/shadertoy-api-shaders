@@ -1,0 +1,52 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1513245067",
+            "description": "This is slight modification of huwb's shader, which in turn is modification of IQ's technique :) It removes discontinuities in shading at certain places, when resulting texture is used as displacement map (modified calculation of 'w3' weight)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4lXfDj",
+            "likes": 4,
+            "name": " Tex bombing 3 samples modified",
+            "published": 3,
+            "tags": [
+                "texture",
+                "bombing"
+            ],
+            "usePreview": 0,
+            "username": "petrsm",
+            "viewed": 750
+        },
+        "renderpass": [
+            {
+                "code": "// Modification by petrsm. Original shader by hubw: https://www.shadertoy.com/view/4tyGWK\n// Removes discontinuities in shading when technique is used to generate displacement map\n// (which is in turn used to calculate normals)\n\n\n// Modification by huwb. Original shader by iq: https://www.shadertoy.com/view/lt2GDd\n\n// Does texture bombing with 3 samples instead of 4 by treating the uv plane as a\n// tri mesh grid and using barycentric coordinates for sample weights.\n\n// Also has branches to minimize texture samples. click to see sample count, green=1, yellow=2,\n// red=3 texture samples. makes a nice tile pattern!\n\n// Finally by flipping uvs in alternating tiles, texture uvs are continuous and no special\n// derivative calculations are required.\n\n// ---\n\n// Quality with 3 samples looks good to me, but i haven't used this in production so\n// i don't know how they compare in practical scenarios, or how performance would change\n// on different gpus/platforms.\n\n// I am happy for the newly added code to be used in an unlimited way. I've included\n// the original header with license from iq below.\n\n//////////////// ORIGINAL HEADER //////////////////\n\n// Created by inigo quilez - iq/2015\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// One simple way to avoid texture tile repetition, at the cost of 4 times the amount of\n// texture lookups (still much better than https://www.shadertoy.com/view/4tsGzf)\n//\n// More info: https://iquilezles.org/articles/texturerepetition\n\n//////////////// ORIGINAL HEADER //////////////////\n\n\n#define BLEND_WIDTH 0.4\n#define JIGGLE 0\n\n// utilities for randomizing uvs\nvec4 hash4( vec2 p ) { return fract(sin(vec4( 1.0+dot(p,vec2(37.0,17.0)), 2.0+dot(p,vec2(11.0,47.0)), 3.0+dot(p,vec2(41.0,29.0)), 4.0+dot(p,vec2(23.0,31.0))))*103.); }\nvec2 transformUVs( in vec2 iuvCorner, in vec2 uv )\n{\n    // random in [0,1]^4\n\tvec4 tx = hash4( iuvCorner );\n    // scale component is +/-1 to mirror\n    tx.zw = sign( tx.zw - 0.5 );\n    // debug vis\n    #if JIGGLE\n    tx.xy *= .05*sin(5.*iTime+iuvCorner.x+iuvCorner.y);\n    #endif\n    // random scale and offset\n\treturn tx.zw * uv + tx.xy;\n}\n\n\n// new 3 samples version.\n// makes heavy use of branching to factor out computation and texture sampling but\n// these are optional, and whether they help or not will depend on target platform/hardware\nvec4 textureNoTile_3weights( sampler2D samp, in vec2 uv )\n{\n    vec4 res = vec4(0.);\n    int sampleCnt = 0; // debug vis\n    \n    // compute per-tile integral and fractional uvs.\n    // flip uvs for 'odd' tiles to make sure tex samples are coherent\n    vec2 fuv = mod( uv, 2. ), iuv = uv - fuv;\n    vec3 BL_one = vec3(0.,0.,1.); // xy = bot left coords, z = 1\n    if( fuv.x >= 1. ) fuv.x = 2.-fuv.x, BL_one.x = 2.;\n    if( fuv.y >= 1. ) fuv.y = 2.-fuv.y, BL_one.y = 2.;\n    \n    \n    // weight orthogonal to diagonal edge = 3rd texture sample\n    vec2 iuv3;\n    float w3 = (fuv.x+fuv.y) - 1.;\n    if( w3 < 0. ) iuv3 = iuv + BL_one.xy, w3 = -w3; // bottom left corner, offset negative, weight needs to be negated\n    else iuv3 = iuv + BL_one.zz; // use transform from top right corner\n    \n    #if 0\n    \n    //\n    // Original calculation of w3\n    //\n    \n    w3 = smoothstep(BLEND_WIDTH, 1.-BLEND_WIDTH, w3);\n    #else\n    \n    //\n    // Modified calculation of w3\n    //\n    \n    w3 = smoothstep(BLEND_WIDTH, 1.-BLEND_WIDTH, pow(1. - min(length(1. - fuv), length(fuv)) , 1.5));\n    \n    #endif\n    \n    // if third sample doesnt dominate, take first two\n    if( w3 < 0.999 )\n    {\n        // use weight along long diagonal edge\n        float w12 = dot(fuv,vec2(.5,-.5)) + .5;\n        w12 = smoothstep(1.125*BLEND_WIDTH, 1.-1.125*BLEND_WIDTH, w12);\n\n        // take samples from texture for each side of diagonal edge\n        if( w12 > 0.001 ) res +=     w12  * texture( samp, transformUVs( iuv + BL_one.zy, uv ) ), sampleCnt++;\n        if( w12 < 0.999 ) res += (1.-w12) * texture( samp, transformUVs( iuv + BL_one.xz, uv ) ), sampleCnt++;\n    }\n    \n\t// first two samples aren't dominating, take third\n    if( w3 > 0.001 ) res = mix( res, texture( samp, transformUVs( iuv3, uv ) ), w3 ), sampleCnt++;\n\n    \n    // debug vis: colour based on num samples taken for vis purposes\n    if( iMouse.z > 0. )\n    {\n        if( sampleCnt == 1 ) res.rb *= .25;\n        if( sampleCnt == 2 ) res.b *= .25;\n        if( sampleCnt == 3 ) res.gb *= .25;\n    }\n    \n    return res;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord / iResolution.x;\n\t\n    float s = smoothstep( 0.4, 0.6, sin(iTime*0.5) );\n    uv = (4.0 + 16.0*s)*uv - iTime*0.1;\n        \n    if( fract(iTime/4.) > .5 )\n\t    fragColor = textureNoTile_3weights( iChannel0, uv );\n    else\n        fragColor = texture( iChannel0, uv );\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

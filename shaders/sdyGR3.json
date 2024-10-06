@@ -1,0 +1,69 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1631889690",
+            "description": "Glass shader that integrates over wavelengths of light in visible spectrum instead of just r,g,b. \nAlso accounts for 3 light ray bounces\n\nMove around with the mouse",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "sdyGR3",
+            "likes": 26,
+            "name": "Spectral glass",
+            "published": 3,
+            "tags": [
+                "reflection",
+                "refraction",
+                "cubemap",
+                "glass",
+                "spectral"
+            ],
+            "usePreview": 0,
+            "username": "NLIBS",
+            "viewed": 772
+        },
+        "renderpass": [
+            {
+                "code": "//21/09/20 : Fixed the spectrum function.\n\n#define exposure 1.\n#define DISPLAY_GAMMA 2.2\n#define DISPERSION 8.\n#define SAMPLES 8\nconst float N_AIR = 1.0;\n\nconst vec3 GLASS_COL = vec3(0.9);\n//const vec3 GLASS_COL = vec3(0.9,0.5,0.2);\n//const vec3 GLASS_COL = vec3(0.99,0.61,0.5);\nconst vec3 GLASS_REF = pow(GLASS_COL,vec3(0.6));\n\n//Minimal sphere raytrace\nfloat trace(vec3 rd, vec3 ro) {\n    float r = (sin(iTime/1.5)*0.5+0.5)*0.6+0.4;\n    float x0 = max(dot(-ro,rd),0.);\n    vec3 a = x0*rd+ro;\n    float b = dot(a,a);\n    float c = sqrt(r*r-b);\n    return (x0-c*sign(x0-c))*step(b,r*r);\n}\n\nfloat get_fresnel(vec3 rd, vec3 n, float n1, float n2){\n    float cosI = abs(dot(rd, n));\n    float cosR = n1/n2 * sqrt(1.-cosI*cosI);\n    if(cosR > 1.0) return 1.0; // total internal reflection\n    cosR = sqrt(1.0 - cosR * cosR);\n    float Rs = (n1*cosI - n2*cosR)/(n1*cosI + n2*cosR);\n    float Rp = (n1*cosR - n2*cosI)/(n1*cosR + n2*cosI);\n    return (Rs*Rs+Rp*Rp)*0.5;\n}\n\nvec3 _sample(vec3 rd) {\n\tvec3 col = texture(iChannel0,rd).rgb;\n    col = pow(col*1.3,vec3(DISPLAY_GAMMA+3.5));\n    col *= mix(vec3(0.1,0.3,0.9),vec3(0.9,0.27,0.08),rd.x*0.5+0.5);\n    //col *= mix(vec3(0.1,0.9,0.3),vec3(1.,.5,.2),rd.z*0.5+0.5);\n    return col;\n}\n\n//Cauchy's equation\nfloat get_n_glass(float lambda, float disp)\n{\n    lambda *= 1e-3;\n    return 1.5046 + 0.0042*disp / (lambda*lambda);\n}\n\n//spectral_zucconi6 but corrected so it integrates to white (1,1,1) ---------------------\nvec3 bump3(vec3 x, vec3 yoffset)\n{\n    vec3 y = 1. - x * x;\n    y = clamp(y-yoffset,0.,1.);\n    return y;\n}\n\nvec3 spectral(float lambda)\n{\n    float x = (lambda - 400.)/ 300.;\n    const vec3 c1 = vec3(3.54585, 2.93225, 2.41594);\n    const vec3 x1 = vec3(0.69549, 0.49228, 0.27700);\n    const vec3 y1 = vec3(0.02313, 0.15225, 0.52608);\n    const vec3 c2 = vec3(3.90307, 3.21183, 3.96587);\n    const vec3 x2 = vec3(0.11749, 0.86755, 0.66078);\n    const vec3 y2 = vec3(0.84897, 0.88445, 0.73949);\n    return pow((bump3(c1 * (x - x1), y1) + bump3(c2 * (x - x2), y2)),vec3(2.2)) * vec3(3.64499, 4.4228, 15.6893);\n}\n//---------------------------------------------------------------------------------------\n\nvoid mainImage(out vec4 O, in vec2 U) {\n    vec2 R = iResolution.xy;\n    vec2 uv = (2.*U-R)/R.x;\n    float a = (iMouse.z>0.) ? iMouse.x/R.x*3.14 : iTime*0.5;    \n    vec3 viewPos = vec3(0,0,-1.8);//-cos(iTime)*0.6);\n    \n    mat2 mat = mat2(cos(a),-sin(a),sin(a),cos(a));\n    vec3 ro = viewPos;\n    ro.xz = mat * ro.xz;\n    \n    vec3 rd = normalize(vec3(uv,0.8));\n    //vec3 rd = normalize(vec3(vec3(uv,0.,1. )));\n    rd.xz = mat * rd.xz;\n    \n    //Hit depth, pos and normal\n    float t = trace(rd,ro);\n    vec3 p = ro + rd*t;\n    p += rd*0.001;\n    vec3 n = normalize(p);\n    \n    vec3 acc;\n    \n    if (t>0.) {\n        float noise = texelFetch(iChannel1,ivec2(U)%1024,0).r;\n        noise = fract(noise+1.61803398*float(iFrame%100))*2.-1.;\n\n        for (float lambda = 400.+300.*(0.5+noise*0.5)/float(SAMPLES); lambda<700.; lambda+=300./float(SAMPLES)) {\n\n            float n_glass = get_n_glass(lambda,DISPERSION);\n            \n            float ratio = n_glass/N_AIR; //Swap these for an interesting (albeit incorrect) look\n            \n            //Bounce 1----------------------------\n            float fresnel = get_fresnel(rd,n,N_AIR,n_glass);\n            vec3 reflect_rd = reflect(rd,n);\n            vec3 refract_rd = refract(rd,n,N_AIR/n_glass); \n            \n            //Stop reflected ray\n            vec3 reflect_col = _sample(reflect_rd  ) * GLASS_REF;\n            \n            //Continue refracted ray\n            vec3 bounce_rd = refract_rd;\n            float t1 = trace(bounce_rd,p)*0.999;\n            vec3 bounce_p = p + bounce_rd*t1;\n            vec3 bounce_n = -normalize(bounce_p);\n            \n            //Bounce 2-----------------------------\n            float fresnel_2 = get_fresnel(bounce_rd,bounce_n,n_glass,N_AIR);\n            vec3 reflect_2_rd = reflect(bounce_rd,bounce_n);\n            vec3 refract_2_rd = refract(bounce_rd,bounce_n,ratio);\n            \n            //Stop refracted ray\n            vec3 refract_2_col = _sample(refract_2_rd);\n            \n            //Continue reflected ray\n            bounce_rd = reflect_2_rd;\n            float t2 = trace(bounce_rd,bounce_p)*0.999;\n            bounce_p = bounce_p+t2*bounce_rd;\n            bounce_n = -normalize(bounce_p);\n            \n            //Bounce 3-----------------------------\n            float fresnel_3 = get_fresnel(bounce_rd,bounce_n,n_glass,N_AIR);\n            vec3 reflect_3_rd = reflect(bounce_rd,bounce_n);\n            vec3 refract_3_rd = refract(bounce_rd,bounce_n,ratio);\n            \n            //Stop refracted ray\n            vec3 refract_3_col = _sample(refract_3_rd);\n            vec3 reflect_3_col = _sample(reflect_3_rd);\n            \n            //Continue reflected ray\n            bounce_rd = reflect_3_rd;\n            float t3 = trace(bounce_rd,bounce_p)*0.999;\n            bounce_p = bounce_p+t3*bounce_rd;\n            bounce_n = -normalize(bounce_p);\n            \n            //Combine results----------------------\n            vec3 reflect_2_col = mix(refract_3_col,reflect_3_col,fresnel_3); //Fresnel\n            reflect_2_col *= pow(GLASS_COL,vec3(t2));                        //Attenuation\n            \n            vec3 refract_col = mix(refract_2_col,reflect_2_col,fresnel_2); //Fresnel\n            refract_col *= pow(GLASS_COL,vec3(t1));                        //Attenuation\n            \n            vec3 col = mix(refract_col,reflect_col,fresnel); //Fresnel for bounce 1\n            \n            //Add as a spectral componant\n            acc += col*spectral(lambda);\n        }\n        \n        acc /= float(SAMPLES);\n    } else {\n        //Background\n        acc = _sample(rd)*0.8;\n    }\n    \n    vec3 col = acc;\n    \n    //Tone mapping\n    col = vec3(1.0) - exp(-col * exposure);\n    //Gamma correction\n\tcol = pow(max(col,0.), vec3(1./DISPLAY_GAMMA));\n    \n    \n    O = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

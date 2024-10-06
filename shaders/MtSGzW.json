@@ -1,0 +1,85 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1427259522",
+            "description": "Specular path tracing, AKA Super 16 2: Electric Boogaloo.\nThis started out as a naive path tracer, but soon turned into a pretty neat mini-demo!\nInspired by Fairlight's Feed Me Lies and PHOTON.\n05/27/2017: Cleaned up code; everything should run faster now",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MtSGzW",
+            "likes": 39,
+            "name": "Theme from Brazil",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "video",
+                "gi",
+                "globalillumination",
+                "pathtracing",
+                "pathtracer",
+                "film"
+            ],
+            "usePreview": 0,
+            "username": "NBickford",
+            "viewed": 5008
+        },
+        "renderpass": [
+            {
+                "code": "// This is a quick real-time raytracer! It's intentionally a bit noisy,\n// but shows off a nice single-bounce system with both diffuse and specular lobes.\n\n// Originally, this used signed distance field raymarching, using IQ's Distance\n// Functions: https://iquilezles.org/articles/distfunctions\n// hearing about how the 4K demo \"Absolute Territory\" (http://www.pouet.net/prod.php?which=69642)\n// was made, I realized that the geometry here was simple enough that\n// we could just perform raytracing in a fairly fast way.\n\n// Heavily inspired by Fairlight's PHOTON and Feed Me Lies, which was itself inspired\n// by Bot & Dolly's Box:https://vimeo.com/75260457\n\n//OpenGL: z minus is into the screen\nvec3 rotY(vec3 p, float rot){\n    return vec3(p.x*cos(rot)-p.z*sin(rot),p.y,p.x*sin(rot)+p.z*cos(rot));\n}\n\n// Tests if the ray intersects the axis-aligned bounding box at\n// (0.0,-0.51069,-1.6) +- (0.319,0.417,0.319))\n// Based off of Real-Time Rendering, 3rd edition, pg. 743.\n// Returns a negative value if there's no intersection.\nfloat rayAABBIntersect(vec3 co, vec3 ci, out vec3 n){\n    vec3 p = vec3(0.0, -0.51069, -1.6)-co;\n    \n    // TODO: vectorize!\n    // Reject early if for some axis,\n    // the camera points perpendicular to that axis, and\n    // the camera ray could not possibly intersect the cube.\n    \n    vec3 b=vec3(0.319,0.417,0.319);\n    \n    // This is a bit of a hack; while computing the inverse\n    // of each of the elements of ci, we just set the value\n    // to a really large value if the component is close to 0.\n    // This makes t1 very negative and t2 very positive, which\n    // works out.\n    \n    // Q: Is there a better way of doing this?\n    \n    vec3 cii = vec3(1000000.0);\n    float eps = 0.000001;\n    \n    if(abs(ci.x)>eps){\n        cii.x=1.0/ci.x;\n    }\n    if(abs(ci.y)>eps){\n        cii.y=1.0/ci.y;\n    }\n    if(abs(ci.z)>eps){\n        cii.z=1.0/ci.z;\n    }\n    \n    vec3 pi = p*cii;\n    vec3 bc = abs(b*cii);\n    \n    vec3 t1 = pi-bc;\n    vec3 t2 = pi+bc;\n    float tmin = max(t1.x, max(t1.y, t1.z));\n    float tmax = min(t2.x, min(t2.y, t2.z));\n    \n    if(tmin>tmax || tmax<0.0) return -1.0;\n    \n    // Compute the normal\n    n = vec3(0.0);\n    if(t1.x>=tmin) n.x=-1.0;\n    if(t1.y>=tmin) n.y=-1.0;\n    if(t1.z>=tmin) n.z=-1.0;\n    n*=sign(ci);\n    \n    return tmin;\n}\n\nvec3 remap(vec3 co){\n    // Remaps the given location to be within [-2,2] in x and [-1.1, 1.1] in y\n    return vec3(\n        mod(co.x-2.0,4.0)-2.0,\n        mod(co.y-1.1,2.2)-1.1,\n        co.z);\n}\n\nvec2 intersect(vec3 co, vec3 ci, out vec3 n){\n    // Our main structure consists of a grid of identical scenes in the x and y axes.\n    // As a result, we can split our intersection routine into two steps:\n    // 1. Find which cell our ray hits\n    // 2. Find what object in the cell our ray hits.\n    \n    float back=2.0;\n    float w2=1.78;\n    float h2=1.0;\n    float wall=0.1/2.0;\n    // Default normal (front face):\n    n = vec3(0.0);\n    \n    float t = 0.0;\n        \n    // If we're not already past the plane...\n    if(co.z>=wall+0.0001){\n        // Intersect with plane at z=wall\n        // (co+ci*t).z=wall\n        t = (wall-co.z)/ci.z; // TODO (neil): Handle case where ci.z>0;\n\n        co = remap(co+ci*t);\n\n        // See if we hit the edges of the shape:\n        if(abs(co.x)>w2-wall || abs(co.y)>h2-wall){\n            n = vec3(0.0,0.0,1.0);\n            return vec2(t,0.0);\n        }\n    }else{\n        co = remap(co);\n    }\n\n    \n    // Our inner section consists of a hollowed-out cuboid centered\n    // at (0,0,wall-back/2) with a radius of (w2-wall,h2-wall,back/2)\n    // This essentially amounts to a slightly varied AABB intersection:\n    float tX = max((w2-wall-co.x)/ci.x, (-w2+wall-co.x)/ci.x);\n    float tY = max((h2-wall-co.y)/ci.y, (-h2+wall-co.y)/ci.y);\n    \n    // TODO: simplify this section of the code; it isn't wholly intuitive:\n    float id = 0.0;\n    float t3=min(tX,tY);\n    if(ci.z<0.0){\n        float tZ = (wall-back-co.z)/ci.z;\n    \tt3 = min(t3,tZ);\n        // If we hit the back wall, set the id to 2 to indicate that:\n    \tif(tZ<=t3){\n        \tid=2.0;\n        \tn.z=-1.0;\n    \t}\n    }else{\n        //Handle the special case where we're inside the box, reflecting back.\n        float tZ = (wall-co.z)/ci.z; // this is positive\n        if(tZ<=t3 || t3<0.0) t3=10000.0; // if we escape or if we're on the front surface\n    }\n    \n    // Compute normal (this will get overwritten if rayAABB intersects):\n    if(tX<=t3) n.x=-1.0;\n    if(tY<=t3) n.y=-1.0;\n           \n    n*=sign(ci);\n    \n    // Include axis-aligned box:\n    float t2 = rayAABBIntersect(co, ci, n);\n    if(t2>=0.0 && t2<t3){\n        t3 = t2;\n        id=1.0;\n    }\n    \n    return vec2(t+t3,id);\n}\n\nvec3 gamma(vec3 col){\n    return pow(clamp(col,0.0,1.0),vec3(0.45));\n}\n\nvec3 degamma(vec3 col){\n    return pow(clamp(col,0.0,1.0),vec3(2.2));\n}\n\nvec2 cubemap(vec3 p, vec3 n){\n    //Maps position, normal-> texture coordinate.\n    //n=1,0,0: just y and z\n    //This isn't a particularly nice way to do things, but it works.\n    n=abs(n);\n    if(n.x>n.y && n.x>n.z){\n        return p.yz;\n    }else if(n.y>n.x && n.y>n.z){\n        return p.xz;\n    }else{\n        return p.xy;\n    }\n}\n\nvec4 cubetex(sampler2D channel, vec3 p, vec3 n){\n    return texture(channel,cubemap(p,n));\n}\n\n// Computes an orthonormal basis with n as one of the vectors.\n// This is an intentionally simple method, which only works if\n// n is (-1,0,0), (1,0,0), (0,1,0), (0,-1,0), (0,0,-1), or (0,0,1).\n// Handedness not guaranteed.\nvoid genONB(vec3 n, out vec3 t, out vec3 b){\n    if(abs(n.x)<0.5){ //i.e. n.x==0\n        t = vec3(1.0,0.0,0.0);\n    }else{ // n.x == +-1\n        t = vec3(0.0,1.0,0.0);\n    }\n    b = cross(n,t);\n    //Q: Is it faster to just test all three cases?\n}\n\nvec3 sampleMovie(vec2 p){\n    p=vec2(mod(p.x-2.0,4.0)-2.0,-mod(p.y-1.1,2.2)+1.1);\n    return degamma(texture(iChannel1,(p-vec2(-1.5,-1.0))*vec2(0.325,0.5)).rgb);\n}\n\n\nvec2 getStart(vec2 fragCoord){\n    //TODO: Make the fact that this is just a linear shift less obvious\n    return vec2(97.0*fragCoord.x+157.0*float(iFrame),157.0*fragCoord.y+97.0*float(iFrame))/iChannelResolution[0].x;\n}\n\nvec3 noise(vec2 uv, float i){\n    return texture(iChannel0,uv+vec2(float(i)/iChannelResolution[0].x,0.0)).rgb;\n}\n\n// Gives a random Gaussian variate of standard deviation 1 given u and v in [0,1]^2.\nvec2 boxMuller(vec2 uv){\n    float r = sqrt(-2.0*log(uv.x));\n    float th = 2.0*3.1415926*uv.y;\n    return vec2(r*cos(th),r*sin(th));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 cs = (fragCoord.xy-iResolution.xy*0.5)/iResolution.x; //lower-left=-1,-y/x\n    \n    float time = iTime;\n    vec2 randStart = getStart(fragCoord.xy);\n    \n    \n    // Camera controls:\n    vec3 co;\n    vec3 ci;\n    if(iMouse.z>0.0){\n        \n        float rotation=2.0*(iMouse.x/iResolution.x-0.5);\n        co=rotY(vec3(0.0,0.0,5.0),rotation);\n    \tfloat zoom=0.5/0.6;\n        ci=rotY(normalize(vec3(zoom*cs.x,zoom*cs.y,-1)),rotation);\n    }else{\n        \n        float camz=3.0+8.0*(exp(smoothstep(5.0,30.0,time))-1.0);\n        float rotation=mix(0.4*cos(time*0.3),-0.95,smoothstep(20.0,32.0,time));\n        co=rotY(vec3(0.0,0.0,camz),rotation)+vec3(1.2*mix(0.0,time-26.0,smoothstep(26.0,35.0,time)),0.0,0.0);\n    \tfloat zoom=0.5/0.6;\n        ci=rotY(normalize(vec3(zoom*cs.x,zoom*cs.y,-1)),rotation);\n    }\n    \n    vec3 nor = vec3(0.0);\n    vec2 res=intersect(co,ci,nor);\n    float t=res.r;\n    \n    vec3 col=vec3(0.0);\n    \n    if(t<50.0){\n        vec3 p=co+t*ci;\n        vec2 uv=cubemap(p,nor);\n        \n        vec3 albedo=vec3(0.0);\n        vec3 emissive=vec3(0.0);\n        \n        if(res.g<0.9){\n            // Walls\n            albedo = vec3(0.3);\n        }else if(res.g<1.9){\n            // Cube\n            albedo = vec3(0.2);\n        }else{\n            // Video\n            emissive = sampleMovie(p.xy);\n        }\n        \n        float sampleScale=1.0/12.0;\n        vec3 sum=vec3(0.0);\n        float iter=0.0;\n        \n        vec3 t = vec3(0.0);\n        vec3 b = vec3(0.0);\n        genONB(nor,t,b);\n        \n        for(int i=0;i<4;i++){\n            // Choose a random direction along the normal.\n            // This gives approximately a Beckmann distribution of normals:\n            float sd = 0.2;\n            vec2 bm = sd*boxMuller(noise(randStart, iter).xy);\n            vec3 localNormal = normalize(nor+bm.x*t+bm.y*b);\n            \n            vec3 rd = ci-2.0*localNormal*dot(ci,localNormal);\n            vec3 nor2 = vec3(0.0);\n            vec2 res2 = intersect(p, rd, nor2);\n            \n            vec3 p2=p+res2.r*rd;\n            \n            if(res2.g>1.9){\n                sum+=dot(nor,rd)*sampleMovie(p2.xy);\n            }\n            iter+=1.0;\n        }\n        \n        sum*=1.5; //Now uses 4 samples and is far granier, so this is just for aesthestics.\n        // Might be possible to replace it with an analytical (mipmapped) approximation, \n        // aside from the fact that it looks like you can't use mipmapping on videos?\n\n        \n        float gloss=pow(clamp(2.0*cubetex(iChannel2,p.xzy*0.5,nor.xzy).b-0.5,0.0,1.0),5.0);\n        for(int i=0;i<8;i++){\n            \n            float sd = sqrt(gloss);\n            vec2 bm = sd*boxMuller(noise(randStart, iter).xy);\n            vec3 localNormal = normalize(nor+bm.x*t+bm.y*b);\n            \n            vec3 rd = reflect(ci,localNormal);\n            vec3 nor2=vec3(0.0);\n            vec2 res2=intersect(p,rd,nor2);\n            \n            vec3 p2=p+res2.r*rd;\n            \n            if(res2.g>1.9){\n                sum+=pow(1.0-gloss,32.0)*dot(nor,rd)*sampleMovie(p2.xy);\n            }\n\n            iter+=1.0;\n        }\n\n        col=emissive+albedo*sum*sampleScale;\n    }\n    \n\tfragColor = vec4(gamma(2.0*col),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "video",
+                        "id": 29,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/3405e48f74815c7baa49133bdc835142948381fbe003ad2f12f5087715731153.ogv"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

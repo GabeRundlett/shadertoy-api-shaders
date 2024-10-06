@@ -1,0 +1,173 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1597769486",
+            "description": "Using dynamically generated altitude map and K-value map. The K-map algorithm is the trick. Only a few loops can let the ray hits most of the terrain.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "WlsfDj",
+            "likes": 6,
+            "name": "Terrain With Altitude Map",
+            "published": 3,
+            "tags": [
+                "terrain",
+                "raycast",
+                "altitude"
+            ],
+            "usePreview": 0,
+            "username": "0xAA55",
+            "viewed": 564
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nMIT LICENSE\n\nCopyright (c) 2020 0xAA55\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\n*/\n\n// Raycast to the map, returns 0 if not cast.\nint MapRaycast(in vec3 Orig, in vec3 Ray, in float MaxDist, out vec3 CastPos, out float CastDist, out float MinStepLen)\n{\n    float RayHorz = length(Ray.xz);\n    if(RayHorz <= Epsilon)\n    {\n        CastPos.y = Altitude(texture(iChannel0, Orig.xz / MapScale));\n        CastDist = Orig.y - CastPos.y;\n        return 1;\n    }\n    \n    float RayK = -Ray.y / RayHorz;\n    CastDist = 0.0;\n    MinStepLen = 100000.0;\n    \n    // Move the orig forward the ray direction and check if it's near enough to the terrain\n    for(int s = 0; s < MaxIterSteps; s++)\n    {\n        float StepLength = 0.0;\n        float Alt = Altitude(texture(iChannel0, Orig.xz / MapScale));\n    \tfloat MapK = texture(iChannel1, Orig.xz / MapScale).z * length(iResolution.xy) / MapScale;\n    \tfloat K = RayK + MapK;\n        \n        // The ray is going away from the map\n        if(RayK < 0.0 && -RayK > MapK)\n        {\n            return 0;\n        }\n        \n        // Calculate the step length to move the orig forward\n        if(K > Epsilon)\n        {\n            StepLength = (Orig.y - Alt) / RayHorz / K;\n            StepLength = max(StepLength * StepLengthModifier, MinDistThreshold);\n            MinStepLen = min(MinStepLen, StepLength);\n        }\n        else\n        {\n            // Infinite step length, the ray is parallel to the map plane and it would never cast to the terrain\n            return 0;\n        }\n        \n        // Do the move\n        Orig += Ray * StepLength;\n        CastDist += StepLength;\n        \n        // Check if near enough\n        if(Orig.y <= Alt + MinDistThreshold)\n        {\n\t\t\tif(StepLength <= MinDistThreshold) break;\n            else\n            {\n                StepLength *= -0.5;\n                Orig += Ray * StepLength;\n                CastDist += StepLength;\n            }\n        }\n        \n        // Check if far enough to give up\n        if(CastDist > MaxDist)\n        {\n            CastDist = MaxDist;\n            return 0;\n        }\n    }\n    \n    CastPos = Orig;\n    return 1;\n}\n\n// Get the normal from the altitude map\nvec3 GetNormal(in vec2 OrigXZ)\n{\n    float Alt1 = Altitude(texture(iChannel0, (OrigXZ - vec2(1.0, 0.0)) / MapScale));\n    float Alt2 = Altitude(texture(iChannel0, (OrigXZ + vec2(1.0, 0.0)) / MapScale));\n    float Alt3 = Altitude(texture(iChannel0, (OrigXZ - vec2(0.0, 1.0)) / MapScale));\n    float Alt4 = Altitude(texture(iChannel0, (OrigXZ + vec2(0.0, 1.0)) / MapScale));\n    return normalize(vec3(Alt1 - Alt2, 2.0, Alt3 - Alt4));\n}\n\n// Render the scene\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // The rotation of the camera\n    float PitchAngle = Pi * 0.33 + Pi * 0.05 * sin(Pi * 0.06 * iTime);\n    float YawAngle = Pi * 0.04 * iTime;\n    mat3 RayRotYaw = mat3\n    (\n        vec3(cos(YawAngle), 0.0, -sin(YawAngle)),\n        vec3(0.0, 1.0, 0.0),\n        vec3(sin(YawAngle), 0.0, cos(YawAngle))\n    );\n    mat3 RayRotPitch = mat3\n    (\n        vec3(1.0, 0.0, 0.0),\n        vec3(0.0, cos(PitchAngle), -sin(PitchAngle)),\n        vec3(0.0, sin(PitchAngle), cos(PitchAngle))\n    );\n    \n    // Create rays from the screen pixels\n    vec3 StartRay = vec3(fragCoord / iResolution.xy - 0.5, 0.5);\n    StartRay.x *= iResolution.x / iResolution.y;\n    StartRay *= RayRotPitch;\n    StartRay *= RayRotYaw;\n    StartRay = normalize(StartRay);\n    \n    // Prepare raycast to the scene\n    vec3 Orig = vec3(5.0 + sin(iTime * Pi * 0.1) * 50.0, CameraAlt, 5.0 + cos(iTime * Pi * 0.1) * 50.0);\n    float CamPosAlt = Altitude(texture(iChannel0, Orig.xz / MapScale));\n    Orig.y = max(Orig.y, CamPosAlt + 5.0);\n    vec3 Ray = StartRay;\n    vec3 CastPos = Orig;\n    float CastDist = 0.0;\n    float MinStepLen;\n    vec3 Diffuse = FogColor;\n    vec3 Specular = vec3(0);\n    vec3 NLD = normalize(LightDir);\n    vec3 Color = FogColor;\n    \n    // Begin raycast to the scene\n    if(MapRaycast(Orig, Ray, MaxDOV, CastPos, CastDist, MinStepLen) != 0)\n    {\n        // Cast color\n        vec3 CastColor = texture(iChannel3, CastPos.xz / MapScale).xyz;\n        vec3 MetallicColor = texture(iChannel2, CastPos.xz / MapScale).xyz;\n\n        // Cast normal\n        vec3 Normal = GetNormal(CastPos.xz);\n        float NdL = dot(Normal, -NLD);\n        Diffuse = vec3(max(NdL, 0.0));\n        \n        vec3 Halfway = -normalize(Ray + NLD);\n        Specular = vec3(1.0) * min(pow(max(dot(Normal, Halfway), 0.0), TerrainShineness), 1.0);\n        \n        // Add some shadow\n        if(NdL > 0.0)\n        {\n            float Shadow = 0.0;\n            float ShadowDist;\n            vec3 ShadowCastPos;\n            if(MapRaycast(CastPos + (Normal - NLD) * 2.0 * MinDistThreshold, -NLD, MaxDOV, ShadowCastPos, ShadowDist, MinStepLen) != 0)\n            {\n                // Shadowed\n                Shadow = 1.0; // clamp(ShadowDist * 0.5 - MinDistThreshold * 1.5 + NdL * 10.0, 0.0, 1.0);\n            }\n            else\n            {\n                // Soft shadow\n                // I don't know how to implement soft shadow.\n                // So there's no soft shadow.\n                // Sorry.\n            }\n            Diffuse *= 1.0 - Shadow;\n            Specular *= 1.0 - Shadow;\n        }\n        // Add some fog\n        Color = mix((Diffuse + Ambient) * CastColor + Specular * MetallicColor, FogColor, CastDist / MaxDOV);\n    }\n    \n    fragColor = vec4(Color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\n\nMIT LICENSE\n\nCopyright (c) 2020 0xAA55\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\n*/\n\n// You can put your code here to do some additional shading for the input texture.\n// This buffer is the source of the altitude map\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texture(iChannel0, fragCoord / iResolution.xy);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 12,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/e81e818ac76a8983d746784b423178ee9f6cdcdf7f8e8d719341a6fe2d2ab303.webm"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*\n\nMIT LICENSE\n\nCopyright (c) 2020 0xAA55\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\n*/\n\n// Higher for precise map raycasting and more adaptive to the dynamic changing altitude map (e.g. Video as the altitude map)\n// Lower for more FPS. K-map generation is slower.\n// For the static altitude map (A texture, rather than a video), change SEARCH_RADIUS to 1\n#define SEARCH_RADIUS 6\n\nconst int SearchRadius = SEARCH_RADIUS;\n\n// K-map generation\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float MaxK = 0.5;\n    vec2 MaxKPos = fragCoord;\n    float ThisAlt = Altitude(texture(iChannel0, fragCoord / iResolution.xy));\n    \n    // First, calculate the K-value from nearby pixels\n    const int SR = SearchRadius;\n    for(int y = -SR; y <= SR; y++)\n    {\n    \tfor(int x = -SR; x <= SR; x++)\n        {\n            if(x == 0 && y == 0) continue;\n            vec2 xy = vec2(x, y);\n            vec2 CurPosition = (fragCoord + vec2(xy));\n            \n            float CurAltDiff = Altitude(texture(iChannel0, CurPosition / iResolution.xy)) - ThisAlt;\n            float CurDist = length(xy);\n            \n            // Ratio of height difference to distance, is the K-value\n            float K = CurAltDiff / CurDist;\n            if(K > MaxK)\n            {\n                MaxK = K;\n                MaxKPos = CurPosition;\n            }\n        }\n    }\n    \n    // Then, collect the previous K-value result from the nearby pixels, expand the highest ratio to all the map frame by frame.\n    for(int y = -SR; y <= SR; y++)\n    {\n    \tfor(int x = -SR; x <= SR; x++)\n        {\n            if(x == 0 && y == 0) continue;\n            vec2 xy = vec2(x, y);\n            vec2 CurPosition = (fragCoord + vec2(xy));\n            // Nearby pixel K-value and the corresponding coordinate\n            vec4 Data = texture(iChannel1, CurPosition / iResolution.xy);\n            \n            vec2 Position = Data.xy;\n            float AltDiff = Altitude(texture(iChannel0, Position / iResolution.xy)) - ThisAlt;\n            float Dist = distance(fragCoord, Position);\n            if(Dist > 0.5) // Not grabbing current data back from the nearby\n            {\n                float K = AltDiff / Dist;\n                if(K > MaxK)\n                {\n                    MaxK = K;\n                    MaxKPos = Position;\n                }\n            }\n        }\n    }\n    \n    // Output the K-value map\n    fragColor = vec4(MaxKPos, MaxK, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/*\n\nMIT LICENSE\n\nCopyright (c) 2020 0xAA55\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\n*/\n\nconst float Pi = 3.14159265358979323846264;\nconst float Epsilon = 0.000001;\n\nconst float MinDistThreshold = 0.05; // The minimum distance value of how to determine if a ray hits the terrain\nconst float MapScale = 192.0; // Magnitude scaling\nconst float AltScale = 20.0; // Altitude scaling\nconst float StepLengthModifier = 0.75;\nconst int MaxIterSteps = 120; // Higher for quality, lower for FPS\nconst float MaxDOV = 300.0; // Max depth of view\nconst vec3 FogColor = vec3(0.8, 0.9, 1.0); // The color of the sky\nconst vec3 LightDir = vec3(0.5, -1.0, 0.5); // The direction of the light\nconst vec3 Ambient = vec3(0.08, 0.09, 0.1); // The ambient lighting for the shadow\nconst float TerrainShineness = 100.0;\nconst float CameraAlt = AltScale + 30.0;\n\nfloat Altitude(vec4 Sample)\n{\n    // If your map is very spiky, change the power value higher.\n    return AltScale * pow(length(Sample.rgb) / length(vec3(1)), 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

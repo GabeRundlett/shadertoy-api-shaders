@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1681580824",
+            "description": "So much to learn from such seemingly simple ideas. Soft shadows, ambient light, reflection effects - each a journey on its own and each one visibly worth it.\n\nUse with music in iChannel0.",
+            "flags": 64,
+            "hasliked": 0,
+            "id": "cdGXDK",
+            "likes": 7,
+            "name": "Music Boxes",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "music"
+            ],
+            "usePreview": 0,
+            "username": "QuantumSuper",
+            "viewed": 252
+        },
+        "renderpass": [
+            {
+                "code": "// Music Boxes 0.4.230415 by QuantumSuper\n// auti-vj with a bunch of bouncing boxes\n// Ray marching inspired by The Art of Code: youtu.be/PGtv-dBi2wE\n// Lighting & shadows based on iq's work: https://www.shadertoy.com/view/lsKcDD\n//\n// - use with music in iChannel0, floor texure in iChannel1 & cubemap in iChannel2 -\n\n#define aTime .2133333*iTime \n#define MAX_STEP 70\n#define MAX_DIST 80.\n#define MIN_DIST 0.02\n#define AA 1. \n\nstruct object{\n\tint type; //0: plane; 1: box\n    vec3 pos; //position\n\tvec4 param; //horizontal plane (height,0,0,0); box (width, height, depth, 0);\n};\nobject[6] objects; //stores geometry definitions\nvec4 fft, ffts; //compressed frequency amplitudes\n\n\nvoid compressFft(){ //compress sound in iChannel0 to simplified amplitude estimations by frequency-range\n    fft = vec4(0), ffts = vec4(0);\n\n\t// Sound (assume sound texture with 44.1kHz in 512 texels, cf. https://www.shadertoy.com/view/Xds3Rr)\n    for (int n=1;n<3;n++) fft.x  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //bass, 0-517Hz, reduced to 86-258Hz\n    for (int n=6;n<8;n++) ffts.x  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech I, 517-689Hz\n    for (int n=8;n<14;n+=2) ffts.y  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech II, 689-1206Hz\n    for (int n=14;n<24;n+=4) ffts.z  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //speech III, 1206-2067Hz\n    for (int n=24;n<95;n+=10) fft.z  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //presence, 2067-8183Hz, tenth sample\n    for (int n=95;n<512;n+=100) fft.w  += texelFetch( iChannel0, ivec2(n,0), 0 ).x; //brilliance, 8183-44100Hz, tenth2 sample\n    fft.y = dot(ffts.xyz,vec3(1)); //speech I-III, 517-2067Hz\n    ffts.w = dot(fft.xyzw,vec4(1)); //overall loudness\n    fft /= vec4(2,8,7,4); ffts /= vec4(2,3,3,21); //normalize\n    //fft.x = step(.9,fft.x); //weaken weaker sounds, hard limit\n}\n\nmat2 rotM2(float a){float c = cos(a), s = sin(a); return mat2(c,s,-s,c);}\n\nfloat sdPlane(vec3 p, float h){return p.y-h;}\n\nfloat sdBox(vec3 p, vec3 b){ //source: https://iquilezles.org/articles/distfunctions/\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat getDistance(vec3 p){\t\n\tfloat minDist = MAX_DIST; //max minDist\n\t\n\tfor (int n=0; n<objects.length(); n++){ //get the distance to each object\t\n             if (objects[n].type == 0) minDist = min( minDist, sdPlane(p-objects[n].pos,objects[n].param.x)); //horizontal Plane\n        else if (objects[n].type == 1) minDist = min( minDist, sdBox(p-objects[n].pos,objects[n].param.xyz)); //box     \n    }\n    \n\treturn minDist;\n}\n\nfloat rayMarch(vec3 rayOrigin, vec3 rayDirection){ //cf. The Art of Code's ray marching tutorial: youtu.be/PGtv-dBi2wE\n\tfloat rayLength = MIN_DIST; \n\tfloat radSphere;\n\t\n\tfor (int n=0; n<MAX_STEP; n++){\n\t\tradSphere = getDistance(rayOrigin+rayLength*rayDirection); //get sphere\n\t\trayLength += radSphere; //march\n\t\tif (rayLength>MAX_DIST || abs(radSphere)<MIN_DIST) break;\n\t}\n\t\n\treturn rayLength;\n}\n\nvec3 guessNormal(vec3 pos){ //estimate the surface normal at pos\n\tvec2 tangent = vec2(.01*MIN_DIST, 0); //sensitive!\n\t\n\tvec3 normal = getDistance(pos) - vec3(\n\t\tgetDistance(pos-tangent.xyy),\n\t\tgetDistance(pos-tangent.yxy), \n\t\tgetDistance(pos-tangent.yyx)\n\t\t);\n\t\t\n\treturn normalize(normal);\n}\n\nfloat calcAO( vec3 pos, vec3 nor){ //see iq again: https://www.shadertoy.com/view/lsKcDD\n\tfloat occ = 0.;\n    float sca = 1.;\n    \n    for (int i=0;i<5;i++){\n        float h = .001 + .15*float(i)/4.;\n        float d = getDistance( pos+h*nor);\n        occ += (h-d)*sca;\n        sca *= .95;\n    }\n    \n    return clamp( 1.-1.5*occ, 0., 1.);    \n}\n\nfloat softShadow( vec3 ro, vec3 rd, float mint, float maxt, float w){ //source: https://iquilezles.org/articles/rmshadows/\n    float res = 1.;\n    float t = mint;\n    \n    for (int i=0;i<256 && t<maxt;i++){\n        float h = getDistance(ro + t*rd);\n        res = min( res, h/(w*t));\n        t += clamp( h, .005, .5);\n        if (res<-1. || t>maxt) break;\n    }\n    res = max(res,-1.);\n    \n    return .25*(1.+res)*(1.+res)*(2.-res);\n}\n\nvec3 render(vec3 pos, vec3 dir){\n    // Light initialization\n    vec3 lightPos = vec3(4,6,4);\n    vec3 lightCol = .5*vec3(sin(aTime*1.123),sin(aTime*1.234),sin(aTime*1.345))\n                    + .5 + step(.9,fft.x);\n    \n    // Depth calculation\n    float rayDist = rayMarch(pos,dir); \n    vec3 rayPos = pos+rayDist*dir;   \n    vec3 lightDir = normalize( lightPos-rayPos);\n    \n    // Texture\n    lightCol *= (rayPos.y<ffts.w || rayPos.y<.03)? //global geometry hack rather than object based\n                    (rayPos.y>0.03)? \n                        .7*texture( iChannel1, (rayPos.xz*rotM2(1.5708)+rayPos.y-ffts.w+.42)/5., 0.).x:\n                        .5*texture( iChannel1, .1*rayPos.xz, 0.).x:\n                    1.5;\n    \n    // Shadows\n    vec3 surfNormal = guessNormal(rayPos);\n    float amp = clamp( dot(lightDir, surfNormal), 0., 1.) * softShadow( rayPos, lightDir, MIN_DIST, MAX_DIST, .5);\n    vec3 col = lightCol * amp;\n    \n    // Light speck\n    vec3  halo = normalize( lightDir-dir );\n    float speck = (.1+.9*pow( clamp( dot(surfNormal,halo),0.,1.), 16.)) * amp * (.04+.96*pow( clamp(1.0+dot(halo,dir),0.,1.), 5.));  \n    speck = (rayPos.y<ffts.w || rayPos.y<.03)? //same global geo hack\n                speck : (.005+15.*speck) * clamp( dot(textureLod( iChannel2, reflect(dir,surfNormal), 1.).rgb,halo), 0., 1.); //cubemap reflection\n    col+= lightCol * speck;\n    \n    // Ambient light\n    amp = clamp( .5+.5*surfNormal.y, 0., 1.) * calcAO( rayPos, surfNormal);\n    col += lightCol * amp * vec3(.1,.05,.1);\n        \n    // Fog\n    col *= exp(-0.0001*rayDist*rayDist*rayDist); //simple distance based attenuation\n    \n    // Utility\n    //col = .06*vec3(rayPos); //depth map\n    \n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n    compressFft(); //initializes fft, ffts\n    \n    // Camera initialization\n    vec2 uv = (2.*fragCoord-iResolution.xy) / max(iResolution.x, iResolution.y); //long edge -1 to 1\n    vec3 camPos = vec3(0,3.+1.5*sin(.5*aTime),0) + (6.*cos(2.*aTime)+9.) * vec3(sin(aTime), 0,-cos(aTime)); //ray origin, rotating on circle\n    vec3 camDir = normalize( vec3( uv.x, vec2(uv.y,1)*rotM2(-.15+.1*cos(2.*aTime)-.2*sin(.5*aTime)))); //ray direction, static, slightly downwards\n    camDir.xz *=rotM2(-aTime);\n\t\n\t// Object initializations\n    objects = object[](\n\t\tobject(0, vec3(0), vec4(0)), //horizontal plane\n\t\tobject(1, vec3(1.5,0,1.5), vec4(1,4.*fft.x+ffts.w,1,0)), //box 1\n        object(1, vec3(-1.5,0,1.5), vec4(1,4.*fft.y+ffts.w,1,0)), //box 2\n        object(1, vec3(1.5,0,-1.5), vec4(1,4.*fft.z+ffts.w,1,0)), //box 3\n        object(1, vec3(-1.5,0,-1.5), vec4(1,4.*fft.w+ffts.w,1,0)),//box 4\n        object(1, vec3(0), vec4(3,ffts.w,3,0)) //pedestal\n        );\n    \n    // Render\n    vec3 col = vec3(0);\n    for(float m=0.;m<AA;m++) //simple antialiasing (for AA>=2.)\n        for(float n=0.;n<AA;n++)\n            col += render(camPos+vec3(m,n,.0)*length(camPos.xy)/iResolution.x,camDir); //sloppy pixel estimation     \n    col /= AA*AA;\n    \n    // Finalizations\n    col = 1. - exp(-col); //tone mapping\n\tcol = pow(col, vec3(.4545)); //gamma correction\n    fragColor = vec4(col,1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "musicstream",
+                        "id": 33049,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/skelermusic/contracts"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

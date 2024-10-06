@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1637484279",
+            "description": "interpolating isolines from sparse sample points.\nleft: ground-truth  right: interpolated.\nthe blend falloff power here is 4.0.\ncan be modified at top of code.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7tyGWz",
+            "likes": 9,
+            "name": "isolines from sparse points",
+            "published": 3,
+            "tags": [
+                "isolines",
+                "interpolation",
+                "power",
+                "falloff",
+                "sparse"
+            ],
+            "usePreview": 0,
+            "username": "elenzil",
+            "viewed": 258
+        },
+        "renderpass": [
+            {
+                "code": "\n// the weighting of each sample point is 1 / distance^BLEND_FALLOFF_POWER\nconst float BLEND_FALLOFF_POWER = 4.0;\n\n\n// sample point are contained in a square of this 'radius'.\nconst float sweepRadius = 10.0;\n\n// distance between sample points.\nconst float sweepStep   = sweepRadius / 5.0;\n\n// every third and seventh sample points are removed for some irregularity.\n\n\n\n\n#define RES iResolution\n\n\nmat2 rotationMatrix2(float theta) {\n    float c = cos(theta);\n    float s = sin(theta);\n    return mat2(c, s, -s, c);\n}\n\nconst float sinData[] = float[](\n    // angle\n    // frequency\n    // phase\n    // amplitude\n    2.5, 0.11, 1.5, 3.0,\n    3.1, 0.71, 1.5, 2.0,\n    6.1, 1.31, 1.5, 1.0,\n    2.2, 0.41, 1.5, 4.0\n);\nfloat groundTruth(in vec2 p) {\n\n    float accum = 0.0;\n    float range = 0.0;\n    for (int n = 0; n < sinData.length(); n += 4) {\n        vec2  v   = p * rotationMatrix2(sinData[n + 0]);\n        float val = sin(v.y * sinData[n + 1] + sinData[n + 2]) * sinData[n + 3];\n        accum += val;\n        range += sinData[n + 3];\n    }\n    \n    float f = accum * 0.5 / range + 0.5;\n    \n    return f;\n}\n\nvoid accumulateSample(in vec2 p, in vec2 samplePt, inout float accumVal, inout float accumRng) {\n    \n    float sampleVal = groundTruth(samplePt);\n    float sampleDst = length(p - samplePt);\n        \n    float weight = 1.0 / pow(sampleDst, BLEND_FALLOFF_POWER);\n    accumVal += sampleVal * weight;\n    accumRng += weight;\n}\n\nbool discardSamplePoint(int n) {\n    return n % 3 == 0 || n % 7 == 0;\n}\n\n\nfloat interpolated(in vec2 p, in vec2 screenCenter, in vec2 mousePt) {\n    float accumVal = 0.0;\n    float accumRng = 0.0;\n    \n    accumulateSample(p, screenCenter + mousePt       , accumVal, accumRng);\n    \n\n    int n = 0;\n    for (float dx = -sweepRadius; dx <= sweepRadius; dx += sweepStep) {\n    for (float dy = -sweepRadius; dy <= sweepRadius; dy += sweepStep) {\n        ++n;\n        if (discardSamplePoint(n)) {\n            continue;\n        }\n        accumulateSample(p, screenCenter + vec2(dx, dy), accumVal, accumRng);\n    }\n    }\n    \n    return accumVal / accumRng;\n}\n\n// doing fwidth 'yourself' with dFdx() and dFdy()\n// yields finer results on some systems, iirc.\nfloat fwidth_home(float val) {\n    return abs(dFdy(val)) + abs(dFdx(val));\n}\n\n// val in [0, 1]\nfloat isolines(float val) {\n    val = (val - 0.5) * 1.01 + 0.5;\n    return smoothstep(2.0, 0.0, abs(mod(val + 0.05, 0.1) - 0.05) / fwidth_home(val));\n}\n\nvoid mainImage(out vec4 RGBA, in vec2 XY)\n{\n    // get normalized xy screen-coordinates in \n    float zoomFactor       = 1.2;\n    float smallDim         = min(RES.x, RES.y);\n    vec2  xy               = (XY - RES.xy * 0.5) /smallDim * 2.0 * zoomFactor;\n    bool  isLeftSide       = xy.x < 0.0;\n    \n    // for smooth lines\n    float edgeWidth        = 2.0;\n    float smoothingEpsilon = edgeWidth / smallDim * 2.0;\n\n    // world-space coord\n    vec2  worldOffset      = vec2(cos(iTime * 0.0051), sin(iTime * 0.0041)) * 100.0;\n    vec2  p                = xy * 10.0 + worldOffset;\n    vec2  resetSide        = vec2(RES.x / smallDim * zoomFactor * -10.0, 0.0);\n    \n    vec2  mouse            = (iMouse.xy - RES.xy * 0.5) / smallDim * 2.0 * zoomFactor;\n    vec2  samplePt         = mouse * 10.0 - resetSide * 0.5;\n        \n    float val;\n    if (isLeftSide) {\n        val = groundTruth(p);\n    }\n    else {\n        val  = interpolated(p + resetSide, worldOffset + resetSide * 0.5, samplePt);\n    }\n    \n    vec3 rgb  = val * vec3(0.5, 0.8, 1.0);\n    \n    float iso = isolines(val);\n    rgb       = mix(rgb, vec3(0.5, 0.5, 0.3), iso);\n    \n    // draw sample points\n    float ptRad = 0.2;\n    vec3  ptCol = vec3(1.0);\n    float dp;\n    if (isLeftSide) {   \n        dp = length(p - (worldOffset + resetSide * 0.5 + samplePt));\n        rgb = mix(rgb, ptCol, smoothstep(smoothingEpsilon * 12.0, 0.0, abs(dp - ptRad) - 0.01));\n    }\n    else {\n        dp = length(p + resetSide - (worldOffset + resetSide * 0.5 + samplePt));\n        rgb = mix(rgb, ptCol, smoothstep(smoothingEpsilon * 12.0, 0.0, abs(dp - ptRad) - 0.01));\n    }\n\n    int n = 0;\n    for (float dx = -sweepRadius; dx <= sweepRadius; dx += sweepStep) {\n    for (float dy = -sweepRadius; dy <= sweepRadius; dy += sweepStep) {\n        ++n;\n        if (discardSamplePoint(n)) {\n            continue;\n        }\n        if (isLeftSide) {\n            dp = length(p - (worldOffset + resetSide * 0.5 + vec2(dx, dy)));\n            rgb = mix(rgb, ptCol, smoothstep(smoothingEpsilon * 12.0, 0.0, abs(dp - ptRad) - 0.01));\n        }\n        else {\n            dp = length(p + resetSide - (worldOffset + resetSide * 0.5 + vec2(dx, dy)));\n            rgb = mix(rgb, ptCol, smoothstep(smoothingEpsilon * 12.0, 0.0, abs(dp - ptRad) - 0.01));\n        }\n    }\n    }\n    \n    // center divider\n    rgb       = mix(rgb, vec3(0.0, 0.0, 0.0), smoothstep(smoothingEpsilon * 2.0, 0.0, abs(xy.x)));\n    \n    \n    RGBA.rgb = rgb;\n    RGBA.a   = 1.0;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

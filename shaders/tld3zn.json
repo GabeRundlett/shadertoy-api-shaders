@@ -1,0 +1,245 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1575500938",
+            "description": "Explore an infinite world of fractals with global illumination. Use WASD and mouse to move. L - place light, Z - clear buffer. Q, E accelerate/decelerate camera.\n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "tld3zn",
+            "likes": 71,
+            "name": "Fractal dimension explorer",
+            "published": 3,
+            "tags": [
+                "ray",
+                "fast",
+                "fractals",
+                "pathtracing",
+                "marcher"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 2662
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"Path marching experimental\" by michael0884. https://shadertoy.com/view/tdGSRd\n// 2019-12-04 22:16:41\n\n// Fork of \"Path marching - sky illumination\" by None. https://shadertoy.com/view/-1\n// 2019-11-26 00:05:56\n\n/// USE WASD TO MOVE AROUND\n\nfloat sqr(float x)\n{\n    return x*x;\n}\n\nfloat sdist(vec3 a, vec3 b, float r)\n{\n    vec3 d = a-b;\n    return dot(d,d)/(sqr(r)+1e-6);\n}\n\nvec4 sample_radius(vec2 pos, float lod)\n{\n    vec4 res = vec4(0.);\n    float R = exp2(lod)/iResolution.x;\n    float norm = 0.;\n    for(float i = -2.; i <= 2.; i++)\n    {\n        for(float j = -2.; j <= 2.; j++)\n        {\n            float k = 1./(1. + dot(vec2(i,j),vec2(i,j)));\n            res += texture(iChannel2, pos+vec2(i,j)*R, lod)*k;\n            norm += k;\n        }\n    }\n    return res/norm;\n}\n\n//cheap bloom\nvec4 mip_bloom(vec2 pos, float exposure)\n{\n    vec4 fcol = vec4(0.);\n    for(float i = 0.; i<4.; i+=1.)\n    {\n        fcol += pow(abs(sample_radius(pos, i)),vec4(2.));\n    }\n    return fcol*exposure;\n}\n\nconst vec3 msat = vec3(.3,.3,.3);\nconst float msdiv = .12;\nvec3 saturate( vec3 v ) {\n  // https://www.shadertoy.com/view/Wtt3R8\n  float sv = dot(v,msat);\n  vec3 hs = v/sv*msdiv;\n  float ls = (1.-exp(-sv))*.9;\n  float s = 1.-exp(-sv*sv/10.);\n  vec3 hs2 = mix(hs,vec3(1),s);\n  return ls*hs2/mix(msdiv,1.,s);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pos = fragCoord/iResolution.xy;\n   \n    #ifdef AUTOEXPOSURE\n    \tfloat avg_ill = length(texture(iChannel2, pos, log2(max(iResolution.x, iResolution.y))).xyz);\n    \tfloat exposure = 1.6*pow(abs(avg_ill+1e-5), -1.);\n    #else\n    \tfloat exposure = 10.;\n    #endif\n    \n    vec4 c = texture(iChannel2, pos) + BLOOM*mip_bloom(pos, exposure);\n    vec3 col = c.xyz;\n    \n\n    \n    ///tonemapping\n    //col*=.3;\n    //col=vec3(dot(col,vec3(.2126,.7152,.0722))); // grey luminance test\n    //col = (1. - exp(-exposure*col))*.9; // exactly matches saturate(expos*col) for colorless input.\n    col = saturate(exposure*col);\n    fragColor.xyz = pow(col,vec3(1./2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PI 3.14159265\n#define SQRT2 1.4142135\n#define SQRT3 1.7320508\n#define FOV 3.\n\n#define MAX_STEPS 75.\n#define MAX_DIST 1024.\n#define LOD max(0.003,2./iResolution.x)\n#define CAMERA_SPEED 5./60.\n#define MOUSE_SENSITIVITY 0.15/60.\n\n#define SPP 1.\n#define AVG 0.99\n#define MAX_BOUNCE 3.\n#define AUTOEXPOSURE\n#define reflection 0.55\n#define BLOOM 0.01\n\n#define N 6.\n\n#define MOUSE_INDX 0\n#define ANGLE_INDX 1\n#define POS_INDX   2\n#define VEL_INDX   3\n#define LIGHT_INDX 4\n#define SPEED_INDX 5\n#define FRACTAL_ITER 12.\n\n#define overrelax 1.2\n/*\n //Building bridges\nconst float iFracScale = 1.8093;\nconst float iFracAng1 = -3.165;\nconst float iFracAng2 = -3.209477;\nconst vec3 iFracShift = vec3(-1.0939, -0.43495, -3.1113);\nconst vec3 iFracCol = vec3(5.00, 5.99, 0.1);\n*/\n\n//Mega citadel\nconst float iFracScale = 1.4731;\nconst float iFracAng1 = 0.0;\nconst float iFracAng2 = 0.0;\nconst vec3 iFracShift = vec3(-10.4, 3.28, -1.90);\nconst vec3 iFracCol = vec3(1.f, 1.f, 1.f);\n\n\n\n\nfloat hash11(float p)\n{\n    p = fract(p * .1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\n\nvec3 hash33(vec3 p)\n{\n    return fract(13406.456*sin(p.xyz)*sin(p.zxy));\n}\n\nfloat noise(float t, float seed) {\n    float i = floor(t), f = fract(t);\n    float u = 0.5 - cos(3.14159*f)*0.5;\n    return mix(hash11(i + seed),  hash11(i + 1. + seed), u);\n}\n\nfloat perlin(float t, float seed)\n{\n    float r = 0.f;\n    float f = 1.f;\n    float a = 1.f;\n    for(float i = 0.; i < 5.; i++)\n    {\n        r += noise(f*t, f+seed)*a;\n        f *= 1.4;\n        a *= 0.6;\n    }\n    return r;\n}\n\nvec3 lim_mod(vec3 p, vec3 s)\n{\n    vec3 lim =  mod(p,s) - s*0.5;\n    if(p.z > 1.)\n    {\n        lim.z = p.z - 1.;\n    }\n    return lim;\n}\n\n\nmat3 getCamera(vec2 angles)\n{\n   mat3 theta_rot = mat3(1,   0,              0,\n                          0,   cos(angles.y),  sin(angles.y),\n                          0,  -sin(angles.y),  cos(angles.y)); \n        \n   mat3 phi_rot = mat3(cos(angles.x),   sin(angles.x), 0.,\n        \t\t       -sin(angles.x),   cos(angles.x), 0.,\n        \t\t        0.,              0.,            1.); \n        \n   return theta_rot*phi_rot;\n}\n\nvec3 getRay(vec2 angles, vec2 pos)\n{\n    mat3 camera = getCamera(angles);\n    return normalize(transpose(camera)*vec3(FOV*pos.x, 1., FOV*pos.y));\n}\n\nfloat hash(float p)\n{  \n    return hash11(p);\n}\n\nvec2 hash22(vec2 p)\n{\n    vec2 res;\n    res.x = hash(dot(p, vec2(1.,sqrt(2.))));\n    res.y = hash(res.x);\n    return res;\n}\n\nvec2 hash21(float p)\n{\n    vec2 res;\n    res.x = hash(p);\n    res.y = hash(res.x);\n    return res;\n}\n\n\nvec3 hash31(float x)\n{\n    vec3 res;\n    res.x = hash(x);\n    res.y = hash(x+1.);\n    res.z = hash(x+2.);\n    return res;\n}\n\n//normally distributed random numbers\nvec3 randn(float p)\n{\n    vec3 rand = hash31(p);\n    vec3 box_muller = sqrt(-2.*min(log(max(rand.x,1e-6)), 0.))*vec3(sin(2.*PI*rand.y),cos(2.*PI*rand.y),sin(2.*PI*rand.z));\n    return box_muller;\n}\n\n//uniformly inside a sphere\nvec3 random_sphere(float p)\n{\n    return normalize(randn(p))*pow(abs(hash(p+1.)), 0.3333);\n}\n\nvec3 perlin31 (float p)\n{\n   float pi = floor(p);\n   float pf = p - pi;\n   return hash31(pi)*(1.-pf) +\n          hash31(pi + 1.)*pf; \n}\n\nvec3 perlin31(float p, float n)\n{\n    float frq = 1., amp = 1., norm = 0.;\n    vec3 res = vec3(0.);\n    for(float i = 0.; i < n; i++)\n    {\n        res += amp*perlin31(frq*p);\n        norm += amp;\n        frq *= 2.;\n       // amp *= 1;\n    }\n    return res/norm;\n}\n\n\nvec2 perlin(vec2 p)\n{\n   vec2 pi = floor(p);\n   vec2 pf = p - pi;\n   vec2 a = vec2(0.,1.);\n   return hash22(pi+a.xx)*(1.-pf.x)*(1.-pf.y) +\n          hash22(pi+a.xy)*(1.-pf.x)*pf.y +\n          hash22(pi+a.yx)*pf.x*(1.-pf.y) +\n          hash22(pi+a.yy)*pf.x*pf.y;   \n}\n\nfloat singrid(vec2 p, float angle)\n{\n    return 0.5*(sin(cos(angle)*p.x + sin(angle)*p.y)*sin(-sin(angle)*p.x + cos(angle)*p.y) + 1.);\n}\n\n//technically this is not a blue noise, but a single freqency noise, the spectrum should look like a gaussian peak around a frequency\nfloat blue(vec2 p, float seed)\n{ \n    seed = 100.*hash(seed);\n    vec2 shift = 20.*hash21(seed);\n    p += shift;\n    vec2 pnoise = perlin(p*0.25+seed);\n    \n    //bilinear interpolation between sin grids\n    return singrid(p,0.)*(pnoise.x*pnoise.y+(1.-pnoise.x)*(1.-pnoise.y)) +\n           singrid(p,3.14159*0.33*2.)*(1.-pnoise.x)*pnoise.y +\n           singrid(p,3.14159*0.66*2.)*(1.-pnoise.y)*pnoise.x;\n}\n\nvec3 blue3(vec2 p, float seed)\n{\n    vec3 res;\n    res.x = blue(p, sin(seed));\n    res.y = blue(p, sin(2.*seed));\n    res.z = blue(p, sin(3.*seed));\n    return res;\n}\n\nfloat qntz(float x, float d)\n{\n    return round(x/d)*d;\n}\n\n\nvec4 sdPlane( vec3 p )\n{\n\treturn vec4(vec3(0.25,0.25,0.25) + mod(round(p.x)+round(p.y),2.)*vec3(0.5,0.5,0.5),p.z);\n}\n\nfloat sdSphere( vec3 p, float s )\n{\n    return length(p)-s;\n}\n\nfloat sdBox( vec3 p, vec3 b )\n{\n    vec3 d = abs(p) - b;\n    return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));\n}\n\nvec3 sdSponge(vec3 p)\n{\n   p.xyz = p.xyz - 2.44*round(clamp(p.xyz/2.44, -2., 0.));\n    \n   float d = sdBox(p,vec3(1.0));\n   vec3 res = vec3( d, 1.0, 0.0 );\n\n   float s = 1.0;\n   for( int m=0; m<5; m++ )\n   {\n      vec3 a = mod( p*s, 2.0 )-1.0;\n      s *= 3.0;\n      vec3 r = abs(1.0 - 3.0*abs(a));\n\n      float da = max(r.x,r.y);\n      float db = max(r.y,r.z);\n      float dc = max(r.z,r.x);\n      float c = (min(da,min(db,dc))-1.0)/s;\n\n      if( c>d )\n      {\n          d = c;\n          res = vec3( d, 0.2*da*db*dc, (1.0+float(m))/4.0 );\n      }\n   }\n   return res;\n}\n\nfloat light_map(vec3 p, float time)\n{\n    float sd = sdSphere(p - vec3(-10.*cos(0.0*time),-10.*cos(0.0*time), 5.), 1.);\n    //sd = min(sd, sdSphere(p - vec3(5.*cos(0.8*iTime+3.14),5.*sin(0.8*iTime+3.14), 2.), 0.5));\n    return sd;\n}\n\n\nfloat smin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n\nvoid mengerFold(inout vec3 z) {\n\tfloat a = smin(z.x - z.y, 0.0, 0.2);\n\tz.x -= a;\n\tz.y += a;\n\ta = min(z.x - z.z, 0.0);\n\tz.x -= a;\n\tz.z += a;\n\ta = min(z.y - z.z, 0.0);\n\tz.y -= a;\n\tz.z += a;\n}\n\n\nvoid rotX(inout vec3 z, float s, float c) {\n\tz.yz = vec2(c*z.y + s*z.z, c*z.z - s*z.y);\n}\nvoid rotY(inout vec3 z, float s, float c) {\n\tz.xz = vec2(c*z.x - s*z.z, c*z.z + s*z.x);\n}\nvoid rotZ(inout vec3 z, float s, float c) {\n\tz.xy = vec2(c*z.x + s*z.y, c*z.y - s*z.x);\n}\nvoid rotX(inout vec3 z, float a) {\n\trotX(z, sin(a), cos(a));\n}\nvoid rotY(inout vec3 z, float a) {\n\trotY(z, sin(a), cos(a));\n}\nvoid rotZ(inout vec3 z, float a) {\n\trotZ(z, sin(a), cos(a));\n}\n\nvec4 sdFractal(vec3 p, float itr, vec2 cell, float sc)\n{\n    p.xz = p.xz+cell*0.5;\n    vec2 cell_i = floor(p.xz/cell);\n    p.xz = mod(p.xz, cell) -  cell*0.5;\n    float box = sdBox(p.xzy, vec3(cell.xy*0.35,1000.));\n    vec3 dp = ((length(cell_i)==0.)?iFracShift:iFracShift*0.9+3.*hash31(dot(cell_i,vec2(1.,sqrt(2.)))));\n    float scale = 1.;\n    vec3 orbit =  vec3(0.);\n    vec3 col = vec3(0.);\n    float norm = 0.;\n    \n    vec2 angl = (cell_i)*0.05 + vec2(iFracAng1,iFracAng2);\n    float s1 = sin(angl.x), c1 = cos(angl.x);\n    float s2 = sin(angl.y), c2 = cos(angl.y);\n\n\tfor (float i = 0.; i < itr; i++) \n    {\n\t\tp = abs(p);\n\t\trotZ(p, s1, c1);\n\t\tmengerFold(p);\n\t\trotX(p, s2, c2);\n        scale *= sc;\n\t\tp = p*sc + dp;\n    \torbit = max(orbit, sin(.9*p*iFracCol));\n\t}\n\treturn vec4(clamp(1.-0.8*orbit,0.,1.),max(sdBox(p, vec3(6.0))/scale, box));\n}\n\nvec4 opU(vec4 a, vec4 b)\n{\n    return (a.w<b.w)?a:b;\n}\n\nvec4 map(vec3 p)\n{\n    vec4 sd = opU( sdFractal(p.xzy - vec3(14,0,0), FRACTAL_ITER, vec2(35,35),  iFracScale),\n                   sdFractal(p.xzy - vec3(0,-30,-60), 5.,  vec2(100,100),  iFracScale*0.5));\n    return sd;\n}\n\n\nvec4 calcGrad( in vec3 pos )\n{\n    vec4 e = vec4(0.0005,-0.0005, 0.25, -0.25);\n    return   (e.zwwz*map( pos + e.xyy ).w + \n  \t\t\t  e.wwzz*map( pos + e.yyx ).w + \n\t\t\t  e.wzwz*map( pos + e.yxy ).w + \n              e.zzzz*map( pos + e.xxx ).w )/vec4(e.xxx, 1.);\n}\n\n//calculate the normal using an already evaluated distance in one point\nvec3 calcNormal(in vec3 pos, in float h)\n{\n    vec4 e = vec4(0.0005,-0.0005, 1., -1);\n    pos = pos - e.xxx;\n    return normalize(e.zww*map( pos + e.xyy ).w + \n  \t\t\t \t\t e.wwz*map( pos + e.yyx ).w + \n\t\t\t  \t\t e.wzw*map( pos + e.yxy ).w + \n              \t\t e.zzz*h );\n}\n\nvec4 trace(vec3 p, vec3 ray, inout float t, inout float i, float angle)\n{\n    float h = 0., prev_h = 0., avg_h = 0., td = 0.;\n    float omega = overrelax;\n    float candidate_td = 0.;\n    float candidate_error = 1e6;\n    float j = i;\n    for(; ((t+td) < MAX_DIST) && (i < MAX_STEPS);  i++)\n    {\n        h = map(p + td*ray).w;\n        \n        if(prev_h*omega>max(h,0.)+max(prev_h,0.)) //if overtepped\n        {\n            td += (1.-omega)*prev_h; // step back to the safe distance\n            prev_h = 0.;\n            omega = (omega - 1.)*0.7 + 1.; //make the overstepping smaller\n        }\n        else\n        {\n            if(h/td < candidate_error)\n            {\n                candidate_error = h/td;\n                candidate_td = td; \n                if(h < (t+td)*angle)\n                {\n                    break;\n                }\n            }\n\n            \n            td += h*omega; //continue marching\n            \n           /* float avging = 0.8*tanh(0.2*(i-j));\n           \tavg_h = avg_h*avging + (1. - avging)*h;\n            if(abs(h - avg_h) < 0.08*avg_h) //if h is not changing much\n            {\n                omega = clamp(omega*1.02,1.,2.); //then accelerate marching \n            }*/\n            \n            prev_h = h;        \n        }\n    }\n    \n    t+=td;\n\n    return vec4(p + candidate_td*ray, candidate_error*candidate_td); \n   \n}\n\n\n//Keyboard constants\nconst int KEY_LEFT  = 37;\nconst int KEY_UP    = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN  = 40;\nconst int KEY_A     = 65;\nconst int KEY_B     = 66;\nconst int KEY_C     = 67;\nconst int KEY_D     = 68;\nconst int KEY_E     = 69;\nconst int KEY_F     = 70;\nconst int KEY_G     = 71;\nconst int KEY_H     = 72;\nconst int KEY_I     = 73;\nconst int KEY_J     = 74;\nconst int KEY_K     = 75;\nconst int KEY_L     = 76;\nconst int KEY_M     = 77;\nconst int KEY_N     = 78;\nconst int KEY_O     = 79;\nconst int KEY_P     = 80;\nconst int KEY_Q     = 81;\nconst int KEY_R     = 82;\nconst int KEY_S     = 83;\nconst int KEY_T     = 84;\nconst int KEY_U     = 85;\nconst int KEY_V     = 86;\nconst int KEY_W     = 87;\nconst int KEY_X     = 88;\nconst int KEY_Y     = 89;\nconst int KEY_Z     = 90;\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "/// UTILITY\n///\n/// Using the GPU as the CPU here, pretty inefficient I guess\n\nbool isKeyPressed(int KEY)\n{\n\treturn texelFetch( iChannel3, ivec2(KEY,0), 0 ).x > 0.5;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if(iFrame < 1)\n    {\n        fragColor = vec4(0.);\n    }\n    \n    if(fragCoord.x <= N && fragCoord.y <= 1.)\n    {\n        //instruction\n        int I = int(fragCoord.x); \n        fragColor = texelFetch(iChannel0,  ivec2(I,0), 0);\n        vec4 mouse = texelFetch(iChannel0,  ivec2(MOUSE_INDX,0), 0);\n        vec2 mousespeed = texelFetch(iChannel0,  ivec2(MOUSE_INDX,0), 0).xy;\n        vec4 angles = texelFetch(iChannel0,  ivec2(ANGLE_INDX,0), 0);\n        mat3 camera = transpose(getCamera(angles.xy));\n        vec4 posit = texelFetch(iChannel0,  ivec2(POS_INDX,0), 0);\n        vec4 vel = texelFetch(iChannel0,  ivec2(VEL_INDX,0), 0);\n\t\tvec4 speed = texelFetch(iChannel0,  ivec2(SPEED_INDX,0), 0);\n        vec4 norm = calcGrad(posit.xyz);\n        norm.xyz = norm.xyz/(length(norm.xyz) + 0.0001);\n        switch(I)\n        {\n        case MOUSE_INDX:  //mouse speed calculation \n            if(length(iMouse.zw - iMouse.xy) > 10.)\n  \t\t    {\n   \t\t\t\tfragColor.xy = iMouse.xy - fragColor.zw; // mouse delta\n                if(iFrame < 1)\n                {\n                    fragColor.xy = vec2(0.);\n                }\n            }\n            else\n            {\n\t\t\t\tfragColor.xy = vec2(0.); // mouse delta\n            }\n    \t\tfragColor.zw = iMouse.xy; // mouse pos\n            break;\n            \n        case ANGLE_INDX:  //angle computation\n           \n   \t\t\tfragColor.xy = fragColor.xy + fragColor.zw*MOUSE_SENSITIVITY; // angle delta\n            fragColor.y = clamp(fragColor.y, -PI*0.5, PI*0.5);\n    \t\tfragColor.zw += vec2(1,-1)*mouse.xy; // mouse pos\n            fragColor.zw *= 0.8;\n             if(iFrame < 1)\n            {\n                fragColor.xy = vec2(PI*1.25,0.);\n            }\n            break;\n            \n        case POS_INDX:  //position\n          \n            float DX = length(vel.xyz*speed.x)+0.0001;\n            float MAXDX = map(fragColor.xyz + vel.xyz*speed.x).w + norm.w;\n            if(DX > MAXDX)\n                vel *= 0.25;\n            fragColor.xyz += vel.xyz*speed.x;\n   \t\t\tfragColor.w = vel.w;\n            if(iFrame < 1)\n            {\n                fragColor.xyz = vec3(13.,1.,10.4);\n            }\n           \n            break;\n         case VEL_INDX:  //velocity\n          \n            fragColor.w++;\n            if(length(mousespeed) >0. || isKeyPressed(KEY_Z))\n            {\n                fragColor.w = 0.;\n            }\n            if(isKeyPressed(KEY_UP) || isKeyPressed(KEY_W))\n   \t   \t\t{\n   \t\t\t\tfragColor.xyz += camera[1]*speed.x;\n                fragColor.w = 0.;\n            }\n            if(isKeyPressed(KEY_DOWN) || isKeyPressed(KEY_S))\n   \t   \t\t{\n   \t\t\t\tfragColor.xyz -= camera[1]*speed.x;\n                fragColor.w = 0.;\n            }\n            if(isKeyPressed(KEY_RIGHT) || isKeyPressed(KEY_D))\n   \t   \t\t{\n   \t\t\t\tfragColor.xyz += camera[0]*speed.x;\n                fragColor.w = 0.;\n            }\n            if(isKeyPressed(KEY_LEFT) || isKeyPressed(KEY_A))\n   \t   \t\t{\n   \t\t\t\tfragColor.xyz -= camera[0]*speed.x;\n                fragColor.w = 0.;\n            }\n            fragColor.xyz *= 0.8; //slowing down\n            \n            //fractal collision detection, removing the normal velocity component \n          \tfragColor.xyz += norm.xyz*max(dot(fragColor.xyz, -norm.xyz),0.)*exp(-max(norm.w,0.)/0.04);\n            break;\n          case LIGHT_INDX:  //light\n            if(isKeyPressed(KEY_L))\n   \t   \t\t{\n   \t\t\t\tfragColor.xyz = posit.xyz;\n                fragColor.w = .08;\n            }\n            if(iFrame < 1)\n            {\n                fragColor = vec4(12.5,-4,10.5, 0.1);\n            }\n            break; \n          case SPEED_INDX: //camera max speed\n            if(isKeyPressed(KEY_Q))\n   \t   \t\t{\n   \t\t\t\tfragColor.x *= 1.01;\n            }\n            if(isKeyPressed(KEY_E))\n   \t   \t\t{\n   \t\t\t\tfragColor.x *= 0.99;\n            }\n            if(iFrame < 1)\n            {\n                fragColor.x = CAMERA_SPEED;\n            }\n            break; \n        }   \n    } else discard;\n    \n   \n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/// PATH MARCHING\n\nconst float PHI = 0.5*(sqrt(5.) + 1.); \nconst float PHI2 = 0.5*(sqrt(5.) - 1.); \n\nvec2 fibonacci_lattice(int i, int n)\n{\n    return vec2((float(i)+0.5)/float(n), mod(float(i)/PHI, 1.)); \n}\n\nvec2 fcircle(int i, int n)\n{\n    vec2 xy = fibonacci_lattice(i, n);\n    vec2 pt = vec2(2.*PI*xy.y, pow(xy.x, PHI2));\n    return pt.y*vec2(cos(pt.x), sin(pt.x));\n}\n\n#define Nsamp 512\n#define aperture 0.02\n#define focal_plane 0.6\n\nvoid getRay(out vec3 ro, out vec3 rd, vec2 pos, ivec2 p)\n{\n    vec2 angles = texelFetch(iChannel3,  ivec2(ANGLE_INDX,0), 0).xy;\n \tmat3 camera = getCamera(angles);\n    int kk = int(iMouse.z);\n  \t//dither position on the aperture\n    vec4 blue = texture(iChannel2, vec2(p)/1024. + PI*iTime);\n    int I = int(blue.x * float(Nsamp));\n    \n    pos += (blue.yz - 0.5)/iResolution.x;\n    vec2 delta = 2.*aperture*fcircle(I, Nsamp);\n    vec3 ro0 = vec3(delta.x, 0., delta.y);\n    vec3 rd0 = focal_plane*vec3(FOV*pos.x, 1, FOV*pos.y) - ro0;\n    \n    ro = texelFetch(iChannel3,  ivec2(POS_INDX,0), 0).xyz + transpose(camera)*ro0;\n    rd = normalize(transpose(camera)*rd0);\n}\n\nvec4 light_sphere;\nvec4 light( in vec3 pos )\n{\n    vec4 e = vec4(0.0005,-0.0005, 0.25, -0.25);\n    return   (e.zwwz*light_map( pos + e.xyy , iTime) + \n  \t\t\t  e.wwzz*light_map( pos + e.yyx , iTime) + \n\t\t\t  e.wzwz*light_map( pos + e.yxy , iTime) + \n              e.zzzz*light_map( pos + e.xxx , iTime) )/vec4(e.xxx, 1.);\n}\n\n\nvec3 light_distr(vec3 p)\n{\n    return vec3(1,1,1) * (4.*step(-light_sphere.w, -length(p - light_sphere.xyz)));\n}\n\nvec3 sky(vec3 ray)\n{\n    return 0.2*(cos(0.001*iTime)+1.)*vec3(1.15,1.1,1.0)*sqrt(1.-0.95*ray.z*ray.z)*(tanh(10.*ray.z)+1.);\n}\n\n\nvec3 path_march(vec3 p, vec3 ray, float t, float i, float angle, float seed)\n{\n    vec3 fincol = vec3(1.), finill = vec3(0.);\n    vec4 res = vec4(0.);\n    for(float b = 0.; (b < MAX_BOUNCE); b++)\n    {\n        if(b < 1.)\n        {\n            float h = map(p).w;\n            if (h < angle*t || t > MAX_DIST)\n            {\n                 res = vec4(p, h);\n            }\n        }\n       \n        if(res.xyz != p)\n        {\n            //march next ray\n       \t\tres = trace(p, ray, t, i, angle);\n        }\n         \n        if(t > MAX_DIST || (i >= MAX_STEPS && res.w > 5.*angle*t))\n        {\n            finill += sky(ray)*fincol;\n            break;\n        }\n        \n        /// Surface interaction\n        vec3 norm = calcNormal(res.xyz, res.w);    \n        //discontinuity correction\n        p = res.xyz - (res.w - 2.*angle*t)*norm;\n        \n        vec3 refl = reflect(ray, norm);\n        \n        float refl_prob = hash(seed*SQRT2);\n       \n        //random diffusion, random distr already samples cos(theta) closely\n        if(refl_prob < reflection)\n        {\n            vec3 rand = clamp(pow(1.-reflection,4.)*randn(seed*SQRT3),-1.,1.);\n        \tray = normalize(refl + rand);\n        }\n        else\n        {\n            vec3 rand = random_sphere(seed*SQRT3);\n            ray = normalize(norm + rand);\n        }\n      \n\n        //color and illuminaition\n        vec4 colp = map(p);\n        fincol = fincol*clamp(colp.xyz,0.,1.);\n        \n        //add fractal glow\n        finill += 5.*light_distr(p)*fincol;\n        finill += vec3(1.)*exp(-300.*clamp(pow(abs(length(colp.xyz-vec3(0.2,0.3+0.01*cos(iTime),0.75+0.01*sin(iTime)))),2.),0.,1.))*fincol;\n        finill += vec3(0.6)*exp(-300.*clamp(pow(abs(length(colp.xyz-vec3(0.3,0.8,0.3))),2.),0.,1.))*fincol;\n        \n        angle *= 1.15;\n    }\n    \n    return finill;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n     // Normalized centered pixel coordinates \n    vec2 pos = (fragCoord - iResolution.xy*0.5)/max(iResolution.x,iResolution.y);\n    \n    vec2 angles = texelFetch(iChannel3,  ivec2(ANGLE_INDX,0), 0).xy;\n    \n    vec3 rand = 2.*blue3(2.*fragCoord, iTime) - 1.;\n \tvec3 ray = getRay(angles, pos+0.5*rand.xy/iResolution.x);\n    vec4 p = texelFetch(iChannel3,  ivec2(POS_INDX,0), 0);\n    \n    light_sphere = texelFetch(iChannel3,  ivec2(LIGHT_INDX,0), 0);\n    light_sphere.xyz += 0.*light_sphere.w*vec3(sin(iTime), cos(iTime), 0.);\n    \n    fragColor = vec4(0.);\n\tfloat iter = 0., td = 0.;\n    vec4 res = trace(p.xyz, ray, td, iter, LOD);\n    iter*=.5; //give the bounces only half of the marches to improve speed\n    for(float i = 0.; i <SPP; i++)\n    {\n        fragColor.xyz += path_march(res.xyz, ray, td, iter, LOD*2., rand.x+hash(iTime+i));\n    }\n    \n    fragColor.xyz /= SPP;\n\n    vec4 posit = texelFetch(iChannel3,  ivec2(POS_INDX,0), 0);\n   \n    vec4 prev = texture(iChannel0, fragCoord/iResolution.xy);\n\n    float avg = (posit.w>1.)?AVG*tanh(posit.w*0.5*sqrt(1.-AVG)):0.2;\n    fragColor.xyz = avg*prev.xyz + (1.- avg)*fragColor.xyz;\n    fragColor.w = posit.w;\n    if(iFrame < 1)\n    {\n        fragColor = vec4(0.);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Temporal AA based on Epic Games' implementation:\n// https://de45xmedrsdbp.cloudfront.net/Resources/files/TemporalAA_small-59732822.pdf\n// \n// Originally written by yvt for https://www.shadertoy.com/view/4tcXD2\n// Feel free to use this in your shader!\n\n// YUV-RGB conversion routine from Hyper3D\nvec3 encodePalYuv(vec3 rgb)\n{\n    rgb = pow(rgb, vec3(2.0)); // gamma correction\n    return vec3(\n        dot(rgb, vec3(0.299, 0.587, 0.114)),\n        dot(rgb, vec3(-0.14713, -0.28886, 0.436)),\n        dot(rgb, vec3(0.615, -0.51499, -0.10001))\n    );\n}\n\nvec3 decodePalYuv(vec3 yuv)\n{\n    vec3 rgb = vec3(\n        dot(yuv, vec3(1., 0., 1.13983)),\n        dot(yuv, vec3(1., -0.39465, -0.58060)),\n        dot(yuv, vec3(1., 2.03211, 0.))\n    );\n    return pow(abs(rgb), vec3(1.0 / 2.0)); // gamma correction\n}\n\n#define mip_blur 0.75\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 lastColor = texture(iChannel1, uv);\n    \n    vec3 antialiased = lastColor.xyz;\n    float mixRate = min(lastColor.w, 0.5);\n    \n    vec2 off = 1.0 / iResolution.xy;\n    //get new pixel value\n    vec3 in0 = max(texture(iChannel0, uv).xyz,1e-5);\n    \n    //average antialiased with new. apply gamma\n    antialiased = mix(antialiased * antialiased, in0 * in0, mixRate);\n    antialiased = sqrt(antialiased);\n    \n    //get neighbors\n    vec3 in1 = texture(iChannel0, uv + vec2(+off.x, 0.0), mip_blur).xyz;\n    vec3 in2 = texture(iChannel0, uv + vec2(-off.x, 0.0), mip_blur).xyz;\n    vec3 in3 = texture(iChannel0, uv + vec2(0.0, +off.y), mip_blur).xyz;\n    vec3 in4 = texture(iChannel0, uv + vec2(0.0, -off.y), mip_blur).xyz;\n    vec3 in5 = texture(iChannel0, uv + vec2(+off.x, +off.y), mip_blur).xyz;\n    vec3 in6 = texture(iChannel0, uv + vec2(-off.x, +off.y), mip_blur).xyz;\n    vec3 in7 = texture(iChannel0, uv + vec2(+off.x, -off.y), mip_blur).xyz;\n    vec3 in8 = texture(iChannel0, uv + vec2(-off.x, -off.y), mip_blur).xyz;\n    \n    //encode into YUV\n    antialiased = encodePalYuv(antialiased);\n    in0 = encodePalYuv(in0);\n    in1 = encodePalYuv(in1);\n    in2 = encodePalYuv(in2);\n    in3 = encodePalYuv(in3);\n    in4 = encodePalYuv(in4);\n    in5 = encodePalYuv(in5);\n    in6 = encodePalYuv(in6);\n    in7 = encodePalYuv(in7);\n    in8 = encodePalYuv(in8);\n    \n    //clamp colors\n    vec3 minColor = min(min(min(in0, in1), min(in2, in3)), in4);\n    vec3 maxColor = max(max(max(in0, in1), max(in2, in3)), in4);\n    minColor = mix(minColor,\n       min(min(min(in5, in6), min(in7, in8)), minColor), 0.5);\n    maxColor = mix(maxColor,\n       max(max(max(in5, in6), max(in7, in8)), maxColor), 0.5);\n    \n    //clamp antialiased with current neighbors\n   \tvec3 preclamping = antialiased;\n    antialiased = clamp(antialiased, minColor, maxColor);\n    \n    //update mix rate based on clamping strength \n    mixRate = 1.0 / (1.0 / (abs(mixRate)+1e-5) + 1.0);\n    \n    vec3 diff = antialiased - preclamping;\n    float clampAmount = dot(diff, diff);\n    \n    mixRate += clampAmount * 4.0;\n    mixRate = clamp(mixRate, 0.05, 0.5);\n    \n    //decode int RGB\n    antialiased = decodePalYuv(antialiased);\n        \n    fragColor = vec4(antialiased, mixRate);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

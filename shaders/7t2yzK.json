@@ -1,0 +1,115 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1650021874",
+            "description": "Volume Scattering in \"real time\"",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "7t2yzK",
+            "likes": 2,
+            "name": "Volume Scattering by LinusDev",
+            "published": 3,
+            "tags": [
+                "volumescattering"
+            ],
+            "usePreview": 0,
+            "username": "Pro_Coder",
+            "viewed": 325
+        },
+        "renderpass": [
+            {
+                "code": "\n\nfloat sdfBox(vec3 pos, vec3 center, vec3 size){\n    pos -= center;\n    vec3 d = abs(pos) - size*.5;\n    float m = (vmax(d));\n    return max(length(min(sign(d) + vec3(1.), 1.) * d), abs(m)) * sign(m);\n}\n\nfloat sdfSphere(vec3 pos, vec3 center, float r) {\n    pos -= center;\n    return length(pos) - r;\n}\n\nvoid mmin(inout float dis, float b, inout uint id, uint idB, uint ignoreId) {\n    if(dis < b || ignoreId == idB) return;\n    dis = b;\n    id = idB;\n}\n\nvoid mmin(inout float dis, float b, inout uint id, uint idB, uint ignoreId, uint inverseId) {\n    if(idB == inverseId) b = -b;\n    if(dis < b || ignoreId == idB) return;\n    dis = b;\n    id = idB;\n}\n\nstruct Ray {\n    vec3 o;//origin\n    vec3 d;//direction\n};\n\nstruct Hit {\n    vec3 pos;\n    float dis;\n    uint id;\n    vec3 color;  \n    Ray ray;\n};\n\n\n\n\nfloat getDistance(vec3 pos, out uint hitId, uint ignoreId){\n    float dis = RENDER_DISTANCE;\n    \n    mmin(dis, sdfSphere(pos, LIGHT_SOURCE_POSITION, LIGHT_SOURCE_RADIUS), hitId, LIGHT_SOURCE_ID, ignoreId);\n    mmin(dis, abs(pos.y+0.1)-0.1, hitId, 2u, ignoreId);\n    mmin(dis, sdfBox(pos, BOX_POSITION, BOX_SIZE), hitId, 3u, ignoreId);\n    mmin(dis, sdfBox(pos, VOLUME_POSITION, VOLUME_SIZE), hitId, 4u, ignoreId);\n    \n    return dis;\n}\n\nfloat getDistanceInVolume(vec3 pos, out uint hitId, uint ignoreId){\n    float dis = RENDER_DISTANCE;\n    \n    mmin(dis, sdfSphere(pos, LIGHT_SOURCE_POSITION, LIGHT_SOURCE_RADIUS), hitId, LIGHT_SOURCE_ID, ignoreId);\n    mmin(dis, abs(pos.y+0.1)-0.1, hitId, 2u, ignoreId);\n    mmin(dis, sdfBox(pos, BOX_POSITION, BOX_SIZE), hitId, 3u, ignoreId);\n    mmin(dis, sdfBox(pos, VOLUME_POSITION, VOLUME_SIZE), hitId, 4u, ignoreId, 4u);\n    \n    return dis;\n}\n\n//only for the getNormal function. Ignore the Volume, so that normal calculation for objects inside the \n//Volume work too.\nfloat getDistance(vec3 pos){\n    uint a;\n    return getDistance(pos, a, 4u);\n}\n\n\n\n\n/*\n * Normal function by Inigo Quilez: https://iquilezles.org/articles/normalsSDF/\n*/\nconst vec2 e = vec2(.01, 0);\nvec3 getNormal(vec3 p){\n \tfloat d = getDistance(p);\n    \n    vec3 n = d - vec3(getDistance(p - e.xyy), getDistance(p - e.yxy), getDistance(p - e.yyx));\n    return normalize(n);\n}\n\n\nconst vec3 colors[] = vec3[](\n            vec3(0.0),\n            vec3(1.),\n            vec3(.7, .1, 1.),\n            vec3(1., 0., .0)\n            );\nvec3 color(vec3 pos, uint id) {\n    return colors[id]/20.;\n}\n\n\n\nstruct Path {\n    vec3 pos;\n    vec3 dir;\n    float dis;\n    uint hitId;\n    vec3 multiply;\n    vec3 add;\n};\n\nvec3 attenuation(float dis, Path path) {\n    return exp(-(dis) * (ABSOPRTION_C(path.pos, path.dir) + SCATTERING_C(path.pos, path.dir)));\n}\n\nvec3 volumeLightMarch(vec3 inPos, out vec3 ligthDir) { \n    ligthDir = normalize(LIGHT_SOURCE_POSITION - inPos);\n    \n    \n    Path path = Path(inPos, ligthDir, 0.0, NO_HIT_ID, vec3(1.0), vec3(0.0));    \n    for(uint i = 0u; i < MAX_STEPS; i++){\n        #ifdef CONSTANT_ANT\n            float dis = getDistanceInVolume(path.pos, path.hitId, 0u);\n        #else\n            float dis = min(VOLUME_MAX_STEP_DISTANCE, getDistanceInVolume(path.pos, path.hitId, 0u));\n        #endif\n        \n        path.dis += dis;\n        path.pos = inPos + path.dir * path.dis;\n        \n        if(dis < MIN_DISTANCE){\n            //Processes\n            path.multiply *= attenuation(path.dis, path);\n            path.add += ADD_EMISSION(path.pos, path.dir) * path.dis * path.multiply;\n            \n            if(path.hitId == LIGHT_SOURCE_ID) {\n                return (LIGHT_SOURCE_LIGHT) * path.multiply + path.add;\n            } else if(path.hitId != 4u){\n                return vec3(0.);  \n            }\n            \n            \n            break;\n        }\n    }\n    \n    \n    vec3 pos = path.pos;\n    uint id = NO_HIT_ID;\n    float dis = 0.0;\n    \n    for(uint i = 0u; i < MAX_STEPS; i++){\n        float cdis = getDistance(pos, id, 4u);\n        dis += cdis;\n        \n        pos = path.pos + ligthDir * dis;\n        \n        if(cdis < MIN_DISTANCE){\n            if(id == LIGHT_SOURCE_ID) {\n                return (LIGHT_SOURCE_LIGHT) * path.multiply + path.add;\n            }\n            return vec3(0.);  \n        }\n        \n        if(dis > RENDER_DISTANCE) break;\n        \n    }\n    \n    return  vec3(0.,0., 0.);\n}\n\nPath volumeMarch(vec3 inPos, vec3 rayDir, float maxStep, uint ignoreId) {\n    Path path = Path(vec3(0.0), rayDir, MIN_DISTANCE*20., NO_HIT_ID, vec3(1.0), vec3(0.0));\n    path.pos = inPos + path.dir * path.dis;\n    vec3 atten = attenuation(path.dis, path);\n    path.multiply *= atten;\n    path.add += ADD_EMISSION(path.pos, path.dir) * path.dis * atten;   \n    \n    for(uint i = 0u; i < MAX_STEPS; i++){\n        float dis = min(maxStep, getDistanceInVolume(path.pos, path.hitId, ignoreId));\n        \n        path.dis += dis;\n        path.pos = inPos + path.dir * path.dis;\n        \n        //Processes\n        path.multiply *= attenuation(dis, path);\n        path.add += ADD_EMISSION(path.pos, path.dir) * dis*path.multiply;\n        vec3 lightDir;\n        vec3 light = volumeLightMarch(path.pos, lightDir);\n        path.add += light*henyeyGreenstein(HG_G, lightDir, path.dir)*dis*SCATTERING_C(path.pos, path.dir)*path.multiply;\n        \n        \n        if(dis < MIN_DISTANCE){\n            return path;\n        }\n    }\n    \n    return path;\n}\n\nvec3 lightMarch(vec3 inPos, uint ignoreId) {\n    if(ignoreId == NO_HIT_ID) return vec3(1.); //make light not apply to the sky\n    vec3 ligthDir = normalize(LIGHT_SOURCE_POSITION - inPos);\n    float lightIntensity = dot(getNormal(inPos), ligthDir);\n    \n    if(lightIntensity <= 0.0) return vec3(0.0);\n    \n    Path path = Path(vec3(0.), vec3(0.), 0., 0u, vec3(1.), vec3(0.0));\n    vec3 pos = inPos;\n    uint id = NO_HIT_ID;\n    float dis = 0.0;\n    \n    for(uint i = 0u; i < MAX_STEPS; i++){\n        float cdis = getDistance(pos, id, ignoreId);\n        dis += cdis;\n        \n        pos = inPos + ligthDir * dis;\n        \n        if(cdis < MIN_DISTANCE){\n            if(id == LIGHT_SOURCE_ID) {\n                return (LIGHT_SOURCE_LIGHT * (lightIntensity)) * path.multiply + path.add;\n            } else if(id == 4u) {\n                //return volumeLightMarch(pos, ligthDir);\n                #ifdef CONSTANT_ANTs\n                    path = volumeMarch(pos, ligthDir, 1000., ignoreId);\n                #else\n                    path = volumeMarch(pos, ligthDir, VOLUME_MAX_STEP_DISTANCE, ignoreId);\n                #endif\n                \n                if(path.hitId == LIGHT_SOURCE_ID) {\n                    return (LIGHT_SOURCE_LIGHT * (lightIntensity)) * path.multiply + path.add;\n                }else if(path.hitId != 4u) {\n                    return vec3(0.0);\n                }\n                \n                ignoreId = 4u;\n                dis += path.dis;\n                pos = inPos + ligthDir * dis;\n                continue;\n            }\n            \n            return vec3(0.0);\n           \n        }\n        \n        if(dis > RENDER_DISTANCE) break;\n        \n    }\n    \n    return vec3(0.0);\n}\n\nvec3 diffuse(vec3 pos, uint hitId, Path path) {\n    return color(pos, hitId) * lightMarch(pos, hitId) * path.multiply + path.add;\n}\n\nHit rayMarch(Ray r, uint ignoreId){\n    \n    Hit hit = Hit(r.o, 0.0, NO_HIT_ID, vec3(0.0), r);\n    Path path = Path(vec3(0.), vec3(0.), 0., 0u, vec3(1.), vec3(0.0));\n    \n    for(uint i = 0u; i < MAX_STEPS; i++){\n        float dis = getDistance(hit.pos, hit.id, ignoreId);\n        hit.dis += dis;\n        \n        hit.pos = r.o + r.d * hit.dis;\n        \n        if(dis < MIN_DISTANCE){\n        \n            if(hit.id == LIGHT_SOURCE_ID){\n                hit.color = LIGHT_SOURCE_LIGHT;\n                return hit;\n            } else if(hit.id == 4u) {\n                path = volumeMarch(hit.pos, r.d, VOLUME_MAX_STEP_DISTANCE, 0u);\n                \n                if(path.hitId != 4u) {\n                    if(path.hitId == LIGHT_SOURCE_ID){\n                        hit.color = LIGHT_SOURCE_LIGHT;\n                        return hit;\n                    }\n                    hit.color = diffuse(path.pos, path.hitId, path);\n                    return hit;\n                }\n                \n                ignoreId = 4u;\n                hit.dis += path.dis;\n                hit.pos = r.o + r.d * hit.dis;\n                continue;\n            }\n            \n            hit.color = diffuse(hit.pos, hit.id, path);\n        \n            return hit;\n        }\n        \n        if(hit.dis > RENDER_DISTANCE) break;\n        \n    }\n    \n    hit.id = NO_HIT_ID;\n    hit.color = diffuse(hit.pos, hit.id, path);\n    return hit;\n}\n\nRay calcRay(vec2 uv, sampler2D varChannel) {\n    vec4 camPosition = GET(varChannel, CAM_POS_TEXEL); //xyz = pos; w = distance to screen\n    vec4 viewDirection = GET(varChannel, VIEW_DIR_TEXEL);\n    \n    //calc ray Direction\n    vec3 screenXVector = cross(viewDirection.xyz, UP_VECTOR);\n    vec3 screenYVector = -cross(viewDirection.xyz, screenXVector);\n\n    vec3 rayDirection = normalize(viewDirection.xyz * camPosition.w\n                    + screenXVector * uv.x + screenYVector  * uv.y);\n                    \n    return Ray(camPosition.xyz, rayDirection);\n}\n\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy*.5) / (iResolution.yy*.5);\n    Hit hit = rayMarch(calcRay(uv, iChannel1), 0u);  \n    fragColor = vec4(hit.color,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\n *\n *\n * Volume Scattering\n *\n *\n */\n#define VOLUME_MAX_STEP_DISTANCE 0.05\n\n\n#define CONSTANT_ANT\n\n#ifdef CONSTANT_ANT\n    #define ABSOPRTION_C(POS, DIR) (vec3(0.1))\n    #define SCATTERING_C(POS, DIR) (vec3(0.5))\n    #define ADD_EMISSION(POS, DIR) (vec3(0.1))\n#else\n    #define ABSOPRTION_C(POS, DIR) (vec3(0.0))\n    #define SCATTERING_C(POS, DIR) (noise(iChannel0, POS*.15).rrr*1.5)\n    #define ADD_EMISSION(POS, DIR) (noise(iChannel0, POS*.15).rrr*.4)\n#endif\n\n\n\n#define HG_G 0.0\n\n\n/*\n *\n *\n * World Stuff\n *\n *\n */\n#define UP_VECTOR vec3(0., 1., 0.)\n\n#define CAM_START_POS vec3(0., 3., 4.)\n#define CAM_START_DIS_TO_SCREEN 1.\n#define CAM_START_LOOK_AT_POSITION vec3(0., 3., 0.)\n\n/*\n *\n *\n * Constants\n *\n *\n */\n#define PI 3.14\n#define NO_HIT_ID 0u\n#define RENDER_DISTANCE 100.0\n#define MIN_DISTANCE 0.001\n//#define MAX_STEPS 1000u\n//better max steps by @morimea\n#define MAX_STEPS (1000u+uint(1-min(iFrame+1,1)))\n\n#define BOX_POSITION vec3(sin(iTime), 5., 0.)\n#define BOX_SIZE vec3(0.5)\n\n#define VOLUME_POSITION vec3(0., 3., 0.)\n#define VOLUME_SIZE vec3(4., 5.8, 2.)\n\n//#define LIGHT_SOURCE_POSITION vec3(0., 3.*sin(iTime*.5+PI*.5) + 6., 0.)\n#define LIGHT_SOURCE_POSITION vec3(0., 9., 0.)\n#define LIGHT_SOURCE_RADIUS 0.0\n#define LIGHT_SOURCE_LIGHT (vec3(1., 1. , 1.)*20.)\n#define LIGHT_SOURCE_ID 1u\n\n/*\n *\n *\n * Vars\n *\n *\n */\n#define DO_SAVE(texel) (ivec2(fragCoord) == texel)\n#define GET(buffer, texel) (texelFetch(buffer, texel, 0))\n\n#define CAM_POS_TEXEL   ivec2(0, 0)\n#define VIEW_DIR_TEXEL  ivec2(0, 1)\n\n/*\n *\n *\n * Functions\n *\n *\n */\n \nfloat vmax(vec3 a){\n    return max(a.z, max(a.x, a.y));\n} \n\n//dirLight -> normalized direction to the light source\n//dirRefle -> the reflection direction we care about\nfloat henyeyGreenstein(float g, vec3 dirLight, vec3 dirRefle)\n{\n    return (1.0 - g * g) / (12.56637061436 * pow(1. + g * g - 2. * g * dot(-dirLight, dirRefle), 1.5));\n}\n\nvec4 noise(sampler2D tex, vec3 pos) {\n    return pow(textureLod(tex, pos.xz, 0.0) * textureLod(tex, pos.xy, 0.0) * textureLod(tex, pos.zy, 0.0), vec4(1.3));\n}\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//Keyboard and storage buffer\n\n\n#define MOVE_SPEED 0.1\n\n//Keyboard\n#define NUMBER_OF_KEYS 256.\n#define IS_PRESSED 0.0\n#define ON_PRESS 0.5\n#define BUFFFER_PRESS 1.0\n\n#define KEY_TAB 10./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_ENTER 14./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_SHIFT 17./NUMBER_OF_KEYS - 1./512.\n#define KEY_CTRL 18./NUMBER_OF_KEYS - 1./512.\n#define KEY_ALT 19./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_SPACE 33./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_ARROW_LEFT 38./NUMBER_OF_KEYS - 1./512.\n#define KEY_ARROW_UP 39./NUMBER_OF_KEYS - 1./512.\n#define KEY_ARROW_RIGHT 40./NUMBER_OF_KEYS - 1./512.\n#define KEY_ARROW_DOWN 41./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_0 49./NUMBER_OF_KEYS - 1./512.\n#define KEY_1 50./NUMBER_OF_KEYS - 1./512.\n#define KEY_2 51./NUMBER_OF_KEYS - 1./512.\n#define KEY_3 52./NUMBER_OF_KEYS - 1./512.\n#define KEY_4 53./NUMBER_OF_KEYS - 1./512.\n#define KEY_5 54./NUMBER_OF_KEYS - 1./512.\n#define KEY_6 55./NUMBER_OF_KEYS - 1./512.\n#define KEY_7 56./NUMBER_OF_KEYS - 1./512.\n#define KEY_8 57./NUMBER_OF_KEYS - 1./512.\n#define KEY_9 58./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_NUMPAD_0 97./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_1 98./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_2 99./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_3 100./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_4 101./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_5 102./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_6 103./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_7 104./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_8 105./NUMBER_OF_KEYS - 1./512.\n#define KEY_NUMPAD_9 106./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_GREATER 61./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_SS 64./NUMBER_OF_KEYS - 1./512.\n\n#define KEY_A 66./NUMBER_OF_KEYS - 1./512.\n#define KEY_B 67./NUMBER_OF_KEYS - 1./512.\n#define KEY_C 68./NUMBER_OF_KEYS - 1./512.\n#define KEY_D 69./NUMBER_OF_KEYS - 1./512.\n#define KEY_E 70./NUMBER_OF_KEYS - 1./512.\n#define KEY_F 71./NUMBER_OF_KEYS - 1./512.\n#define KEY_G 72./NUMBER_OF_KEYS - 1./512.\n#define KEY_H 73./NUMBER_OF_KEYS - 1./512.\n#define KEY_I 74./NUMBER_OF_KEYS - 1./512.\n#define KEY_J 75./NUMBER_OF_KEYS - 1./512.\n#define KEY_K 76./NUMBER_OF_KEYS - 1./512.\n#define KEY_L 77./NUMBER_OF_KEYS - 1./512.\n#define KEY_M 78./NUMBER_OF_KEYS - 1./512.\n#define KEY_N 79./NUMBER_OF_KEYS - 1./512.\n#define KEY_O 80./NUMBER_OF_KEYS - 1./512.\n#define KEY_P 81./NUMBER_OF_KEYS - 1./512.\n#define KEY_Q 82./NUMBER_OF_KEYS - 1./512.\n#define KEY_R 83./NUMBER_OF_KEYS - 1./512.\n#define KEY_S 84./NUMBER_OF_KEYS - 1./512.\n#define KEY_T 85./NUMBER_OF_KEYS - 1./512.\n#define KEY_U 86./NUMBER_OF_KEYS - 1./512.\n#define KEY_V 87./NUMBER_OF_KEYS - 1./512.\n#define KEY_W 88./NUMBER_OF_KEYS - 1./512.\n#define KEY_X 89./NUMBER_OF_KEYS - 1./512.\n#define KEY_Y 90./NUMBER_OF_KEYS - 1./512.\n#define KEY_Z 91./NUMBER_OF_KEYS - 1./512.\n\n//example isKey(KEY_A, IS_PRESSED)\nbool isKey(float checkKey, float type, sampler2D channel){\n    return texture( channel, vec2(checkKey, type)).r > 0.0;\n}\n\n#define KEYBOARD_CHANNEL iChannel0\n#define BACK_BUFFER_CHANNEL iChannel1\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(1.0);\n     \n    if(iFrame > 0) {\n        if(DO_SAVE(CAM_POS_TEXEL)){\n            vec4 pos = GET(BACK_BUFFER_CHANNEL, CAM_POS_TEXEL);\n            vec4 vdir = GET(BACK_BUFFER_CHANNEL, VIEW_DIR_TEXEL);\n            vec2 v = normalize(vdir.xz);\n            vec2 t = normalize(cross(UP_VECTOR, vdir.xyz)).xz;\n    \n            float speed = MOVE_SPEED;\n            \n            //move cam\n            if(isKey(KEY_W, IS_PRESSED, KEYBOARD_CHANNEL)){//forward\n                pos.xz += v * speed;\n            }\n            if(isKey(KEY_S, IS_PRESSED, KEYBOARD_CHANNEL)){//backward\n                pos.xz -= v * speed;\n            }\n            if(isKey(KEY_A, IS_PRESSED, KEYBOARD_CHANNEL)){//left\n                pos.xz += t * speed;\n            }\n            if(isKey(KEY_D, IS_PRESSED, KEYBOARD_CHANNEL)){//right\n                pos.xz -= t * speed;\n            }\n            if(isKey(KEY_SHIFT, IS_PRESSED, KEYBOARD_CHANNEL)){\n                pos.y -= 1.0 * speed;\n            }\n            if(isKey(KEY_SPACE, IS_PRESSED, KEYBOARD_CHANNEL)){\n                pos.y += 1.0 * speed;\n            }\n            \n            //Zoom\n            if(isKey(KEY_C, IS_PRESSED, KEYBOARD_CHANNEL)){\n                pos.w *= 1.052631578947368;\n            }\n            if(isKey(KEY_X, IS_PRESSED, KEYBOARD_CHANNEL)){\n                pos.w *= 0.95;\n            }\n            \n            fragColor = pos;\n            return;\n            \n        }else if(DO_SAVE(VIEW_DIR_TEXEL)){\n            vec4 viewDirection = GET(BACK_BUFFER_CHANNEL, VIEW_DIR_TEXEL);\n            \n            if(iMouse.z > 0.0){\n                float angleXZ = atan(viewDirection.x, viewDirection.z);\n                angleXZ -= ((iMouse.x-iResolution.x*.5)/iResolution.x)*PI*0.05; \n                viewDirection.xyz = normalize(vec3(sin(angleXZ), viewDirection.y, cos(angleXZ)));\n            }\n            fragColor = viewDirection;\n            return;    \n        }\n         \n    }else{\n         //initial values\n         if(DO_SAVE(CAM_POS_TEXEL)){\n            fragColor = vec4(CAM_START_POS, CAM_START_DIS_TO_SCREEN);\n\n         }else if(DO_SAVE(VIEW_DIR_TEXEL)){\n            vec3 viewDirection = normalize(CAM_START_LOOK_AT_POSITION - CAM_START_POS);\n            fragColor = vec4(viewDirection, 1.0);\n\n         }    \n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

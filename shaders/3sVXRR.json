@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1596966831",
+            "description": "Started on this quite a while ago but never got around to actually finishing it.\nWanted a good approximation of volumetric clouds for cases where those would be too expensive or simply unnecessary.\nThere's definitely a lot of room for improvement.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3sVXRR",
+            "likes": 13,
+            "name": "2D clouds experiment",
+            "published": 3,
+            "tags": [
+                "clouds"
+            ],
+            "usePreview": 1,
+            "username": "Zombye",
+            "viewed": 1247
+        },
+        "renderpass": [
+            {
+                "code": "const float fieldOfView = 60.0;\n\nconst float lightAngle = 70.0;\n\nconst uint raySteps = 10u;\nconst uint noiseIterations = 7u;\n\nconst float cloudsFrequency = 1.0;\nconst float cloudsThickness = 0.15;\nconst float cloudsAltitude = 1.0;\n\nfloat GetCloudNoise(vec2 position, float e0) {\n    position *= cloudsFrequency;\n    position /= iChannelResolution[0].xy;\n    float noise = 0.0, weightSum = 0.0;\n    for (uint i = 0u; i < noiseIterations; ++i) {\n        float iterationWeight = exp2(-float(i));\n        vec2 noisePosition = position * exp2(float(i)) + 0.1 * iTime / iChannelResolution[0].xy;\n        noise += texture(iChannel0, noisePosition).r * iterationWeight;\n        weightSum += iterationWeight;\n    } noise /= weightSum;\n    return smoothstep(e0, 1.0, noise);\n}\n\nvoid PlanarClouds(\n    vec3 viewPosition,\n    vec3 viewDirection,\n    vec3 lightDirection,\n    float rand,\n    out float scattering,\n    out float transmittance\n) {\n    scattering = 0.0;\n    transmittance = 1.0;\n    \n    //--// Find current point on cloud\n    \n    float tPlane = (cloudsAltitude - viewPosition.z) / viewDirection.z;\n    if (tPlane < 0.0) { return; }\n    vec2 cloudPosition = viewPosition.xy + viewDirection.xy * tPlane;\n    \n    //--// Set up self-shadowing raymarch\n    \n    float rayLength3D = cloudsThickness / lightDirection.z;\n    vec3 rayVector3D = rayLength3D * lightDirection;\n    \n    vec2 rayStep  = lightDirection.xy * cloudsThickness / lightDirection.z;\n         rayStep -= viewDirection.xy  * cloudsThickness / viewDirection.z;\n         rayStep /= float(raySteps);\n    vec2 rayPosition = cloudPosition + rayStep * rand;\n    \n    //--// Self-shadowing raymarch\n    \n    float e0 = 0.5 / (0.5 * cloudsThickness / (cloudsAltitude * viewDirection.z) + (1.0 - 0.5 * cloudsThickness / cloudsAltitude));\n    \n    float lightOpticalDepth = 0.0;\n    for (uint i = 0u; i < raySteps; ++i, rayPosition += rayStep) {\n        float cloudNoise = GetCloudNoise(rayPosition, e0);\n        lightOpticalDepth += max(cloudNoise, 0.0);\n    }\n    lightOpticalDepth *= 4.0 * cloudsFrequency / cloudsThickness * rayLength3D / float(raySteps);\n    \n    float cloudNoise = GetCloudNoise(cloudPosition, e0);\n    float cloudOpticalDepth = 4.0 * cloudsFrequency * cloudNoise / abs(viewDirection.z);\n        \n    transmittance = exp(-cloudOpticalDepth);\n    scattering = exp(-lightOpticalDepth) * (1.0 - transmittance);\n}\n\nmat3 GetRotationMatrix(vec3 unitAxis, float angle) {\n\tfloat cosine = cos(angle);\n\n\tvec3 axis = unitAxis * sin(angle);\n\tvec3 tmp = unitAxis - unitAxis * cosine;\n\n\treturn mat3(\n\t\tunitAxis.x * tmp.x + cosine, unitAxis.x * tmp.y - axis.z, unitAxis.x * tmp.z + axis.y,\n\t\tunitAxis.y * tmp.x + axis.z, unitAxis.y * tmp.y + cosine, unitAxis.y * tmp.z - axis.x,\n\t\tunitAxis.z * tmp.x - axis.y, unitAxis.z * tmp.y + axis.x, unitAxis.z * tmp.z + cosine\n\t);\n}\nvec3 LinearToSrgb(vec3 color) {\n\treturn mix(1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, color * 12.92, step(color, vec3(0.0031308)));\n}\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    float zrot =  radians(360.0) * iMouse.x / iResolution.x;\n    float xrot = -radians(90.0) * ((iMouse.x + iMouse.y) < 1.5 ? 0.2 : (iMouse.y / iResolution.y)) - radians(90.0);\n    mat3 viewRot = GetRotationMatrix(vec3(0.0, 0.0, 1.0), zrot)\n                 * GetRotationMatrix(vec3(1.0, 0.0, 0.0), xrot);\n    vec3 viewDirection;\n    viewDirection.xy = (2.0 * fragCoord - iResolution.xy) * tan(radians(fieldOfView) / 2.0) / iResolution.y;\n    viewDirection.z = -1.0;\n    viewDirection = viewRot * normalize(viewDirection);\n    vec3 viewPosition = vec3(0.0);\n    \n    vec3 lightDirection = vec3(vec2(cos(iTime + 2.0), sin(iTime + 2.0)) * sin(radians(lightAngle)), cos(radians(lightAngle)));\n    \n    // sky\n    const vec3 rlHor = vec3(0.3, 0.4, 0.5), rlUp = vec3(0.1, 0.2, 0.4);\n    const vec3 mieHor = vec3(0.2), mieUp = vec3(0.05);\n    float phaseRl = pow(dot(viewDirection, lightDirection), 2.0) * 0.5 + 1.0;\n    float phaseMie = pow((dot(viewDirection, lightDirection) + 1.0) * 0.55, 16.0) * 0.5 + 1.0;\n    fragColor.rgb  = phaseRl * mix(rlUp, rlHor, pow(1.0 - max(viewDirection.z, 0.0), 4.0));\n    fragColor.rgb += phaseMie * mix(mieUp, mieHor, pow(1.0 - max(viewDirection.z, 0.0), 4.0));\n    \n    // clouds\n    vec2 noise = texture(iChannel0, fragCoord / iChannelResolution[0].xy).xy;\n    \n    float cloudsScattering; float cloudsTransmittance;\n    PlanarClouds(viewPosition, viewDirection, lightDirection, noise.x, cloudsScattering, cloudsTransmittance);\n    \n    // fade distant clouds\n    cloudsScattering *= exp(-0.05 / abs(viewDirection.z));\n    cloudsTransmittance = mix(1.0, cloudsTransmittance, exp(-0.05 / abs(viewDirection.z)));\n    \n    fragColor.rgb = fragColor.rgb * cloudsTransmittance + phaseMie * cloudsScattering;\n    \n    // basic tonemap\n    fragColor.rgb *= inversesqrt(fragColor.rgb * fragColor.rgb + 1.0);\n    \n    // convert to srgb & dither\n    fragColor.rgb = LinearToSrgb(fragColor.rgb);\n    fragColor.rgb += (noise.x - noise.y) / 255.0;\n    fragColor.a = 1.0;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

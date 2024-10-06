@@ -1,0 +1,99 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1569089157",
+            "description": "A quick sketch, based off of lighting/framework used for my ONE demo here: https://www.shadertoy.com/view/wtjXWt\n\nSimple AA, simple motion blur/frame averaging, vignette and a simple depth of field, using the alpha channel for depth storage.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ws33Rl",
+            "likes": 13,
+            "name": "experiments — #3",
+            "published": 3,
+            "tags": [
+                "texture",
+                "motionblur",
+                "shading",
+                "dof",
+                "spheretracing",
+                "vignette",
+                "depthoffield",
+                "buffer",
+                "cyberpunk",
+                "neon",
+                "vaporwave",
+                "retrowave",
+                "frameaveraging"
+            ],
+            "usePreview": 0,
+            "username": "szczm_",
+            "viewed": 1012
+        },
+        "renderpass": [
+            {
+                "code": "// WARNING: this DoF is in no way based on professional techniques, academic papers\n//          or standards. I wanted to try doing it without looking up any resources.\n//          Definitely don't try this at home.\n//\n//          Although I'm not your dad.\n\n#define DOF_START 1.2\n\n#define SAMPLES 6\n\nconst float SAMPLES_REC = 2.5/float(SAMPLES);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Make that DoF resolution independent\n    float SCALE_MULT = length(iResolution.xy) / length(vec2(512., 288.)) * SAMPLES_REC;\n    \n    vec2 screen = fragCoord / iResolution.xy;\n    \n    // iChannel0 is Buffer A, which is the rendered image\n    vec4 col = texture(iChannel0, screen);\n    \n    // This is just distance from eye to center\n    float dofTarget = length(vec2(sin(iTime * .15) * 6.0, cos(iTime * .15) * 4.0));\n    float dof = max(0.0, abs(MAX_DIST * col.a - dofTarget) - DOF_START);\n\n    // Bound for very nice \n    float bound = float(SAMPLES - 1) * 0.5;\n    float mults = 0.0;\n    \n    for (float y = -bound; y <= bound; y += 1.0) for (float x = -bound; x <= bound; x += 1.0) {\n        vec2 offset = vec2(x, y) * dof * SAMPLES_REC;\n        vec2 coord = (fragCoord + offset) / iResolution.xy;\n        float len = length(offset * 1./float(SAMPLES));\n        float gauss = exp(-4.0*len*len);\n        col += texture(iChannel0, coord) * gauss;\n        mults += gauss;\n    }\n    \n    col /= mults + 1.;\n    \n    // Uncomment to see where DoF is focused:\n    // col = mix(col, vec4(dof, 0.0, 0.0, 1.0), dof * 0.7);\n    \n    vec2 vignetteCoord = screen - 0.5;\n    col *= smoothstep(1.0, 0.37, length(vignetteCoord));\n              \n\tcol.a = 1.0;\n    \n    fragColor = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This is ripped straight out of my ONE demo (https://www.shadertoy.com/view/wtjXWt)\n// and simplified a bit. If you have any questions on how this works, feel free to ask!\n\n#define MAX_STEPS 1000\n#define MAX_SHADOW_STEPS 100\n#define MIN_DIST 0.0\n#define EPSILON 1e-3\n#define SHADOW_EPSILON 1e-4\n#define NORMAL_EPSILON 5e-4\n\n#define MAT_NONE -1\n\n#define MAT_FLOOR 0\n#define MAT_PRISM 1\n\n#define MAX_MAT MAT_PRISM+1\n\nconst vec3 albedo[MAX_MAT] = vec3[MAX_MAT](\n\tvec3(0.2), // MAT_FLOOR\n\tvec3(0.9)  // MAT_PRISM\n);\n\nconst float metallic[MAX_MAT] = float[MAX_MAT](\n\t0.0,\n\t0.0\n);\n\nstruct DistMat {\n    float dist;\n    int mat;\n};\n\nstruct HitInfo {\n    float dist;\n    int steps;\n    int mat;\n};\n\nstruct Light {\n\tvec3 pos;\n\tvec3 col;\n\tfloat inten;\n\tfloat amb;\n};\n\nconst Light lights[2] = Light[2](\n\tLight(vec3(-3.0, -1.5, 3.0), vec3(1.0, 0.1, 0.9), 20.0, 0.02),\n\tLight(vec3(0.0, -1.5, -3.0), vec3(0.1, 0.9, 1.0), 20.0, 0.02)\n);\n\nfloat planeSDF(vec3 p, vec3 n) {\n    return -dot(p, n);\n}\n\nfloat boxSDF(vec3 p, vec3 b) {\n    vec3 d = abs(p) - b;\n    return length(max(d,0.0)) + min(max(d.x,max(d.y,d.z)),0.0);\n}\n\nfloat ringSDF(vec3 p, vec2 t)\n{\n  vec2 q = vec2(length(p.yz)-t.y,p.x);\n  return length(q)-t.x;\n}\n\nfloat hexprismSDF(vec3 p, vec2 h) {\n    const vec3 k = vec3(-0.8660254, 0.5, 0.57735);\n    p = abs(p);\n    p.xy -= 2.0*min(dot(k.xy, p.xy), 0.0)*k.xy;\n    vec2 d = vec2(\n       length(p.xy-vec2(clamp(p.x,-k.z*h.x,k.z*h.x), h.x))*sign(p.y-h.x),\n       p.z-h.y );\n    return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nDistMat sum(DistMat a, DistMat b) {\n    if (a.dist < b.dist)\n        return a;\n    else\n        return b;\n}\n\nDistMat intersect(DistMat a, DistMat b) {\n    if (a.dist > b.dist)\n        return a;\n    else\n        return b;\n}\n\nDistMat sceneSDF(vec3 p)\n{    \n    DistMat scene;\n\n    float ground = planeSDF(p - vec3(3.2), vec3(0.0, 1.0, 0.0));\n        \n    scene = DistMat(ground, MAT_FLOOR);\n    scene = sum(scene, DistMat(hexprismSDF(p.xzy - vec3(0.0, 0.0, 2.4), vec2(0.8)), MAT_PRISM));\n    scene = sum(scene, DistMat(boxSDF(p - vec3(2.0, 2.8, 1.5), vec3(0.4)), MAT_PRISM));\n    scene = sum(scene, DistMat(ringSDF((p - vec3(-1.2, 3.0, -2.0)).yxz, vec2(0.2, 0.5)), MAT_PRISM));\n\n    return scene;\n}\n\nfloat sceneDist(vec3 p) {\n    return sceneSDF(p).dist;\n}\n\nvec3 lightDir(vec3 point, Light light) {\n\tvec3 dir = normalize(light.pos - point);\n\n\treturn dir;\n}\n\nfloat lightIntensity(vec3 point, Light light) {\n\tfloat dist = distance(point, light.pos);\n\n\treturn light.inten / (dist*dist);\n}\n\nHitInfo shortestDistanceToSurface(vec3 eye, vec3 marchingDirection, float start, float end, int steps) {\n    float depth = start;\n    int i;\n    int mat;\n    \n    for (i = 0; i < steps; i++) {\n        DistMat dist = sceneSDF(eye + depth * marchingDirection);\n        dist.dist *= 0.7;\n        \n        depth += dist.dist;\n        mat = dist.mat;\n        \n        if (dist.dist < EPSILON) {\n\t    break;\n        }\n        \n        if (depth >= end) {\n            depth = end;\n            mat = MAT_NONE;\n            break;\n        }\n    }\n    \n    return HitInfo(depth, i, mat);\n}      \n\n\nfloat shadow(in vec3 eye, vec3 marchingDirection, vec3 normal, float end) {\n    eye += normal * SHADOW_EPSILON * 2.0;\n    float depth = 0.0;\n\n    float shad = 1.0;\n    float ph = 1e10;\n\n    for (int i = 0; i < MAX_SHADOW_STEPS; i++) {\n        DistMat distMat = sceneSDF(eye + depth * marchingDirection);\n        float dist = distMat.dist;\n\n        if (dist < SHADOW_EPSILON) {\n\t        shad = 0.0;\n\t        break;\n        }\n\n        if (depth > end) {\n            break;\n        }\n\n        float y = dist * dist / (2.0 * ph);\n        float d = sqrt(dist * dist - y*y);\n        shad = min(shad, 4.0 * d / max(0.0, depth - y));\n        ph = dist;\n\n        depth += dist;\n    }\n\n    return clamp(shad, 0.0, 1.0);\n}\n\nvec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(fieldOfView) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\nvec3 normal(vec3 p, vec3 dir) {\n    vec3 n = vec3(\n        sceneDist(vec3(p.x + NORMAL_EPSILON, p.y, p.z)) - sceneDist(vec3(p.x - NORMAL_EPSILON, p.y, p.z)),\n        sceneDist(vec3(p.x, p.y + NORMAL_EPSILON, p.z)) - sceneDist(vec3(p.x, p.y - NORMAL_EPSILON, p.z)),\n        sceneDist(vec3(p.x, p.y, p.z  + NORMAL_EPSILON)) - sceneDist(vec3(p.x, p.y, p.z - NORMAL_EPSILON))\n    );\n\n    return normalize(n - max(0.0, dot(n, dir)) * dir);\n}\n\nfloat ao(vec3 eye, vec3 norma, float scale) {\n    float depth = scale;\n    float accum = 0.0;\n    for (int i = 0; i < 5; i++) {\n        float dist = sceneDist(eye + depth * norma);\n        accum = max(accum, (depth - dist) / depth);\n        depth += scale;\n    }\n    return clamp(1.0 - accum, 0.0, 1.0);\n}\n\nfloat lambert(vec3 normal, vec3 lightPos) {\n\treturn clamp(dot(normal, lightPos), 0.0, 1.0);\n}\n\nfloat fresnel(vec3 dir, vec3 normal) {\n\treturn pow(1.0 - clamp(dot(dir, -normal), 0.0, 1.0), 8.);\n}\n\nvec3 color(vec3 position, vec3 normal, vec3 dir, HitInfo hitInfo) {\n\tvec3 col = vec3(0.0);\n\t\n    vec3 alb = albedo[hitInfo.mat];\n\n    vec3 diff = vec3(0.0);\n\n    for (int i = 0; i < 2; i++)\n    {\n        Light light = lights[i];\n\n        float shad = shadow(position, lightDir(position, light), normal, distance(position, light.pos));\n        float lamb = lambert(normal, light.pos);\n        float fres = fresnel(dir, normal);\n\n        diff += ((lightIntensity(position, light) * (lamb + fres)) * shad + light.amb) * (alb * light.col);\n    }\n\n    float a1 = 0.3 * ao(position, normal, 0.001);\n    float a2 = 0.3 * ao(position, normal, 0.01);\n    float a3 = 0.2 * ao(position, normal, 0.04);\n    float a4 = 0.2 * ao(position, normal, 0.2);\n\n    float aa = a1 + a2 + a3 + a4;\n\n    col = diff * aa;\n\n\treturn col;\n}\n\nvec3 transformForReflection(vec3 p, vec3 dir, vec3 refl) {\n    float dist = sceneDist(p);\n\n    return p + 2.0 * dist * (dir + refl);\n}\n\nmat4 viewMatrix(vec3 eye, vec3 center, vec3 up) {\n    vec3 f = normalize(center - eye);\n    vec3 s = normalize(cross(f, up));\n    vec3 u = cross(s, f);\n    return mat4(\n        vec4(s, 0.0),\n        vec4(u, 0.0),\n        vec4(-f, 0.0),\n        vec4(0.0, 0.0, 0.0, 1.0)\n    );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragCoord.y = iResolution.y - fragCoord.y;\n\n    vec3 eye = vec3(sin(iTime * .3) * 6.0, -0.1, cos(iTime * .4) * 4.0);\n    \n    vec3 col = vec3(0.0);\n    float depth = 0.0;\n\n    for (int y = -1; y <= 1; y += 2) for (int x = -1; x <= 1; x += 2) {\n        vec2 offset = vec2(x, y) / 4.;\n\n        vec3 viewDir = rayDirection(65.0, iResolution.xy, fragCoord + offset);\n        mat4 viewToWorld = viewMatrix(eye, vec3(sin(iTime*0.3+cos(iTime))*0.3, 2.6, cos(iTime*0.4+sin(iTime*0.6))*0.2), vec3(0.0, 1.0, 0.0));\n        vec3 worldDir = (viewToWorld * vec4(viewDir, 0.0)).xyz;\n\n        HitInfo hitInfo = shortestDistanceToSurface(eye, worldDir, MIN_DIST, MAX_DIST, MAX_STEPS);\n        float dist = hitInfo.dist;\n        \n        depth += dist;\n\n        vec3 pp = eye + dist * worldDir;\n\n        vec3 n = normal(pp, worldDir);\n\n        col += color(pp, n, worldDir, hitInfo);\n    }\n\n    col *= 0.25;\n    col = pow(col, vec3(1./2.2));\n    col = clamp(col, vec3(0.0), vec3(1.0));\n\n    fragColor = vec4(col, depth * (0.25 / float(MAX_DIST)));\n    \n    fragCoord.y = iResolution.y - fragCoord.y;\n    \n    // This right here is where we do the \"motion blur\" B)\n    // Framerate dependent because I'm working on a slow PC and I like having effects\n    fragColor = mix(fragColor, texture(iChannel0, fragCoord/iResolution.xy), 0.1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define MAX_DIST 40.0",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

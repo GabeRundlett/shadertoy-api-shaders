@@ -1,0 +1,118 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1705820952",
+            "description": "Genuary Bauhaus experiment inspired by the classic snake game. Code is lightly cleaned up, but no attempt at optimization.\n\n\nAdjust the constants in \"Image\" and \"Common\" for some style changes",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "McXSDf",
+            "likes": 20,
+            "name": "Bauhaus Snake",
+            "published": 3,
+            "tags": [
+                "genuary",
+                "bauhaus",
+                "genuary2024",
+                "genuary18"
+            ],
+            "usePreview": 0,
+            "username": "SpookyElectric",
+            "viewed": 237
+        },
+        "renderpass": [
+            {
+                "code": "// Play with these!\nconst bool TRANSPARENT = true;\nconst bool BORDER = true;\nconst bool FADE_TAIL = true;\nconst bool GRID = false;\nconst bool INVERT = false;\n// Select one of these\n#define VIEW_TRANSFORM(co) co\n//#define VIEW_TRANSFORM(co) co + iTime * vec2(-0.05 * iResolution.x)\n//#define VIEW_TRANSFORM(co) rotate((co - 0.5) * (1. + .5 * sin(iTime * .5)) + 0.5, iTime * 0.1)\n\n// input:\n// pos is mapped -1.0 - 1.0\n// entry + exit are:\n//   .x = \"segment\" (which band within the subdivided block)\n//   .y = \"direction\" 0 (left to right) ,0.25,0.5,0.75\n//\n// for \"direction\", if the entry and exit are the same, it assumes the segment doesn't change\n//\n// output:\n//   .x is the distance from the centerline of the arc\n//       1.0 is half the width of a subdivided segment\n//   .y is the distance along the arc in a 0..1 range,\n//       0 is the entry, 1 is the exit\nvec2 mapArc(vec2 pos, vec2 entry, vec2 exit) {\n    float entry_seg = floor(entry.x * SUB_DIV);\n    float entry_dir = entry.y;\n    vec2 entry_vec = rot_world(entry_dir, vec2(1.,0.));\n    \n    float exit_seg = floor(exit.x * SUB_DIV);\n    float exit_dir = fract(exit.y);\n    vec2 exit_vec = rot_world(exit_dir, vec2(1.,0.));\n\n    float thickness = 1. / (SUB_DIV ); // not divided by 2 because scale is +/-1, range of 2.0\n\n    // coordinates are now always so entry is at .x = -1.\n    pos = rot_world_rev(entry_dir, pos);\n    // Y axis of entry point is determined by the \"segment\"\n    float enpos = (2. * entry_seg - SUB_DIV  + 1.) / SUB_DIV;\n    vec2 entry_pt = vec2(-1.0, enpos);\n\n\n    // entry & exit vector are parallel, so render as line.\n    if (abs(dot(entry_vec, exit_vec)) > 0.9) {\n       float amt = (pos.x + 1.)/2.;\n       return vec2(abs(pos.y - entry_pt.y) / thickness, amt);\n        \n    }\n    \n    // otherwise this is an arc\n    \n    // because we're reorienting to the entry is always x = -1.\n    exit_vec = rot_world_rev(entry_dir, exit_vec);\n\n    // flip to always curve \"down\" where exit is y = -.1\n    float flipped = (exit_vec.y > 0.0) ? -1.0 : 1.0;\n    pos.y = pos.y * flipped;\n    entry_pt.y *= flipped;\n    \n    float expos = (2. * exit_seg - SUB_DIV  + 1.) / SUB_DIV;\n    vec2 exit_pt = vec2(expos * (flipped), -1.0); // exit segment also needs to be flipped along X axis.\n\n    // The center & radius depends on entry/exit segment locations.\n    vec2 delta = entry_pt - exit_pt;\n    float radius = min(abs(delta.x), abs(delta.y));\n    vec2 center = vec2(exit_pt.x - radius, entry_pt.y - radius);\n\n    float lead_len = center.x + 1.0;\n    float tail_len = center.y + 1.0;\n    float arc_len = radius * TAU * 0.25;\n    float total_len = lead_len + tail_len + arc_len;\n\n    if (pos.x + 1.0 < lead_len) {\n       // lead in segment, straight along x axis\n       float amt = (1.+pos.x) / total_len;\n       return vec2(abs(pos.y - entry_pt.y) / thickness, amt);\n    } else if (pos.y + 1.0 < tail_len) {\n       // lead out segment, straight along y\n       float amt = ((tail_len - (1. + pos.y) + lead_len + arc_len) / total_len);\n       return vec2(abs(pos.x - exit_pt.x) / thickness, amt);\n    } else {\n       // quarter arc\n       // angle is always 0..1\n       float angle = 1.0 - 4. *atan(pos.y - center.y, pos.x -  center.x) / TAU;\n       float amt = (lead_len + angle * arc_len) / total_len ;\n       return vec2(abs(length(pos-center) - radius) / thickness,  amt);\n    }\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 SIZE = gridsize(iResolution.xy);\n    vec2 BLOCKS = gridblocks(iResolution.xy);\n    vec2 SHIFT = (BLOCKS - SIZE) / 2.; // center grid\n\n    float cur_step = float(curStep(iTime * TIME_SCALE)); \n\n    fragCoord = VIEW_TRANSFORM(fragCoord);\n\n \n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n         \n    // Scaled to a grid of blocks\n    vec2 block_pos = mod(uv * SIZE + SHIFT, BLOCKS);\n    \n    // 0..num blocks\n    vec2 block = floor(block_pos);\n\n    // -1 .. 1\n    vec2 pos = fract(block_pos) * 2. - 1.;\n   \n\n    fragColor = BACKGROUND_COLOR;\n    \n    if (GRID) {\n        vec2 apos = abs(pos);\n        if (max(apos.x, apos.y) > 0.98) {\n            fragColor *= LINE_COLOR;\n        }\n    }\n    //fragColor.rg *= block * 0.1;\n    \n    // Looping steps from last to latest so the latest is on top.\n    // This is less relevant since there is transparency...\n    for (int i = 0; i < STEPS-1; i++) {\n\n        // 0 = oldest, STEPS-1 = Latest\n        int step_offset = STEPS - 2 - i; // 0 = last\n        \n        float step = mod(cur_step - float(step_offset) + float(STEPS), float(STEPS));\n        float prev_step = mod(cur_step - float(step_offset+1) + float(STEPS), float(STEPS));\n        \n        // x-offset within buffer for info about this step\n        float step_x = (step + 0.5) / float(STEPS);\n        float prev_step_x = (prev_step + 0.5) / float(STEPS);\n        \n        for (int w =0; w < NUM_SNAKES; w++) {\n            // y-offset within buffer to look for info about this snake\n            float wy = (float(w)+0.5)/float(NUM_SNAKES);\n\n            vec4 cur_info = texture(iChannel0, vec2(step_x, wy));\n            vec4 prev_info = texture(iChannel0, vec2(prev_step_x, wy));\n\n            vec2 cur_block = floor(cur_info.xy * BLOCKS);\n\n            if (cur_block == block) {\n                float fractTime = fract(iTime * TIME_SCALE);\n                float fade0 = 0.0;\n                float mn0 = -0.0001; // little extra because floating point math\n                float fade1 = 1.0;\n                float mn1 = -0.0001;\n                float mx = 1.0001;\n                if (i == 0) { // tale of snake?\n                    mn0 = fractTime;\n                    if (FADE_TAIL) {\n                        mn1 = 1.0;\n                        fade1 = 1. - fractTime;\n                    } else {\n                        mn1 = mn0;\n                    }\n                }\n                if (i == 1 && FADE_TAIL) { // almost tale of snake?\n                    fade0 = 1. - fractTime;\n                    mn1 = fractTime;\n                }\n                if (step_offset == 0) { // head of snake?\n                    mx = fractTime;\n                }\n\n                vec2 res = mapArc(pos, prev_info.zw, cur_info.zw);\n                \n                // for some reason just \"w % NUM_COLORS\" creates noise\n                int col = int(mod(float(w), float(NUM_COLORS)));\n                vec4 c = COLORS[col];\n                // some color remapping to look nicer\n                c = 1.0 - pow(1.0-c, vec4(3.));\n                if (!TRANSPARENT) {\n                    c *= c;\n                }\n                // darker towards edges\n                c *= 0.9 + 0.1 *(1.0 - res.x * res.x);\n                // add some texture for interestingness\n                vec2 grainCoord = fract(fragCoord / 256.);\n                c = c * 0.85 + 0.15 * texture(iChannel1, grainCoord).x;\n                \n                // even darker border\n                if (BORDER) {\n                    c *= mix(vec4(1.0), LINE_COLOR, smoothstep(0.97,0.99, res.x));\n                }\n                \n                if (res.y >= mn0 && res.y <= mx) {\n                \n                    float pixel = (SIZE.x*SUB_DIV*2.)/iResolution.x;\n                    float v =  pixel+1.-res.x;\n                    if (TRANSPARENT) {\n                        c = mix(fragColor, fragColor*c, \n                            smoothstep(0., 1.5*pixel, v) );\n                    } else {\n                        c = mix(fragColor, c, \n                            smoothstep(0., 1.5*pixel, v) );\n                    }\n                    if (FADE_TAIL) {\n                        fragColor = mix(\n                            mix(fragColor, c, fade0),\n                            mix(fragColor, c, fade1),\n                            smoothstep(mn0, mn1, res.y));\n                    } else {\n                        fragColor = c;\n                    }\n                }\n            }\n        }\n    }\n    \n    if (INVERT) {\n        fragColor = vec4(1.0) - fragColor;\n    }\n    \n\n    //fragColor = texture(iChannel0, uv) * 0.5;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This computes the states of each segment of the snake\n\n\nvec4 getState(int step, float snake) {\n    return texture(iChannel0, vec2((float(step)+0.5) / float(STEPS), snake));\n}\n\n\nvec2 nextBlock(vec4 last) {\n   \n    float lastdir = floor(last.w * 4.) / 4.;\n    vec2 dir_vec = rot_world(lastdir, vec2(1.000001,0.));\n    //dir_vec = vec2(-1.000001, 0.0);\n    \n    vec2 scale = gridblocks(iResolution.xy);\n\n    vec2 last_xy = floor(last.xy * scale);\n    \n    vec2 next_xy = last_xy + dir_vec + scale + 0.5;\n    \n    return fract(next_xy / scale);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    // snake is quantized to avoid possible sampling problems.\n    float snake = (floor(uv.y * float(NUM_SNAKES)) + 0.5) / float(NUM_SNAKES);\n\n    int now_step = curStep(iTime * TIME_SCALE);\n    int last1_step = (now_step + STEPS - 1) % STEPS;\n    int last2_step = (now_step + STEPS - 2) % STEPS;\n    \n    int my_step = int(uv.x * float(STEPS));\n    \n    vec4 old = getState(my_step, snake);\n    \n    if (iFrame == 0) {\n        vec2 xy = vec2(0., 0.);\n        float seg = uv.y;\n        float dir = 0.;\n        // this is not correct, but provides a good-enough start.\n        for (int i = 0; i < STEPS - ((my_step - now_step + STEPS) %STEPS) - 1 ; i ++) {\n            xy = nextBlock(vec4(xy, seg, dir));\n            dir += 0.125;\n        }\n        old = vec4(xy, seg, dir);\n    }\n\n    fragColor = old;\n    \n    if (my_step == now_step) {\n        vec4 last1 = getState(last1_step, snake);\n        vec4 last2 = getState(last2_step, snake);\n        \n        vec4 seed = texture(iChannel1, vec2(floor(iTime * TIME_SCALE) / 128.0, uv.y));\n\n        float seg = last1.z;\n        \n        float last1_dir = floor(last1.w * 4.) / 4.;\n        float last2_dir = floor(last2.w * 4.) / 4.;\n        float new_dir = floor(seed.x * 4.)/4.;\n\n        vec2 last1_vec = rot_world(last1_dir, vec2(1.,0.));\n        vec2 new_vec = -rot_world(new_dir, vec2(1.,0.));\n\n        float last_rot = last1_dir - last2_dir;\n        float this_rot = new_dir - last1_dir;\n        \n        float dir = last1_dir;\n\n        // are we rotating?\n        if (abs(dot(new_vec, last1_vec)) < 0.5) {\n            // was the last segment straight?\n            if (abs(last_rot) < 0.1 ) {\n                // exiting a string segment: rotate any direction.\n                dir = new_dir;\n\n                seg = uv.y;\n                //seg = seed.y; // optionally change segment if new direction\n            } else {\n                // already in rotation:\n                // rotate the direction we were rotating last time.\n                // this makes nice circles / semi-circles / loops\n                dir = fract(last1_dir + last_rot);\n            }\n        }\n        fragColor = vec4(nextBlock(last1), seg, dir);\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Play with these!\nconst float SUB_DIV = 3.; // largest arc size, best as int., 1. to 5. is a reasonable range.\nconst float SCALE = 4.6667 / SUB_DIV; // number of segments in smallest axis, may be fractional.\nconst int NUM_SNAKES = 3;\nconst vec4 BACKGROUND_COLOR = vec4(0.96,0.93,0.9,1.0);\nconst vec4 LINE_COLOR = vec4(0.3, 0.3, 0.3, 1.0);\nconst int NUM_COLORS = 5;\nconst vec4 COLORS[NUM_COLORS] = vec4[](\n    vec4(vec3(0.8,0.1,0.2), 1.0), \n    vec4(vec3(0.85,0.66,0.2), 1.0),\n    vec4(vec3(0.1,0.3,0.7), 1.0),\n    vec4(vec3(0.0,0.8,0.2), 1.0),\n    vec4(vec3(0.1,0.8,0.7), 1.0)\n);\nconst int STEPS = 8; // length of snake. Must be >= 3.\nconst float TIME_SCALE = 1.;\n\n// not this\nconst float TAU = 6.28318530717958647692;\n\n// for scaling the screen.\nvec2 gridsize(vec2 res) {\n    float aspect = res.x / res.y;\n    if (aspect >= 1.0) {\n        return vec2(SCALE * aspect, SCALE);\n    }\n    return vec2(SCALE, SCALE/aspect);\n}\n\n// whole numbers to compute wrap-around correctly.\nvec2 gridblocks(vec2 res) {\n    return ceil(gridsize(res) - 0.0001);\n}\n\nint curStep(float time) {\n    return int(time + 2.) % STEPS;\n    //return int(floor(mod(time + 2., float(STEPS))));\n}\n\nfloat linstep(float start, float stop, float value) {\n  return clamp((value - start) / (stop - start), 0., 1.);\n}\n\nvec2 rot_world(float d, vec2 p) {\n    if (d < 0.25) {\n        return p;\n    }\n    if (d < 0.5) {\n        return vec2(p.y,-p.x);\n    }\n    if (d < 0.75) {\n            return vec2(-p.x, -p.y);\n    }\n    return vec2(-p.y, p.x);\n}\n\nvec2 rot_world_rev(float d, vec2 p) {\n    if (d < 0.25) {\n        return p;\n    }\n    if (d < 0.5) {\n        return vec2(-p.y,p.x);\n    }\n    if (d < 0.75) {\n            return vec2(-p.x, -p.y);\n    }\n    return vec2(p.y, -p.x);\n}\n\nvec2 rotate(vec2 v, float a) {\n\tfloat s = sin(a);\n\tfloat c = cos(a);\n\treturn vec2(v.x * c + v.y * s, v.y*c - v.x * s );\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

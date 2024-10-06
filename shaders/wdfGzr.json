@@ -1,0 +1,136 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1545173505",
+            "description": "A little festive shader for the holidays.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wdfGzr",
+            "likes": 62,
+            "name": "Baubles",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "christmas",
+                "cubemap",
+                "tree",
+                "shiny",
+                "holiday",
+                "baubles",
+                "spherel"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 1918
+        },
+        "renderpass": [
+            {
+                "code": "// Baubles\n// by Hazel Quantock 2018\n// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. http://creativecommons.org/licenses/by-nc-sa/4.0/\n\n\n// adjust this to improve frame rate in windowed mode\n#define AA_QUALITY .5\n\n// allow a little bleed between pixels - I think this looks more photographic, but blurrier\n#define AA_ROUND true\n#define AA_ROUND_RADIUS 0.7071\n\n\n// very silly effect, but it kinda shows some of how the branch and bauble placement works\n//#define PATTERN_SCROLL vec3(0,.3,0)\n#define PATTERN_SCROLL vec3(0)\n\n\n\n//--\n\n// hashes from https://www.shadertoy.com/view/4dVBzz\n#define M1 1597334677U     //1719413*929\n#define M2 3812015801U     //140473*2467*11\n#define M3 3299493293U     //467549*7057\n\n#define F0 exp2(-32.)\n//(1.0/float(0xffffffffU))\n\n#define hash(n) n*(n^(n>>15))\n\n#define coord1(p) (p*M1)\n#define coord2(p) (p.x*M1^p.y*M2)\n#define coord3(p) (p.x*M1^p.y*M2^p.z*M3)\n\nfloat hash1(uint n){return float(hash(n))*F0;}\nvec2 hash2(uint n){return vec2(hash(n)*uvec2(0x1U,0x3fffU))*F0;}\nvec3 hash3(uint n){return vec3(hash(n)*uvec3(0x1U,0x1ffU,0x3ffffU))*F0;}\nvec4 hash4(uint n){return vec4(hash(n)*uvec4(0x1U,0x7fU,0x3fffU,0x1fffffU))*F0;}\n\n\nfloat TreeBoundsSDF( vec3 pos )\n{\n    // just a cone\n    pos.y -= 4.;\n    return dot( vec2(pos.y,length(pos.xz)), normalize(vec2(.3,1)) );\n}\n\n\n/*\nWarp space into a series of repeated cells (\"branches\") around the y axis\nThis causes some distortion, causing marching errors near the axis when branches are\nparticularly sparse. But this can be worked round by tweaking the SDF.\n\nCells are mirrored so whatever's placed in them will tile with itself!\n\nyByOutStep - tilts branches along the axis, but breaks vertical tiling.\n*/\nvec3 HelixGrid( out ivec2 grid, vec3 pos, int numSpokes, float yStepPerRotation, float yByOutStep )\n{\n    // convert to polar coordinates\n    vec3 p = vec3(atan(pos.x,pos.z),pos.y,length(pos.xz));\n\n    p.y -= yByOutStep*p.z;\n    float l = sqrt(1.+yByOutStep*yByOutStep);\n    \n    // draw a grid of needles\n    vec2 scale = vec2(6.283185/float(numSpokes),yStepPerRotation);\n    p.xy /= scale;\n    \n    // rotate and skew the grid to get a spiral with nice irrational period\n    float sn = 1./float(numSpokes); // so we step by an integer number of rows\n\n    p.xy += p.yx*vec2(-1,1)*sn;\n    \n    // make horizontal triangle-waved, so edges of cells match up no matter what's put inside them!\n    grid = ivec2(floor(p.xy));\n    vec2 pair = fract((p.xy + 1.)*.5)*2.-1.;\n    p.xy = (abs(pair)-.5);\n    vec2 flip = step(0.,pair)*2.-1.; // sign() but without a 0.\n    p.xy *= scale;\n\n    // unshear...\n    p.y += flip.y*yByOutStep*p.z;\n    \n    // reconstruct a non-bent space\n    p.xz = p.z*vec2(sin(p.x),cos(p.x));\n\n    // ...and apply rotation to match the shear (now we've sorted out the grid stuff)\n    p.yz = ( p.yz + flip.yy*p.zy*vec2(-1,1)*yByOutStep )/l; // dammit - I think it breaks the wrap\n    \n// might be worth returning a bound on y to mask the discontinuous area\n// I think it will just be yByAngleStep/sqrt(1.+yByOutStep*yByOutStep) which caller can do if desired\n// Or, could make z NOT start at 0 - so caller has to bound using parent-level's length (totally viable and I'm doing it a lot)\n// so mirroring WOULD line up!\n    \n    return p;\n}\n\n\n\nstruct TreeSpace\n{\n    vec3 branch;\n    vec3 twig;\n    vec3 needle;\n    ivec2 branchGrid;\n    ivec2 twigGrid;\n    ivec2 needleGrid;\n};\n\n\nTreeSpace GetTreeSpace( in vec3 pos )\n{\n    TreeSpace o;\n    o.branch = HelixGrid( o.branchGrid, pos, 12, .5, .5 ); //.5\n    o.twig = HelixGrid( o.twigGrid, o.branch.xzy, 5, .5, 1. );\n    o.needle = HelixGrid( o.needleGrid, o.twig.xzy, 9, .04, 1. );\n    \n    return o;\n}\n\n\nfloat TreeSDF( vec3 pos )\n{\n    float bounds = TreeBoundsSDF(pos);\n    \n    pos += PATTERN_SCROLL*iTime;\n\tTreeSpace ts = GetTreeSpace(pos);\n\n\tfloat branchRand = hash1(coord2(uvec2(ts.branchGrid+0x10000)));\n    float branchEndLength = .3*(branchRand-.5);\n    \n    return\n        min(\n            max(\n                min(\n                    min(\n                        // twig\n                        length(ts.twig.xy)-.005,\n                        // needle\n                        length( vec3( ts.needle.xy, max(0.,ts.needle.z-.05) ) ) - .003\n                    ),\n                    // branch\n                    max(\n                    \t(length(ts.branch.xy\n                               + .004*sin(vec2(0,6.283/4.)+ts.branch.z*6.283/.1) // spiral wobble\n                              )-.01)*.9,\n                    \tbounds - branchEndLength - .2 // trim branches shorter than twigs\n                    )\n            \t),\n            \t// branch length (with rounded tip to clip twigs nicely)\n                length( vec3(ts.branch.xy,max(0.,bounds\n                                              -branchEndLength  // this seems to cause more floating twigs (or more obvious ones)\n                                             )) )-.3\n            ),\n            max(\n                // trunk\n                length(pos.xz)-.03,\n                bounds  // this will give a sharp point - better to just chop it - but might not show it\n            )\n        )*.7; // the helical distortion bends the SDF, so gradient can get higher than 1:1\n}\n\n\n// baubles only spawn in negative areas of this mask\nfloat BaubleBoundsSDF( vec3 pos )\n{\n    return abs(TreeBoundsSDF(pos))-.3; // half the width of the area bauble centres can be placed in\n}\n\n\n// pass different seeds and densities to generate different sets of baubles\n// if spacing = radius*2. the baubles will lie on a grid touching each other\nfloat BaublesSDF( vec3 pos, uint seed, float spacing, float radius )\n{\n    // avoid looping over every bauble - find closest one from a handful of candidates, using a jittered grid\n    float f = BaubleBoundsSDF(pos);\n    f -= radius;\n    \n    float margin = .1; // distance at which to start computing bauble SDFs - affects speed of marching (trial and error suggests .1 is fairly optimal)\n    if ( f > margin ) return f;\n    \n\tvec3 offset = spacing*(hash3(coord1(seed))-.5); // use a different grid for each set of baubles\n    offset += PATTERN_SCROLL*iTime;\n\tpos += offset;\n\n    // find closest centre point\n    vec3 c = floor(pos/spacing);\n    ivec3 ic = ivec3(c);\n    c = (c+.5)*spacing; // centre of the grid square\n    \n    c += (spacing*.5 - radius /*- margin*/) * ( hash1(coord3(uvec3(ic+63356))^seed)*2. - 1. );\n    \n    // cull it if it's outside bounds\n    if ( BaubleBoundsSDF(c-offset) > 0. ) return margin; // could do max (margin, distance to grid cell edge)\n    \n    return min( length(pos-c)-radius, margin ); // don't return values > margin otherwise we'll overshoot in next cell!\n}\n\nfloat Baubles1( vec3 pos ) { return BaublesSDF( pos, 0x1002U, .8, .1 ); }\nfloat Baubles2( vec3 pos ) { return BaublesSDF( pos, 0x2037U, 1., .07 ); }\nfloat Baubles3( vec3 pos ) { return BaublesSDF( pos, 0x3003U, .8, .08 ); }\n\n\nfloat SDF( vec3 pos )\n{\n    return min(min(min(\n        \tTreeSDF(pos),\n        \tBaubles1(pos)),\n        \tBaubles2(pos)),\n        \tBaubles3(pos));\n}\n\n\n// assign a material index to each of the SDFs\n// return whichever one we're closest to at this point in space\nint GetMat( vec3 pos )\n{\n    struct MatDist { int mat; float dist; };\n    MatDist mats[] = MatDist[](\n        \tMatDist( 0, TreeSDF(pos) ),\n        \tMatDist( 1, Baubles1(pos) ),\n        \tMatDist( 2, Baubles2(pos) ),\n        \tMatDist( 3, Baubles3(pos) )\n        );\n    \n    MatDist mat = mats[0];\n    for ( int i=1; i < mats.length(); i++ )\n    {\n        if ( mats[i].dist < mat.dist ) mat = mats[i];\n    }\n    \n    return mat.mat;\n}\n\n\nfloat epsilon = .0004; // todo: compute from t everywhere it's used (see \"size of pixel\"\\/\\/)\nint loopCount = 200; // because of the early out this can actually be pretty high without costing much\n\nfloat Trace( vec3 rayStart, vec3 rayDirection, float far, out int count )\n{\n    float t = 0.;\n    \n    float h = 0.;\n    float lasth = 0.;\n    float bestt = 0.;\n    float bestDist = far;\n    float sdf = 0.;\n    for ( int i=0; i < loopCount; i++ )\n    {\n        lasth = h;\n        sdf = SDF( rayDirection*t+rayStart );\n        h = sdf + epsilon*.5;\n\t\tt += h;\n        if ( sdf < bestDist ) { bestt = t; bestDist = sdf; } // not sure if all these conditionals will compile well, could flip to use step and mix\n        count = i;\n        if ( h < epsilon || t > far ) break;\n    }\n\n    // some precision improvements:\n    if ( sdf == bestDist )\n    {\n        // improve precision\n\t\tfloat lastt = t-epsilon;\n\t\tfloat lastsdf = SDF( rayDirection*lastt+rayStart );\n\t\tfloat sdf = SDF( rayDirection*t+rayStart );\n        \n       \tt = mix( lastt, t, (0.-lastsdf)/(sdf-lastsdf) );\n    }\n    else if ( t < bestt*2. )\n    {\n        // use the closest sample we had, to avoid sampling back-sides and things\n        t = bestt;\n\t\t// this can add a fringe, but maybe better than the alternative\n    }\n    \n    return t;\n}\n\n\nvoid mainImage2( out vec4 fragColour, in vec2 fragCoord )\n{\n    float time = 3.-3.*cos(iTime/5.);//fract(iTime/12.)*12.;\n    \n    vec3 camPos = vec3(-2,0,-5)+vec3(2,0,-12)*smoothstep(.5,5.5,time)+vec3(0,0,-30)*smoothstep(7.,10.,time);\n    vec2 a = vec2(-.05,1.35/*-iTime*.005*/)+.02*sin(vec2(1,.618)*iTime/3.);\n    \n    if ( iMouse.z > 0. ) a += ((iMouse.xy/iResolution.xy).yx-.5)*vec2(-3,6);\n    \n    camPos.yz = camPos.yz*cos(a.x)+sin(a.x)*vec2(-1,1)*camPos.zy;\n    camPos.zx = camPos.zx*cos(a.y)+sin(a.y)*vec2(-1,1)*camPos.xz;\n    \n    vec3 camK = normalize(vec3(0,0,0)-camPos);\n    vec3 camI = normalize(cross(vec3(0,1,0),camK));\n    vec3 camJ = cross(camK,camI);\n    \n    camPos -= camI*(.5+1.*smoothstep(.5,5.5,time));\n    \n    float zoom = 5.-3.*smoothstep(.5,5.5,time);\n    vec3 ray = vec3((fragCoord-.5*iResolution.xy)/iResolution.y,zoom);\n    ray = ray.x*camI + ray.y*camJ + ray.z*camK;\n    ray = normalize(ray);\n    \n    int count = 0;\n    const float far = exp2(6.);\n    float t = Trace( camPos, ray, far, count );\n    \n    fragColour = vec4(vec3(.05),1);\n    \n    if ( t < far )\n    {\n    \tvec3 pos = camPos + t*ray;\n\n        // size of 1 pixel\n\t\t// tan(a) = h / zoom\n\t\t// h = .5 / (resolution.y*.5)\n        vec2 d = vec2(-1,1) * t / (zoom*iResolution.y);\n        vec3 normal = normalize(\n            \tSDF(pos+d.xxx)*d.xxx +\n            \tSDF(pos+d.xyy)*d.xyy +\n            \tSDF(pos+d.yxy)*d.yxy +\n            \tSDF(pos+d.yyx)*d.yyx\n            );\n\n        int matIdx = GetMat(pos);\n        \n        struct Material\n        {\n            vec3 albedo;\n            float metallicity;\n            float roughness; // blurriness of the metallicity\n        };\n           \n\t\tMaterial mat = Material[](\n            Material( vec3(0/*overridden*/), 0., 0. ), // tree\n            Material( vec3(1,.5,.3), 1., .7 ),\n            Material( vec3(1,.4,.1), 1., .0 ),\n            Material( vec3(.7,.25,.1)*.6, 1., .4 )\n\t\t)[matIdx]; // is this bad? I kind of like it!\n\n        if ( matIdx == 3 )\n        {\n            // glitter bauble\n            normal += .4*(hash3(coord3(uvec3(pos/.002 + 65536.)))-.5);\n            normal = normalize(normal);\n        }\n        \n        vec3 refl = reflect( ray, normal );\n        \n        // very broad AO - just use the tree's bound SDF\n        float AO = exp2(min(0.,TreeBoundsSDF(pos)-.3)/.3);\n        \n\t\tTreeSpace ts = GetTreeSpace(pos);\n        if ( matIdx == 0 )\n        {\n\t\t\t// compute tree albedo\n            \n            float leafness = smoothstep(.0,.05, ts.needle.z) // // gradient along needle\n                \t\t\t* smoothstep(.01,.04, length(ts.branch.xy))\n                \t\t\t* smoothstep(.03,.06, length(pos.xz));\n            \n            // blend wood to leaf colour\n        \tmat.albedo = mix( vec3(.05,.025,.01), vec3(0,.3,0), leafness );\n            \n            // snow\n            float snow = texture(iChannel2,pos.xz/.02).r;\n            mat.albedo = mix( mat.albedo, vec3(1), smoothstep(.1,.5,normal.y*.1+snow-.3*(1.-AO)) );\n            \n        \t// and use the same things to paint the albedo trunk/branch colours\n            mat.roughness = .7;\n        }\n            \n        // fake reflection of the tree\n\t\t// I can probably afford a reflection trace - but I want to blur it based on roughness\n        float SO = smoothstep(-1.,1.,(TreeBoundsSDF(pos + refl*1.)\n\t\t\t                              -1.*(texture(iChannel2,refl.yz*2.).r*2.-.7)*pow(1.-mat.roughness,5.)\n                                      +.4)/(1.*(mat.roughness+.3))\n                             );\n        \n        vec4 diffuseSample = texture( iChannel0, normal );\n        vec3 diffuseLight = diffuseSample.rgb/diffuseSample.a;\n        diffuseLight *= AO;\n        \n\t\tvec3 specularLight = LDRtoHDR(textureLod( iChannel1, refl, mix(4.,9.,mat.roughness) ).rgb);\n        specularLight = mix( vec3(.01,.02,.0)+.0, specularLight, SO ); // blend to a rough tree colour\n        \n        float fresnel = pow(1.-abs(dot(ray,normal)),5.);\n        \n        fragColour.rgb =\n            //mix(\n                //mix ( mat.albedo, vec3(1.), mat.metallicity*(1.-mat.roughness)*fresnel ) *\n                //^ this actually looks wrong for baubles, it's roughly correct for metal but baubles are a clear tint over a mirror\n                mat.albedo *\n                mix(\n                    diffuseLight,\n                    specularLight,\n                    mat.metallicity\n                /*),\n                env,\n                mix( .02, 1., fresnel )*(1.-mat.roughness)*/\n            );\n\n        // debug colours\n\t\t//fragColour.rgb = fract( pos );\n        //fragColour.rgb = normal*.5+.5;\n    }\n    else\n    {\n        fragColour.rgb = LDRtoHDR(texture( iChannel1, ray ).rgb);\n    }\n    \n    // exposure\n    fragColour.rgb *= 1.8;\n    \n    fragColour.rgb = HDRtoLDR( fragColour.rgb );\n}\n\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    // todo: compute numSamples dynamically\n    int numSamples = max( 1, int((1920.*1080.*AA_QUALITY) / (iResolution.x*iResolution.y)) ); // I get 35fps at 1080p\n\n    fragColour = vec4(0);\n    for ( int i=0; i < numSamples; i++ )\n    {\n        uvec2 quasi2 = uvec2(0xC13FA9A9u,0x91E10DA5u);\n        uint seed = uint(i);\n        //seed += uint(iFrame*numSamples); // randomize per frame - causes shimmering\n        if ( numSamples > 1 ) seed += uint(fragCoord.x)*quasi2.x+uint(fragCoord.y)*quasi2.y; // randomize per pixel - this looks bad at low sample counts (and at high counts it's less important)\n        vec2 jitter = vec2( quasi2 * seed ) / exp2(32.);\n\n        if ( AA_ROUND )\n        {\n            // circle of confusion slightly bigger than a pixel - should look more photographic\n            jitter.x *= 6.283185;\n            jitter = AA_ROUND_RADIUS*(1.-jitter.y*jitter.y)*vec2(cos(jitter.x),sin(jitter.x));\n        }\n        else\n        {\n            jitter -= .5;\n        }\n        \n        vec4 col;\n        mainImage2( col, fragCoord + jitter );\n        fragColour += col;\n    }\n    fragColour /= float(numSamples);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float whiteSoftness = 0.15; // this mostly affects the diffuse light - rewind to recompute it!\n\nvec3 HDRtoLDR( vec3 col )\n{\n    // soft clamp to white (oh this is so good)\n    float w2 = whiteSoftness*whiteSoftness;\n    col += w2;\n    col = (1.-col)*.5;\n    col = 1. - (sqrt(col*col+w2) + col);\n    \n    // linear to sRGB (approx)\n    col = pow( col, vec3(1./2.2) );\n\n    return col;\n}\n\nvec3 LDRtoHDR( vec3 col )\n{\n    // sRGB to linear (approx)\n    col = pow( col, vec3(2.2) );\n    \n    col = clamp(col,0.,.99);\n    \n    float w2 = whiteSoftness*whiteSoftness;\n    col = (w2 - col*col + 2.*col - 1.)/(2.*(col - 1.)); // inverted by wolfram\n    col = 1.-col*2.;\n    col -= w2;\n    \n    return col;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Make a diffuse convolution of the LDRtoHDR of the cube map\n// This is not an efficient approach - it's based on code I use for Monte Carlo rendering - but it converges to the right solution pretty quickly\n\n// quasi random numbers from: http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/\nconst uvec2 quasi2 = uvec2(3242174889u,2447445413u);\n\nuvec2 Hash( uint seed )\n{\n    return (seed+0x9E3779B9u)*quasi2;\n} \n\nvec2 Rand( uint seed )\n{\n    return vec2(Hash(seed))/exp2(32.); // [0,1)\n}\n\n// input rand = 2 floats in range [0,1)\nvec3 SphereRand( vec2 rand )\n{\n    float sina = rand.x*2. - 1.;\n    float b = 6.283*rand.y;\n    float cosa = sqrt(1.-sina*sina);\n    return vec3(cosa*cos(b),sina,cosa*sin(b));\n}\n\nvec3 PowRand( vec2 rand, vec3 axis, float fpow )\n{\n    vec3 r = SphereRand(rand);\n    \n    // redistribute samples\n    float d = dot(r,axis);\n\n    // map sphere to cylinder\n    r -= d*axis;\n    r = normalize(r); // hahaha! I'd forgotten this, very clever\n\n    // project onto a spike\n    // h = pow(1.-radius,m)*2-1\n    // radius = 1.-pow(h*.5+.5,1/m)\n    // ^ WRONG! That's radius squared, otherwise POW=1 gives a spike\n    float h = d*.5+.5;\n    //        r *= sqrt(1.-pow(h,1./POW));\n    // ^ wrong again! Need to solve the integral with that sqrt in,\n    // and needed a factor of /radius for sample density\n    r *= sqrt( 1. - pow( h, 2./(fpow+1.) ) ); // YES!!!!\n\n    // and down onto the hemisphere\n    r += axis*sqrt(1.-dot(r,r));\n\n    return r;\n}\n\nvec3 HemisphereRand( vec3 axis, uint seed )\n{\n    return PowRand( Rand(seed), axis, 1. );\n}\n\nvoid mainCubemap( out vec4 fragColour, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    fragColour = textureLod( iChannel0, rayDir, 0. ); // this needs NEAREST filter on the texture\n\tif ( iFrame == 0 ) fragColour = vec4(0);\n\n    // wait for texture to load (I know the top of the cubemap should not be black)\n    if ( textureLod( iChannel1, vec3(0,1,0), 0. ).r == 0. ) return;\n    \n    // early-out once we've got a good enough result\n    if ( fragColour.a > 100.0 ) discard;\n    \n    const int n = 16;\n    for ( int i = 0; i < n; i++ )\n    {\n        vec3 ray = HemisphereRand(rayDir,uint(i+n*iFrame)+quasi2.y*uint(fragCoord.x)+quasi2.x*uint(fragCoord.y));\n\n        fragColour.rgb += LDRtoHDR(textureLod( iChannel1, ray, 0. ).rgb);\n        fragColour.a += 1.;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

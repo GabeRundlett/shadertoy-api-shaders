@@ -1,0 +1,81 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1477553213",
+            "description": "I was looking for ways to make the calculation of a discrete 3D distance field faster. Willing to accept 'some' disturbance in the SDF i went with the \"Dead Reckoning\" algorithm. Here's a shader implementation:\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4lKGDt",
+            "likes": 14,
+            "name": "Dead Reckoning SDF",
+            "published": 3,
+            "tags": [
+                "approximation",
+                "signeddistancefield",
+                "discrete"
+            ],
+            "usePreview": 0,
+            "username": "bergi",
+            "viewed": 1379
+        },
+        "renderpass": [
+            {
+                "code": "/** Discretized Signed-Distance-Field calculation.\n\n\tAfter the methods described in \n\t\"The ‘‘dead reckoning’’ signed distance transform\"\n\tGeorge J. Grevera \n\tMedical Image Processing Group, Department of Radiology, University of Pennsylvania\n\thttp://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.102.7988&rep=rep1&type=pdf\n\n\tThese algorithms approximate a descrete signed distance field for any binary image.\n\tAnd they do it comparitively fast. O(N) instead of O(N²)\n\tThat stuff is also extendible to three or more dimensions\n\n\tBoth \"Chamfer\" and \"Dead Reckoning\" algorithms have been modified to work in a shader.\n\tNormally, they are split in a forward and backward pass that need only be executed\n\t10-20 times. Here every pixel is processed in parallel and it takes much more iterations\n\t(sqrt(width²+height²) at the most).\n\n\tThe DR algorithm is the enhanced version of a 3x3 Chamfer, \n\tstoring the coordinate to the closest border along with each pixel,\n\twhich works pretty good!\n\n\tThe estimated distances are not signed in Buf A, you need to flip the sign \n\tdepending on the value of x.\n\t\n*/\n\n// read the signed min-distance\nfloat DE(in vec2 coord) \n{\n    vec4 t = texture(iChannel0, coord / iChannelResolution[0].xy);\n    return t.x > 0. ? -t.y : t.y;\n}\n\nvec3 norm(in vec2 coord)\n{\n    vec2 e = vec2(1., 0.);\n    return normalize(vec3(\n        DE(coord+e.xy) - DE(coord-e.xy),\n        DE(coord+e.yx) - DE(coord-e.yx),\n        2.*e.x));\n}\n\nvoid mainImage(out vec4 fc, in vec2 coord)\n{\n\tfc = vec4(0,0,0,1);\n    \n    float d = DE(coord);\n    vec3 n = norm(coord);\n    \n    // border (where d is zero)\n    fc.x += smoothstep(1.,.0,abs(d));\n    \n    // where derivative of distance field is close zero\n    // similiar to voronoi edges\n    fc.y += smoothstep(0.,.1,abs(n.z)-.68);\n    \n    // signed distance itself\n    d /= iResolution.y/1.3;\n    if (d < 0.)\n        fc.yz -= d; \n    else\n        fc.xyz += d;\n\n    // show closest border coordinate\n    if (iMouse.z > .5 && coord.y > iMouse.y)\n    {\n    \tvec4 t = texture(iChannel0, coord / iChannelResolution[0].xy);\n    \tfc.xyz = vec3(t.zw,0) / iResolution.y;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/** Discretized Signed-Distance-Field calculation.\n\n\tAfter the methods described in \n\t\"The ‘‘dead reckoning’’ signed distance transform\"\n\tGeorge J. Grevera \n\tMedical Image Processing Group, Department of Radiology, University of Pennsylvania\n\thttp://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.102.7988&rep=rep1&type=pdf\n\n\tThese algorithms approximate a descrete signed distance field for any binary image.\n\tAnd they do it comparitively fast. O(N) instead of O(N²)\n\tThat stuff is also extendible to three or more dimensions\n\n\tBoth \"Chamfer\" and \"Dead Reckoning\" algorithms have been modified to work in a shader.\n\tNormally, they are split in a forward and backward pass that need only be executed\n\t10-20 times. Here every pixel is processed in parallel and it takes much more iterations\n\t(sqrt(width²+height²) at the most).\n\n\tThe DR algorithm is the enhanced version of a 3x3 Chamfer, \n\tstoring the coordinate to the closest border along with each pixel,\n\twhich works pretty good!\n\n\tThe estimated distances are not signed in Buf A, you need to flip the sign \n\tdepending on the value of x.\n\t\n*/\n\n\n\n// draw some shapes\nvoid initShapes(out vec4 fc, in vec2 coord)\n{\n    vec2 uv = coord / iResolution.y;\n    // the buffer:\n    // x=binary shape image\n    // y=estimated minimum distance\n    // zw=coordinate (DRA only)\n    fc = vec4(0,10000,-1.,-1.);\n    \n    if (length(uv-vec2(.5)) < .2)\n        fc.x = 1.;\n    if (max(abs(uv.x-1.3),abs(uv.y-.3)) < .1)\n        fc.x = 1.;\n    if (max(abs(uv.x-1.+.1*sin(uv.y*20.)),abs(uv.y-.8)) < .1)\n        fc.x = 1.;\n}\n\n\nvec4 tex(in vec2 coord) { return texture(iChannel0, coord/iResolution.xy); } \n\n\n// set initial distance (y) to 0. for all pixels\n// that are different to adjacent pixels\n// (also init source coordinate (zw))\nvoid findBorder(inout vec4 fc, in vec2 coord)\n{\n    float t = 0.001;\n    if (abs(tex(coord+vec2(-1,0)).x - fc.x) > t\n     || abs(tex(coord+vec2(+1,0)).x - fc.x) > t\n     || abs(tex(coord+vec2(0,-1)).x - fc.x) > t\n     || abs(tex(coord+vec2(0,+1)).x - fc.x) > t\n       )\n    \tfc.yzw = vec3(0., coord);\n}\n\n// The original 3x3 \"Chamfer\" distance algorithm \nvoid CDA(inout vec4 fc, in vec2 coord)\n{\n    float d, \n\t\td1 = 1., d2 = sqrt(2.);\n        //d1 = 3., d2 = 4.;\n    vec2 c;\n    c = coord+vec2(-1,-1); d = tex(c).y + d2; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2(-1,+1); d = tex(c).y + d2; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2(+1,-1); d = tex(c).y + d2; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2(+1,+1); d = tex(c).y + d2; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2(-1, 0); d = tex(c).y + d1; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2(+1, 0); d = tex(c).y + d1; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2( 0,-1); d = tex(c).y + d1; if (d < fc.y) fc.yzw = vec3(d, c);\n    c = coord+vec2( 0,+1); d = tex(c).y + d1; if (d < fc.y) fc.yzw = vec3(d, c);\n}\n\n// 3x3 \"Dead Reckoning\" distance algorithm\nvoid DRA(inout vec4 fc, in vec2 coord)\n{\n    float d, d1 = 1., d2 = sqrt(2.);\n    vec2 c;\n    \n    c = coord+vec2(-1,-1); if (tex(c).y + d2 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n    c = coord+vec2( 0,-1); if (tex(c).y + d1 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n    c = coord+vec2(+1,-1); if (tex(c).y + d2 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n    c = coord+vec2(-1, 0); if (tex(c).y + d1 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n    \n \tc = coord+vec2(+1, 0); if (tex(c).y + d1 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n \tc = coord+vec2(-1,+1); if (tex(c).y + d2 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n \tc = coord+vec2( 0,+1); if (tex(c).y + d1 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n \tc = coord+vec2(+1,+1); if (tex(c).y + d2 < fc.y)\n    \tfc.zw = tex(c).zw, fc.y = length(coord-fc.zw);\n}\n\n\nvoid mainImage(out vec4 fc, in vec2 coord)\n{\n    if (iFrame == 0)\n    \tinitShapes(fc, coord);\n    else \n    {\n        fc = tex(coord);\n        \n        if (iFrame == 1)\n        \tfindBorder(fc, coord);\n    \telse\n            //CDA(fc, coord);\n            DRA(fc, coord);\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,272 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1686997293",
+            "description": "A downsampling filter designed to be used in a bloom downsampling chain.\nThe implementation uses 9 bilinear samples to emulate a 6x6 kernel.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "cslczj",
+            "likes": 12,
+            "name": "Bloom Downsampling Filter",
+            "published": 3,
+            "tags": [
+                "antialiasing",
+                "filtering",
+                "bloom",
+                "downsampling"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 355
+        },
+        "renderpass": [
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n// https://twitter.com/Mirko_Salm/status/1673425464579194883\n\n/*\n    A downsampling filter designed to be used in a bloom downsampling chain.\n    The implementation uses 9 bilinear samples to emulate a 6x6 kernel.\n    \n    This filter produces less residual aliasing than the commonly used 13 (bilinear) samples kernel.\n    \n    It is, however, less forgiving with regard to sloppy implementations: \n    it is important that the sample positions are properly aligned with the texel grid of the source texture.\n        \n    The main difference between the implementations of both filters is that the 13 samples kernel limits itself to always sample exactly\n    in the center of a 2x2 texel group, which the the 9 samples kernel does not.\n    \n    (As a result, I think optimizing the 13 samples kernel using shared memory might be more straightforward than it is for the 9 samples variant.)\n    \n    Optimized sample weights for the 13 samples kernel are also provided.\n    \n    EDIT:\n    \n    The idea to use just 9 samples is not new: Mikkel Gjoel already described this approach in 2016 (his parameters are different from mine, though).\n    \n    Also, turns out it is important to make sure that the bilinear sampler doesn't mess with the texcoord offsets in a way that corrupts the\n    symmetry of the filter kernel. Otherwise the resulting error amplifies when the filter is repeatedly applied in a mipchain.\n    For that reason, I pre-quantize all relevant texcoord offsets used by the 9 samples kernel designs.\n    \n    \n    left : filtered test image\n    right: amplitude spectrum\n    \n    Downsampling is turned off by default.\n    If downsampling is active a small amount of jittering is applied to the test image. This helps to highlight the residual aliasing.\n    \n    Shift - toggle on/off low amplitude highlighting (useful to ensure that filter response is symmetrical)\n    Space - toggle downsampling on/off (square shaped indicator)\n    Tab   - toggle test image between white noise and texture\n    Ctrl  - toggle thresholding of test image on/off (useful to test kernel shape)\n1,2,3,4,5 - change filter kernel (circular indicators):\n\n        1 -  9 samples kernel (optimized stop-band)\n        2 -  9 samples kernel with improved radial symmetry (but more aliasing)\n        3 -  9 samples kernel with params by Mikkel Gjoel (\"The Rendering of Inside, High Fidelity, Low Complexity\" (GDC 2016))\n        \n        4 - 13 samples kernel with optimized weights\n        5 - 13 samples kernel from \"Next Generation Post Processing in Call of Duty Advanced Warfare\" (Siggraph 2014)\n    \n    \n    Buffer A: test image creation\n    Buffer B: filtering/downsampling implementation\n    Buffer C: horizontal discrete Fourier transform\n    Buffer D: vertical   discrete Fourier transform\n    Image   : visualization\n    \n    \n    Related:\n    \n        practical implementation of the down-sampling filters in a complete bloom mipchain: \"Bloom.\"\n        https://www.shadertoy.com/view/mdsyDf\n        \n        13 samples kernel design: \"Next Generation Post Processing in Call of Duty Advanced Warfare\" (Siggraph 2014)\n        http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare\n        \n        9 samples kernel that tries to match the original 13 samples kernel: \"The Rendering of Inside, High Fidelity, Low Complexity\" (GDC 2016)\n        https://loopit.dk/rendering_inside.pdf#page=17\n        https://twitter.com/pixelmager/status/1691731512004071785\n*/\n\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 2), 0).x;}\n\nvoid mainImage(out vec4 outCol, in vec2 uv0)\n{\n    if(false)\n    {\n        // show test image\n        ivec2 uvi = ivec2(uv0 - 0.5);\n        \n        vec3 col = texelFetch(iChannel2, uvi, 0).rgb;\n\n        col = pow(col, vec3(1.0/2.2));\n        \n        outCol = vec4(col, 1.0);\n        \n        return;\n    }\n    \n    float b = ceil((iResolution.y - SIZE)*0.5);\n    \n    if(uv0.y < b || uv0.y > iResolution.y-b) { outCol = vec4(0.11); return; }\n    \n    uv0.y -= b;\n    \n    vec2 tc = uv0/iResolution.xy;\n    \n    vec3 col = vec3(0.0);\n    \n    if (tc.x > 0.5)\n    {\n        // fft\n        vec2 dft = texelFetch(iChannel1, ivec2(uv0-0.5-vec2(SIZE,0.0)), 0).xy;\n        \n        float amp = length(dft); \n        \n        amp *= 0.005;\n        \n        // amp = sqrt(amp);\n        \n        float b = 16.0;\n        amp = log2(amp * b + 1.0) / log2(b + 1.0);\n        \n        col = vec3(amp);\n\n        #if 1\n        if(ReadKeyToggle(KEY_SHIFT) != 0.0)\n        {\n            // highlight low amplitudes\n            if(amp <= exp2(-8.0)) col = sqrt((amp*exp2(8.0)))* vec3(.0, 0.0, 1.0);\n        }\n        #endif\n        \n        col = clamp01(col);\n    }\t\n    else\n    {\n        // input\n        float n = texelFetch(iChannel0, ivec2(uv0-0.5), 0).x;\n        \n        col = pow(clamp01(vec3(n)), vec3(1.0/2.2));\n    }\n    \n    {\n        vec2 uv = uv0;\n\n        float filterType = texelFetch(iChannel2, ivec2(0, 0), 0).a;\n\n        if(ReadKeyToggle(KEY_CTRL) != 0.0) col = 1.0 - col;\n        \n        // circular filter type indicators\n        uv -= 16.0;    \n        float l = length(uv);\n        col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), filterType == 0.0 ? clamp01(l - 4.0) : 1.0);\n        uv.x -= 24.0;\n        l = length(uv);\n        col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), filterType == 1.0 ? clamp01(l - 4.0) : 1.0);\n        uv.x -= 24.0;\n        l = length(uv);\n        col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), filterType == 2.0 ? clamp01(l - 4.0) : 1.0);\n        uv.x -= 24.0;\n        l = length(uv);\n        col *= min(max(clamp01(l - 9.0), 1.0 - clamp01(l - 4.0)), filterType == 3.0 ? clamp01(l - 2.0) : 1.0);\n        uv.x -= 24.0;\n        l = length(uv);\n        col *= min(max(clamp01(l - 9.0), 1.0 - clamp01(l - 4.0)), filterType == 4.0 ? clamp01(l - 2.0) : 1.0);\n        \n        // square shaped downsampling indicator\n        uv.x -= 32.0;\n        l = max(abs(uv.x), abs(uv.y));\n        col *= min(max(clamp01(l - 10.0), 1.0 - clamp01(l - 6.0)), DO_DOWNSAMPLE_COND ? clamp01(l - 4.0) : 1.0);\n        \n        if(ReadKeyToggle(KEY_CTRL) != 0.0) col = 1.0 - col;\n        \n    }\n\n    outCol = vec4(col, 1.0);\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n#define SIZE (floor(iResolution.y/2.25)*2.)\n\n#define READ_TEXTURE_COND (ReadKeyToggle(KEY_TAB) != 0.0)\n#define DO_DOWNSAMPLE_COND (ReadKeyToggle(KEY_SPACE) != 0.0)\n\n#define rsqrt inversesqrt\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define If(cond, resT, resF) mix(resF, resT, cond)\n\n/* http://keycode.info/ */\n#define KEY_LEFT  37\n#define KEY_UP    38\n#define KEY_RIGHT 39\n#define KEY_DOWN  40\n\n#define KEY_TAB 9\n#define KEY_CTRL 17\n#define KEY_ALT 18\n#define KEY_SHIFT 16\n#define KEY_SPACE 32 \n#define KEY_A 0x41\n#define KEY_D 0x44\n#define KEY_S 0x53\n#define KEY_W 0x57\n\n#define KEY_N1 49\n#define KEY_N2 50\n#define KEY_N3 51\n#define KEY_N4 52\n#define KEY_N5 53\n#define KEY_N6 54\n#define KEY_N7 55\n#define KEY_N8 56\n\nconst float Pi = 3.14159265359;\nconst float Pi05 = Pi * 0.5;\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\n\nvec3 GammaEncode(vec3 x) {return pow(x, vec3(1.0 / 2.2));}\n\nvec2 cossin(float x) { return vec2(cos(x), sin(x)); }\n\nvec2 cmul(vec2 c0, vec2 c1)\n{\n\treturn vec2(c0.x * c1.x - c0.y * c1.y, \n\t\t        c0.y * c1.x + c0.x * c1.y);\n}\n\n\n//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////\n//==============================================================================================================================================//\n\nuint  asuint2(float x) { return x == 0.0 ? 0u : floatBitsToUint(x); }\nuvec2 asuint2(vec2 x) { return uvec2(asuint2(x.x ), asuint2(x.y)); }\nuvec3 asuint2(vec3 x) { return uvec3(asuint2(x.xy), asuint2(x.z)); }\nuvec4 asuint2(vec4 x) { return uvec4(asuint2(x.xy), asuint2(x.zw)); }\n\nfloat Float01(uint x) { return float(    x ) * (1.0 / 4294967296.0); }\nfloat Float11(uint x) { return float(int(x)) * (1.0 / 2147483648.0); }\n\nvec2 Float01(uvec2 x) { return vec2(      x ) * (1.0 / 4294967296.0); }\nvec2 Float11(uvec2 x) { return vec2(ivec2(x)) * (1.0 / 2147483648.0); }\n\nvec3 Float01(uvec3 x) { return vec3(      x ) * (1.0 / 4294967296.0); }\nvec3 Float11(uvec3 x) { return vec3(ivec3(x)) * (1.0 / 2147483648.0); }\n\nvec4 Float01(uvec4 x) { return vec4(      x ) * (1.0 / 4294967296.0); }\nvec4 Float11(uvec4 x) { return vec4(ivec4(x)) * (1.0 / 2147483648.0); }\n\n// http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/\n// https://probablydance.com/2018/06/16/fibonacci-hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/\nconst float rPhif1 =      0.6180340;\nconst vec2  rPhif2 = vec2(0.7548777, 0.5698403);\nconst vec3  rPhif3 = vec3(0.8191725, 0.6710436, 0.5497005);\nconst vec4  rPhif4 = vec4(0.8566749, 0.7338919, 0.6287067, 0.5385973);\n\nconst uint  rPhi1 =       2654435769u;\nconst uvec2 rPhi2 = uvec2(3242174889u, 2447445413u);\nconst uvec3 rPhi3 = uvec3(3518319153u, 2882110345u, 2360945575u);\nconst uvec4 rPhi4 = uvec4(3679390609u, 3152041523u, 2700274805u, 2313257605u);\n\n// low bias version | https://nullprogram.com/blog/2018/07/31/\nuint WellonsHash(uint x)\n{\n    x ^= x >> 16u;\n    x *= 0x7feb352dU;\n    x ^= x >> 15u;\n    x *= 0x846ca68bU;\n    x ^= x >> 16u;\n\n    return x;\n}\n\n// minimal bias version | https://nullprogram.com/blog/2018/07/31/\nuint WellonsHash2(uint x)\n{\n    x ^= x >> 17u;\n    x *= 0xed5ad4bbU;\n    x ^= x >> 11u;\n    x *= 0xac4c1b51U;\n    x ^= x >> 15u;\n    x *= 0x31848babU;\n    x ^= x >> 14u;\n\n    return x;\n}\n\n// http://marc-b-reynolds.github.io/math/2016/03/29/weyl_hash.html\nuint WeylHash(uvec2 c)\n{ \n    return ((c.x * 0x3504f333u) ^ (c.y * 0xf1bbcdcbu)) * 741103597u;\n}\n\n// Pierre L'Ecuyer - \"TABLES OF LINEAR CONGRUENTIAL GENERATORS OF DIFFERENT SIZES AND GOOD LATTICE STRUCTURE\"\n// https://www.ams.org/journals/mcom/1999-68-225/S0025-5718-99-00996-5/S0025-5718-99-00996-5.pdf\nconst uint lcgM = 2891336453u;// ideal for 32 bits with odd c\n\nuint lcg(uint h)\n{\n    return h * lcgM + 0x5C995C6Du;\n}\n\n#define SEED uvec4(0x5C995C6Du, 0x6A3C6A57u, 0xC65536CBu, 0x3563995Fu)\n\n// Melissa E. O’Neill - \"PCG: A Family of Simple Fast Space-Efficient Statistically Good Algorithms for Random Number Generation\"\n// https://www.cs.hmc.edu/tr/hmc-cs-2014-0905.pdf\n\n// Mark Jarzynski & Marc Olano - \"Hash Functions for GPU Rendering\"\n// http://jcgt.org/published/0009/03/02/ | https://www.shadertoy.com/view/XlGcRh\nuvec3 pcg3Mix(uvec3 h)\n{\n    h.x += h.y * h.z; \n    h.y += h.z * h.x; \n    h.z += h.x * h.y;\n    \n    return h;\n}\n\nuvec3 pcg3Permute(uvec3 h)\n{\n    h = pcg3Mix(h);\n\n    h ^= h >> 16u;\n    \n    return pcg3Mix(h);\n}\n\nuvec3 pcg3(inout uint state)\n{\n    state = lcg(state);\n\n    return pcg3Permute(uvec3(2447445413u, state, 3242174889u));\n}\n\nuvec3 pcg3(uvec3 h, uint seed)\n{\n    uvec3 c = (seed << 1u) ^ SEED.xyz;\n    \n    return pcg3Permute(h * lcgM + c);\n}\n\nuvec4 pcg4Mix(uvec4 h)\n{\n    h.x += h.y * h.w; \n    h.y += h.z * h.x; \n    h.z += h.x * h.y;\n    h.w += h.y * h.z;\n    \n    return h;\n}\n\nuvec4 pcg4Permute(uvec4 h)\n{\n    h = pcg4Mix(h);\n\n    h ^= h >> 16u;\n    \n    return pcg4Mix(h);\n}\n\nuvec4 pcg4(inout uint state)\n{\n    state = lcg(state);\n\n    return pcg4Permute(uvec4(2882110345u, state, 3518319153u, 2360945575u));\n}\n\nuvec4 pcg4(uvec4 h, uint seed)\n{\n    uvec4 c = (seed << 1u) ^ SEED;\n\n    return pcg4Permute(h * lcgM + c);\n}\n\nuint pcg(inout uint state)\n{\n    state = lcg(state);\n    \n    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;\n    \n    return (word >> 22u) ^ word;\n}\n\nuint pcg(uint h, uint seed)\n{\n    uint c = (seed << 1u) ^ SEED.x;\n\n    h = h * lcgM + c;\n    \n    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;\n    \n    return (h >> 22u) ^ h;\n}\n\n#undef SEED\n\n//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////\n//==============================================================================================================================================//\n\nvec4  Hash01x4(inout uint state) { return Float01(pcg4(state)   ); }\nvec3  Hash01x3(inout uint state) { return Float01(pcg3(state)   ); }\nvec2  Hash01x2(inout uint state) { return Float01(pcg3(state).xy); }\nfloat Hash01  (inout uint state) { return Float01(pcg (state)   ); }\n\nvec4  Hash11x4(inout uint state) { return Float11(pcg4(state)   ); }\nvec3  Hash11x3(inout uint state) { return Float11(pcg3(state)   ); }\nvec2  Hash11x2(inout uint state) { return Float11(pcg3(state).xy); }\nfloat Hash11  (inout uint state) { return Float11(pcg (state)   ); }\n\n\nvec4 Hash01x4(vec4  v, uint seed) { return Float01(pcg4(asuint2(v), seed)); }\nvec4 Hash01x4(vec3  v, uint seed) { return Hash01x4(vec4(v, 0.0          ), seed); }\nvec4 Hash01x4(vec2  v, uint seed) { return Hash01x4(vec4(v, 0.0, 0.0     ), seed); }\nvec4 Hash01x4(float v, uint seed) { return Hash01x4(vec4(v, 0.0, 0.0, 0.0), seed); }\n\nvec3 Hash01x3(vec4  v, uint seed) { return Float01(pcg4(asuint2(v), seed).xyz); }\nvec3 Hash01x3(vec3  v, uint seed) { return Float01(pcg3(asuint2(v), seed)); }\nvec3 Hash01x3(vec2  v, uint seed) { return Hash01x3(vec3(v, 0.0     ), seed); }\nvec3 Hash01x3(float v, uint seed) { return Hash01x3(vec3(v, 0.0, 0.0), seed); }\n\nvec2 Hash01x2(vec4  v, uint seed) { return Float01(pcg4(asuint2(v), seed).xy); }\nvec2 Hash01x2(vec3  v, uint seed) { return Float01(pcg3(asuint2(v), seed).xy); }\nvec2 Hash01x2(vec2  v, uint seed) { return Hash01x3(vec3(v, 0.0     ), seed).xy; }\nvec2 Hash01x2(float v, uint seed) { return Hash01x3(vec3(v, 0.0, 0.0), seed).xy; }\n\nfloat Hash01(vec4  v, uint seed) { return Float01(pcg4(asuint2(v), seed).x); }\nfloat Hash01(vec3  v, uint seed) { return Float01(pcg3(asuint2(v), seed).x); }\nfloat Hash01(vec2  v, uint seed) { return Float01(pcg3(asuint2(vec3(v, 0.0)), seed).x); }\nfloat Hash01(float v, uint seed) { return Float01(pcg(asuint2(v), seed)); }\n\n\nvec4 Hash11x4(vec4  v, uint seed) { return Float11(pcg4(asuint2(v), seed)); }\nvec4 Hash11x4(vec3  v, uint seed) { return Hash11x4(vec4(v, 0.0          ), seed); }\nvec4 Hash11x4(vec2  v, uint seed) { return Hash11x4(vec4(v, 0.0, 0.0     ), seed); }\nvec4 Hash11x4(float v, uint seed) { return Hash11x4(vec4(v, 0.0, 0.0, 0.0), seed); }\n\nvec3 Hash11x3(vec4  v, uint seed) { return Float11(pcg4(asuint2(v), seed).xyz); }\nvec3 Hash11x3(vec3  v, uint seed) { return Float11(pcg3(asuint2(v), seed)); }\nvec3 Hash11x3(vec2  v, uint seed) { return Hash11x3(vec3(v, 0.0     ), seed); }\nvec3 Hash11x3(float v, uint seed) { return Hash11x3(vec3(v, 0.0, 0.0), seed); }\n\nvec2 Hash11x2(vec4  v, uint seed) { return Float11(pcg4(asuint2(v), seed).xy); }\nvec2 Hash11x2(vec3  v, uint seed) { return Float11(pcg3(asuint2(v), seed).xy); }\nvec2 Hash11x2(vec2  v, uint seed) { return Hash11x3(vec3(v, 0.0     ), seed).xy; }\nvec2 Hash11x2(float v, uint seed) { return Hash11x3(vec3(v, 0.0, 0.0), seed).xy; }\n\nfloat Hash11(vec4  v, uint seed) { return Float11(pcg4(asuint2(v), seed).x); }\nfloat Hash11(vec3  v, uint seed) { return Float11(pcg3(asuint2(v), seed).x); }\nfloat Hash11(vec2  v, uint seed) { return Float11(pcg3(asuint2(vec3(v, 0.0)), seed).x); }\nfloat Hash11(float v, uint seed) { return Float11(pcg(asuint2(v), seed)); }\n\n//==============================================================================================================================================//\n//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////\n\n/*\n    backups\n\n        BloomKernel9B\n    // radial symmetry + half Nyquist = 0 (along x & y)\n        (oa      , ob  )   aliasing       radial symmetry \n        (0.290956, 0.20)   -------------- ------------\n        (0.291459, 0.21)   -----------    -----------\n        (0.291945, 0.22)   --------       ----------\n        (0.292413, 0.23)   -----          ---------\n        (0.292864, 0.24)   ----           --------\n        (0.293298, 0.25)   ---            -------\n        (0.293714, 0.26)   --             ------\n        (0.294112, 0.27)   --             -----\n        (0.294493, 0.28)   -              ----\n        (0.294856, 0.29)   -              ---\n        (0.295202, 0.30)   -              --\n        (0.295266, 0.3019) .              -\n        (0.295531, 0.31)   -              .\n        \n    After playing around some more with different filters in a complete bloom mip chain it seems to me that it is a desirable property for the filter\n    to have an amplitude response that falls off to 0 halfway to Nyquist (in addition to minimizing the stop-band response).\n    The reason being that this way the error in the final effect appears to be more consistent and therefore less noticeable.\n    -> nope, was a problem with texcoord quantization by hardware\n    \n#elif 0\n    // more blurry\n    w0 = 0.1666050;\n    wa = 0.0936696;\n    wb = 0.0781594;\n    wc = 0.0365198;\n\n// non-separable variant, virtually no improvements\nvec4 BloomKernel9(vec2 uv)\n{\n    float w0 = 0.28397;\n\tfloat a = 0.124413;\n\tfloat b = 0.0545943;\n\tfloat oa = 0.75 + 0.5 * 0.262180;\n\tfloat ob = 0.75 + 0.5 * 0.262641;\n\n\tvec4 c = vec4(0.0);\n    c += Read(uv, vec2(0.0)) * w0;\n\n\tc += Read(uv, vec2(-1.0, 0.0) * oa) * a;\n\tc += Read(uv, vec2( 1.0, 0.0) * oa) * a;\n\tc += Read(uv, vec2( 0.0,-1.0) * oa) * a;\n\tc += Read(uv, vec2( 0.0, 1.0) * oa) * a;\n    \n\tc += Read(uv, vec2(-1.0,-1.0) * ob) * b;\n\tc += Read(uv, vec2( 1.0,-1.0) * ob) * b;\n\tc += Read(uv, vec2(-1.0, 1.0) * ob) * b;\n\tc += Read(uv, vec2( 1.0, 1.0) * ob) * b;\n\n\treturn c;\n}\n\n    {\n        // 2x2 box filter\n        v = 0.0;\n        v += Read(uv, vec2(0.0, 0.0)) * 0.25;\n        v += Read(uv, vec2(1.0, 0.0)) * 0.25;\n        v += Read(uv, vec2(0.0, 1.0)) * 0.25;\n        v += Read(uv, vec2(1.0, 1.0)) * 0.25;\n    }\n    \n        float size = SIZE*InputScale;\n        if(uv.x < 0.0) uv.x += size;\n        if(uv.y < 0.0) uv.y += size;\n\n        if(uv.x >= size) uv.x -= size;\n        if(uv.y >= size) uv.y -= size;\n\n        v = Hash01(uv, 0u);\n        \n        v = v > 0.99 ? 8.0 : 0.0;\n        \n// [1/32, 5/32, 10/32, 10/32, 5/32, 1/32]^2\nvec4 Pascal6x6Ref(vec2 uv)\n{\n\tvec4 c = vec4(0.0);\n\tfor(float y = -1.25; y <= 1.25; y += 0.5)\n\tfor(float x = -1.25; x <= 1.25; x += 0.5)\n\t{\n\t\tvec2 o = vec2(x, y);\n\n\t\tfloat wx = abs(o.x) == 0.25 ? 10.0 / 32.0 :\n\t\t\t       abs(o.x) == 0.75 ?  5.0 / 32.0 : 1.0 / 32.0;\n        float wy = abs(o.y) == 0.25 ? 10.0 / 32.0 :\n\t\t\t       abs(o.y) == 0.75 ?  5.0 / 32.0 : 1.0 / 32.0;\n\n\t\tc += Read(uv + 0.5 + o * 2.0) * (wx * wy);\n\t}\n\n\treturn c;\n}\n\nfloat Read2(vec2 uv)\n{\n    //if(ReadKeyToggle(KEY_TAB) != 0.0) \n    return Read(uv);\n    \n    vec2 uvI = floor(uv);\n    vec2 uvF = uv - uvI;\n    \n    return mix(mix(Read(uvI + vec2(0.0, 0.0)), Read(uvI + vec2(1.0, 0.0)), uvF.x),\n               mix(Read(uvI + vec2(0.0, 1.0)), Read(uvI + vec2(1.0, 1.0)), uvF.x), uvF.y);\n}\n\n// \"Bandwidth-Efficient Rendering\" (Siggraph 2015)\nvec4 Moo3x3(vec2 uv)\n{\n    uv += 0.5;\n    float o = 2.0;\n\n    float b = 4.0;// 0 works much better, i.e. a box filter\n\n\tvec4 sum = vec4(0.0, 0.0, 0.0, 0.0);\n\n\tsum += b * Read2(uv);\n\n\tsum += Read2(uv + vec2(-1.0, -1.0) * 0.5 * o);\n\tsum += Read2(uv + vec2( 1.0,  1.0) * 0.5 * o);\n\tsum += Read2(uv + vec2( 1.0, -1.0) * 0.5 * o);\n\tsum += Read2(uv + vec2(-1.0,  1.0) * 0.5 * o);\n    \n    return sum / (b + 4.0);\n}\n\n*/",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\n    test image creation\n*/\n\n\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 2), 0).x;}\nfloat ReadKey(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 0), 0).x;}\n\nvoid mainImage(out vec4 outCol, in vec2 uv0)\n{\n    vec2 uv = floor(uv0);\n\n    float filterType = texelFetch(iChannel1, ivec2(0, 0), 0).a;\n    \n    if(ReadKey(KEY_N1) != 0.0) filterType = 0.0;\n    if(ReadKey(KEY_N2) != 0.0) filterType = 1.0;\n    if(ReadKey(KEY_N3) != 0.0) filterType = 2.0;\n    if(ReadKey(KEY_N4) != 0.0) filterType = 3.0;\n    if(ReadKey(KEY_N5) != 0.0) filterType = 4.0;\n    \n\n    vec2 res = vec2(SIZE);\n    \n    if(READ_TEXTURE_COND) res = iChannelResolution[0].xy;\n    \n    if(uv.x >= res.x) if(uv.x < res.x + 8.0) uv.x -= res.x; else uv.x -= iResolution.x - res.x;\n    if(uv.y >= res.y) if(uv.y < res.y + 8.0) uv.y -= res.y; else uv.y -= iResolution.y - res.y;\n\n   #if 1\n    // jittering\n    if(DO_DOWNSAMPLE_COND)\n    {\n        uint h = uint(iFrame) / 2u;\n        \n        bool a = (h & 1u) != 0u;\n        bool b = (h & 2u) != 0u;\n        \n        if(a != b) uv.x += 1.0;\n        if(b     ) uv.y += 1.0;\n        \n        if(uv.x == res.x) uv.x = 0.0;\n        if(uv.y == res.y) uv.y = 0.0;\n    }\n   #endif\n   \n    ivec2 uvi = ivec2(uv);\n\n    float noise = Hash01(uv, 0u);\n        \n    vec3 col = vec3(noise);\n\n    if(READ_TEXTURE_COND)\n    {\n        col = texelFetch(iChannel0, uvi, 0).rgb;\n\n        col = pow(col, vec3(2.2));    \n    }\n\n    if(ReadKeyToggle(KEY_CTRL) != 0.0) col = vec3(col.r > 0.99 ? 1.0 : 0.0);\n\n    outCol = vec4(col, filterType);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// License: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\n    filtering/downsampling implementation\n*/\n\n\nfloat ReadKeyToggle(int keyCode) {return texelFetch(iChannel3, ivec2(keyCode, 2), 0).x;}\n\nfloat Read(vec2 uv)\n{\n    //uv += off * 2.0;// * 2.0 because offsets assume that the target has a 1/(2x2) lower resolution (which usually is the case (but isn't here))\n    \n    vec2 res = vec2(SIZE);\n\n    if(READ_TEXTURE_COND) res = iChannelResolution[0].xy;\n\n    uv = fract(uv / res) * res;// wrap\n    \n    float v = textureLod(iChannel1, (uv + 0.) / iResolution.xy, 0.0).g;\n        \n    return v;\n}\n\nfloat filterType;// set in mainImage(..)\n\n// 4x4 samples downsampling kernel implemented via 4 bilinear samples\nvec4 BloomKernel4(vec2 uv)\n{\n    // optimal stop band\n    float la = 0.3533943809268811;\n    \n\tfloat oa = 0.5 + la;\n    \n\tvec4 ca = vec4(0.0);\n\tca += Read(uv + vec2(-1.0,-1.0) * oa);\n\tca += Read(uv + vec2( 1.0,-1.0) * oa);\n\tca += Read(uv + vec2(-1.0, 1.0) * oa);\n\tca += Read(uv + vec2( 1.0, 1.0) * oa);\n    \n    return ca * 0.25;\n}\n\n// 24 samples downsampling kernel implemented via 8 bilinear samples\nvec4 BloomKernel8B(vec2 uv)\n{\n#if 1\n    // optimal stop band\n    float la = 0.553811;\n    float lb = 0.35856;    \n#else\n    float la = 0.245966;\n    float lb = 0.333333;\n#endif\n    \n\tvec2 o = vec2(1.5, 0.5) + vec2(la, lb);\n   //o*=.5;\n\tvec4 col = vec4(0.0);\n\tcol += Read(uv + vec2( 1.0, 1.0) * o.xy);\n\tcol += Read(uv + vec2(-1.0, 1.0) * o.xy);\n\tcol += Read(uv + vec2( 1.0,-1.0) * o.xy);\n\tcol += Read(uv + vec2(-1.0,-1.0) * o.xy);\n    \n    col += Read(uv + vec2( 1.0, 1.0) * o.yx);\n\tcol += Read(uv + vec2(-1.0, 1.0) * o.yx);\n\tcol += Read(uv + vec2( 1.0,-1.0) * o.yx);\n\tcol += Read(uv + vec2(-1.0,-1.0) * o.yx);\n    \n    return col * 0.125;\n}\n\n// 24 samples downsampling kernel implemented via 8 bilinear samples\nvec4 BloomKernel8(vec2 uv)\n{\n#if 0\n    // optimal stop band\n    float a = 0.13433339843769723; \n    float la = 0.9108132736411344;\n    float lb = 0.37269896061302266;\n#elif 0\n    float a = 0.0181804; \n    float la = 0.0744041;\n    float lb = 0.370778;\n#elif 0\n    float a = 0.055432; \n    float la = 0.553841;\n    float lb = 0.334987;\n#elif 0\n    float a  = 0.215607; \n    float la = 0.591313;\n    float lb = 0.36029;\n#elif 1\n    // optimal stop band 2\n    float a  = 0.125143; \n    float la = 0.701224;\n    float lb = 0.330373;    \n#else\n    // new Nyquist = 0\n    float a = 0.32761490937746784;\n    float la = 0.5;\n    float lb = 0.5;\n#endif\n    \n\tfloat oa = 1.5 + la;\n\tfloat ob = 0.5 + lb;\n    \n\tvec4 ca = vec4(0.0);\n\tca += Read(uv + vec2(-1.0, 0.0) * oa);\n\tca += Read(uv + vec2( 1.0, 0.0) * oa);\n\tca += Read(uv + vec2( 0.0,-1.0) * oa);\n\tca += Read(uv + vec2( 0.0, 1.0) * oa);\n    \n    vec4 cb = vec4(0.0);\n\tcb += Read(uv + vec2(-1.0,-1.0) * ob);\n\tcb += Read(uv + vec2( 1.0,-1.0) * ob);\n\tcb += Read(uv + vec2(-1.0, 1.0) * ob);\n\tcb += Read(uv + vec2( 1.0, 1.0) * ob);\n    \n    return (cb * (1.0 - a) + ca * a) * 0.25;\n}\n\n// 6x6 downsampling kernel implemented via 9 bilinear samples (non-separable variant)\nvec4 BloomKernel9B(vec2 uv)\n{\n#if 0\n    // optimal stop-band\n    float w0 = 0.28397;\n\tfloat a  = 0.124413;\n\tfloat b  = 0.0545943;\n\tfloat oa = 1.5 + 0.262180;\n\tfloat ob = 1.5 + 0.262641;\n#elif 0\n    // radial symmetry + optimal stop-band\n    float w0 = 0.309247;\n\tfloat a  = 0.129306;\n\tfloat b  = 0.0433824;\n\tfloat oa = 1.5 + 0.25;// ~ 0.246235\n\tfloat ob = 1.5 + (0.125+1.0/32.0);\n#elif 1\n    // radial symmetry + optimal stop-band\n    float w0 = 0.302001;\n\tfloat a  = 0.127963;\n\tfloat b  = 0.0465365;\n\tfloat oa = 1.5 + 0.25;// ~ 0.250795\n\tfloat ob = 1.5 + (0.125+1.0/16.0);    \n#elif 1\n    // params by Mikkel Gjoel;; half Nyquist = 0 (along x & y)\n    // (https://twitter.com/pixelmager/status/1691731512004071785)\n    float w0 = 4.0/16.0;\n\tfloat a  = 2.0/16.0;\n\tfloat b  = 1.0/16.0;\n\tfloat oa = 1.5 + 0.25;\n\tfloat ob = 1.5 + 0.2052; //(1.0 - 0.7948);       \n#elif 1\n    // radial symmetry + half Nyquist = 0 (along x & y)\n    float w0 = 4.0/16.0;\n\tfloat a  = 2.0/16.0;\n\tfloat b  = 1.0/16.0;\n\tfloat oa = 1.5 + 0.292864;\n\tfloat ob = 1.5 + 0.24;\n#else    \n    // optimal stop-band + half Nyquist = 0 (along x & y)\n    float w0 = 4.0/16.0;\n\tfloat a  = 2.0/16.0;\n\tfloat b  = 1.0/16.0;\n\tfloat oa = 1.5 + 0.295266;\n\tfloat ob = 1.5 + 0.3019;\n#endif\n\n    if(filterType == 2.0)\n    {\n        // params by Mikkel Gjoel \n        // (https://twitter.com/pixelmager/status/1691731512004071785)\n        w0 = 4.0/16.0;\n        a  = 2.0/16.0;\n        b  = 1.0/16.0;\n        oa = 1.5 + 0.25;\n        ob = 1.5 + 0.2052; //(1.0 - 0.7948);   \n    }\n\n\tvec4 c = vec4(0.0);\n    c += Read(uv + vec2(0.0)) * w0;\n\n\tc += Read(uv + vec2(-1.0, 0.0) * oa) * a;\n\tc += Read(uv + vec2( 1.0, 0.0) * oa) * a;\n\tc += Read(uv + vec2( 0.0,-1.0) * oa) * a;\n\tc += Read(uv + vec2( 0.0, 1.0) * oa) * a;\n    \n\tc += Read(uv + vec2(-1.0,-1.0) * ob) * b;\n\tc += Read(uv + vec2( 1.0,-1.0) * ob) * b;\n\tc += Read(uv + vec2(-1.0, 1.0) * ob) * b;\n\tc += Read(uv + vec2( 1.0, 1.0) * ob) * b;\n\n\treturn c;\n}\n\n// 6x6 downsampling kernel implemented via 9 bilinear samples\nvec4 BloomKernel9(vec2 uv)\n{\n    float wa, o;\n    \n#if 0\n    // optimal stop band\n    wa = 7.46602 / 32.0;\n\to  = 1.5 + 0.261629;    \n#elif 1\n    // optimal stop band but o is chosen so as to keep frequency response \n    // symmetric despite lower-precision hardware bilinear filtering\n   #if 1\n    wa = 7.49862 / 32.0;\n\to  = 1.5 + (0.25+1.0/64.0);\n   #elif 1\n    wa = 7.44733 / 32.0;\n\to  = 1.5 + (0.25+1.0/128.0);\n   #else\n    wa = 7.37167 / 32.0;\n\to  = 1.5 + 0.25; \n   #endif\n#elif 1\n    // new Nyquist = 0\n    wa = 8.0 / 32.0;\n\to  = 1.5 + 0.297785;\n#elif 0\n    // pascal kernel (gauss approx), no ripples in stop band\n\twa = 6.0 / 32.0;\n\to  = 1.5 + (1.0 / 6.0);\n#endif\n\n\tfloat wb = 1.0 - wa * 2.0;\n\n\tvec4 c = vec4(0.0);\n    c += Read(uv + vec2(0.0)) * (wb * wb);\n\n\tc += Read(uv + vec2(-1.0, 0.0) * o) * (wa * wb);\n\tc += Read(uv + vec2( 1.0, 0.0) * o) * (wa * wb);\n\tc += Read(uv + vec2( 0.0,-1.0) * o) * (wa * wb);\n\tc += Read(uv + vec2( 0.0, 1.0) * o) * (wa * wb);\n    \n\tc += Read(uv + vec2(-1.0,-1.0) * o) * (wa * wa);\n\tc += Read(uv + vec2( 1.0,-1.0) * o) * (wa * wa);\n\tc += Read(uv + vec2(-1.0, 1.0) * o) * (wa * wa);\n\tc += Read(uv + vec2( 1.0, 1.0) * o) * (wa * wa);\n\n\treturn c;\n}\n\n// original 13 samples kernel design: \"Next Generation Post Processing in Call of Duty Advanced Warfare\" (Siggraph 2014)\n// http://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare\n\n// 6x6 downsampling kernel implemented via 13 bilinear samples\nvec4 BloomKernel13(vec2 uv)\n{\n    float w0, wa, wb, wc;\n    \n#if 1\n    // optimal stop band\n    w0 = 0.173633;\n    wa = 0.0991668;\n    wb = 0.0744867;\n    wc = 0.0329382;    \n#elif 0\n    // radial symmetry\n    w0 = 0.144622;\n    wa = 0.105596;\n    wb = 0.0822943;\n    wc = 0.0259547;\n#elif 0\n    // hybrid\n    w0 = 0.15377;\n    wa = 0.106554;\n    wb = 0.0781547;\n    wc = 0.0268489;\n#else\n    // original weights (new Nyquist = 0)\n    w0 = 4.0/32.0;// 0.125\n    wa = 4.0/32.0;// 0.125\n    wb = 2.0/32.0;// 0.0625\n    wc = 1.0/32.0;// 0.03125\n#endif\n\n    if(filterType == 4.0)\n    {\n        // original weights (new Nyquist = 0)\n        w0 = 4.0/32.0;// 0.125\n        wa = 4.0/32.0;// 0.125\n        wb = 2.0/32.0;// 0.0625\n        wc = 1.0/32.0;// 0.03125\n    }\n\n\tvec4 c = vec4(0.0);\n\n\tc += w0 * Read(uv + vec2(0.0));\n\n\tc += wa * Read(uv + vec2(-1.0,-1.0));\n\tc += wa * Read(uv + vec2( 1.0, 1.0));\n\tc += wa * Read(uv + vec2( 1.0,-1.0));\n\tc += wa * Read(uv + vec2(-1.0, 1.0));\n\n\tc += wb * Read(uv + vec2( 2.0, 0.0));\n\tc += wb * Read(uv + vec2(-2.0, 0.0));\n\tc += wb * Read(uv + vec2( 0.0, 2.0));\n\tc += wb * Read(uv + vec2( 0.0,-2.0));\n\n\tc += wc * Read(uv + vec2( 2.0, 2.0));\n\tc += wc * Read(uv + vec2(-2.0, 2.0));\n\tc += wc * Read(uv + vec2( 2.0,-2.0));\n\tc += wc * Read(uv + vec2(-2.0,-2.0));\n    \n    return c;\n}\n\nvoid mainImage(out vec4 outCol, in vec2 uv0)\n{\n    if(uv0.x > SIZE || uv0.y > SIZE)\n    {\n        discard;\n    }\n    \n    filterType = texelFetch(iChannel1, ivec2(0, 0), 0).a;\n    \n    vec2 uv = floor(uv0);\n        \n    if(DO_DOWNSAMPLE_COND) uv *= 2.0;\n    \n    float v = 0.0;\n\n    if(filterType == 0.0)\n    {     \n        v = BloomKernel9(uv).r;\n    }\n    else if(filterType == 1.0 ||\n            filterType == 2.0)\n    {     \n        v = BloomKernel9B(uv).r;\n    }\n    else\n    {        \n        v = BloomKernel13(uv).r;\n    }\n    \n    outCol = vec4(v, 0.0, 0.0, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Horizontal + Vertical Discrete Fourier Transform of the input \n//adapted from FabriceNeyret2's https://www.shadertoy.com/view/XtScWt\n\nvec2 cmul (vec2 a,float b) { return mat2(a,-a.y,a.x) * vec2(cos(b),sin(b)); } \n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord )\n{\n   \tfragColor = vec4(0);\n    \n    vec2 uv = fragCoord.xy - 0.5;\n    \n    if(fragCoord.x >= SIZE || fragCoord.y >= SIZE) {fragColor = vec4(0.01); return;}\n    \n    for(float i = 0.; i < SIZE; i++)  \n\t{\n\t\tvec2 xn = texelFetch(iChannel0, ivec2(i, uv.y), 0).rg;\n        //vec2 yn = texelFetch(iChannel0, ivec2(uv.x, i), 0).ba;\n\t\tvec2 ang = - 6.2831853 * (uv -SIZE/2.) * i/SIZE;\n\t\tfragColor.zw += cmul(xn, ang.x);\n\t\t//fragColor.xy += cmul(yn, ang.y);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Horizontal + Vertical Discrete Fourier Transform of the input \n//adapted from FabriceNeyret2's https://www.shadertoy.com/view/XtScWt\n\nvec2 cmul (vec2 a,float b) { return mat2(a,-a.y,a.x) * vec2(cos(b),sin(b)); } \n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord )\n{\n   \tfragColor = vec4(0);\n    \n    vec2 uv = fragCoord.xy - 0.5;\n    \n    if(fragCoord.x >= SIZE || fragCoord.y >= SIZE) {fragColor = vec4(0.01); return;}\n    \n    for(float i = 0.; i < SIZE; i++)  \n\t{\n\t\t//vec2 xn = texelFetch(iChannel0, ivec2(i, uv.y), 0).rg;\n        vec2 yn = texelFetch(iChannel0, ivec2(uv.x, i), 0).ba;\n\t\tvec2 ang = - 6.2831853 * (uv -SIZE/2.) * i/SIZE;\n\t\t//fragColor.zw += cmul(xn, ang.x);\n\t\tfragColor.xy += cmul(yn, ang.y);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

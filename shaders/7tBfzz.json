@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1651705617",
+            "description": "Terrain raymarching, but with a few special techniques that radically improve performance and reduce artifacts, particularly at glancing angles.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7tBfzz",
+            "likes": 12,
+            "name": "Fast SDF Terrain",
+            "published": 3,
+            "tags": [
+                "ray",
+                "terrain",
+                "sdf",
+                "march"
+            ],
+            "usePreview": 0,
+            "username": "zesterer",
+            "viewed": 914
+        },
+        "renderpass": [
+            {
+                "code": "#define DEBUG false\n#define CAMERA_CONTROL false\n\nconst float PLANCK = 0.01;\n\nvec4 sdf_union(vec4 a, vec4 b) {\n    return a.w < b.w ? a : b;\n}\n\nfloat sdf(vec3 pos) {\n    float height = (\n        texture(iChannel1, pos.xy * 0.002).x +\n        texture(iChannel1, pos.xy * 0.02).x * 0.1 +\n        texture(iChannel1, pos.xy * 0.1).x * 0.03\n    ) * 30.0;\n    float ao = min(pow(texture(iChannel1, pos.xy * 0.02).x * 2.0, 1.5), 1.0);\n    \n    return pos.z - height;\n}\n\nvec3 sdf_col(vec3 pos, vec3 norm) {\n    float ao = min(texture(iChannel1, pos.xy * 0.1).x * 2.0, 1.0);\n    return ao\n        * mix(vec3(1.0, 0.5, 0.2), vec3(0, 1, 0), clamp((-norm.z - 0.5) * 2.0, 0.0, 1.0));\n}\n\nvec3 sdf_norm(vec3 pos) {\n    const float NORM_PLANCK = PLANCK * 5.0;\n    float d000 = sdf(pos);\n    float d100 = sdf(pos + vec3(NORM_PLANCK, 0.0, 0.0));\n    float d010 = sdf(pos + vec3(0.0, NORM_PLANCK, 0.0));\n    float d001 = sdf(pos + vec3(0.0, 0.0, NORM_PLANCK));\n    \n    return normalize(d000 - vec3(d100, d010, d001));\n}\n\nconst int MAX_ITER = 256;\n\nfloat march(vec3 pos, vec3 dir, out bool hit, out int i, out float min_d) {\n    // Always jump at least this far, massively speeding up glancing rays\n    // This comes at the cost of resolving surface details, but we can hack this parameter with distance to reduce this\n    const float MIN_JUMP = PLANCK * 10.0;\n    const float MIN_JUMP_FACTOR = 0.003;\n\n    // Remember the surface we got closest to during march and use that *as* the surface\n    min_d = 100000.0;\n    float min_t = 0.0;\n    \n    float t = 0.0;\n    for (i = 0; i < MAX_ITER; i ++) {\n        float d = sdf(pos + dir * t);\n        \n        if (abs(d) < PLANCK * t * 0.1) {\n            hit = true;\n            return t;\n        } else if (d < min_d) {\n            min_d = d;\n            min_t = t;\n        } else if (t > 2000.0) {\n            hit = false;\n            return 10000.0;\n        }\n        \n        t += d * (0.4 + t * MIN_JUMP_FACTOR + MIN_JUMP);\n    }\n    \n    hit = true;\n    return min_t;\n}\n\nvec3 ray_dir(vec3 z_up, vec3 dir, float fov, float aspect, vec2 uv) {\n    vec3 right = normalize(cross(z_up, dir));\n    vec3 up = cross(dir, right);\n    return normalize(dir + right * uv.x * aspect * fov + up * uv.y * fov);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy * 2.0 - 1.0;\n    \n    vec3 origin = vec3(0, 0, 25);\n    vec2 angle = (iMouse.xy/iResolution.xy * 2.0 - vec2(1.0, 0.5)) * vec2(-5, -2.5) - vec2(0, 5);\n    vec2 ldir = vec2(sin(angle.x), cos(angle.x));\n    vec3 cpos = vec3(ldir * max(cos(angle.y), 0.01), sin(angle.y)) * 50.0 + origin;\n    \n    if (!CAMERA_CONTROL) {\n        cpos.xy = vec2(sin(iTime), cos(iTime * 1.5)) * 50.0 + 20.0;\n    }\n    \n    vec3 cdir = normalize(origin - cpos);\n    \n    vec3 dir = ray_dir(vec3(0, 0, 1), cdir, 0.8, 1.5, uv);\n    \n    float sun_angle = iTime * 0.2 * 0.0 + 3.3;\n    vec3 sun_dir = normalize(vec3(0, cos(sun_angle), sin(sun_angle)));\n    vec3 sky = vec3(0.5, 0.5, 1.0);\n    \n    bool hit;\n    int n;\n    float min_d;\n    float t = march(cpos, dir, hit, n, min_d);\n    vec3 pos = cpos + dir * t;\n    \n    vec3 col = sky;\n    if (hit) {\n        vec3 norm = sdf_norm(pos);\n        vec3 surf = sdf_col(pos, norm);\n        float specular = pow(max(0.0, dot(reflect(dir, norm), -sun_dir)), 5.0);\n        \n        bool _hit;\n        int _n;\n        float _min_d;\n        float shadow = clamp((march(pos - norm * 0.3, -sun_dir, _hit, _n, _min_d) - 100.0), 0.0, 1.0);\n        \n        float occlusion = min(max(dot(sun_dir, norm), 0.0), shadow);\n        col = surf * ((1.0 + specular) * occlusion * 0.85 + 0.15);\n    }\n    col = mix(sky, col, min(1.0 / exp(0.002 * t), 1.0));\n    \n    if (DEBUG && iMouse.z > 0.0) {\n        col = vec3(float(n) / float(MAX_ITER), min_d, 0);\n    }\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

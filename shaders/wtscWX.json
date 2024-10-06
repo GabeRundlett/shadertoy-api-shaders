@@ -1,0 +1,82 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1640450200",
+            "description": "A test of smooth corners using neighbor rules on a voxel grid. I tried using 8-neighborhoods to define the shape but it was too slow, so horizontal neighbors only.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wtscWX",
+            "likes": 6,
+            "name": "Subterranean city",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "voxels",
+                "city",
+                "dark"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 255
+        },
+        "renderpass": [
+            {
+                "code": "#define PI 3.141593\n#define MAX_VOXELS 200\n#define MAXSTEP 50\n#define TOL 0.001\n#define FDIST 0.5\n\n#define PERIOD 11.\n#define BUILDINGRAD 4.\n\n#define GAMMA 0.5\nstruct Hit {\n    float t;\n    int mat;\n    vec3 n;\n    vec3 id;\n};\n    \nfloat noise2d(in vec2 uv) {\n    return fract(814.*sin(uv.x*15829.+uv.y*874.));\n}\n\nfloat hash( in vec3 P )\n{\n    //  https://github.com/BrianSharpe/Wombat/blob/master/Value3D.glsl\n\n    // establish our grid cell and unit position\n    vec3 Pi = floor(P);\n    vec3 Pf = P - Pi;\n    vec3 Pf_min1 = Pf - 1.0;\n\n    // clamp the domain\n    Pi.xyz = Pi.xyz - floor(Pi.xyz * ( 1.0 / 69.0 )) * 69.0;\n    vec3 Pi_inc1 = step( Pi, vec3( 69.0 - 1.5 ) ) * ( Pi + 1.0 );\n\n    // calculate the hash\n    vec4 Pt = vec4( Pi.xy, Pi_inc1.xy ) + vec2( 50.0, 161.0 ).xyxy;\n    Pt *= Pt;\n    Pt = Pt.xzxz * Pt.yyww;\n    vec2 hash_mod = vec2( 1.0 / ( 635.298681 + vec2( Pi.z, Pi_inc1.z ) * 48.500388 ) );\n    vec4 hash_lowz = fract( Pt * hash_mod.xxxx );\n    vec4 hash_highz = fract( Pt * hash_mod.yyyy );\n\n    //\tblend the results and return\n    vec3 blend = Pf * Pf * Pf * (Pf * (Pf * 6.0 - 15.0) + 10.0);\n    vec4 res0 = mix( hash_lowz, hash_highz, blend.z );\n    vec4 blend2 = vec4( blend.xy, vec2( 1.0 - blend.xy ) );\n    return dot( res0, blend2.zxzx * blend2.wwyy );\n}\n\nvec2 condmin(in vec2 d1, in vec2 d2) {\n    return vec2(min(d1.x, d2.x), mix(d1.y, d2.y, step(d2.x, d1.x)));\n}\n    \nfloat occupancy(in vec3 id, out int mat) {\n    vec2 block = floor(id.xy/PERIOD+0.5);\n    vec3 modid = vec3(mod(id.xy+0.5*PERIOD, PERIOD)-0.5*PERIOD, id.z);\n    float randval1 = noise2d(block);\n    float randval2 = noise2d(vec2(block.y, randval1));\n    \n    vec2 mindist = vec2(max(modid.z-1., PERIOD*0.5 - length(modid.xy)), 3.); //base\n    vec2 buildings = vec2(max(length(modid.xy)-BUILDINGRAD, -30.+modid.z-100.*randval2), 2.);\n    buildings.x = max(buildings.x, -length(vec2(mix(modid.x, modid.y, mod(floor(modid.z/4.), 2.0)), mod(modid.z, 4.)-2.)) + 2.);\n    mindist = condmin(mindist, buildings);\n    vec2 ground = vec2(modid.z + 10. * hash(id/10.), 1.0);\n    ground.x = min(ground.x, -modid.z+30. - 20. * hash(id/10.));\n    mindist = mix(mindist, ground, step(0.2, randval1));\n    float occ = step(mindist.x, 0.5);\n    mat = int(occ * round(mindist.y));\n    return occ;\n}\n\nfloat map(in vec3 ro, bool occ00, bool occ01, bool occ10, bool occ11) {\n    vec3 offsets = vec3(-1.,0.,1);\n    ro -= 0.5;\n    float height = 100.;\n    if (occ00)\n    \theight = min(height, length(max(vec2(0.), -ro.xy)));\n    if (occ11)\n    \theight = min(height, length(max(vec2(0.), ro.xy*offsets.zz)));\n    if (occ10)\n        height = min(height, length(max(vec2(0.), ro.xy*offsets.zx)));\n    if (occ01)\n        height = min(height, length(max(vec2(0.), ro.xy*offsets.xz)));\n    if (occ11 && occ00) {\n        height = min(height, 0.5-min(length(ro.xy + 0.5*offsets.zx), length(ro.xy+0.5*offsets.xz)));\n    }\n    if (occ01 && occ10) {\n        height = min(height, 0.5-min(length(ro.xy + 0.5*offsets.xx), length(ro.xy+0.5*offsets.zz)));\n    }\n    height -= 0.3;\n    return max(height, abs(ro.z)-0.5);\n}\n\nvec3 getnormal(vec3 ro, bool occ00, bool occ01, bool occ10, bool occ11) {\n    vec2 d = vec2(TOL, 0.0);\n    return normalize(vec3(\n        map(ro+d.xyy, occ00, occ01, occ10, occ11)-map(ro-d.xyy, occ00, occ01, occ10, occ11),\n        map(ro+d.yxy, occ00, occ01, occ10, occ11)-map(ro-d.yxy, occ00, occ01, occ10, occ11),\n        map(ro+d.yyx, occ00, occ01, occ10, occ11)-map(ro-d.yyx, occ00, occ01, occ10, occ11)));\n}\n\nHit voxtrace(in vec3 ro, in vec3 rd) {\n    Hit h;\n    h.mat = 0;\n    h.t = 0.;\n    // box marching with fb39ca4's DDA\n    h.id = floor(ro);        \n    vec3 ri = 1.0/rd;\n    vec3 rs = sign(rd);\n    vec3 dis = (h.id-ro + 0.5 + rs*0.5) * ri;\n    vec3 mm = vec3(0.0);\n    for (int i=0; i<MAX_VOXELS; i++) {\n        mm = step(dis.xyz, dis.yzx) * step(dis.xyz, dis.zxy);\n\t\tdis += mm * rs * ri;\n        h.id += mm * rs;\n        \n        //h.n = -mm*rs;\n\n        //find all 8 corner states\n        /*vec3 offsets = vec3(-1.,0.,1);\n        int neighbormat; //TODO: force neighbor to be same material?\n        bool occ000 = occupancy(h.id, neighbormat) > 0.5;\n        bool occ001 = occupancy(h.id+offsets.yyx, neighbormat) > 0.5;\n        bool occ010 = occupancy(h.id+offsets.yxy, neighbormat) > 0.5;\n        bool occ011 = occupancy(h.id+offsets.yxx, neighbormat) > 0.5;\n        bool occ100 = occupancy(h.id+offsets.xyy, neighbormat) > 0.5;\n        bool occ101 = occupancy(h.id+offsets.xyx, neighbormat) > 0.5;\n        bool occ110 = occupancy(h.id+offsets.xxy, neighbormat) > 0.5;\n        bool occ111 = occupancy(h.id+offsets.xxx, neighbormat) > 0.5;*/\n\n        vec3 offsets = vec3(-1.,0.,1);\n        int neighbormat[4];\n        bool occs[4];\n        occs[0] = occupancy(h.id, neighbormat[0]) > 0.5; //00\n        occs[1] = occupancy(h.id+offsets.yxy, neighbormat[1]) > 0.5; //01\n        occs[2] = occupancy(h.id+offsets.xyy, neighbormat[2]) > 0.5; //10\n        occs[3] = occupancy(h.id+offsets.xxy, neighbormat[3]) > 0.5; //11\n        if (occs[0] || occs[1] || occs[2] || occs[3]) {\n            for (int k=0; k<4; k++) {\n                if (occs[k]) {\n                    h.mat = neighbormat[k];\n                    break;\n                }\n            }\n            vec3 mini = (h.id-ro + 0.5 - 0.5*vec3(rs))*ri;\n            float t_enter = max ( mini.x, max ( mini.y, mini.z ) );\n            vec3 maxi = (h.id-ro + 0.5 + 0.5*vec3(rs))*ri;\n            float t_exit = min ( maxi.x, min ( maxi.y, maxi.z ) );\n            \n            float dt = t_exit - t_enter;\n            \n            //raymarch\n            float t = 0.0;\n            vec3 eye = ro + rd * t_enter - h.id;\n            for (int i=0; i<MAXSTEP; i++) {\n                vec3 modpos2 = eye + rd*t;\n                float height = map(modpos2, occs[0], occs[1], occs[2], occs[3]);\n                t += height;\n                if (abs(height) < TOL) {\n                    h.t = t_enter + t;\n                    h.n = getnormal(eye + rd * t, occs[0], occs[1], occs[2], occs[3]);\n                    return h;\n                } else if (t < 0.0) {\n                    h.t = t_enter + t;\n                    return h;\n                } else if (t > dt) break;\n            }\n            h.t = t_exit;\n    \t}\n    }\n    \n    \n\t     \n    return h;\n}\n\n/*vec2 raymarch(in vec3 ro, in vec3 rd) {\n    float t = 0.0;\n    for (int i=0; i<MAXSTEP; i++) {\n        vec3 pos = eye + rd*t;\n        float dist = map(pos);\n        t += dist;\n        if (abs(dist) < TOL) {\n            return vec2(t, 1.0);\n        } else if (t > MAXDIST) break;\n    }\n    return vec2(t, 0.0);\n}*/\n\n#define sampleTriplanar(dir2, pos, tex) dir2.x * texture(tex, pos.yz).xyz + dir2.y * texture(tex, pos.zx).xyz + dir2.z * texture(tex, pos.xy).xyz\n\nvec3 shade(in vec3 n, in int mat, in vec3 pos, in vec3 lightpos) {\n    vec3 n2 = n*n;\n    vec3 albedo = vec3(0.);\n    if (mat == 0) {\n        return vec3(0.);\n    }\n    else if (mat == 1) {\n        albedo = sampleTriplanar(n2, (pos/5.), iChannel0);\n    } else if (mat == 2) {\n        albedo = sampleTriplanar(n2, pos, iChannel1);\n    } else {\n        albedo = sampleTriplanar(n2, (pos/10.), iChannel2);\n    }\n    vec3 lightdiff = lightpos - pos;\n    float lightdist = length(lightdiff);\n    lightdiff /= lightdist;\n    float lightfac = max(0., dot(lightdiff, n)) / (lightdist * lightdist) * 10.;\n    return albedo * lightfac;\n    // n*.25+.25 + vec3(mat)/4.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float mouseY = iMouse.y < 1. ? 0. : (0.5-iMouse.y/iResolution.y) * PI;\n    float mouseX = iMouse.x < 1. ? iTime*0.25 : -(iMouse.x/iResolution.x) * 2. * PI;\n    vec2 uv = (fragCoord - 0.5*iResolution.xy)/iResolution.x;\n\tvec3 eye = vec3(PERIOD*0.6, iTime * 9., 6.1);\n    vec3 w = vec3(cos(mouseX) * cos(mouseY), sin(mouseX) * cos(mouseY), -sin(mouseY));\n    vec3 u = normalize(cross(w, vec3(0., 0., 1.)));\n    vec3 v = cross(u, w);\n    vec3 rd = normalize(FDIST*w + uv.x*u + uv.y*v);\n    \n    Hit h = voxtrace(eye, rd);\n    vec3 pos = eye + rd * h.t;\n    vec3 col = shade(h.n, h.mat, pos, eye);\n    fragColor = vec4(pow(col, vec3(GAMMA)), 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

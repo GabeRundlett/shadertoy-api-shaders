@@ -1,0 +1,145 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1669209420",
+            "description": "Based on https://hal.inria.fr/inria-00596050/document,\nfound in https://www.shadertoy.com/view/4tGfDW.\nIt's my first EDP's implementation i'm new on this topic.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "msXSRB",
+            "likes": 17,
+            "name": "Water effect (use mouse)",
+            "published": 3,
+            "tags": [
+                "water",
+                "navier",
+                "stokes"
+            ],
+            "usePreview": 0,
+            "username": "rubioh",
+            "viewed": 418
+        },
+        "renderpass": [
+            {
+                "code": "#define A(u) texture(iChannel0, u)\n#define PI 3.14159\n#define dx vec2(1./iResolution.x, 0)\n#define dy vec2(0, 1./iResolution.y)\n\nfloat smooth_damier(vec2 uv){\n    float a = (.32035*atan(sin(PI*uv.x)/0.05)+.5);\n    float b = (.32035*atan(sin(PI*uv.y)/0.05)+.5);\n    return a*(1.-b)+b*(1.-a);\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uvf = (fragCoord.xy/iResolution.xy);\n    ivec2 uv = ivec2(fragCoord.xy);\n\n\n    float D = texture(iChannel0, uvf).z;\n    vec4 sl = A(uvf-dx);\n    vec4 sr = A(uvf+dx);\n    vec4 su = A(uvf-dy);\n    vec4 sd = A(uvf+dy);\n           \n    vec3 normal = normalize(vec3(uvf, sl.z-sr.z) + vec3(uvf, su.z-sd.z) + vec3(uvf, D));\n    \n\n    vec3 col = vec3(.0, .7, .8)*.7;\n    \n    vec3 ld = vec3(1.,1.,2.);\n    \n    vec3 rd = vec3(uvf, -1.);\n    \n    float L = dot(normal, ld);\n    L = pow(L, .5);\n\n    // Some refraction effect\n    vec3 rr = refract(rd, normal, .1);\n    vec3 ro = vec3(uv, D);\n    float depth = -ro.z/rr.z*20.;\n    vec2 st = (ro+rr*depth).xy;\n    \n    // Smoothed version of a chessboard\n    float d = clamp(smooth_damier(st/40.)+.6, 0., 1.);\n\n    // Ambient + Diffuse lightning\n    col = col*L*4. + 5.*col*(.5+.5*normal.z);\n    \n    // Gamma correction\n    col = vec3(3.*pow(d*col/8., vec3(3.)));\n    \n    fragColor = vec4(col, 1.);\n    }\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float v = .2; // Viscosity factor\nconst float K = .1; // Normalization factor\nconst float dt = .1; // delta t\nconst float kappa = .6; // Diffusion factor\nconst float N = 2.; // Advection factor\n\n\nfloat Bound(vec2 uvf){\n    float res;\n    res = 1.-smoothstep(.49, .5, abs(uvf.y-0.5)); \n    res *= 1.- smoothstep(.49, .5, abs(uvf.x-0.5));\n    return res;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define A(u) textureLod(iChannel0, u, 0.)\n#define R iResolution.xy\n#define dx vec2(1./iResolution.x, 0)\n#define dy vec2(0, 1./iResolution.y)\nvec4 init_lattice(vec2 uv){\n    return vec4(0.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    vec2 m = (vec2(cos(iTime*3.), sin(iTime*6.))*.3+.5);\n    if (iMouse.z > 0.){\n        m = iMouse.xy/iResolution.xy;\n    }\n    ivec2 uv = ivec2(fragCoord.xy);\n    vec2 uvf = fragCoord.xy/R.xy;\n    \n    vec4 state;    \n    // Init lattice\n    if (iFrame < 1){\n        state = init_lattice(uvf);\n    }    \n        \n    else{\n        // X,Y is for velocity, Z for density, W is not used here.\n        state = A(uvf);                \n               \n        float S = K/dt;\n        vec4 sl = A(uvf-dx);\n        vec4 sr = A(uvf+dx);\n        vec4 su = A(uvf-dy);\n        vec4 sd = A(uvf+dy);\n        \n        \n        vec4 Udx = (sr-sl)*.5; // Differential respect to x\n        vec4 Udy = (su-sd)*.5; // Differential respect to y\n        \n        float Udiv = Udx.x + Udy.y; // Velocity divergence\n        vec2 DdX = vec2(Udx.z, Udy.z); // density's gradient\n        \n        // Diffusion        \n        state.z -= kappa*dt* dot(vec3(DdX, Udiv), state.xyz);        \n        \n        // Pressure Thing's\n        vec2 PdX = S*DdX; // grad P = K * grad rho\n        vec2 L = (sl.xy + sr.xy + su.xy + sd.xy) - 4.*state.xy; // velocity's laplacian \n        vec2 viscosity = v*L; \n\n        // Semi Lagrangian advection\n        vec2 where = uvf - (dt*state.xy)*N/iResolution.xy; \n        state.xy = A(where).xy;\n        \n        // Correct the advection to reduce the divergence. \n        // It's not a real constraint on divergence since the divergences is not 0\n        // after this correction. \n        // But it correct it enough to allow a full explicit scheme of the equation\n        state.xy += dt*(viscosity - PdX);\n        \n        // Change density when click\n        state.z += 3.*(1.-smoothstep(0., .02, length(uvf-m)));\n        \n        // Boundaries\n        state.xy *= Bound(uvf);\n        \n        state.z *= .999; // Stability\n\n        // Clamping in order to mitigate exploding scheme. This setting is completly arbitrary\n        state = clamp(state, vec4(vec2(-10.), .5, -10.), vec4(vec2(10), 3., 10.));\n    }\n    \n    \n    fragColor = state;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define A(u) textureLod(iChannel0, u, 0.)\n#define R iResolution.xy\n#define dx vec2(1./iResolution.x, 0)\n#define dy vec2(0, 1./iResolution.y)\nvec4 init_lattice(vec2 uv){\n    return vec4(0.);\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n\n    ivec2 uv = ivec2(fragCoord.xy);\n    vec2 uvf = fragCoord.xy/R.xy;\n    \n    vec4 state;    \n    // Init lattice\n    if (iFrame < 1){\n        state = init_lattice(uvf);\n    }    \n        \n    else{\n        // X,Y is for velocity, Z for density, W is not used here.\n        state = A(uvf);                \n               \n        float S = K/dt;\n        vec4 sl = A(uvf-dx);\n        vec4 sr = A(uvf+dx);\n        vec4 su = A(uvf-dy);\n        vec4 sd = A(uvf+dy);\n        \n        \n        vec4 Udx = (sr-sl)*.5; // Differential respect to x\n        vec4 Udy = (su-sd)*.5; // Differential respect to y\n        \n        float Udiv = Udx.x + Udy.y; // Velocity divergence\n        vec2 DdX = vec2(Udx.z, Udy.z); // density's gradient\n        \n        // Diffusion        \n        state.z -= kappa*dt* dot(vec3(DdX, Udiv), state.xyz);        \n        \n        // Pressure Thing's\n        vec2 PdX = S*DdX; // grad P = K * grad rho\n        vec2 L = (sl.xy + sr.xy + su.xy + sd.xy) - 4.*state.xy; // velocity's laplacian \n        vec2 viscosity = v*L; \n\n        // Semi Lagrangian advection\n        vec2 where = uvf - (dt*state.xy)*N/iResolution.xy; \n        state.xy = A(where).xy;\n        \n        // Correct the advection to reduce the divergence. \n        // It's not a real constraint on divergence since the divergences is not 0\n        // after this correction. \n        // But it correct it enough to allow a full explicit scheme of the equation\n        state.xy += dt*(viscosity - PdX);\n        \n        // Boundaries\n        state.xy *= Bound(uvf); \n\n        // Clamping in order to mitigate exploding scheme. This setting is completly arbitrary\n        state = clamp(state, vec4(vec2(-10.), .5, -10.), vec4(vec2(10), 3., 10.));\n    }\n    \n    \n    fragColor = state;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define A(u) textureLod(iChannel0, u, 0.)\n#define R iResolution.xy\n#define dx vec2(1./iResolution.x, 0)\n#define dy vec2(0, 1./iResolution.y)\nvec4 init_lattice(vec2 uv){\n    return vec4(0.);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n\n    ivec2 uv = ivec2(fragCoord.xy);\n    vec2 uvf = fragCoord.xy/R.xy;\n    \n    vec4 state;    \n    // Init lattice\n    if (iFrame < 1){\n        state = init_lattice(uvf);\n    }    \n        \n    else{\n        // X,Y is for velocity, Z for density, W is not used here.\n        state = A(uvf);                \n               \n        float S = K/dt;\n        vec4 sl = A(uvf-dx);\n        vec4 sr = A(uvf+dx);\n        vec4 su = A(uvf-dy);\n        vec4 sd = A(uvf+dy);\n        \n        \n        vec4 Udx = (sr-sl)*.5; // Differential respect to x\n        vec4 Udy = (su-sd)*.5; // Differential respect to y\n        \n        float Udiv = Udx.x + Udy.y; // Velocity divergence\n        vec2 DdX = vec2(Udx.z, Udy.z); // density's gradient\n        \n        // Diffusion        \n        state.z -= kappa*dt* dot(vec3(DdX, Udiv), state.xyz);        \n        \n        // Pressure Thing's\n        vec2 PdX = S*DdX; // grad P = K * grad rho\n        vec2 L = (sl.xy + sr.xy + su.xy + sd.xy) - 4.*state.xy; // velocity's laplacian \n        vec2 viscosity = v*L; \n\n        // Semi Lagrangian advection\n        vec2 where = uvf - (dt*state.xy)*N/iResolution.xy; \n        state.xy = A(where).xy;\n        \n        // Correct the advection to reduce the divergence. \n        // It's not a real constraint on divergence since the divergences is not 0\n        // after this correction. \n        // But it correct it enough to allow a full explicit scheme of the equation\n        state.xy += dt*(viscosity - PdX);\n                \n        // Boundaries\n        state.xy *= Bound(uvf); \n\n        // Clamping in order to mitigate exploding scheme. This setting is completly arbitrary\n        state = clamp(state, vec4(vec2(-10.), .5, -10.), vec4(vec2(10), 3., 10.));\n    }\n    \n    \n    fragColor = state;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

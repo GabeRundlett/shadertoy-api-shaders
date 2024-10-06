@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1611461651",
+            "description": "Based on https://www.scratchapixel.com/lessons/procedural-generation-virtual-worlds/simulating-sky/simulating-colors-of-the-sky\nCurrenty has a bug in it",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "3lVyRc",
+            "likes": 9,
+            "name": "Nishita sky Equirectangular",
+            "published": 3,
+            "tags": [
+                "skyboxnishita"
+            ],
+            "usePreview": 0,
+            "username": "AlexApps99",
+            "viewed": 1425
+        },
+        "renderpass": [
+            {
+                "code": "// Nishita sky equirectangular\n// I have run into a strange bug and am not sure why it occurs\n// Check it out by uncommenting the line below\n//#define BUG\n// If you have any idea why this jittering occurs please let me know\n// Likely something to do with the integrals\n\n// Based on:\n// https://www.scratchapixel.com/lessons/procedural-generation-virtual-worlds/simulating-sky/simulating-colors-of-the-sky\nconst float Re = 6360e3;\nconst float Ra = 6420e3;\nconst float Hr = 7994.0;\nconst vec3 betaR = vec3(3.8e-6, 13.5e-6, 33.1e-6);\n#define MIE\n#ifdef MIE\nconst float Hm = 1200.0;\nconst vec3 betaM = vec3(21e-6);\nconst float g = 0.76;\n#endif\n\n#define PI radians(180.0)\n#define INFINITY uintBitsToFloat(0x7F800000u)\n\n#define SAMPLES (32u)\n#define SAMPLES_LIGHT (8u)\n#define ALTITUDE (1.0)\n// We use a magic number here for the intensity of the sun (20). We will make it more\n// scientific in a future revision of this lesson/code\n#define SUN_INTENSITY (20.0)\n#define MIE_EXTINCTION_MUL (1.1)\n\n// Dir must be normalized\n// Orig must be centered on sphere\nbool raySphereIntersect(const in vec3 orig, const in vec3 dir, const in float radius, out float t0, out float t1) {\n    float b = dot(dir, orig);\n    float c = dot(orig, orig) - (radius * radius);\n\tfloat test = b*b - c;\n    // Intersection should have two points\n    if (test <= 0.0) return false;\n\ttest = sqrt(test);\n\tt0 = -b - test;\n\tt1 = -b + test;\n\tif (t0 > t1) t0 = t1, t1 = t0;\n\treturn true;\n}\n\nvec3 computeIncidentLight(const in vec3 orig, const in vec3 dir, in float tmin, in float tmax, const in vec3 sunDirection) {\n    float t0, t1;\n    if (!raySphereIntersect(orig, dir, Ra, t0, t1) || t1 < 0.0) return vec3(0.0);\n    if (t0 > tmin && t0 > 0.0) tmin = t0;\n    if (t1 < tmax) tmax = t1;\n    float segmentLength = (tmax - tmin) / float(SAMPLES);\n    float tCurrent = tmin;\n    vec3 sumR = vec3(0.0); // rayleigh contribution\n    float opticalDepthR = 0.0;\n    float mu = dot(dir, sunDirection); // mu in the paper which is the cosine of the angle between the sun direction and the ray direction\n    float phaseR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);\n    #ifdef MIE\n    vec3 sumM = vec3(0.0); // mie contribution\n    float opticalDepthM = 0.0;\n    float phaseM = 3.0 / (8.0 * PI) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));\n    #endif\n    for (uint i = 0u; i < SAMPLES; ++i) {\n        vec3 samplePosition = orig + (tCurrent + segmentLength * 0.5) * dir;\n        float height = length(samplePosition) - Re;\n        // compute optical depth for light\n        float hr = exp(-height / Hr) * segmentLength;\n        opticalDepthR += hr;\n        #ifdef MIE\n        float hm = exp(-height / Hm) * segmentLength;\n        opticalDepthM += hm;\n        #endif\n        // light optical depth\n        float t0Light, t1Light;\n        raySphereIntersect(samplePosition, sunDirection, Ra, t0Light, t1Light);\n        float segmentLengthLight = t1Light / float(SAMPLES_LIGHT), tCurrentLight = 0.0;\n        float opticalDepthLightR = 0.0;\n        #ifdef MIE\n        float opticalDepthLightM = 0.0;\n        #endif\n        uint j;\n        for (j = 0u; j < SAMPLES_LIGHT; ++j) {\n            vec3 samplePositionLight = samplePosition + (tCurrentLight + segmentLengthLight * 0.5) * sunDirection;\n            float heightLight = length(samplePositionLight) - Re;\n            if (heightLight < 0.0) break;\n            opticalDepthLightR += exp(-heightLight / Hr) * segmentLengthLight;\n            #ifdef MIE\n            opticalDepthLightM += exp(-heightLight / Hm) * segmentLengthLight;\n            #endif\n            tCurrentLight += segmentLengthLight;\n        }\n        if (j == SAMPLES_LIGHT) {\n            #ifdef MIE\n            vec3 tau = betaR * (opticalDepthR + opticalDepthLightR) + betaM * MIE_EXTINCTION_MUL * (opticalDepthM + opticalDepthLightM);\n            #else\n            vec3 tau = betaR * (opticalDepthR + opticalDepthLightR);\n            #endif\n            vec3 attenuation = vec3(exp(-tau.x), exp(-tau.y), exp(-tau.z));\n            sumR += attenuation * hr;\n            #ifdef MIE\n            sumM += attenuation * hm;\n            #endif\n        }\n        tCurrent += segmentLength;\n    }\n\n    #ifdef MIE\n    return (sumR * betaR * phaseR + sumM * betaM * phaseM) * SUN_INTENSITY;\n    #else\n    return (sumR * betaR * phaseR) * SUN_INTENSITY;\n    #endif\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 o = (fragCoord / iResolution.xy - 0.5) * 2.0 * PI;\n    o.y /= 2.0;\n\n    vec3 dir = normalize(vec3(cos(o.x), tan(o.y), sin(o.x)) * cos(o.y));\n    float time = 0.2 * PI * iTime;\n\n    #ifdef BUG\n    vec3 sun_dir = normalize(vec3(0.0, 1.0, 0.0));\n    float d = Re + ALTITUDE;\n    vec3 pos = vec3(0.0, d*sin(time), d*-cos(time));\n    #else\n    vec3 sun_dir = normalize(vec3(0.0, sin(time), -cos(time)));\n    vec3 pos = vec3(0.0, Re + ALTITUDE, 0.0);\n    #endif\n\n    float t0, t1, tMax = INFINITY;\n    if (raySphereIntersect(pos, dir, Re, t0, t1) && t0 > 0.0) {\n        tMax = t0;\n    }\n    \n    fragColor = vec4(computeIncidentLight(pos, dir, 0.0, tMax, sun_dir), 0.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,89 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1720291666",
+            "description": "Use the left mouse button to chase the boids off.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lXtSWN",
+            "likes": 6,
+            "name": "Boid-based Voronoi diagram",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "tesselation",
+                "boids"
+            ],
+            "usePreview": 0,
+            "username": "pwyr",
+            "viewed": 130
+        },
+        "renderpass": [
+            {
+                "code": "// ----------------------------------------\n// Boid-based Voronoi diagram - Overview\n// ----------------------------------------\n//\n// - settings are stored in 'Common'\n// - 'Buffer A' is used to simulate the boids\n// - 'Image' only contains the rendering code\n//\n// ----------------------------------------\n//\n\nvec2 resolution() {\n    return iChannelResolution[0].xy;\n}\n\nvoid readBoidData(int index, inout vec2 pos, inout vec2 vel) {\n    vec4 data = texelFetch(iChannel0, ivec2(index % int(resolution().x), index / int(resolution().x)), 0);\n    pos = data.xy;\n    vel = data.zw;\n}\n\n// source: https://stackoverflow.com/a/17897228/6163527\nvec3 hsv2rgb(vec3 c) {\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\nvec3 velocityColor(vec2 vel, float dist) {\n    float h = acos(dot(normalize(vel), vec2(1.0, 0.0))) / PI;\n    h = mod(h / 1.5 + 0.70, 1.0);\n    float s = max(0.0, 1.0 - 0.002 * dist - 0.2);\n    float v = max(0.0, 1.0 - 0.0015 * dist);\n    return hsv2rgb(vec3(h,s,v));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n\n    float minDist = intBitsToFloat(2139095039);\n    float sndMinDist = intBitsToFloat(2139095039);\n    vec2 tPos, tVel, tSndPos, tSndVel;\n   \n    vec2 pos, vel;\n    for (int i = 1; i <= BOID_COUNT; ++i) {\n        readBoidData(i, pos, vel);\n        \n        float dist = length(pos - fragCoord);\n        if (dist < minDist) {\n            sndMinDist = minDist;\n            tSndPos = tPos;\n            tSndVel = tVel;\n            \n            minDist = dist;\n            tPos = pos;\n            tVel = vel;\n        } else if (dist < sndMinDist) {\n            sndMinDist = dist;\n            tSndPos = pos;\n            tSndVel = vel;\n        }\n    }\n    \n    vec4 seedColor = vec4(vec3(0.0), 1.0);\n    vec4 cellColor = vec4(velocityColor(tVel, minDist), 1.0);\n    vec4 sndCellColor = vec4(velocityColor(tSndVel, sndMinDist), 1.0);\n    \n    vec2 n = normalize(tPos - tSndPos);\n    float d1 = abs(dot(fragCoord - tPos, n));\n    float d2 = abs(dot(fragCoord - tSndPos, n));\n    \n    float t1 = smoothstep(0.0, 1.0, d2 - d1);\n    vec4 finalCellColor = (1.0 - t1) * 0.5 * (cellColor+sndCellColor) + t1  * cellColor;\n    \n    float t2 = smoothstep(0.0, 0.6, minDist - SEED_RADIUS);\n    fragColor = (1.0 - t2) * seedColor + t2 * finalCellColor;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec2 resolution() {\n    return iChannelResolution[0].xy;\n}\n\nfloat normalDistrib2D(vec2 dx, float sigma) {\n    return (1.0/(2.0*PI*pow(sigma,2.0)))*exp(-(dot(dx,dx)/(2.0*pow(sigma,2.0))));\n}\n\nint getCurrentBoidIndex(vec2 coord) {\n    return int(coord.y) * int(iChannelResolution[0].x) + int(coord.x);\n}\n\n// - fragment coord (0,0) is used for initialization only\n// - the following entries (row by row) contain the boid positions and velocities\nvoid readBoidData(int index, inout vec2 pos, inout vec2 vel) {\n    vec4 data = texelFetch(iChannel0, ivec2(index % int(resolution().x), index / int(resolution().x)), 0);\n    pos = data.xy;\n    vel = data.zw;\n}\n\nbool shaderUpdatesBoid(vec2 coord) {\n    int index = getCurrentBoidIndex(coord);\n    return index > 0 && index <= BOID_COUNT;\n}\n\nbool initializeBoids(vec2 coord, inout vec4 fragColor) {\n    vec4 c = texelFetch(iChannel0, ivec2(0), 0);\n    if (iFrame == 0 || c.w < 1.0 || distance(MAX_RESOLUTION * c.xy, resolution()) > EPS) {\n        fragColor = vec4(0.0);\n        \n        if (resolution().x > 0.0) {\n        \n            if (!shaderUpdatesBoid(coord)) {\n                fragColor = vec4(resolution() / MAX_RESOLUTION, 0.0, 1.0);\n            } else {\n                vec2 uv = coord / resolution();\n\n                // init position and velocity\n                vec2 pos = resolution() * vec2(rand(uv), rand(uv+vec2(1.0)));\n                vec2 vel = INITIAL_SPEED * normalize(vec2(rand(uv+vec2(2.0)), rand(uv+vec2(3.0))) - vec2(0.5));\n                fragColor = vec4(pos, vel);\n            }\n        }\n        return true;\n    }\n    return false;\n}\n\nvec2 computeBoidForces(int index, vec2 curPos, vec2 curVel) {\n    \n    // cohesion\n    vec2 mean = vec2(0.0);\n    float totalWeight = 0.0;\n    // separation\n    vec2 dx = vec2(0.0);\n    //alignment\n    vec2 meanVel = vec2(0.0);\n    \n    vec2 pos, vel;\n    for (int i = 1; i != BOID_COUNT; ++i) {\n        if (i == index) continue;\n        \n        readBoidData(i, pos, vel);\n        float w = normalDistrib2D(pos-curPos, STANDARD_DEVIATION);\n        totalWeight += w;\n        // cohesion\n        mean += w * pos;\n        // separation\n        if (distance(curPos, pos) < SEPARATION_DIST) {\n            dx += curPos - pos;\n        }\n        // alignment\n        meanVel += w * vel;\n    }\n    \n    \n    vec2 cohesionForce = vec2(0.0), alignmentForce = vec2(0.0);\n    if (totalWeight > EPS) {\n        mean /= totalWeight;\n        meanVel /= totalWeight;\n        cohesionForce = COHESION_STIFFNESS * (mean - curPos);\n        alignmentForce = ALIGNMENT_COEFF * meanVel;\n    }\n    vec2 separationForce = SEPARATION_COEFF * dx;\n    \n    return cohesionForce + separationForce + alignmentForce;\n}\n\nvec2 computePenaltyForces(vec2 pos) {\n    vec2 force = vec2(0.0);\n    \n    float penetrationLeft = max(0.0, PADDING_WIDTH - pos.x);\n    float penetrationDown = max(0.0, PADDING_HEIGHT - pos.y);\n    float penetrationRight = max(0.0, pos.x - resolution().x + PADDING_WIDTH);\n    float penetrationUp = max(0.0, pos.y - resolution().y + PADDING_HEIGHT);\n   \n    force += penetrationLeft * vec2(1.0, 0.0);\n    force += penetrationDown * vec2(0.0, 1.0);\n    force += penetrationRight * vec2(-1.0, 0.0);\n    force += penetrationUp * vec2(0.0, -1.0);\n    \n    return PENALTY_COEFF * force;\n}\n\nvec2 computeEvasionForces(vec2 pos) {\n    vec2 force = vec2(0.0);\n    if (iMouse.z > 0.0) {\n        float d = distance(pos, iMouse.xy);\n        if (d < EVASION_DIST) {\n            force += EVASION_COEFF * (EVASION_DIST - d) * normalize(pos-iMouse.xy); \n        }\n    }\n    return force;\n}\n\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    if (initializeBoids(fragCoord, fragColor)) return;\n    \n    fragColor = vec4(resolution() / MAX_RESOLUTION, 0.0, 1.0);\n    if (!shaderUpdatesBoid(fragCoord)) return;\n    \n    \n    int index = getCurrentBoidIndex(fragCoord);\n    vec4 data = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec2 pos = data.xy;\n    vec2 vel = data.zw;\n    vec2 force = vec2(0.0);\n    \n    if (length(vel) < MAX_SPEED) {\n        force += ACCEL_COEFF * normalize(vel);\n    }\n    force += computeBoidForces(index, pos, vel);\n    force += computePenaltyForces(pos);\n    \n    vel += iTimeDelta * force;\n    if (length(vel) > MAX_SPEED) {\n        vel = MAX_SPEED * normalize(vel);\n    }\n    vel += iTimeDelta + computeEvasionForces(pos);\n    \n    pos += iTimeDelta * vel;\n    pos = clamp(pos, vec2(0.0), resolution());\n    \n    fragColor = vec4(pos, vel);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define PI 3.1415926535897932384626433832795\n#define EPS 0.0001\n#define MAX_RESOLUTION 10000.0\n\n\n// ----------------------------------------\n// settings\n// ----------------------------------------\n\n#define BOID_COUNT 200\n\n#define SEED_RADIUS 2.0\n\n// ----------------------------------------\n#define INITIAL_SPEED 60.0\n#define MAX_SPEED 120.0\n\n#define ACCEL_COEFF 10.0\n\n// (cohesion and alignment computations depend on a normal distrib)\n#define STANDARD_DEVIATION 20.0\n\n#define COHESION_STIFFNESS 0.2\n\n#define SEPARATION_COEFF 600.0\n#define SEPARATION_DIST 10.0\n\n#define ALIGNMENT_COEFF 6.0\n\n#define PADDING_WIDTH 50.0\n#define PADDING_HEIGHT 30.0\n#define PENALTY_COEFF 400.0\n\n// (for the evasion w.r.t. the mouse position)\n#define EVASION_COEFF 3.0\n#define EVASION_DIST 200.0\n\n// ----------------------------------------\n\n\nfloat rand(vec2 co){\n    return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

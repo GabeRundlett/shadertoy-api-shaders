@@ -1,0 +1,87 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1630955742",
+            "description": "• Doesn’t require a large number of iterations.\n• Doesn’t damage areas without banding.\n• Robust on both large and small bands.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "sddGWf",
+            "likes": 3,
+            "name": "Simple and robust debanding",
+            "published": 3,
+            "tags": [
+                "dithering",
+                "debanding"
+            ],
+            "usePreview": 0,
+            "username": "miyaokamarina",
+            "viewed": 337
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================================//\n//=  # Simple and robust debanding shader                               =//\n//=                                                                     =//\n//=   -  Doesn’t require a large number of iterations.                  =//\n//=   -  Doesn’t damage areas without banding.                          =//\n//=   -  Robust on both large and small bands.                          =//\n//=                                                                     =//\n//=  TO SEE THE ORIGINAL IMAGE — click/drag the image.                  =//\n//=                                                                     =//\n//=  TO INCREASE CONTRAST — uncomment the `DEBUG` macro.                =//\n//=                                                                     =//\n//=  Sources:                                                           =//\n//=                                                                     =//\n//=   -  gh:mpv-player/mpv/blob/master/video/out/gpu/video_shaders.c    =//\n//=   -  gh:ahjolinna/mpv-conf/blob/master/mpv/etc/shaders/deband.glsl  =//\n//=======================================================================//\n\n//=======================================================================//\n//=  ## Debanding radius                                                =//\n//=                                                                     =//\n//=  Sorta kinda sampling radius. Actual values may vary, though.       =//\n//=                                                                     =//\n//=  Try changing this value and comment some of the `average`  calls   =//\n//=  in the `deband` function.                                          =//\n//=                                                                     =//\n//=  ≈60 seems to be a reasonable default.                              =//\n//=======================================================================//\n#define R 64.0\n\n//=======================================================================//\n//=  ## Debanding threshold                                             =//\n//=                                                                     =//\n//=  Only apply debanding when a local contrast (per channel) is under  =//\n//=  this threshold.                                                    =//\n//=                                                                     =//\n//=  Defaults to $\\frac{1}{256} (targeting 8 bit per channel outputs).  =//\n//=======================================================================//\n#define T 1.0 / 256.0\n\n// Instead of sampling multiple times at increasing distances,\n// we may sample once, but using the normal distribution to calculate a random offset.\n//\n// In this case, actual samples may be at distances greater than required,\n// but with less probability.\n//\n// This allows us to achieve near-perfect quality at just three interations.\n//\n// Possible PDF types:\n//\n//  -  `NORMAL`  — the default, use the normal distribution.\n//  -  `UNIFORM` — use the uniform distrubution within a circle.\n//  -  `SIMPLE`  — use the triangular distrubution within a circle.\n//\n// See the `random2` function for details.\n#define DEBAND_PDF SIMPLE\n\n// Comment this to see original colors:\n#define DEBUG\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2  uv = fragCoord / iResolution.xy;\n\n    float px = fragCoord.x;\n    float py = fragCoord.y;\n    float mx = iMouse.x;\n    float my = iMouse.y;\n\n    bool l = px + 1.0 < mx; bool r = px - 1.0 > mx;\n    bool t = py - 1.0 > my; bool b = py + 1.0 < my;\n\n    fragColor = vec4(vec3(0), 1);                                                // slider\n    fragColor = mix(fragColor, deband(fragCoord),      bvec4(l && b || r && t)); // debanded quarters\n    fragColor = mix(fragColor, texture(iChannel0, uv), bvec4(r && b || l && t)); // original quarters\n\n    #ifdef DEBUG\n        fragColor *= 8.0;\n        fragColor -= 0.5;\n    #endif\n}\n\nvec4 deband(vec2 fragCoord) {\n    vec4 src  = texture(iChannel0, fragCoord / iResolution.xy);\n    vec4 tmp  = src;\n    vec4 rand = random4(fragCoord);\n\n    average(fragCoord, tmp, 8.0, rand.yz); // Dither small bands\n    average(fragCoord, tmp, R,   rand.zw); // Dither large bands\n\n    vec4 noise = rand;\n\n    noise *= T;         // Scale the noise.\n    noise *= src - tmp; // Scale it further and discard unwanted noise in non-banded areas.\n\n    return tmp + noise;\n}\n\n// Local contrast calculation interation.\nvoid average(vec2 fragCoord, inout vec4 tmp, float radius, vec2 rand) {\n    // Compute a random point:\n    vec2 o = random2(rand) * radius;\n\n    // Sample at quarter-turn intervals around the source pixel:\n    vec4 avg = texture(iChannel0, (fragCoord + o * vec2(-1, -1)) / iResolution.xy)\n             + texture(iChannel0, (fragCoord + o * vec2(-1, +1)) / iResolution.xy)\n             + texture(iChannel0, (fragCoord + o * vec2(+1, -1)) / iResolution.xy)\n             + texture(iChannel0, (fragCoord + o * vec2(+1, +1)) / iResolution.xy);\n\n    avg *= 0.25;\n    vec4 diff = abs(tmp - avg);\n\n    // Replace the current value, if a local contrast is below threshold:\n    tmp = mix(avg, tmp, greaterThan(diff, vec4(T)));\n}\n\nvec4 random4(vec2 pos) {\n    return texture(iChannel1, pos / iChannelResolution[1].xy);\n}\n\n// Picks a random point in the ≈ (-1, +1) range.\nvec2 random2(vec2 rand) {\n    #if defined(DEBAND_PDF) && DEBAND_PDF == SIMPLE\n        float a = rand.x * PI2; // Angle\n        float r = rand.y;       // Radius\n\n        return vec2(cos(a), sin(a)) * r;\n    #elif defined(DEBAND_PDF) && DEBAND_PDF == UNIFORM\n        float a = rand.x * PI2; // Angle\n        float r = sqrt(rand.y); // Kinda radius\n\n        return vec2(cos(a), sin(a)) * sqrt(r);\n    #else\n        // https://en.wikipedia.org/wiki/Box–Muller_transform\n        float r = sqrt(-2.0 * log(rand.x));\n        float t = PI2 * rand.y;\n\n        return vec2(r * cos(t), r * sin(t));\n    #endif\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define NORMAL  1\n#define UNIFORM 2\n#define SIMPLE  3\n\n#define PI   3.141592653589793\n#define PI2  6.283185307179586\n\nfloat escape_time(vec2 pos);\nvec2  ratio_fix(vec2 res);\n\nvec4  random4(vec2 pos);\nvec2  random2(vec2 rand);\nvoid  average(vec2 pos, inout vec4 tmp, float radius, vec2 rand);\nvec4  deband(vec2 pos);\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Test image\n\n#define MANDELBROT_ITERATIONS 128\n\nvoid mainImage(out vec4 col, in vec2 pos) {\n    vec2 fix = ratio_fix(iResolution.xy); // Calculate aspect ratio fix.\n\n    pos /= iResolution.xy;                // Normalize ccordinates.\n    pos *= fix;                           // Fix aspect ratio.\n    pos -= fix * 0.5;                     // Center origin.\n\n    pos -= vec2(+3.0, -0.3);              // Move origin.\n    pos *= 0.5;                           // Scale origin (less is deeper).\n\n    float t = escape_time(pos) + 0.08;\n\n    // Green makes the most significant perceptual difference with minimal value changes:\n    col = vec4(t, t, t, 1);\n}\n\nconst float COLOR_SCALE = 0.00390625; // 1/256\n\n//= Mandelbrot escape time function =//\nfloat escape_time(vec2 pos) {\n    vec2 t;\n    vec2 u;\n\n    for(int i; i < MANDELBROT_ITERATIONS; i++) {\n        t.y = 2.0 * t.x * t.y + pos.y;\n        t.x = u.x - u.y + pos.x;\n        u = t * t;\n\n        if (u.x + u.y > 4.0) return float(i) / 256.0;\n    }\n\n    return 0.0;\n}\n\n\nvec2 ratio_fix(vec2 res) {\n    float rmax  = max(res.x, res.y);\n    float rmin  = min(res.x, res.y);\n    float ratio = rmax / rmin;\n    float fx    = mix(1.0, ratio, res.x > res.y);\n    float fy    = mix(1.0, ratio, res.y > res.x);\n\n    return vec2(fx, fy);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

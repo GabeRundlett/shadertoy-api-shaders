@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1610977708",
+            "description": "Testing different specular highlight models, from left to right: Phong, Gaussian, and Beckmann.\n\nhttps://en.wikipedia.org/wiki/Specular_highlight\nhttps://bit.ly/35Qi8VT (notes with contour plots)",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WtycWW",
+            "likes": 8,
+            "name": "Specular highlight models",
+            "published": 3,
+            "tags": [
+                "phong",
+                "specular",
+                "gaussian",
+                "beckmann"
+            ],
+            "usePreview": 0,
+            "username": "darkeclipz",
+            "viewed": 497
+        },
+        "renderpass": [
+            {
+                "code": "#define RES iResolution.xy\n#define MIN_DIST 0.0001\n\nmat2 rotate(float a) {\n    float co = cos(a), si = sin(a);\n    return mat2(co, si, -si, co);\n}\n\nfloat smin( float a, float b, float k ) {\n    float h = max( k-abs(a-b), 0.0 )/k;\n    return min( a, b ) - h*h*h*k*(1.0/6.0);\n}\n\nfloat sdCircle(vec3 p, float r) {\n    return length(p) - r;\n}\n\nfloat sdBox(vec3 p, vec3 b) {\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat sdShape(vec3 p) {\n    float mCircle = sdCircle(p, 0.4);\n    float sCircle = sdCircle(abs(p) - vec3(0.35,0.35,0), 0.25);\n    float d = smin(mCircle, sCircle, 0.1);\n    return d;\n}\n\nint id = 0;\nfloat map(vec3 p) {\n    id = 0;\n    float s = 1.5;\n    float d = sdShape(p*s)/s;\n    float d2 = sdShape(p*s - vec3(1.5,0,0))/s;\n    if(d2 < d) id = 1;\n    d = min(d, d2);\n    float d3 = sdShape(p*s + vec3(1.5,0,0))/s;\n    if(d3 < d) id = 2;\n    d = min(d, d3);\n    return d;\n}\n\nstruct hit {\n    float t;\n    float occlusion;\n    int id;\n};\n\nhit trace(vec3 ro, vec3 rd) {\n    float t = 0., i = 0.;\n    float N = 100.;\n    for(i=0.; i < N; i++) {\n        vec3 p = ro + t * rd;\n        float d = map(p);\n        if(d < MIN_DIST) {\n            break;\n        }\n        t += d;\n        if(t > 20.) {\n            break;\n        }\n    }\n    if(i == N) id = 0;\n    return hit(t, 1.-i/N, id);\n}\n\nvec3 normal(vec3 p) {\n    vec2 h = vec2(0.0001,0);\n    return normalize(vec3(map(p+h.xyy) - map(p-h.xyy), \n                          map(p+h.yxy) - map(p-h.yxy), \n                          map(p+h.yyx) - map(p-h.yyx)));\n}\n\nfloat angle(vec3 a, vec3 b) {\n    return acos(dot(a,b) / (length(a)*length(b)));\n}\n\nvec3 brdf(vec3 N, vec3 L, vec3 V, vec3 diff, vec3 spec, float exponent) {\n    vec3 R = reflect(L,N);\n    vec3 H = normalize(L+V);\n    \n    float k = 0.;\n    float NdotH = dot(N, H);\n    \n    if(id == 2) {\n        // phong specular\n        k = pow(max(0., dot(R,V)), exponent)*.7;\n    }\n    else if(id == 0) {\n        // gaussian specular\n        float m = 1.;\n        \n        // float NHm = NdotH / m; // is wrong but gives some anisotropic highlight?\n        float NHm = angle(N,H) / m;\n        float NHm2 = NHm*NHm;\n        k = exp(-NHm2)*1.2;\n    }\n    else if(id == 1) {\n        // beckmann\n        float m = 0.38;\n        //float alpha = acos(NdotH); // oh oh\n        //float tana = tan(alpha);\n        //float cosa = cos(alpha);\n        float tana = length(cross(N, H)) / NdotH; // bye acos\n        float cosa = NdotH;\n        float m2 = m*m;\n        float tana2 = tana*tana;\n        float cosa4 = pow(abs(cosa), 4.);\n        k = exp(-tana2 / m2) / (3.14159 * m2 * cosa4)*.4;\n    }\n    \n    // diff = texture(iChannel0, R).rgb;\n    float wrap = 0.5;\n    float diffuse = max(0., dot(L, N));\n    float wrap_diffuse = max(0., (dot(L, N) + wrap) / (1. + wrap));\n    \n    return diff * diffuse * wrap_diffuse  + spec * k;\n}\n\nvec3 shade(vec3 P, vec3 N, vec3 ro) {\n    vec3 V = normalize(P-ro);\n    vec3 ambient = vec3(0.1,0.1,0.2);\n    vec3 diffuse = vec3(.4, .4, .9);\n    vec3 specular = vec3(.8, .8, 1.0);\n    vec3 light1 = brdf(N, normalize(vec3(0,1,1) - P), V, diffuse, specular, 16.);\n    vec3 light2 = brdf(N, normalize(vec3(0,0,-0.5) - P), V, diffuse, specular, 16.);\n    return ambient + light1 + light2;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (2.*fragCoord-RES)/RES.y;\n    vec3 ro = vec3(0,0.1,2.);\n    ro.xz *= rotate(iMouse.x/RES.x*3.14*2.);\n    ro.yz *= rotate(-iMouse.y/RES.y*3.14*2.);\n    vec3 ta = vec3(0,0,0);\n    vec3 ww = normalize(ta-ro);\n    vec3 uu = normalize(cross(ww, vec3(0,1,0)));\n    vec3 vv = normalize(cross(uu,ww));\n    vec3 rd = normalize(uv.x*uu + uv.y*vv + 2.2*ww);\n\n    hit hit = trace(ro, rd);\n    vec3 col = vec3(0);\n    if(hit.t < 20.) {\n        vec3 p = ro + hit.t*rd;\n        vec3 n = normal(p);\n        col = shade(p, n, ro) * hit.occlusion;\n    }\n    else {\n        col = texture(iChannel0, rd).rgb;\n    }\n\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 23,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

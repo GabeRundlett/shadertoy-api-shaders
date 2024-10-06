@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1523935996",
+            "description": "Trying to figure out sky scattering",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MscfRr",
+            "likes": 0,
+            "name": "figuring out the sky",
+            "published": 3,
+            "tags": [
+                "sky",
+                "scattering"
+            ],
+            "usePreview": 0,
+            "username": "mds2",
+            "viewed": 413
+        },
+        "renderpass": [
+            {
+                "code": "\nconst float atmos_thick = 30000.0;\nconst float earth_rad = 6310000.0;\n\nfloat atmos_dist(in float dir_y) {\n\t// r^2 * dir_x^2 + (earth_rad + r *dir_y)^2 =\n    // (atmos_thick + earth_rad)^2\n    // r^2 * (dir_x^2 + dir_y^2) + \n    // r * 2.0 * dir_y * earth_rad +\n    // earth_rad^2 -\n    // (atmos_thick + earth_rad)^2 = 0.0\n    // -------------------------------\n    // r^2 * (dir_x^2 + dir_y^2) + \n    // r * 2.0 * dir_y * earth_rad -\n    // atmos_thick^2 -\n    // 2.0 * atmos_thick * earth_rad = 0.0\n    // -------------------------------\n    //r = (-b + sqrt(b^2 - 4ac)) / (2a)\n    // a = 1.0\n    // b = 2.0 * dir_y * earth_rad\n\t// c = -atmos_thick^2 - 2.0 * atmos_thick * earth_rad\n    // r approx \n    // -dir_y*earth_rad + sqrt(dir_y^2+1.005)*earth_rad\n    float b = 2.0 * dir_y * earth_rad;\n    float c = -atmos_thick * atmos_thick - 2.0 * atmos_thick * earth_rad;\n    return 0.5 * (sqrt(b * b - 4.0 * c) - b);\n}\n\nfloat dist_to_sun_visible(in vec3 ray_dir, in vec3 sun_dir) {\n    if (ray_dir.y < 0.0) {\n        return earth_rad;\n    }\n    if (sun_dir.y > 0.0) {\n        return 1.0;\n    }\n    // e_z = sun_dir\n    vec3 e_y = normalize(vec3(0.0, 1.0, 0.0) - sun_dir.y * sun_dir);\n    vec3 e_x = normalize(cross(e_y, sun_dir));\n\n    vec2 start_xy = earth_rad * vec2(e_x.y, e_y.y);\n    vec2 ray_xy = vec2(dot(e_x,ray_dir), dot(e_y, ray_dir)); // do not normalize\n    \n    // (start_xy + d * ray_xy) ^2 = earth_rad^2\n    // dot(start_xy, start_xy) - earth_rad^2 +\n    // 2.0 * d * dot(start_xy, ray_xy) +\n    // d^2 * dot(ray_xy, ray_xy) = 0.0\n    \n    float a = dot(ray_xy, ray_xy);\n    float b = 2.0 * dot(start_xy, ray_xy);\n    float c = dot(start_xy, start_xy) - earth_rad * earth_rad;\n    \n    return abs((-b + sqrt(b * b - 4.0 * a * c)) / (2.0 * a));\n    \n}\n\nfloat atmos_weight(in vec3 dir, in vec3 sun_dir) {\n    float d = atmos_dist(dir.y);\n    float ds = max(atmos_thick, dist_to_sun_visible(dir, sun_dir));\n    return max(0.0, atmos_thick/ds - (0.5 * atmos_thick)/d);\n}\n\nvec3 get_sun_dir(in float in_time) {\n    \n    float theta = mod(0.5 * in_time, 31.41592653589793);\n    float ctheta = cos(theta);\n    float stheta = sin(theta);\n    \n    mat3 rot_mat = mat3(ctheta, 0.0, -stheta,\n                        0.0, 1.0, 0.0,\n                        stheta, 0.0, ctheta);\n    const vec3 sun_dir = normalize(vec3(0.0, 0.0, 1.0));\n    \n    const mat3 tilt_mat = mat3(0.8, 0.6, 0.0,\n                               -0.6, 0.8, 0.0,\n                               0.0, 0.0, 1.0);\n    const mat3 inv_tilt_mat = mat3(0.8, -0.6, 0.0,\n                               0.6, 0.8, 0.0,\n                               0.0, 0.0, 1.0);\n    vec3 dir = tilt_mat * sun_dir;\n    dir = rot_mat * dir;\n\treturn inv_tilt_mat * dir;\n}\n\n/**\n * Found some \"Rayleigh scatter\" equations on wikipedia.\n * Mostly copied them, but dropped some terms and simplified others.\n *\n * Vaguely ends up looking like a blue sky.\n */\nvec3 sky_color(in vec3 dir) {\n\tvec3 sun_dir = get_sun_dir(iTime);\n    const vec3 lambdas = vec3(0.6, 0.5, 0.45);\n    const vec3 scatter_terms =\n        vec3(0.0625) / (lambdas * lambdas * lambdas * lambdas);\n    float cos_theta = max(min(dot(dir, sun_dir), 1.0), -1.0);\n    float dir_factor = (1.0 + cos_theta * cos_theta) * 0.5;\n    float w = atmos_weight(dir, sun_dir);\n    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);\n    vec3 scatter_factor = w * 2.0 * scatter_terms;\n    vec3 passthru = max(1.0 - scatter_factor, vec3(0.0));\n    float direct_intense = smoothstep(0.02, 0.018, sin_theta) * step(0.0, cos_theta);\n    return dir_factor * scatter_factor + direct_intense * passthru;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    \n    vec3 ray_dir = normalize(vec3(uv, -1.0));\n    \n    const float root_two = 0.7071067811865476;\n    const mat3 ray_twist =\n        mat3(1.0, 0.0, 0.0,\n             0.0, root_two, root_two,\n             0.0, -root_two, root_two);\n    \n    ray_dir = ray_twist * ray_dir;\n    \n \n    // Time varying pixel color\n    vec3 col = sky_color(ray_dir) + vec3(0.1, 0.0, 0.2);\n    \n    col = col * smoothstep(-2.0 / iResolution.y, 2.0 / iResolution.y, ray_dir.y);\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

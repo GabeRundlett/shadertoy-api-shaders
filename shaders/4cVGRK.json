@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1712992088",
+            "description": "Mountains with refraction",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4cVGRK",
+            "likes": 2,
+            "name": "Mountain Lakes 2.0",
+            "published": 3,
+            "tags": [
+                "3d",
+                "terrain",
+                "fbm",
+                "refract"
+            ],
+            "usePreview": 1,
+            "username": "FifthStateOfMatter",
+            "viewed": 152
+        },
+        "renderpass": [
+            {
+                "code": "// More a proof-of-concept than anything else\n// Fresnel is not at all physically accurate and there is no total internal reflection\n\n// Uncomment for specular highlights\n// I lose about 15 fps with this defined (~130 fps vs. ~144 fps)\n//#define specular\n\nvec3 ldir = normalize(vec3(-10, -10, 10));\n\nvec2 rotate1D(vec2 p, float t){\n    float stx = sin(t);\n    float ctx = cos(t);\n    float sty = sin(t);\n    float cty = cos(t);\n    \n    mat2 zRot;\n    zRot[0] = vec2(cty, -sty);\n    zRot[1] = vec2(stx, ctx);\n    return p * zRot;\n}\n\nvec3 rotate2D(vec3 p, vec2 t){\n    float stx = sin(t.x);\n    float ctx = cos(t.x);\n    float sty = sin(t.y);\n    float cty = cos(t.y);\n    mat3 xRotation;\n    xRotation[0] = vec3(1, 0, 0);\n    xRotation[1] = vec3(0, ctx, -stx);\n    xRotation[2] = vec3(0, stx, ctx);\n    \n    mat3 yRotation;\n    yRotation[0] = vec3(cty, 0, -sty);\n    yRotation[1] = vec3(0, 1, 0);\n    yRotation[2] = vec3(sty, 0, cty);\n    return p*xRotation*yRotation;\n}\n\nfloat sphere(vec3 p, float r) {\n    return length(p) - r;\n}\n\nfloat plane(vec3 p, vec3 n, float h) {\n    return length((p - h) * n);\n}\n\nfloat box(vec3 p, vec3 s){\n    vec3 q = abs(p) - s;\n    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);\n}\n\nfloat fbm(vec2 uv) {\n    float f = 1.0;\n    float h = 0.5;\n    float n = 0.0;\n    float r = radians(57.0);\n    for(int i = 0; i < 8; ++i) {\n        r += radians(57.0);\n        uv = rotate1D(uv, r);\n        n += texture(iChannel0, uv * f).r * h;\n        f *= 2.0;\n        h *= 0.5;\n    }\n    return n;\n}\n\nfloat scene(vec3 p, out int i) {\n    float g = plane(p, vec3(0, 1, 0), -1.0);\n    \n    g -= (1.0 - abs(fbm(p.xz * 0.001))) * 3.0;\n    \n    float w = plane(p, vec3(0, 1, 0), 0.5);\n    \n    w -= (1.0 - abs(texture(iChannel0, p.xz * 0.5 + iTime * 0.02))).r * 0.001;\n    \n    float c = min(g, w);\n    if(c == g) {\n        i = 0;\n        return g * 0.7;\n    } else {\n        i = 1;\n        return w * 1.0;\n    }\n}\n\nfloat raymarch(vec3 o, vec3 d, out bool h, out int ind) {\n    float t = 0.0;\n    for(int i = 0; i < 250 && t <= 250.0 && !h; ++i) {\n        float s = scene(o + d * t, ind);\n        t += s;\n        h = abs(s) < 0.001 * t && t >= 0.0;\n    }\n    return t;\n}\n\nvec3 normal(vec3 p) {\n    vec2 e = vec2(0, 0.01);\n    int i;\n    return normalize(vec3(\n        scene(p + e.yxx, i) - scene(p - e.yxx, i),\n        scene(p + e.xyx, i) - scene(p - e.xyx, i),\n        scene(p + e.xxy, i) - scene(p - e.xxy, i)\n    ));\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord){\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;\n    \n    vec3 col;\n    \n    float c = 1.0;\n    \n    vec3 o = vec3(0, 2, iTime);\n    vec3 d = normalize(vec3(uv, 1));\n    \n    bool h = false;\n    int i;\n    float t = raymarch(o, d, h, i);\n    float it = t;\n    vec3 n = normal(o + d * t);\n    \n    if(h && i == 1) {\n        vec3 ro = o + d * t + n * 0.01;\n        vec3 rd = normalize(reflect(d, n));\n        bool rh = false;\n        int ri;\n        \n        float rt = raymarch(ro, rd, rh, ri);\n        \n        o = o + d * t - n * 0.025;\n        vec3 dr = normalize(refract(d, n, 1.0 / 1.52));\n        h = false;\n        \n        t = raymarch(o, dr, h, i);\n        \n        col = mix(\n            texture(iChannel1, o.xz + dr.xz * t).rgb,\n            vec3(0.05, 0.15, 0.15),\n            1.0 - exp(-t * 15.0)\n        ) * 0.5;\n        \n        // Ignore the 3 mile long line\n        // I wouldn't normally do this but I don't plan on ever looking at this project again\n        col = mix(col, rh ? texture(iChannel1, ro.xz + rd.xz * rt).rgb : mix(vec3(0.8, 0.9, 1), vec3(0.5, 0.7, 1), rd.y * 2.0 + 1.0), clamp(dot(d, rd) - 0.75, 0.0, 1.0));\n    } else {\n        c = clamp(dot(n, -ldir), 0.1, 1.0);\n        \n        bool lh = false;\n        int li;\n        float lt = raymarch(o + d * t + n * 0.01, -ldir, lh, li);\n        \n        if(lh) c *= 0.5;\n        \n        t = h ? t : 500.0;\n        \n        col = texture(iChannel1, o.xz + d.xz * t).rgb * c;\n    }\n    \n    col = mix(\n        col,\n        mix(vec3(0.8, 0.9, 1), vec3(0.5, 0.7, 1), d.y * 2.0 + 1.0),\n        1.0 - exp(-it * vec3(0.01, 0.011, 0.015))\n    );\n    \n    #ifdef specular\n    col += h ? max(pow(dot(-ldir, normalize(reflect(d, n))), 9.0), 0.0) : 0.0;\n    #endif\n    \n    fragColor = vec4(pow(col, vec3(1.0 / 2.2)), 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,91 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1691899452",
+            "description": "This isn't the most efficient or complete implementation, but it was fun!\nhere's a desmos link https://www.desmos.com/calculator/cf3yvyqum1",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ml2yzW",
+            "likes": 8,
+            "name": "Projected Spherical Cap sampling",
+            "published": 3,
+            "tags": [
+                "sampling",
+                "spherical",
+                "projected",
+                "cap",
+                "psc"
+            ],
+            "usePreview": 0,
+            "username": "KylBlz",
+            "viewed": 246
+        },
+        "renderpass": [
+            {
+                "code": "\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec2 ndc = uv * 2.0 - 1.0;\n    float ving = 1.1 - sqrt(dot(ndc, ndc) * 0.4);\n    fragColor = texture(iChannel0, uv);\n    fragColor.rgb = linear_srgb(ACESFitted(ving * fragColor.rgb / fragColor.a));\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n\n    // rng\n    ivec2 fc = ivec2(fragCoord);\n    int seed = (fc.x + fc.y*2 + iFrame*53685) + (fc.x*43977 ^ fc.y*36025);\n    // camera stuff\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec2 ndc = uv * 2.0 - 1.0;\n    float asp = iResolution.x / iResolution.y;\n    ndc.x *= asp;\n    vec3 ro = vec3(0.0, 0.5, -5.0);\n    vec3 rd = normalize(vec3(ndc, 2.0));\n\n    // update scene\n    vec2 rnd = weyl2(seed) - 0.5;\n    float time = (iTime + (rnd.x + rnd.y) * iTimeDelta) * 0.5;\n    light.x = -2.0 * sin(time);\n    light.z = -2.0 * cos(time);\n    \n    // render psc sample\n    mat4 precomp = psc_precomp(vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), light);\n    smp = psc(precomp, int(floor(iTime*5.0)));\n    \n    vec4 h = raymarch(ro, rd);\n    vec4 nc = norcurv(h.xyz, eps);\n \n    fragColor = texture(iChannel0, uv) * 0.5;\n    \n    vec3 lc = light.xyz - ro;\n    float lcd = sqrt(dot(lc, lc));\n    lc /= lcd;\n    \n    vec3 lh = light.xyz - h.xyz;\n    float lhd = dot(lh, lh);\n    lh /= sqrt(lhd);\n    \n    // flair\n    fragColor.rgb += lightCol.rgb * pow(max(eps, dot(lc, rd)), 5.0*(lcd*lcd)/(light.w*light.w));\n\n    // hit nothing\n    if (h.w > 100.0) {\n        fragColor += vec4(skyCol * max(eps, rd.y), 1.0);\n        return;\n    }\n    // hit light\n    if (abs(lhd - light.w*light.w) < 0.01) {\n        fragColor += vec4(lightCol, 1.0);\n        //return;\n    }\n    \n    vec3 rfl = reflect(rd, nc.xyz);\n    float sch = Schlick(nc.xyz, rfl, 1.0, 2.0);\n    float oms = 1.0 - sch;\n\n    skyCol *= max(eps, rfl.y);\n\n    // skybox reflection\n    fragColor.rgb += sch*skyCol;\n\n    vec3 ro2 = h.xyz + nc.xyz * 0.001;\n    vec3 final = vec3(0.0);\n    precomp = psc_precomp(ro2, nc.xyz, light);\n    // sample the precomputed spherical cap a few times\n    for (int i = 0; i < PSC_SAMPLES; ++i) {\n        smp = psc(precomp, i + seed);\n        // specular\n        vec3 hv = normalize(smp.xyz - rd);\n        float spec = pow(max(eps, dot(nc.xyz, hv)), 128.0);\n        // trace light\n        vec4 h2 = raymarch(ro2, smp.xyz);\n        float hitlit = float(distance(h2.xyz, light.xyz) - light.w < 0.01);\n        // psc lambert, blinn phong specular\n        final += (sch*spec + oms*smp.w*materialCol) * hitlit*lightCol.rgb;\n    }\n    fragColor.rgb += final / float(PSC_SAMPLES);\n    fragColor.a += 1.0;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const int PSC_SAMPLES = 4;\n\nfloat zfar = 1000.0;\nfloat eps = 0.001;\nfloat ieps = 0.999;\nfloat PI = 3.1415926;\n\nvec3 skyCol = vec3(0.2, 0.3, 0.4);\n// xyz rad\nvec4 light = vec4(0.0, 2.0, 0.0, 0.5);\nvec3 lightCol = vec3(4.0, 3.0, 2.0);\nvec3 materialCol = vec3(0.8);\n// xyz pdf\nvec4 smp = vec4(0.0, 1.0, 0.0, 0.0);\n\n// r2 sequence using 16 bit integers\nvec2 weyl2(in int v) {\n    return fract(vec2(v*ivec2(49471, 37345)) / float(0xffffU));\n}\n\n// https://pbr-book.org/3ed-2018/Monte_Carlo_Integration/2D_Sampling_with_Multidimensional_Transformations\nvec2 concentric(in vec2 v) {\n    vec2 w = v * 2.0 - 1.0;\n    float thta, rad;\n    if (abs(w.x) > abs(w.y)) {\n        rad = w.x;\n        thta = PI/4.0 * (w.y/w.x);\n    } else {\n        rad = w.y;\n        thta = PI/2.0 - PI/4.0 * (w.x/w.y);\n    }\n    return rad * vec2(cos(thta), sin(thta));\n}\n\nmat4 psc_precomp(in vec3 l, in vec3 n, in vec4 s) {\n    mat4 ret = mat4(0.0);\n    \n    vec3 sl = s.xyz - l.xyz;\n    // +y is normal vec\n    float Y = dot(sl, n);\n    vec3 Ybasis = n;\n    // +x is plane tangent vec towards light\n    vec3 Xbasis = sl - Y * Ybasis;\n    float X = max(eps, sqrt(dot(Xbasis, Xbasis)));\n    Xbasis /= X;\n    // by definition Z is zero\n    vec3 Zbasis = cross(Xbasis, Ybasis);\n    // distance to light\n    float d = 1.0 / sqrt(X*X + Y*Y);\n    // light direction and size on unit circle\n    vec3 sln = sl * d;\n    float swn = s.w * d;\n    float pdf = PI * swn * swn;\n    // angle to light +/- half angle\n    float va = asin(clamp(swn, eps, ieps));\n    float vi = atan(Y / X);\n    // x range on unit disk\n    float x1 = cos(clamp(vi - va, eps, PI));\n    float x2 = cos(clamp(vi + va, eps, PI));\n    float xr = x1 - x2;\n    // one dimension simplifies away\n    vi = PI * 0.5;\n    // z range on unit disk\n    float y1 = cos(clamp(vi - va, eps, PI));\n    float y2 = cos(clamp(vi + va, eps, PI));\n    float yr = y1 - y2;\n\n    ret[0] = vec4(Xbasis, X);\n    ret[1] = vec4(Ybasis, Y);\n    ret[2] = vec4(Zbasis, pdf * (xr/yr));\n    ret[3] = vec4(xr, yr, x2, y2);\n    return ret;\n}\n\nvec4 psc(mat4 precomp, in int i) {\n    // disk in range [0, 1]\n    vec2 cw2 = concentric(weyl2(i)) * 0.5 + 0.5;\n    // in range [xz1 to xz2]\n    cw2 = cw2 * precomp[3].xy + precomp[3].zw;\n    // project up onto unit circle\n    vec3 pc3 = vec3(cw2.x, sqrt(max(eps, 1.0 - cw2.x*cw2.x - cw2.y*cw2.y)), cw2.y);\n    return vec4(\n        // back to world space using basis vecs\n        mat3(precomp) * pc3,\n        // pdf from earlier\n        precomp[2].w\n    );\n}\n\nfloat Schlick(in vec3 hn, in vec3 rfl, in float r1, in float r2) {\n \tfloat r0 = (r1 - r2) / (r1 + r2);\n    return mix(r0*r0, 1.0, pow(1.0 - max(eps, dot(rfl, hn)), 5.0));\n}\n\nfloat sdf(in vec3 l) {\n    float d = zfar;\n    d = min(d, (l.y));\n    d = min(d, (distance(l, vec3(0.0, 0.0, 0.0)) - 1.0));\n    d = min(d, (distance(l, light.xyz) - light.w));\n    d = min(d, (distance(l, length(l) * normalize(smp.xyz)) - 0.01));\n    return d;\n}\n\nvec4 norcurv(in vec3 p, in float ep) {\n    vec2 e = vec2(-1., 1.)*ep;\n    float t1 = sdf(p + e.yxx), t2 = sdf(p + e.xxy);\n    float t3 = sdf(p + e.xyx), t4 = sdf(p + e.yyy);\n    return vec4(normalize(e.yxx*t1 + e.xxy*t2 + e.xyx*t3 + e.yyy*t4), (t1+t2+t3+t4 - 4.0*sdf(p))/(ep*ep));\n}\n\nvec4 raymarch(in vec3 ro, in vec3 rd) {\n    vec4 l = vec4(ro, 0.0);\n    for (int i = 0; i < 255; i++) {\n        float d = sdf(l.xyz);\n        if (d < eps)\n            return l;\n        l.w += d;\n        l.xyz += rd * d;\n    }\n    return vec4(zfar);\n}\n\n// Thanks Paniq\nvec3 linear_srgb(vec3 x) {\n    return mix(1.055*pow(x, vec3(1./2.4)) - 0.055, 12.92*x, step(x, vec3(0.0031308)));\n}\n\nvec3 srgb_linear(vec3 x) {\n    return mix(pow((x + 0.055)/1.055,vec3(2.4)), x / 12.92, step(x, vec3(0.04045)));\n}\n\n// Paniq's ACES fitted from https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl\nvec3 ACESFitted(vec3 color) {\n\t// ODT_SAT => XYZ => D60_2_D65 => sRGB\n    color = color * mat3(\n        0.59719, 0.35458, 0.04823,\n        0.07600, 0.90834, 0.01566,\n        0.02840, 0.13383, 0.83777\n    );\n    // Apply RRT and ODT\n    vec3 a = color * (color + 0.0245786) - 0.000090537;\n    vec3 b = color * (0.983729 * color + 0.4329510) + 0.238081;\n    color = a / b;\n\t// Back to color space\n    color = color * mat3(\n         1.60475, -0.53108, -0.07367,\n        -0.10208,  1.10813, -0.00605,\n        -0.00327, -0.07276,  1.07602\n    );\n    // Clamp to [0, 1]\n    return clamp(color, 0.0, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

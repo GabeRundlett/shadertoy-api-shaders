@@ -1,0 +1,244 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1591452639",
+            "description": "Made some visual improvements.\nHDR tonemapping, faster particles and a perspective camera. Now it can be used as a background for a random vlog =)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3llyzH",
+            "likes": 17,
+            "name": "BVH bokeh II",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "volume",
+                "hierarchy",
+                "bounded"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 530
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"BVH bokeh\" by rory618. https://shadertoy.com/view/ttXyR8\n// 2020-06-06 13:50:06\n\n\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\nvec3 HDRmapping(vec3 color, float exposure)\n{\n\t// Exposure tone mapping\n    vec3 mapped = ACESFilm(color * exposure);\n    // Gamma correction \n    return pow(mapped, vec3(1.0 / 2.2));\n}\n\nvec4 F(vec2 p, vec2 r)\n{\n    vec4 t = texture(iChannel2, (p+r)/R.xy);\n    return 0.005*exp(-.03*dot(r,r))*(exp(2.*t)-1.);\n}\n\nvoid mainImage( out vec4 O, in vec2 I )\n{   \n    O = max(texture(iChannel2, I/R.xy), 0.);\n    for (float i = 0.; i < 7.; i+=1.1) {\n    \tO += F(I,+vec2(-i,i));\n    \tO += F(I,+vec2(i,i));\n    \tO += F(I,-vec2(-i,i));\n    \tO += F(I,-vec2(i,i));\n    }\n    O.xyz = HDRmapping(O.xyz,3.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "getters}\n\n//Generate random particles each frame, and use a pipelined bitonic sorting network to arrange them in a list\n//so that they are in ascending order along a z curve covering uv space, saving the xy coordinate at each step.\n\n//Get the partner to be compared with for a bitonic sort at a given stage\n//See https://en.wikipedia.org/wiki/Bitonic_sorter#Alternative_representation\nint getPartner(int x, int s){\n    float j = floor(sqrt(float(2*s)+1.25)-0.5);\t\t//Major stage\n    float n = floor(float(s) - 0.5*(j*j+j) + 0.5);\t//Minor stage\n    float b = floor(exp2(j-n+1.)+0.5);\t\t\t\t//Block size\n    float bot = floor(float(x)/b)*b;\t\t\t\t//Bottom index in block \n    float top = bot + b - 1.;\t\t\t\t\t\t//Top index in block\n    if(n<0.5){\t\t\t\t\t\t\t\t\t\t//Swap with opposite index in block\n        return int(top - (float(x)-bot) + 0.5);\n    }else{\t\t\t\t\t\t\t\t\t\t\t//Swap with index a constant distance away in block\n        if(float(x)-bot < b/2.-0.5){\n            return int(float(x) + b/2. + 0.5);\n        }else{\n            return int(float(x) - b/2. + 0.5);\n        }\n    }\n}\n\n\n\n//Combine two bounding boxes, return null bbox if one of the bboxes is also null\nBBox mergeBBox(BBox A, BBox B){\n    if((A.a==vec3(0) && A.b==vec3(0)) || (B.a==vec3(0) && B.b==vec3(0)) ){\n        return BBox(vec3(0),vec3(0));\n    }\n    return BBox(min(A.a,B.a), max(A.b,B.b) );\n}\n\nvoid mainCubemap( out vec4 O, in vec2 I, in vec3 rayOri, in vec3 rayDir )\n{\n    \n    ivec3 XYFace = RayDirToXYFace(rayDir);\n    ivec2 XYTall = ivec2(XYFace.x, XYFace.y + 1024*XYFace.z);\n    int index = XYTall.x*16 + (XYTall.y%16);\n    if(XYTall.y < 16){\n        /*int seed = XYFace.x + XYFace.y*2000;// + iFrame*2000*2000;\n        seed = IHash(seed);\n        vec3 coord = rand3(seed);\n        coord = mix(coord,normalize(coord-.5)/2.5+.5,.9);\n        \n        coord-=.5;\n        coord.xz = mat2(coord.xz,-coord.z,coord.x) * vec2(cos(iTime/10.), sin(iTime/10.));\n        coord.xz = mat2(coord.xz,-coord.z,coord.x) * vec2(cos(iTime/10.), sin(iTime/10.));\n        coord+=.5;*/\n        vec4 coord = texelFetch(iChannel2, ivec2(index/128,index%128),0);\n        //coord.x=coord.z;\n        O = (coord);\n    } else  {\n        int stage = XYTall.y/16;\n        int sortStage = stage - 1;\n        if(stage<106){\n        \t//Execute the sorting network swaps\n            int partner = getPartner(index,sortStage);\n            vec4 A = sampleIndexStage(index, stage-1);\n            vec4 B = sampleIndexStage(partner, stage-1);\n            int zA = ZOrder(A.xyz);\n            int zB = ZOrder(B.xyz);\n            if(index > partner){\n                if(zA>zB){\n                    O=A;\n                } else {\n                    O=B;\n                }\n            } else {\n                if(zA>zB){\n                    O=B;\n                } else {\n                    O=A;\n                }\n            }\n        } else if(stage==BVHStage0){\n            //Fetch the BVH graph from buf A\n            vec4 A = texelFetch(iChannel1, ivec2(index%128, index/128), 0);\n            int childLeft = int(A.z);\n            int childRight = int(A.w);\n            //Pack a 15 bit integer into a pair of cubemap channels\n            O = vec4(childLeft%128,childLeft/128,childRight%128,childRight/128);\n        } else if(stage>=BBoxStage0){\n            //Compute the bounding boxes from leaf nodes upwards towards the root node\n            int BBoxStage = (stage - BBoxStage0)/2;\n            int substage = (stage - BBoxStage0)%2;\n            BBox bbox = BBox(sampleIndexStage(index, BBoxStage0+BBoxStage*2-2).xyz,\n                             sampleIndexStage(index, BBoxStage0+BBoxStage*2-1).xyz);\n            if((bbox.a==vec3(0) && bbox.b==vec3(0)) || BBoxStage==0){\n                vec4 node = sampleIndexStage(index, BBoxStage+BVHStage0);\n\n                int childLeft = int(node.x) + int(node.y)*128;\n                int childRight = int(node.z) + int(node.w)*128;\n\n                BBox bboxLeft = BBox(vec3(0),vec3(0));\n                BBox bboxRight =BBox(vec3(0),vec3(0));\n                \n                if(BBoxStage!=0){\n                    \n                     bboxLeft = BBox(sampleIndexStage(childLeft, BBoxStage0+BBoxStage*2-2).xyz,\n                                     sampleIndexStage(childLeft, BBoxStage0+BBoxStage*2-1).xyz);\n                \tbboxRight = BBox(sampleIndexStage(childRight, BBoxStage0+BBoxStage*2-2).xyz,\n                                     sampleIndexStage(childRight, BBoxStage0+BBoxStage*2-1).xyz);\n                }\n\n                //Particle 'nodes' are indexed starting from 16384. Make a 1x1 bounding box if its a particle\n                if(childLeft>=16384){\n                    childLeft -= 16384;\n                    vec4 data = sampleIndexStage(childLeft, sortedStage+BBoxStage+1);\n                    bboxLeft = leafToBBox(data);\n                }\n                if(childRight>=16384){\n                    childRight -= 16384;\n                    vec4 data = sampleIndexStage(childRight, sortedStage+BBoxStage+1);\n                    bboxRight = leafToBBox(data);\n                }\n                bbox = mergeBBox(bboxLeft, bboxRight);\n            } else {\n                //bbox.a -= sin(iTime*4. + float(index)/7e2)/1e4;\n                //bbox.b += sin(iTime*4. + float(index)/7e2)/1e4;\n            }\n            O.xyz = substage==0?bbox.a:bbox.b;\n        } else {\n            //Keep shifting the result down so that JFA pipeline always can find the particles\n            O = sampleIndexStage(index, stage-1);\n        }\n        \n    }\n    \n    \n}\n    \n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            },
+            {
+                "code": "#define R iResolution\n\n\n\nconst float dMin = 1e3;\nconst int sortedStage = 106;\nconst int BBoxStages = 70;\nconst int BVHStage0 = sortedStage+BBoxStages;\nconst int BBoxStage0 = BVHStage0+BBoxStages;\nconst int BBoxStageFinal = BBoxStage0 + BBoxStages - 3;\n\nstruct BBox {\n    vec3 a;\n    vec3 b;\n};\n    \n    \n\nbool inBBox(BBox bbox, vec3 p){\n    return (p.x>bbox.a.x && p.y>bbox.a.y && p.z>bbox.a.z && \n            p.x<bbox.b.x && p.y<bbox.b.y && p.z<bbox.b.z);\n}\nvec2 rayBox(BBox bbox, vec3 p, vec3 rdir){\n    if(inBBox(bbox,p)) return vec2(0.);\n    vec3 tMin = (bbox.a - p) / rdir;\n    vec3 tMax = (bbox.b - p) / rdir;\n    vec3 t1 = min(tMin, tMax);\n    vec3 t2 = max(tMin, tMax);\n    float tNear = max(max(t1.x, t1.y), t1.z);\n    float tFar = min(min(t2.x, t2.y), t2.z);\n    if(tNear>tFar || tNear < 0.) return vec2(1e9); else return vec2(length(rdir*tNear),length(rdir*tFar));\n}\n\n\n//Treating aabb as a sphere is faster overall\nbool PointIntersectsCone(vec3 P0, vec3 cone_o,vec3 cone_d,float cone_a){\n    \n    float g = abs(dot(normalize(cone_d), normalize(P0-cone_o)));\n    return (acos(g)<cone_a);\n    /*\n    P0 -= cone_o;\n    vec3 U = normalize(cone_d);\n\tfloat cone_cosAngle = cos(cone_a);\n    \n    // Test whether P0 or P1 is inside the cone.\n    float g = dot(U, P0) - cone_cosAngle * length(P0);\n    if (g > 0.)\n    {\n        // X0 = P0 + V is inside the cone.\n        return true;\n    }*/\n}\n\nbool LineIntersectsCone(vec3 P0, vec3 P1, vec3 cone_o,vec3 cone_d,float cone_a){\n    // Define F(X) = Dot(U,X - V)/|X - V|, where U is the unit-length\n    // cone axis direction and V is the cone vertex.  The incoming\n    // points P0 and P1 are relative to V; that is, the original\n    // points are X0 = P0 + V and X1 = P1 + V.  The segment <P0,P1>\n    // and cone intersect when a segment point X is inside the cone;\n    // that is, when F(X) > cosAngle.  The comparison is converted to\n    // an equivalent one that does not involve divisions in order to\n    // avoid a division by zero if a vertex or edge contain (0,0,0).\n    // The function is G(X) = Dot(U,X-V) - cosAngle*Length(X-V).\n    P0 -= cone_o;\n    P1 -= cone_o;\n    vec3 U = cone_d;\n\tfloat cone_cosAngle = cos(cone_a);\n\n    // Test whether an interior segment point is inside the cone.\n    vec3 E = P1 - P0;\n    vec3 crossP0U = cross(P0, U);\n    vec3 crossP0E = cross(P0, E);\n    float dphi0 = dot(crossP0E, crossP0U);\n    vec3 crossP1U = cross(P1, U);\n    float dphi1 = dot(crossP0E, crossP1U);\n    float t = dphi0 / (dphi0 - dphi1);\n    vec3 PMax = P0 + t * E;\n            float g = dot(U, PMax) - cone_cosAngle * length(PMax);\n\n    return (dphi0 > 0.) && (dphi1 < 0.) && (g > 0.);\n}\n\nbool BBoxIntersectsCone(BBox b, vec3 cone_o,vec3 cone_d,float cone_a){\n    \n    vec3 mp = (b.a+b.b)/2.;\n    float g = dot(normalize(cone_d), normalize(mp-cone_o));\n    //if(g<0.) return false;\n    float a = acos(g)-cone_a;\n    if(a<0.) return true;\n    return length(mp-cone_o)*sin(a)<length(mp-b.a);\n    \n    \n    \n    \n    /*if(rayBox(b,cone_o,cone_d).x < 1e8){return true;}\n    vec3 A = vec3(b.a.x,b.a.y,b.a.z);\n    vec3 B = vec3(b.a.x,b.a.y,b.b.z);\n    vec3 C = vec3(b.a.x,b.b.y,b.a.z);\n    vec3 D = vec3(b.a.x,b.b.y,b.b.z);\n    vec3 E = vec3(b.b.x,b.a.y,b.a.z);\n    vec3 F = vec3(b.b.x,b.a.y,b.b.z);\n    vec3 G = vec3(b.b.x,b.b.y,b.a.z);\n    vec3 H = vec3(b.b.x,b.b.y,b.b.z);\n    int k = 0;\n    if(PointIntersectsCone(A,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(B,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(C,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(D,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(E,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(F,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(G,cone_o,cone_d,cone_a)) return true;\n    if(PointIntersectsCone(H,cone_o,cone_d,cone_a)) return true;\n    return false;\n    if(LineIntersectsCone(A,B,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(B,D,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(D,C,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(C,A,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(E,F,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(F,H,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(H,G,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(F,E,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(A,E,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(B,F,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(C,G,cone_o,cone_d,cone_a)) return true;\n    if(LineIntersectsCone(D,H,cone_o,cone_d,cone_a)) return true;\n    return false;*/\n}\nBBox unpackBBox(vec4 data){\n    uint A = packHalf2x16(data.xy);\n    uint B = packHalf2x16(data.zw);\n    \n    uint a = A & 0x00007FFFu;\n    uint b = (A & 0x7FFF0000u) >> 16;\n    uint c = B & 0x00007FFFu;\n    uint d = (B & 0x7FFF0000u) >> 16;\n    \n    \n    uint x0 = a & 0x3FFu;\n    uint y0 = (a >> 10) | ((b & 0x1Fu) << 5);\n    uint z0 = (b & 0x7FE0u) >> 5;\n    \n    uint x1 = c & 0x3FFu;\n    uint y1 = (c >> 10) | ((d & 0x1Fu) << 5);\n    uint z1 = (d & 0x7FE0u) >> 5;\n    \n    x0 &= 0x3FEu;\n    x1 &= 0x3FEu;\n    y0 &= 0x3FEu;\n    y1 &= 0x3FEu;\n    z0 &= 0x3FEu;\n    z1 &= 0x3FEu;\n    \n    return BBox((vec3(x0,y0,z0))/1024.,(vec3(x1,y1,z1))/1024.);\n}\n\nvec4 packBBox(BBox bbox){\n    uint x0 = uint(bbox.a.x*1024.);\n    uint y0 = uint(bbox.a.y*1024.);\n    uint z0 = uint(bbox.a.z*1024.);\n    \n    uint x1 = uint(bbox.b.x*1024.);\n    uint y1 = uint(bbox.b.y*1024.);\n    uint z1 = uint(bbox.b.z*1024.);\n    \n    \n    x0 &= 0x3FEu;\n    x1 &= 0x3FEu;\n    y0 &= 0x3FEu;\n    y1 &= 0x3FEu;\n    z0 &= 0x3FEu;\n    z1 &= 0x3FEu;\n    \n    uint a = x0 | ((y0 & 0x1Fu)<<10);\n    uint b = y0 >> 5 | z0 << 5;\n    uint c = x1 | ((y1 & 0x1Fu)<<10);\n    uint d = y1 >> 5 | z1 << 5;\n    \n    uint A = a | (b << 16);\n    uint B = c | (d << 16);\n    \n    return vec4(unpackHalf2x16(A),unpackHalf2x16(B));\n}\n\nBBox leafToBBox(vec4 data){\n    vec3 point = data.xyz;\n    return BBox(floor(point*1024.)/1024.,(floor(point*1024.)+1.)/1024.);\n}\n\n//Line segment sdf\nfloat dLine(vec2 p, vec2 a, vec2 b){\n    p-=a;\n    b-=a;\n    float l2 = dot(b,b);\n    p -= b*clamp(dot(p,b/l2),0.,1.);\n    return length(p);\n}\n\n\n//Magic to convert a binary number 0xbbbb into 0x00b00b00b00b\nint spreadBits(int x){\n    x = (x | (x << 16)) & 0x030000FF;\n    x = (x | (x <<  8)) & 0x0300F00F;\n    x = (x | (x <<  4)) & 0x030C30C3;\n    x = (x | (x <<  2)) & 0x09249249;\n    return x;\n}\n\n//Convert a 0-1 xy coordinate to a 20 bit morton/z order code\nint ZOrder(vec3 coord){\n    int x = int(coord.x*1024.);\n    int y = int(coord.y*1024.);\n    int z = int(coord.z*1024.);\n    return spreadBits(x) | (spreadBits(y)<<1) | (spreadBits(z)<<2);\n}\n    \n//Random number functions\nint IHash(int a){\n\ta = (a ^ 61) ^ (a >> 16);\n\ta = a + (a << 3);\n\ta = a ^ (a >> 4);\n\ta = a * 0x27d4eb2d;\n\ta = a ^ (a >> 15);\n\treturn a;\n}\nfloat Hash(int a){\n\treturn float(IHash(a)) / float(0x7FFFFFFF);\n}\nvec4 rand4(int seed){\n    return vec4(Hash(seed^0x34F85A93),\n                Hash(seed^0x85FB93D5),\n                Hash(seed^0x6253DF84),\n                Hash(seed^0x25FC3625));\n}\nvec3 rand3(int seed){\n    return vec3(Hash(seed^0x348CD593),\n                Hash(seed^0x8593FD5),\n                Hash(seed^0x62A5D384));\n}\nvec2 rand2(int seed){\n    return vec2(Hash(seed^0x348C5F93),\n                Hash(seed^0x8593D5BB));\n}\n\n\nvec2 randn(vec2 randuniform){\n    vec2 r = randuniform;\n    r.x = sqrt(-2.*log(1e-9+abs(r.x)));\n    r.y *= 6.28318;\n    r = r.x*vec2(cos(r.y),sin(r.y));\n    return r;\n}\n   \n//Cubemap utils to convert between a 1024 x 1024 x 6 buffer coordinate to a cubemap ray direction\nvec3 XYFaceToRayDir(ivec3 p){\n    vec2 x = vec2(p-512) + 0.5;\n           if (p.z==0){     return vec3( 512,-x.y,-x.x);\n    } else if (p.z==1){     return vec3( x.x, 512, x.y);\n    } else if (p.z==2){     return vec3( x.x,-x.y, 512);\n    } else if (p.z==3){     return vec3(-512,-x.y, x.x);\n    } else if (p.z==4){     return vec3( x.x,-512,-x.y);\n    } else if (p.z==5){     return vec3(-x.x,-x.y,-512);\n    } else return vec3(0);\n}\nivec3 RayDirToXYFace(vec3 dir){\n    \n    if        (dir.x>max(abs(dir.y),abs(dir.z))){\n        dir /= dir.x/512.;\n        return ivec3(-dir.z+512.0, -dir.y+512., 0);\n    } else if (dir.y>max(abs(dir.z),abs(dir.x))){\n        dir /= dir.y/512.;\n        return ivec3(dir.x+512., dir.z+512.,1);\n    } else if (dir.z>max(abs(dir.x),abs(dir.y))){\n        dir /= dir.z/512.;\n        return ivec3(dir.x+512.,-dir.y+512.,2);\n    } else if (-dir.x>max(abs(dir.y),abs(dir.z))){\n        dir /=-dir.x/512.;\n        return ivec3(dir.z+512.,-dir.y+512.,3);\n    } else if (-dir.y>max(abs(dir.z),abs(dir.x))){\n        dir /=-dir.y/512.;\n        return ivec3(dir.x+512.,-dir.z+512.,4);\n    } else if (-dir.z>max(abs(dir.x),abs(dir.y))){\n        dir /=-dir.z/512.;\n        return ivec3(-dir.x+512.,-dir.y+512.,5);\n    } else return ivec3(0,0,-1);\n}\n\n//Functions to sample a particle coordinate from the cubemap as a 1024 x 6144 buffer and a 16384 x 384 buffer\n#define getters \\\nvec4 sampleXYTall(ivec2 XYTall){\\\n    ivec3 XYFace = ivec3(XYTall.x, XYTall.y%1024, XYTall.y/1024);\\\n\treturn texture(iChannel0, XYFaceToRayDir(XYFace));\\\n}\\\nvec4 sampleIndexStage(int index, int stage){\\\n    ivec2 XYTall = ivec2(index/16, index%16+stage*16);\\\n    return sampleXYTall(XYTall);",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "getters}\n\n//Length of the shared prefix of the morton codes of a pair of particles.\n//If the codes are the same, then also count shared bits of the list index which will never be the same.\n//Return -1 if the j particle is outside the range of all particles\nint plen(int i, int j){\n    if(j<0||j>=16384) return -1;\n    int mi = ZOrder(sampleIndexStage(i, sortedStage).xyz);\n    int mj = ZOrder(sampleIndexStage(j, sortedStage).xyz);\n    if(mi!=mj){\n        int x = mi^mj;\n        float f = log2(float(x)+0.5);\n        return 32 - int(f);\n    } else {\n        int x = i^j;\n        float f = log2(float(x)+0.5);\n        return 64 - int(f);\n    }\n}\n        \nvoid mainImage( out vec4 O, in vec2 I )\n{\n    //index always indicates either the left or right end of the range of particle indecies it contains\n    int i = int(I.x) + int(I.y)*128;\n    \n    //Check direction if this node\n    int d = sign(plen(i,i+1)-plen(i,i-1));\n    \n    //Scan to find the other end of this node, so that all the nodes share a prefix at least \n    //as long as the shared prefix between the first two elements\n    //Scan away to find an upper bound\n    int dmin = plen(i,i-d);\n    int lmax = 2;\n    for(int k = 0; k<16; k++){\n        if (plen(i, i + lmax*d) <= dmin)\n            break;\n        lmax *= 2;\n    }\n    \n    //Scan back with a binary search\n    int l = 0;\n    int t = lmax/2;\n    for(int k = 0; k<16; k++){\n        if (plen(i, i + (l+t)*d) > dmin){\n            l = l+t;\n        }\n        if(t==1) break;\n        t /= 2;\n        \n    }\n    //Compute the other end of the range of particle indecies this node contains\n    int j = i + l * d;\n\n    //Find the split index where the nodes on one side share a different longes prefix from the other\n    int dnode = plen(i, j);\n    int s = 0;\n    float ft = float(l)/2.;\n    for(int k = 0; k<16; k++){\n        t = int(max(1.,ceil(ft)));\n        if(plen(i, i + (s + t) * d ) > dnode){\n            s += t;\n        }\n        ft /= 2.;\n    }\n    //Compute split index\n    int y = i + s * d + min(d,0);\n    \n    //Compute the child node indecies using the split index y and two ends i and j\n    int childLeft;\n    int childRight;\n    if (min(i,j) == y) {\n        childLeft = y + 16384;\n    } else {\n        childLeft = y;\n    }\n    if (max(i,j) == y+1){\n        childRight = (y+1) + 16384;\n    } else {\n        childRight = y+1;\n    }\n    \n    //Safe the left index and right index (just for testing), as well as left and right child nodes\n    O = vec4(min(i,j),max(i,j),childLeft,childRight);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Draw 16 thousand volumes around a sphere\n//See:\n//https://www.shadertoy.com/view/WssfDn\n//https://www.shadertoy.com/view/Wdlfz7\n//https://www.shadertoy.com/view/tdlBz7\n//https://www.shadertoy.com/view/wdsBRn\n//for all the utilities and algorithm leading up to this,\n//and the paper: https://devblogs.nvidia.com/wp-content/uploads/2012/11/karras2012hpg_paper.pdf\n\ngetters}\n\nconst float eps = 1e-1;\n\n// iq's smooth HSV to RGB conversion \nvec3 hsv2rgb( in vec3 c )\n{\n    vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n\n\trgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n\n\treturn c.z * mix( vec3(1.0), rgb, c.y);\n}\n\n#define angle 0.04\n\nvec4 DFS(vec3 p, vec3 rd){\n    int count = 0;\n    int[] stack_data = int[] (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);\n    float[] stack_d = float[] (0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.);\n    int stack_pos = -1;\n    int v = 0;\n    float fd = length(rd);\n    \n    #define pop() stack_data[stack_pos--]\n    #define push(data)  stack_data[++stack_pos] = data\n    \n    int node = 0;\n    BBox bbox = BBox(sampleIndexStage(node, BBoxStageFinal+BBoxStages-2).xyz,\n                     sampleIndexStage(node, BBoxStageFinal+BBoxStages-3).xyz);\n    float d = 1e8;\n    vec3 c = vec3(0);\n    count++;\n    for(int k = 0; k < 6000; k++){\n        vec4 node_data = sampleIndexStage(node, BBoxStageFinal-BBoxStages+1);\n        \n        \n        int childLeft = int(node_data.x) + int(node_data.y)*128;\n        int childRight = int(node_data.z) + int(node_data.w)*128;\n        bool leafLeft = childLeft >= 16384;\n        bool leafRight = childRight >= 16384;\n        \n        \n        vec4 pDataLeft = sampleIndexStage(childLeft & 16383, leafLeft?sortedStage+BBoxStages-1:BBoxStageFinal+BBoxStages-2);\n        vec4 pDataRight = sampleIndexStage(childRight & 16383, leafRight?sortedStage+BBoxStages-1:BBoxStageFinal+BBoxStages-2);\n        vec4 pDataLeftB = sampleIndexStage(childLeft & 16383, leafLeft?sortedStage+BBoxStages-1:BBoxStageFinal+BBoxStages-3);\n        vec4 pDataRightB = sampleIndexStage(childRight & 16383, leafRight?sortedStage+BBoxStages-1:BBoxStageFinal+BBoxStages-3);\n        \n        BBox bboxLeft = BBox(pDataLeft.xyz,pDataLeftB.xyz);\n        BBox bboxRight = BBox(pDataRight.xyz,pDataRightB.xyz);\n        if(leafLeft){ bboxLeft = leafToBBox(pDataLeft); }\n        if(leafRight){ bboxRight = leafToBBox(pDataRight); }\n        \n        \n        bool validLeft = BBoxIntersectsCone(bboxLeft, p+rd/2., rd, angle);\n        bool validRight = BBoxIntersectsCone(bboxRight, p+rd/2., rd, angle);\n        \n        /*\n        if(validLeft){\n        \tfloat g = -1.+cos(iTime*4. + float(childLeft)/7e2);\n        \tc += 4e-6;\n        }\n        if(validRight){\n        \tfloat g = -1.+cos(iTime*4. + float(childRight)/7e2);\n        \tc += 4e-6;\n        }\n        */\n        count += int(validLeft);\n        count += int(validRight);\n        validLeft = validLeft && (!leafLeft);\n        validRight = validRight && (!leafRight);\n        \n        vec4 pData;\n        \n        if(leafLeft){\n           pData = pDataLeft;\n        }\n        if(leafRight){\n            pData = pDataRight;\n        }\n        \n        float l = max(.03,abs(length(p-pData.xyz)-fd));\n\t\tvec3 color = hsv2rgb(vec3(pData.w, 1.,abs(4.*cos(10.*pData.w))));\n        c += .0003/l/l*float( PointIntersectsCone(pData.xyz, p+rd, rd, angle) || PointIntersectsCone(pData.xyz, p, rd, 2./R.x)) \n            * color;\n        \n        if(validRight){\n            if(validLeft){\n                push(childRight);\n                node = childLeft;\n            } else {\n                //Go right\n                node = childRight;\n            }\n        } else {\n            if(validLeft){\n                //Go left\n                node = childLeft;\n            } else {\n                //Go up stack\n                if(stack_pos >= 0){\n                    node = pop();\n                } else {\n                    return vec4(c,0);\n                }\n            }\n        }\n    }\n        \n    return vec4(c,1);\n}\n\n\nmat3 getCamera(vec2 angles)\n{\n   mat3 theta_rot = mat3(1,   0,              0,\n                          0,   cos(angles.y),  sin(angles.y),\n                          0,  -sin(angles.y),  cos(angles.y)); \n        \n   mat3 phi_rot = mat3(cos(angles.x),   sin(angles.x), 0.,\n        \t\t       -sin(angles.x),   cos(angles.x), 0.,\n        \t\t        0.,              0.,            1.); \n        \n   return theta_rot*phi_rot;\n}\n\n#define FOV 1.5\n\nvec3 getRay(vec2 angles, vec2 pos)\n{\n    mat3 camera = getCamera(angles);\n    return normalize(transpose(camera)*vec3(FOV*pos.x, 1., FOV*pos.y));\n}\n\n\nvoid mainImage( out vec4 O, in vec2 I )\n{   \n    //Dot Dot Dot while pipeline fills up\n    if(iFrame<BVHStage0){\n        float fracDone = float(iFrame) / float(BVHStage0);\n        vec2 c = mod(I,R.xy/vec2(3,1));\n        O = vec4(min(1.,R.x/30.-length(c-R.xy/vec2(6,2))));\n        O *= .25+.75*vec4(I.x/R.x<floor(fracDone*4.)/3.);\n    } else {\n        vec2 uv = (I-R.xy/2.)/R.y;\n        \n        float p = (iMouse.y/R.y*2.-1.)*3.14/2.;\n        float y = (iMouse.x/R.x*2.-1.)*3.14 + iTime/4.;\n        vec2 angles = vec2(y, p);\n        \n        vec3 r0 = 0.5 -1.*getRay(angles, vec2(0.));\n        vec3 rd = getRay(angles, uv)/1.4;\n       \n        O = DFS(r0,rd);\n    }\n    /*\n    vec3 ba = vec3(iMouse.zw/R.xy,.1);\n    vec3 bb = vec3(iMouse.xy/R.xy,.9);\n    \n    ba = floor(ba*1024.+.5)/1024.;\n    bb = floor(bb*1024.+.5)/1024.;\n    \n    BBox b = BBox(ba,bb);\n    BBox x = unpackBBox(packBBox(b));\n    O = vec4(inBBox(x, vec3(I/R.xy,.5)));*/\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define pi 3.1415\nvec3 sbf(vec3 c, vec3 w, float s){\n    //float x = sin(pi*c.x*w.x) * cos(pi*c.y*w.y) * cos(pi*c.z*w.z);\n    //float y = sin(pi*c.y*w.y) * cos(pi*c.z*w.z) * cos(pi*c.x*w.x);\n    //float z = sin(pi*c.z*w.z) * cos(pi*c.x*w.x) * cos(pi*c.y*w.y);\n    vec3 k = sin(pi*c*w) * cos(pi*c.yzx*w.yzx) * cos(pi*c.zxy*w.zxy);\n    k = mix(k, k* cross(normalize(w), normalize(vec3(2,4,1))), s);\n    return 10.*k;\n}\n\nvoid mainImage( out vec4 O, in vec2 I )\n{\n    if(iFrame<3){\n       int seed = int(I.x) + 2000*int(I.y);// + iFrame*2000*2000;\n        seed = IHash(seed);\n        vec3 coord = rand3(seed);\n        coord = mix(coord,normalize(coord-.5)/2.5+.5,.9);\n        O.xyz = coord;\n        O.w = dot(sin(6.*coord*vec3(4,5,6)),vec3(1));\n    } else{\n        O = texture(iChannel0, I/R.xy);\n        O.xyz += sbf(O.xyz,vec3(3,3 ,3) ,.8 + .2*abs(sin(iTime/4.)))/1300.  *(2.+cos(iTime*.4));\n        O.xyz += sbf(O.xyz,vec3(1,23,1), .8 + .2*abs(sin(iTime/4.)))/1445. *(2.+sin(iTime*.5));\n        O.xyz += sbf(O.xyz,vec3(3,12,5), .8 + .2*abs(sin(iTime/4.)))/753.*(2.+sin(iTime*.65));\n        O.xyz += sbf(O.xyz,vec3(4,7 ,1) ,.8 + .2*abs(sin(iTime/4.)))/1725.  *(2.+cos(iTime*.67));\n        O.xyz -= sbf(O.xyz,vec3(100,100 ,100) ,.8 + .2*abs(sin(iTime/4.)))/2034. *(2.+cos(iTime*.87));\n        O.xyz -= sbf(O.xyz,vec3(1,4 ,4) ,.8 + .2*abs(sin(iTime/4.)))/3646. *(2.+sin(iTime*.9));\n        O.xyz += sbf(O.xyz,vec3(1,9 ,3) ,.8 + .2*abs(sin(iTime/4.)))/2420. *(2.+cos(iTime*.3));\n        O.xyz = clamp(O.xyz,vec3(0), vec3(1));\n        O.xyz = mix(O.xyz, vec3(.5), .0003);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

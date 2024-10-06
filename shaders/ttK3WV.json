@@ -1,0 +1,211 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1579982264",
+            "description": "More of a technical sketch. deferred rendering, shadow mapping, nice bloom, flat look.\n\nMore info in the shader since this description is length restricted ( . _.)",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ttK3WV",
+            "likes": 10,
+            "name": "deferred — sat.sketch #7",
+            "published": 3,
+            "tags": [
+                "flat",
+                "shadow",
+                "bloom",
+                "mapping",
+                "tonemapping",
+                "grading",
+                "debug",
+                "lowpoly",
+                "aesthetic",
+                "look",
+                "nice",
+                "comment",
+                "aces",
+                "ortographic",
+                "deferred"
+            ],
+            "usePreview": 0,
+            "username": "szczm_",
+            "viewed": 745
+        },
+        "renderpass": [
+            {
+                "code": "// Uncomment below line for fun debug view~\n\n// #define DEBUG_VIEW\n\n// Debug view, starting from top-left, going clockwise:\n//\n// G-buffer, normal vectors, shininess, roughness, albedo, depth, shadow buffer, projected light\n// space point, sampled shadow, final shadow, final render before post-process,\n// extracted bright features for bloom\n\n\n/******************************************************************************************\n\n deferred — saturday sketch #7\n  — Matthias Scherba (@szczm_)\n\n\n This is more of a technical sketch. It includes:\n - deferred rendering, with different materials (yes I tried thousands of lights,\n   yes, it was satisfying, no, it didn't look good, shush)\n - approximated ACES tonemaping (credits go to Krzysztof Narkowicz)\n - a shadow mapped directional light\n - \"flat\" look (achieved by quantization of the normal)\n - proper bloom\n - nice color \"grading\"\n\n Some might say a few of these are unnecessarily redundant for ShaderToy. Yes, I know. (: :) (:\n\n The code is spread out between tabs for two reasons:\n  - to declutter the common tab, and\n  - to ensure separation between different stages of rendering\n\n As the shadow resolution depends on the buffer resolution, which depends on\n the viewport resolution, be sure to go fullscreen!\n\n\n I tried to comment the code nicely, but if you have any questions, leave a comment\n or hit me up on Twitter:\n\n twitter.com/szczm_\n\n\n FUTURE TO-DO MAYBE WHO KNOWS:\n - investigate occasional shadow clipping at some angles (weird shadow buffer bias?)\n - minor buffer artifacts/fireflies?\n\n******************************************************************************************/\n\n// Image tab: Apply final post processing and tone mapping.\n\n\n#define LIT_BUFFER (iChannel0)\n#define BLOOM_BUFFER (iChannel1)\n#define SHADOW_BUFFER (iChannel2)\n#define G_BUFFER (iChannel3)\n\n\nfloat normpdf(in float x, in float sigma)\n{\n\treturn 0.39894 * exp(-0.5*x*x / (sigma*sigma)) / sigma;\n}\n\n// Credits: Krzysztof Narkowicz\nvec3 acesApprox(vec3 v)\n{\n    v *= 0.6f;\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((v*(a*v+b))/(v*(c*v+d)+e), 0.0f, 1.0f);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    time = iTime;\n    \n    vec2 coords = fragCoord / iResolution.xy;\n    \n#if defined(DEBUG_VIEW)\n    coords = coords * 2.0 - 0.5;\n#endif\n    \n    fragColor = texture(LIT_BUFFER, coords);\n    \n    vec3 bloom = vec3(0.0);\n    \n    const float SIGMA = 3.0;\n    const float STRETCH = 2.5;\n    const float LOD = 3.0;\n    \n    const int KERNEL_WIDTH = 10;\n    const int KERNEL_HEIGHT = KERNEL_WIDTH / 2;\n    \n    const float BLOOM_INTENSITY = 0.015;\n    \n    \n    // Calculate bloom\n    for (int x = -KERNEL_WIDTH; x <= KERNEL_WIDTH; x++)\n    {\n        float xx = float(x) / float(KERNEL_WIDTH);\n        xx = normpdf(xx, SIGMA);\n        \n        for (int y = -KERNEL_HEIGHT; y <= KERNEL_HEIGHT; y++)\n        {\n            float yy = float(y) / float(KERNEL_HEIGHT);\n            yy = normpdf(yy, SIGMA);\n            \n            bloom += textureLod(BLOOM_BUFFER, coords + vec2(float(x), float(y)) / iResolution.xy * STRETCH, LOD).rgb * xx * yy;\n        }\n    }\n    \n    // Color correction\n    fragColor.rgb = pow(fragColor.rgb, vec3(1.5, 1.5, 0.6));\n    \n    // Tonemapping\n    fragColor.rgb = acesApprox(fragColor.rgb);\n    \n    // Apply PS2 era bloom\n    fragColor.rgb += bloom * BLOOM_INTENSITY;\n    \n    // Vi~gnet~te\n    fragColor.rgb = mix(fragColor.rgb, vec3(1.0, 1.0, 0.5) * 0.4, 1.3 * pow(length(coords - 0.5), 3.0));\n\n    \n// Beware, traveler! Below be Ugly Debug Dragons!\n    \n#if defined(DEBUG_VIEW)\n    vec2 debugCoords = mod(coords * 2.0, vec2(1.0));\n\n    vec4 g_buffer = texture(G_BUFFER, debugCoords);\n    vec3 bloom_buffer = texture(BLOOM_BUFFER, debugCoords).rgb;\n    vec3 shadow_buffer = texture(SHADOW_BUFFER, debugCoords).rgb;\n\n    vec3 viewDir = rayDirection(iResolution.xy, debugCoords * iResolution.xy);\n    \n    vec3 eye = getEye();\n    mat4 viewToWorld = viewMatrix(eye, CAMERA_TARGET, UP);\n    vec3 worldDir = (viewToWorld * vec4(viewDir, 0.0)).xyz;\n        \n    float depth;\n    vec3 normal;\n    Material material;\n    \n    unpackGbuffer(g_buffer, depth, normal, material);\n    \n\n    vec3 position = eye + depth * worldDir;\n    \n\n    float lightDist;\n\tvec3 lightPoint = worldPointToLightPoint(position, lightDist);\n    \n    float shadowDist;\n    unpackShadow(texture(SHADOW_BUFFER, lightPoint.xy), shadowDist);\n    \n    float shadow = shadowDist - lightDist;\n    shadow = step(0.0, shadow);\n\n    if (clamp(lightPoint.x, 0.0, 1.0) != lightPoint.x\n     || clamp(lightPoint.y, 0.0, 1.0) != lightPoint.y\n     || shadowDist >= MAX_DIST_SHADOW - 1.0) // _why_\n        shadow = 1.0;\n    \n    \n    \n    vec3 debugLeft = texture(LIT_BUFFER, debugCoords).rgb;\n    debugLeft = mix(debugLeft, bloom_buffer, step(0.5, coords.y));\n    \n    vec3 debugRight = g_buffer.aaa;\n    debugRight = mix(debugRight, material.albedo, step(0.5, coords.y));\n    \n    vec3 debugBottom = vec3(shadow);\n    debugBottom = mix(debugBottom, vec3(shadowDist) / MAX_DIST_SHADOW, step(0.0, coords.x));\n    debugBottom = mix(debugBottom, lightPoint, step(0.5, coords.x));\n    debugBottom = mix(debugBottom, shadow_buffer, step(1.0, coords.x));\n    \n    vec3 debugTop = g_buffer.rgb;\n    debugTop = mix(debugTop, 0.5 + 0.5 * normal, step(0.0, coords.x));\n    debugTop = mix(debugTop, vec3(material.shininess), step(0.5, coords.x));\n    debugTop = mix(debugTop, vec3(material.roughness / MAX_ROUGHNESS), step(1.0, coords.x));\n    \n    \n    fragColor.rgb = mix(fragColor.rgb, debugLeft, step(0.0, -coords.x));\n    fragColor.rgb = mix(fragColor.rgb, debugRight, step(1.0, coords.x));\n    fragColor.rgb = mix(fragColor.rgb, debugBottom, step(-0.0, -coords.y));\n    fragColor.rgb = mix(fragColor.rgb, debugTop, step(1.0, coords.y));\n\n    return;\n#endif\n}\n\n#undef LIT_BUFFER\n#undef BLOOM_BUFFER\n#undef G_BUFFER\n#undef SHADOW_BUFFER",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Buffer A: Render the G buffer.\n\n// This tab has knowledge of materials, no other tab does.\n\n\nMaterial materials[4] = Material[]\n(\n    //            albedo        // shininess // roughness\n    Material(vec3(0.5),                  0.0,         0.0), // plane\n    Material(vec3(0.5, 0.25, 0.5),       0.3,        60.0), // sphere\n    Material(vec3(0.6, 0.4, 0.15),       0.5,        20.0), // torus\n    Material(vec3(0.25, 0.5, 0.6),       0.2,         8.0)  // capsule\n);\n\nvec3 normal(vec3 p) {\n    return normalize(vec3(\n        sceneSDF(vec3(p.x + EPSILON, p.y, p.z)).dist - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)).dist,\n        sceneSDF(vec3(p.x, p.y + EPSILON, p.z)).dist - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)).dist,\n        sceneSDF(vec3(p.x, p.y, p.z + EPSILON)).dist - sceneSDF(vec3(p.x, p.y, p.z - EPSILON)).dist\n    ));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    time = iTime;\n    \n\tvec3 viewDir = rayDirection(iResolution.xy, fragCoord);\n    \n    vec3 eye = getEye();\n    mat4 viewToWorld = viewMatrix(eye, CAMERA_TARGET, UP);\n    vec3 worldDir = (viewToWorld * viewDir.xyzz).xyz;\n    \n    Hit hit = shortestDistanceToSurface(eye, worldDir, MIN_DIST, MAX_DIST);\n\n    Material material;\n        \n    if (hit.id > 0)\n    {    \n        vec3 normal = normal(eye + hit.dist * worldDir);\n        Material material = materials[hit.id - 1];\n        \n\t\tpackGbuffer(fragColor, hit.dist, normal, material);\n    }\n\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "precision highp float;\n\n\n// Constants\nconst vec3 UP = vec3(0.0, 1.0, 0.0);\n\nconst int MAX_STEPS = 200;\nconst float MIN_DIST = 0.0;\nconst float MAX_DIST = 30.0;\nconst float EPSILON = 1e-4;\n\nconst float MIN_DIST_SHADOW = 0.0;\nconst float MAX_DIST_SHADOW = 5.5;\n\nconst vec3 CAMERA_TARGET = vec3(0.0, -0.8, 0.0);\nconst float CAMERA_FOV = 90.0;\n\nconst vec3 LIGHT_CAMERA_TARGET = vec3(0.0, -0.5, 0.0);\nconst float LIGHT_CAMERA_SIZE = 2.3;\n\nconst float MAX_ROUGHNESS = 60.0;\n\n\n// Need to set time in buffers - iTime is undefined in the Common tab\nfloat time;\n\n\n// Distance functions\n\nfloat torusSDF(vec3 p, vec2 t)\n{\n\tvec2 q = vec2(length(p.xz)-t.x,p.y);\n\treturn length(q)-t.y;\n}\n\nfloat sphereSDF(vec3 p, float r)\n{\n    return length(p) - r;\n}\n\nfloat planeSDF(vec3 p, vec3 n)\n{\n    return length(p) * dot(normalize(p), n);\n}\n\nfloat capsuleSDF(vec3 p, float h, float r)\n{\n\tp.y -= clamp(p.y, 0.0, h);\n\treturn length(p) - r;\n}\n\n\n// Gotta fix those for my drivers\n#define TAU 6.28318530718\nfloat sinf(float arg) { return sin(mod(arg, TAU)); }\nfloat cosf(float arg) { return cos(mod(arg, TAU)); }\n\n\n// Rotations\n\nvec3 rotX(vec3 p, float angle) {\n    return mat3(\n        vec3(1.0, 0.0, 0.0),\n        vec3(0.0, cosf(angle), -sinf(angle)),\n        vec3(1.0, sinf(angle), cosf(angle))\n    ) * p;\n}\n      \nvec3 rotY(vec3 p, float angle) {\n    return mat3(\n        vec3(cosf(angle), 0.0, sinf(angle)),\n        vec3(0.0, 1.0, 0.0),\n        vec3(-sinf(angle), 0.0, cosf(angle))\n    ) * p;\n}\n      \nvec3 rotZ(vec3 p, float angle) {\n    return mat3(\n        vec3(cosf(angle), -sinf(angle), 0.0),\n        vec3(sinf(angle), cosf(angle), 0.0),\n        vec3(1.0, 0.0, 1.0)\n    ) * p;\n}\n\n\n// Structs\n\nstruct Material\n{\n    vec3 albedo;\n    float shininess;\n    float roughness;\n};\n\nstruct Hit\n{\n    float dist;\n    int id;\n};\n    \n\n// Tracing stuff\n    \nHit minHit(Hit a, Hit b)\n{\n    if (a.dist < b.dist)\n        return a;\n    \n    return b;\n}\n\nHit sceneSDF(vec3 p)\n{\n    p -= vec3(-0.3, -0.2, 0.2);\n    Hit scene = Hit(planeSDF(p + vec3(1.5), vec3(0.0, 1.0, 0.0)), 1);\n    \n    scene = minHit(scene, Hit(sphereSDF(p - vec3(-0.5, 0.2, 0.0), 0.7), 2));\n    scene = minHit(scene, Hit(torusSDF(p - vec3(0.5, -0.4, 1.1), vec2(0.45, 0.3)), 3));\n    scene = minHit(scene, Hit(capsuleSDF(p - vec3(1.1, -0.2, -0.7), 0.7, 0.5), 4));\n    \n    return scene;\n}\n\nHit shortestDistanceToSurface(vec3 eye, vec3 marchingDirection, float start, float end) {\n    Hit finalHit = Hit(start, -1);\n    \n    for (int i = 0; i < MAX_STEPS; i++) {\n        Hit hit = sceneSDF(eye + finalHit.dist * marchingDirection);\n        \n        finalHit.dist += hit.dist;\n        finalHit.id = hit.id;\n        \n        if (hit.dist < EPSILON) {\n\t\t\tbreak;\n        }\n        \n        if (finalHit.dist >= end) {\n            finalHit = Hit(end, -1);\n            break;\n        }\n    }\n    \n    return finalHit;\n}\n\nvec3 getEye()\n{\n    return rotY(vec3(2.0, 2.0, 3.0), -time * 0.1);\n}\n\n\n// Math stuff\n\n// vec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {\nvec3 rayDirection(vec2 size, vec2 fragCoord) {\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(CAMERA_FOV) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\nmat4 viewMatrix(vec3 eye, vec3 center, vec3 up) {\n    // Based on gluLookAt man page\n    vec3 f = normalize(center - eye);\n    vec3 s = normalize(cross(f, up));\n    vec3 u = cross(s, f);\n    return mat4(\n        vec4(s, 0.0),\n        vec4(u, 0.0),\n        vec4(-f, 0.0),\n        vec4(0.0, 0.0, 0.0, 1)\n    );\n}\n\n\n// Light stuff\n\nvec3 lightPosition()\n{\n    vec3 dir = vec3(0.0, 2.0, 0.0);\n    \n    dir = rotX(dir, -0.15 * TAU);\n    dir = rotY(dir, time * 0.1 * TAU);\n    \n    return dir;\n}\n\n// This is a directional light - the direction is always the same\nvec3 lightDirection()\n{\n    return -normalize(lightPosition());\n}\n\nvec3 lightColor()\n{\n    return vec3(1.0, 0.9, 0.75) * 3.9;\n}\n\nmat4 lightToWorldMatrix()\n{\n    return viewMatrix(lightPosition(), LIGHT_CAMERA_TARGET, UP);\n}\n\nvec3 worldPointToLightPoint(vec3 worldPoint, out float lightDist)\n{\n    vec3 lightDir = lightDirection();\n    vec3 lightPos = lightPosition();\n    \n    // Plane SDF allows easy distance calculation to ortographic plane.\n    // -lightPos = lightDir * length(lightPos)\n    lightDist = planeSDF(worldPoint, -lightPos);\n\n    mat4 worldToLight = inverse(lightToWorldMatrix());\n    \n    vec3 lightPoint = worldPoint + lightDist * lightDir;\n\tlightPoint = (worldToLight * vec4(lightPoint, 0.0)).xyz;\n    lightPoint = (lightPoint + LIGHT_CAMERA_SIZE) / (2.0 * LIGHT_CAMERA_SIZE);\n    \n    return lightPoint;\n}\n\n\n// Packing/encoding functions\n\nfloat map(in float val, in float startIn, in float endIn, in float startOut, in float endOut)\n{\n    float norm = (val - startIn) / (endIn - startIn);\n    return norm * (endOut - startOut) + startOut;\n}\n\nvec3 quantize(vec3 value, float steps)\n{\n    return floor(value * steps) / steps;\n}\n\nfloat packVec3(vec3 vec, float steps)\n{\n    vec3 quantized = quantize(vec, steps);\n    \n    float x = quantized.x * steps * steps;\n    float y = quantized.y * steps;\n    float z = quantized.z;\n    \n    return (x + y + z) / (steps * steps);\n}\n\nvec3 unpackVec3(float packed, float steps)\n{\n    vec3 vec = vec3(0.0);\n    \n    vec.x = fract(packed);\n    vec.y = fract(packed * steps);\n    vec.z = fract(packed * steps * steps);\n    \n    return vec;\n}\n\nvoid packGbuffer(out vec4 packed, in float depth, in vec3 normal, in Material material)\n{\n    packed = vec4(0.0);\n    \n    // values equal to 1.0 are clipped, so have to lower them a bit\n    packed.r = packVec3(normal * 0.49 + 0.49, 16.0);\n    packed.g = packVec3(material.albedo * 0.999, 256.0);\n    packed.b = packVec3(vec3(material.shininess, material.roughness / MAX_ROUGHNESS, 0.0) * 0.999, 100.0);\n    packed.a = map(depth, MIN_DIST, MAX_DIST, 0.0, 1.0);\n}\n\nvoid unpackGbuffer(in vec4 packed, out float depth, out vec3 normal, out Material material)\n{\n    vec3 matParams = unpackVec3(packed.b, 100.0);\n    \n    depth = map(packed.a, 0.0, 1.0, MIN_DIST, MAX_DIST);\n    normal = 2.0 * unpackVec3(packed.r, 16.0) - 1.0;\n\n    material.shininess = matParams.r;\n    material.roughness = matParams.g * MAX_ROUGHNESS;\n    material.albedo = unpackVec3(packed.g, 256.0);\n}\n\nvoid packShadow(out vec4 packed, in float depth)\n{\n    packed = vec4(map(depth, MIN_DIST_SHADOW, MAX_DIST_SHADOW, 0.0, 1.0));\n}\n\nvoid unpackShadow(in vec4 packed, out float depth)\n{\n    depth = map(packed.r, 0.0, 1.0, MIN_DIST_SHADOW, MAX_DIST_SHADOW);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Buffer B: Render the shadow buffer.\n\n// This is an ortographic camera oriented around the center.\n// Parameters chosen for best quality.\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    time = iTime;\n    \n    vec2 coord = (-1.0 + 2.0 * fragCoord / iResolution.xy) * LIGHT_CAMERA_SIZE;\n    \n    vec3 eye = lightPosition();\n    vec3 viewDir = vec3(0.0, 0.0, -1.0);\n    \n    mat4 lightToWorld = lightToWorldMatrix();\n    \n    // Ortographic projection\n    eye += (lightToWorld * vec4(coord.x, coord.y, 0.0, 0.0)).xyz;\n    \n    vec3 worldDir = (lightToWorld * vec4(viewDir, 0.0)).xyz;\n    \n    Hit hit = shortestDistanceToSurface(eye, worldDir, MIN_DIST_SHADOW, MAX_DIST_SHADOW);\n\n    packShadow(fragColor, hit.dist);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Buffer C: Render the actual scene.\n\n// This tab knows how to light the scene, no other tab does.\n// No post processing here.\n\n\n#define G_BUFFER (iChannel0)\n#define SHADOW_BUFFER (iChannel1)\n\nvec3 lighting(in vec3 position, in vec3 normal, in vec3 viewDir, in Material material, in float shadow)\n{\n    vec3 lightDir = lightDirection();\n    vec3 lightCol = lightColor();\n    \n    // Specular\n    float ndoth = dot(normal, normalize(-viewDir - lightDir));\n    float specularBlinnPhong = pow(max(ndoth, 0.0), material.roughness);\n    \n    // Diffuse\n    float ndotl = dot(normal, -lightDir);\n    float diffuseLambert = max(0.0, ndotl);\n    \n    // Final terms\n    float ambient = 0.4;\n    float diffuse = diffuseLambert * shadow;\n    float specular = specularBlinnPhong * material.shininess * diffuse;\n    \n    return (ambient * material.albedo + (diffuse * material.albedo + specular))* lightCol;\n}\n\nfloat shadow(in vec3 position)\n{\n    float lightDist;\n\tvec3 lightPoint = worldPointToLightPoint(position, lightDist);\n    \n    float shadowDist;\n    unpackShadow(texture(SHADOW_BUFFER, lightPoint.xy), shadowDist);\n    \n    // Shadow mapping\n    float shadow = shadowDist - lightDist;\n    shadow = step(0.0, shadow);\n\n    if (clamp(lightPoint.x, 0.0, 1.0) != lightPoint.x\n     || clamp(lightPoint.y, 0.0, 1.0) != lightPoint.y\n     || shadowDist >= MAX_DIST_SHADOW - 1.0)\n        shadow = 1.0;\n    \n    return shadow;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{   \n    time = iTime;\n\n    vec3 viewDir = rayDirection(iResolution.xy, fragCoord);\n    \n    vec3 eye = getEye();\n    mat4 viewToWorld = viewMatrix(eye, CAMERA_TARGET, UP);\n    vec3 worldDir = (viewToWorld * vec4(viewDir, 0.0)).xyz;\n        \n    \n    float depth;\n    vec3 normal;\n    Material material;\n    \n    unpackGbuffer(texture(G_BUFFER, fragCoord / iResolution.xy), depth, normal, material);\n    \n\n    vec3 position = eye + depth * worldDir;\n    \n    float shadow = shadow(position);\n    \n    fragColor.rgb = lighting(position, normal, worldDir, material, shadow);\n    fragColor.a = 1.0;\n}\n\n#undef G_BUFFER\n#undef SHADOW_BUFFER",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Buffer D: Extract bright features.\n\n\n#define LIT_BUFFER (iChannel0)\n\nfloat luminance(vec3 col)\n{\n    return dot(col, vec3(0.299, 0.587, 0.114));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    time = iTime;\n    \n    fragColor.rgb = texture(iChannel0, fragCoord / iResolution.xy).rgb;\n    \n    float luma = luminance(fragColor.rgb);\n   \n    const float bloom_min_threshold = 2.0;\n    const float bloom_max_threshold = 2.5;\n    \n    fragColor.rgb = mix(vec3(0.0), fragColor.rgb, smoothstep(bloom_min_threshold, bloom_max_threshold, luma));\n}\n\n#undef LIT_BUFFER",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

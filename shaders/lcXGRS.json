@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1703178308",
+            "description": "Experiments with approximate subsurface scattering based on https://www.gdcvault.com/play/1014538/Approximating-Translucency-for-a-Fast",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lcXGRS",
+            "likes": 5,
+            "name": "Ice Experiments",
+            "published": 3,
+            "tags": [
+                "subsurface",
+                "ice"
+            ],
+            "usePreview": 0,
+            "username": "BeardThings",
+            "viewed": 160
+        },
+        "renderpass": [
+            {
+                "code": "#define SS_AMBIENT 0.5\n#define SS_DISTORTION 0.2\n#define SS_POWER 8.0\n#define SS_SCALE 2.5\n#define CONE_THICKNESS 0.8\n#define CONE_POWER 3.0\n#define CONE_ANGLE 1.05\n#define ROUGHNESS 0.2\n#define FRESNEL vec3(1.0,1.0,1.0) * 0.2\n\nfloat rcp(float v) { return 1.0 / v; }\nfloat Pi = 3.14159265358979323846264338327;\n\nvec3 fresnelSchlick(vec3 r0, vec3 n, vec3 i)\n{\n\tfloat a = 1.0 - dot(n, i);\n\treturn r0 + (1.0 - r0) * a*a*a*a*a;\n}\n\nfloat ggx_d(float roughnessSq, float hdotn)\n{\n\t// https://jcgt.org/published/0003/02/03/paper.pdf\n\tfloat hdotnSq = hdotn * hdotn;\n\tfloat t = (hdotnSq * (roughnessSq - 1.0) + 1.0);\n\treturn roughnessSq * rcp(t * t) / Pi;\n}\n\nvec3 ggx(float roughness, float hdotn, float vdotn, float ldotn, vec3 fresnel)\n{\n\tvec3 F = fresnel;\n\n\t// Generalized form:\n\t/*float roughnessSq = roughness*roughness;\n\tfloat D = ggxD(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\tfloat maskingLambda = ggxLambda(roughnessSq, vdotn);\n\tfloat shadowingLambda = ggxLambda(roughnessSq, ldotn);\n\tfloat G = maskingShadowingCorrelatedG(maskingLambda, shadowingLambda);\n\treturn F * (G * D / (4.0f * vdotn * ldotn));*/\n\n\t// Shadowing Masking Simplified Form:\n\tfloat roughnessSq = roughness*roughness;\n\tfloat D = ggx_d(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\n\t// Algebraically merged shadowingLambda and maskingLambda\n\tfloat t0 = vdotn * sqrt((1.0f - roughnessSq) * ldotn * ldotn + roughnessSq);\n\tfloat t1 = ldotn * sqrt((1.0f - roughnessSq) * vdotn * vdotn + roughnessSq);\n\tfloat simplifiedG = rcp(t0 + t1);\n\treturn F * (simplifiedG * D * 0.5f);\n}\n\nvec3 RayDirection(in vec3 \tforward,\n                  in float \tfocalDistance,\n                  in vec3 \tright,\n                  in vec3 \tup,\n                  in vec2 \tscreenSpaceCoord,\n                  in float \taspectRatioXOverY)\n{\n    return normalize(forward * focalDistance + \n                     right * screenSpaceCoord.x * aspectRatioXOverY +\n                     up * screenSpaceCoord.y);\n}\n\nfloat sdCone( vec3 p, vec2 c, float h )\n{\n  // c is the sin/cos of the angle, h is height\n  // Alternatively pass q instead of (c,h),\n  // which is the point at the base in 2D\n  vec2 q = h*vec2(c.x/c.y,-1.0);\n    \n  vec2 w = vec2( length(p.xz), p.y );\n  vec2 a = w - q*clamp( dot(w,q)/dot(q,q), 0.0, 1.0 );\n  vec2 b = w - q*vec2( clamp( w.x/q.x, 0.0, 1.0 ), 1.0 );\n  float k = sign( q.y );\n  float d = min(dot( a, a ),dot(b, b));\n  float s = max( k*(w.x*q.y-w.y*q.x),k*(w.y-q.y)  );\n  return sqrt(d)*sign(s);\n}\n\nfloat coneThickness(vec3 p)\n{\n    return 1.0-pow((abs(p.y - 0.8) / 1.4) * CONE_THICKNESS, CONE_POWER);\n}\n\nfloat SDF(vec3 p, bool useBump)\n{\n    float a = CONE_ANGLE+(useBump ? texture(iChannel2, vec2(atan(p.z,p.x)*2.0, p.y*1.2)).r*0.03 : 0.0);\n    float coneSDF = sdCone(p-vec3(0.0,0.8,0.0),\n        vec2(cos(a), sin(a)), 1.4);\n    return coneSDF;\n}\n\nvec3 Norm(vec3 p)\n{\n    const float cEps = 0.01;\n \n\treturn normalize\n\t(\tvec3\n\t\t(\tSDF(p + vec3(cEps, 0, 0),true) - SDF(p - vec3(cEps, 0, 0),true),\n\t\t\tSDF(p + vec3(0, cEps, 0),true) - SDF(p - vec3(0, cEps, 0),true),\n\t\t\tSDF(p + vec3(0, 0, cEps),true) - SDF(p - vec3(0, 0, cEps),true)\n\t\t)\n\t);\n}\n\nvec3 PaleIceBlue = vec3(186,242,239)/255.0;\nvec3 IceBlue = vec3(115,155,208)/255.0;\n\n// Based on https://www.gdcvault.com/play/1014538/Approximating-Translucency-for-a-Fast\nvec3 subsurface(vec3 l, vec3 n, vec3 v, float t)\n{\n    float distortion = SS_DISTORTION;\n    float power = SS_POWER;\n    float scale = SS_SCALE;\n    vec3 ambient = PaleIceBlue*SS_AMBIENT;\n    \n    vec3 transluentL = l + n * distortion;\n    float translucentDot = \n        pow(min(max(dot(-transluentL, v), 0.0), 1.0), power) * scale;\n    return (ambient + translucentDot) * t;\n}\nvec4 Sample(vec3 o, vec3 direction)\n{\n    vec4 fc;\n    \n    float d = 0.0;\n    for(float i = 0.; i < 64.; ++i)\n    {\n        vec3 pos = o + direction * d;\n\n        float sdf = SDF(pos, false);\n        d += sdf;\n        \n        fc = pow(texture(iChannel0, direction), vec4(2.2));\n        \n        const float EPSILON = 0.0001;\n        if(sdf < EPSILON)\n        {\n            fc = vec4(0.0);\n            vec3 n = Norm(pos);\n            vec3 albedo = IceBlue/Pi;\n            \n            vec3 lp = vec3(1.0, 0.0, 0.0);\n            vec3 ld = normalize(lp-pos);\n            \n            vec3 v = -direction;\n            \n            // Direct\n            float thick = coneThickness(pos);\n            if(true)\n            {\n                float lightInten = 8.0 * min(rcp(pow(distance(lp, pos), 2.0)), 1.0);\n            \n                float ndotl = max(dot(ld, n), 0.0);\n                vec3 h = normalize(ld+v);\n                vec3 F = fresnelSchlick(FRESNEL, h, v);\n                float hdotn = dot(h, n);\n                float vdotn = dot(v, n);\n                fc.rgb += lightInten*ndotl * ggx(ROUGHNESS,\n                    hdotn,\n                    vdotn,\n                    ndotl,\n                    F);\n               \n                fc.rgb += lightInten*albedo*subsurface(ld, n, v, thick);\n            }\n\n            // Ambient\n            if(true)\n            {\n                float lightInten = 1.0;\n            \n                vec3 aDir = -v;\n                vec3 ambientSS = subsurface(aDir, n, v, thick);\n            \tvec3 ambient = lightInten*pow(textureLod(iChannel1,aDir,1.0).rgb,vec3(2.2));\n            \tambient = albedo*ambientSS*ambient;\n                \n                float specIntensity = 1.0;\n                vec3 iv = reflect(-v, n);\n                vec3 h = n;\n                vec3 F = fresnelSchlick(FRESNEL, h, iv);\n                vec3 spec = specIntensity*F *pow(textureLod(iChannel1,iv,0.0).rgb,vec3(2.2));\n            \n                fc.rgb += spec+ambient; \n            }\n            \n            break;\n        }\n        \n        if(d > 30.)\n        {\n            break;\n        }\n    }\n    \n    return fc;\n}\n\nvec3 simpleReinhardToneMapping(vec3 color)\n{\n\tfloat exposure = 1.0;\n\tcolor *= exposure/(1. + color / exposure);\n\treturn color;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy / iResolution.xy;\n\tvec2 screenSpace = uv * 2.0 - 1.0;\n\t\n    const float height = 0.0;\n    vec3 o = vec3(sin(iTime*0.2)*1.5,height,-1.5*cos(iTime*0.2));\n    \n    vec3 f = normalize(-o);\n    vec3 u = vec3(0,1,0);\n    vec3 r = normalize(cross(f, u));\n    \n    vec3 direction = RayDirection(f, \n                                  1.0, \n                                  r, \n                                  u, \n                                  screenSpace, \n                                  iResolution.x / iResolution.y);\n    \n    vec3 fc = Sample(o, direction).xyz;\n    \n    const float gamma = 2.2;\n    // reinhard tone mapping\n    vec3 mapped = fc;//simpleReinhardToneMapping(fc);\n    // gamma correction \n    mapped = pow(mapped, vec3(1.0 / gamma));\n    \n    fragColor = vec4(mapped, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 23,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

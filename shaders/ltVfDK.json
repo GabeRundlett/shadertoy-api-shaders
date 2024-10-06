@@ -1,0 +1,118 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1544140005",
+            "description": "Translucent torus, raytraced using a method for solving quartic equations described by Lanczos.\n\nOriginal torus code by JCDjcd: [url]https://www.shadertoy.com/view/XsBcWd[/url]\n\nMouse rotation.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "ltVfDK",
+            "likes": 21,
+            "name": "Lanczos Quartic Solver",
+            "published": 3,
+            "tags": [
+                "torus",
+                "translucent",
+                "quartic",
+                "lanczos"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 922
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Created by Matthew Arcus, 2018, based on original code by JCDjcd in\n// https://www.shadertoy.com/view/XsBcWd\n//\n// Translucent torus. Raytraced by solving the quartic using the method\n// described by Cornelius Lanczos in \"Applied Analysis\", also described in:\n//\n// http://sepwww.stanford.edu/data/media/public/oldsep/stew/ForDaveHale/sep148stew1.pdf\n//\n// The quartic is transformed to a pair of quadratics, solving a cubic\n// equation to find the parameters. Lanczos shows how to transform the\n// cubic to have a root in the interval [0,1] and we use Newton's method\n// with some bracketing to find that root. Lanczos suggests an ingenious\n// scheme that uses a Chebyshev polynomial to approximate the cubic as a\n// quadratic - we find the quadratic root nearest to the unit interval\n// and use Newton-Raphson to find a close root of the cubic (but I've\n// ended up using a nice cubic solver from Kahan, with a small bodge to\n// handle the double sphere case).\n//\n////////////////////////////////////////////////////////////////////////////////\n\n\nconst float PI =  3.141592654;\nconst float TWOPI = 2.0*PI;\n\n#define ROTATION(alpha) mat2(cos(alpha),-sin(alpha),sin(alpha),cos(alpha))\n#define COLORIZATION(h)\tclamp(abs(fract(h+vec3(3,2,1)/3.0)*6.0-3.0)-1.0,0.0,1.0)\n\nfloat sgn(float x) {\n  return x < 0.0 ? -1.0: 1.0; // Return 1 for x == 0\n}\n\nfloat evalcubic(float x, float a, float b, float c, float d) {\n  return ((x*a+b)*x+c)*x+d;\n}\n\nfloat evalquad(float x, float a, float b, float c) {\n  return (x*a+b)*x+c;\n}\n\n// Quadratic solver from Kahan\nint quadratic(float A, float B, float C, out vec2 res) {\n  float b = -0.5*B, b2 = b*b;\n  float q = b2 - A*C;\n  if (q < 0.0) return 0;\n  float r = b + sgn(b)*sqrt(q);\n  if (r == 0.0) {\n    res.x = C/A;\n    res.y = -res.x;\n  } else {\n    res.x = C/r;\n    res.y = r/A;\n  }\n  return 2;\n}\n\n// The usual method - doesn't seem to cause problems here though. \nint quadratic0(float A, float B, float C, out vec2 res) {\n  float D = B*B-4.0*A*C;\n  if (D < 0.0) return 0;\n  D = sqrt(D);\n  res.x = (-B-D)/(2.0*A);\n  res.y = (-B+D)/(2.0*A);\n  return 2;\n}\n\n// Numerical Recipes algorithm for solving cubic equation\nint cubic(float a, float b, float c, out vec3 res) {\n  // solve x^3 + ax^2 + bx + c = 0\n  float Q = (a*a-3.0*b)/9.0;\n  float R = (2.0*a*a*a - 9.0*a*b + 27.0*c)/54.0;\n  float R2 = R*R, Q3 = Q*Q*Q;\n  if (R2 < Q3) {\n    float X = clamp(R/sqrt(Q3),-1.0,1.0);\n    float theta = acos(X);\n    assert(Q >= 0.0);\n    float S = sqrt(Q); // Q must be positive since 0 <= R2 < Q3\n    res[0] = -2.0*S*cos(theta/3.0)-a/3.0;\n    res[1] = -2.0*S*cos((theta+2.0*PI)/3.0)-a/3.0;\n    res[2] = -2.0*S*cos((theta+4.0*PI)/3.0)-a/3.0;\n    return 3;\n  } else {\n    float alpha = -sgn(R)*pow(abs(R)+sqrt(R2-Q3),1.0/3.0);\n    float beta = alpha == 0.0 ? 0.0 : Q/alpha;\n    res[0] = alpha + beta - a/3.0;\n    return 1;\n  }\n}\n\n// Original version using Chebyshev polynomials.\n\n// Find real root of x**3 + a*x**2 + b*x + c\n// Assume c < 0\nfloat qcubic(float a, float b, float c) {\n  // A double root close to zero gives zero\n  // This fixes the R=0 double sphere case, but\n  // may produce slight artefacts elsewhere.\n  if (abs(b)<1e-4 && abs(c) < 1e-6) return 0.0;\n  // Now substitute to make c = -1\n  float k = 1.0;\n  k = pow(-c,1.0/3.0);\n  a /= k; b /= k*k; c = -1.0;\n  // Now bracket a root between 0 and 1\n  // We may need to solve for 1/x\n  bool reciprocate = evalcubic(1.0,1.0,a,b,c) < 0.0;\n  if (reciprocate) {\n    float a1 = -b;\n    float b1 = -a;\n    a = a1; b = b1;\n  }\n\n  vec2 res;\n  float x = 0.0;\n  // Chebyshev polynomial: |32x**3 - 48x**2 + 18x - 1| < 1\n  if (quadratic(a+1.5, b-0.5625, c+0.03125,res) != 0) {\n    // Find root closest to unit interval,\n    x = (abs(res[0]-0.5) < abs(res[1]-0.5))? res[0]: res[1];\n    //x = min(res[0],res[1]);\n  }\n\n  // 3 rounds of Newton-Raphson\n  x -= evalcubic(x,1.0,a,b,c)/evalquad(x,3.0,2.0*a,b);\n  //x -= evalcubic(x,1.0,a,b,c)/evalquad(x,3.0,2.0*a,b);\n  //x -= evalcubic(x,1.0,a,b,c)/evalquad(x,3.0,2.0*a,b);\n\n  if (reciprocate) return k/x;\n  return k*x;\n}\n\nfloat qcubic0(float B, float C, float D) {\n  vec3 roots;\n  int nroots = cubic(B,C,D,roots);\n  // And select the largest\n  float psi = roots[0];\n  if (nroots > 1 && roots[1] > psi) psi = roots[1];\n  if (nroots > 2 && roots[2] > psi) psi = roots[2];\n  // Give a quick polish with Newton-Raphson\n  for (int i = 0; i < 2; i++) {\n    psi -= evalcubic(psi,1.0,B,C,D)/evalquad(psi,3.0,2.0*B,C);\n  }\n  return psi;\n}\n\nvoid eval(float X, float A, float B, float C, float D,\n          out float Q, out float DQ, out float B1,out float C2) {\n  float q0 = A*X;\n  B1 = q0+B;\n  C2 = B1*X+C;\n  DQ = (q0+B1)*X + C2;\n  Q = C2*X + D;\n}\n\nfloat qcubic1(float B, float C, float D) {\n  // A double root close to zero gives zero\n  // This fixes the R=0 double sphere case, but\n  // may produce slight artefacts elsewhere.\n  if (abs(C)<1e-4 && abs(D) < 1e-6) return 0.0;\n  float A = 1.0;\n  float X,b1,c2;\n  if (D == 0.0) {\n    X = 0.0; b1 = B; c2 = C;\n  } else {\n    X = -(B/A)/3.0;\n    float t,r,s,q,dq,x0;\n    eval(X,A,B,C,D,q,dq,b1,c2);\n    t = q/A; r = pow(abs(t),1.0/3.0); s = sgn(t);\n    t = -dq/A; if (t > 0.0) r = 1.324718*max(r,sqrt(t));\n    x0 = X - s*r;\n    if (x0 != X) {\n      X = x0;\n      for (int i = 0; i < 6; i++) {\n        eval(X,A,B,C,D,q,dq,b1,c2);\n        if (dq == 0.0) break;\n        X -= q/dq;\n      }\n      if (abs(A)*X*X > abs(D/X)) {\n        c2 = -D/X; b1 = (c2 - C)/X;\n      }\n    }\n  }\n  vec2 res;\n  if (quadratic(A,b1,c2,res) != 0) {\n    X = max(X,res.x);\n    X = max(X,res.y);\n  }\n  return X;\n}\n\n// The Lanczos quartic method\nint quartic(float c1, float c2, float c3, float c4, out vec4 res) {\n  float alpha = 0.5*c1;\n  float A = c2-alpha*alpha;\n  float B = c3-alpha*A;\n  float a,b,beta,psi;\n  // Get largest root of cubic\n  psi = qcubic(2.0*A-alpha*alpha, A*A+2.0*B*alpha-4.0*c4, -B*B);\n  // Since the constant term is non-positive, there should be\n  // a non-negative root.\n  //assert(psi < 1e4);\n  //psi = 0.1;//max(0.0,psi);\n  a = sqrt(psi);\n  beta = 0.5*(A + psi);\n  if (psi == 0.0) {\n    b = sqrt(max(beta*beta-c4,0.0));\n  } else {\n    b = 0.5*a*(alpha-B/psi);\n  }\n  int n1 = quadratic(1.0,alpha+a,beta+b,res.xy);\n  int n2 = quadratic(1.0,alpha-a,beta-b,res.zw); \n  if (n1 == 0) res.xy = res.zw;\n  return n1+n2;\n}\n\n// Ray is defined by M(t) = P + t.d\nvec4 compute(vec3 P, vec3 d) {\n  // Parametrization of the torus by phi and theta angles.\n  // x = (R+r*cos(theta))*cos(phi)\n  // y = (R+r*cos(theta))*sin(phi)\n  // z = r*sin(theta)\n    \n  float torus_R = 0.5*max(0.0,1.0-cos(0.45*iTime));\n  assert(torus_R >= 0.0);\n  torus_R = max(0.0,torus_R);\n  float torus_r = 0.5;\n\n  // U*t^2 + V*t + W = 2*r*R*cos(theta)\n  float U = 1.0; //dot(d,d);\n  float V = 2.0*dot(P,d);\n  float W = dot(P,P) - (torus_R*torus_R+torus_r*torus_r);\n    \n  // A*t^4 + B*t^3 + C*t^2 + D*t + E = 0\n  //float A = 1.0; //U*U;\n  float B = 2.0*U*V;\n  float C = V*V + 2.0*U*W + 4.0*torus_R*torus_R*d.z*d.z;\n  float D = 2.0*V*W + 8.0*torus_R*torus_R*P.z*d.z;\n  float E = W*W + 4.0*torus_R*torus_R*(P.z*P.z-torus_r*torus_r);\n\n  vec4 res;\n  int n = quartic(B,C,D,E,res);\n  // Sort results\n  if (n > 1) {\n    if (res.x > res.y) res.xy = res.yx;\n  }\n  if (n > 2) {\n    if (res.y > res.z) res.yz = res.zy;\n    if (res.x > res.y) res.xy = res.yx;\n  }\n  if (n > 3) {\n    if (res.z > res.w) res.zw = res.wz;\n    if (res.y > res.z) res.yz = res.zy;\n    if (res.x > res.y) res.xy = res.yx;\n  }\n  for (int i = 0; i < n-1; i++) {\n    assert(res[i] <= res[i+1]);\n  }\n  // colorization\n  vec3 color = vec3(0);\n  // Process from furthest point of intersection\n  for (int i = n-1; i >= 0; i--) {\n    //if (res[i] > 10.0) continue;\n    if (res[i] < 0.0) break;\n    vec3 M = P+res[i]*d;\n    float phi = atan(M.y,M.x);\n    float theta = atan(M.z,sqrt(M.x*M.x+M.y*M.y)-torus_R);\n    vec3 c = COLORIZATION((3.0*phi+2.0*theta)/TWOPI);\n    if (cos(7.0*phi) > 0.95) {\n      // displays 7 white small rings\n      c = vec3(1);\n    }\n    if (cos(4.0*theta) > 0.95) {\n      // displays 4 white large rings\n      c = vec3(1);\n    }\n    color = c*0.5 + 0.5*color;\n  }\n  assert(!isnan(length(color)));\n  return vec4(color,1.0);\n}\n\nvec2 rotate(in vec2 p, in float t) {\n  return p * cos(t) + vec2(p.y, -p.x) * sin(t);\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  p.yz = rotate(p.yz, 0.1*iTime);\n  p.zx = rotate(p.zx, 0.222*iTime);\n  return p;\n}\n\nvoid mainImage(out vec4 fragColor,vec2 fragCoord) {\n  vec2 uv = (2.0*fragCoord - iResolution.xy)/iResolution.y;\n  vec3 P = vec3(0,0,-4);\n  P.z *= exp(-0.1*float(keycount(KEY_UP)-keycount(KEY_DOWN)));\n  vec3 d = vec3(uv,2);\n\n  d = transform(d);\n  P = transform(P);\n  d = normalize(d);\n  fragColor = compute(P,d);\n  if (check) fragColor.r = 1.0;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "void mainImage(out vec4 t, vec2 uv) {\n  int i = int(uv.x); // Column number\n  int j = int(uv.y); // Row\n  if ( iFrame == 0) {\n    t = vec4(0);\n  } else {\n    t = texelFetch(iChannel2,ivec2(i,j),0); // Get current state   \n  }  \n  if (j == 0) {\n    // First row - key count\n    // Do key repeat here as well?\n    float w1 = keystate(i,0).x;\n    if (w1 != t.w) {\n      t.w = w1;\n      // Don't count key changes when ALT pressed\n      if (keystate(KEY_ALT,0).x == 0.0 && w1 != 0.0) {\n        t.x++; t.y = iTime;\n      }\n    }\n    // Key repeat - only when shader is running!\n    // Should have longer pause after first key press.\n    if (t.w != 0.0 && keystate(KEY_ALT,0).x == 0.0 && iTime-t.y > 0.25) {\n      t.x++; t.y = iTime;\n    }\n  } else if (j == 1) {\n    if (i == 0 && iMouse.z != 0.0) t.xy = iMouse.xy;\n    if (i == 1 && iMouse.z == 0.0) t.xy = iMouse.xy;\n  } else if (j == 2 && key(i)) {\n    // Record mouse position when key pressed\n    t = vec4(iMouse.xyz,iTime);\n  }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "bool check = false;\nvoid assert(bool b) { if (!b) check = true; }\n\nconst int KEY_ALT = 18;\nconst int KEY_PAGE_UP = 33;\nconst int KEY_PAGE_DOWN = 34;\nconst int KEY_LEFT = 37;\nconst int KEY_RIGHT = 39;\nconst int KEY_UP = 38;\nconst int KEY_DOWN = 40;\n\nconst int CHAR_0 = 48;\n\nconst int CHAR_A = 65;\nconst int CHAR_B = 66;\nconst int CHAR_C = 67;\nconst int CHAR_D = 68;\nconst int CHAR_E = 69;\nconst int CHAR_F = 70;\nconst int CHAR_G = 71;\nconst int CHAR_H = 72;\nconst int CHAR_I = 73;\nconst int CHAR_J = 74;\nconst int CHAR_K = 75;\nconst int CHAR_L = 76;\nconst int CHAR_M = 77;\nconst int CHAR_N = 78;\nconst int CHAR_O = 79;\nconst int CHAR_P = 80;\nconst int CHAR_Q = 81;\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\nconst int CHAR_U = 85;\nconst int CHAR_V = 86;\nconst int CHAR_W = 87;\nconst int CHAR_X = 88;\nconst int CHAR_Y = 89;\nconst int CHAR_Z = 90;\n\n// Macros for use in \"common\" blocks.\n#if !defined(key)\n#define key(code) (texelFetch(iChannel3, ivec2((code),2),0).x != 0.0)\n#endif\n#define store(i,j) (texelFetch(iChannel2, ivec2((i),(j)),0))\n#define keycount(key) (int(store((key),0).x))\n#define keystate(k,n) ( texelFetch(iChannel3,ivec2(k,n),0) )\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

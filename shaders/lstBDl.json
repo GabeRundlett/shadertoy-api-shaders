@@ -1,0 +1,71 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1542967054",
+            "description": "Saw a blog post about a single pass depth of field and I wanted to try it out\n\nThis actually gives pretty decent results, but the settings are very hard to control and there are no focal planes and settings you would find in most Bokeh implementations.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lstBDl",
+            "likes": 39,
+            "name": "Single pass DoF",
+            "published": 3,
+            "tags": [
+                "blur",
+                "dof",
+                "bokeh",
+                "field",
+                "depth",
+                "of",
+                "pass",
+                "single"
+            ],
+            "usePreview": 0,
+            "username": "Gaktan",
+            "viewed": 3071
+        },
+        "renderpass": [
+            {
+                "code": "//\n// Inspired by blog post: http://tuxedolabs.blogspot.fr/2018/05/bokeh-depth-of-field-in-single-pass.html\n// Original scene: https://www.shadertoy.com/view/MsG3Dz\n//\n// There is still lots of flickering, I'm guessing this is because of the original scene's lighting.\n// Using PBR would probably fix the crazy specular values we get sometimes\n// As a quick way to remove flickering, we can use AA\n//\n\n\n#define DISPLAY_GAMMA 1.8\n\n#define GOLDEN_ANGLE 2.39996323\n#define MAX_BLUR_SIZE 20.0\n\n// Smaller = nicer blur, larger = faster\n#define RAD_SCALE 0.5\n\n#define uFar 10.0\n\nfloat getBlurSize(float depth, float focusPoint, float focusScale)\n{\n\tfloat coc = clamp((1.0 / focusPoint - 1.0 / depth)*focusScale, -1.0, 1.0);\n    return abs(coc) * MAX_BLUR_SIZE;\n}\n\nvec3 depthOfField(vec2 texCoord, float focusPoint, float focusScale)\n{\n    vec4 Input = texture(iChannel0, texCoord).rgba;\n    float centerDepth = Input.a * uFar;\n    float centerSize = getBlurSize(centerDepth, focusPoint, focusScale);\n    vec3 color = Input.rgb;\n    float tot = 1.0;\n    \n    vec2 texelSize = 1.0 / iResolution.xy;\n\n    float radius = RAD_SCALE;\n    for (float ang = 0.0; radius < MAX_BLUR_SIZE; ang += GOLDEN_ANGLE)\n    {\n        vec2 tc = texCoord + vec2(cos(ang), sin(ang)) * texelSize * radius;\n        \n        vec4 sampleInput = texture(iChannel0, tc).rgba;\n\n        vec3 sampleColor = sampleInput.rgb;\n        float sampleDepth = sampleInput.a * uFar;\n        float sampleSize = getBlurSize(sampleDepth, focusPoint, focusScale);\n        \n        if (sampleDepth > centerDepth)\n        {\n        \tsampleSize = clamp(sampleSize, 0.0, centerSize*2.0);\n        }\n\n        float m = smoothstep(radius-0.5, radius+0.5, sampleSize);\n        color += mix(color/tot, sampleColor, m);\n        tot += 1.0;\n        radius += RAD_SCALE/radius;\n    }\n    \n    return color /= tot;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    \n    vec4 color = texture(iChannel0, uv).rgba;\n    \n    float focusPoint = 78.0;\n    float focusScale = (0.5 + sin(iTime) * 0.5) * 50.0;\n    \n    color.rgb = depthOfField(uv, focusPoint, focusScale);\n\n    //tone mapping\n    color.rgb = vec3(1.7, 1.8, 1.9) * color.rgb / (1.0 + color.rgb);\n    \n    //inverse gamma correction\n\tfragColor = vec4(pow(color.rgb, vec3(1.0 / DISPLAY_GAMMA)), 1.0);\n    \n    // Debug depth\n    //fragColor.rgb = vec3(color.a)*0.015;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//by musk License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n#define AA 4\n\n#define SPHERE 1.0 \n//#define SPHERE 0.0 \n\n#define RAY_STEPS_PRIMARY 120\n#define RAY_STEPS_SECOND 40\n\nfloat df2obj(vec3 p)\n{\n    p.x += iTime - 2.0;\n    vec3 op = p;\n    vec3 p2 = p;\n    p.xz = mod(p.xz + vec2(2.0), 4.0) - vec2(2.0);\n    float box = max(abs(p.x), max(abs(p.y), abs(p.z)));\n    float sphere = length(p);\n    return (mix(box, sphere, SPHERE) - 1.0);\n}\n\nfloat df2floor(vec3 p)\n{\n\treturn p.y + 1.0;\n}\n\nfloat df2(vec3 p)\n{\n\treturn min(df2obj(p), df2floor(p));\n}\n\nmat2 matr(float a)\n{\n    float c = cos(a), s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n#define NF(R,P,F) { vec2 e = vec2(0.0, 0.01); R = normalize(vec3(F(P-e.yxx),F(P-e.xyx),F(P-e.xxy))); }\n#define RM(R,P,D,F,S) { R = P+D; for(int i=0; i<S; i++) { float t = F(R); R += t*D; } }\n\n\nvec3 shading(vec3 p, vec3 d, vec3 n)\n{\n    vec3 c = vec3(0.0);\n    \n    vec3 bg = (d * 0.5 + 0.5) * 0.5;\n    bg += sin(d.y * 4.0) * 0.5 + 0.5;\n    bg *= max(cos(iTime * 0.2 - 10.0) *0.7 + 0.5, 0.0);\n    \n    if (df2(p) < 0.1)\n    {\n        float lt = iTime - 14.0;\n        vec3 l = vec3(sin(lt * 0.1) * 14.0, 4.0 + cos(lt * 0.23) * 2.0, cos(lt * 0.13) * 14.0);\n        vec3 ldir = normalize(vec3(p - l));\n        float oa = (df2(p-n)+df2(p-n*.5)*2.0+df2(p-n*.25)*4.0)*.5*.3333+.5; //ambient occlusion\n        float od = max(min(min(df2(p-ldir*.3)/0.3,df2(p-ldir)),df2(p-ldir*0.6)/.6),.0); //shadow\n        float dist = distance(p,l);\n        \n        float spec = pow(max(.0,dot(normalize(reflect(d,n)),-ldir)*.5+.5),1000.0)*56.0; //specular component\n        \n        c = vec3(0.8, 0.7, 0.6) * max(0.0, dot(n, ldir) * 0.5) / (1.0 + dist * 0.1) * (od * 0.8 + 0.2) * 2.0;//diffuse component\n        c += vec3(spec*od);\n        c *= oa;\n        c = mix(bg,c,1.0/(1.0+length(p)*0.01));//fogging\n    }\n    else\n    {\n        c = bg;\n    }\n    \n    return c;\n}\n\nvec4 render(vec3 pos, vec3 dir)\n{\n    vec3 p = vec3(0.0);\n    \n    //first ray\n    RM(p, pos, dir, df2, RAY_STEPS_PRIMARY);\n    vec3 norm;\n    NF(norm, p, df2);\n    \n    //fresnel shading\n    float fres = 1.0 - dot(dir, norm) * 0.9;\n    vec4 color = vec4(0.0);\n\n    float dist = distance(pos, p);\n    color.w = dist;\n    \n    //did we hit surface?\n    if (df2(p) < 0.1)\n    {\n        //then shoot the second ray\n        vec3 p2, n2, d2 = reflect(dir, norm);\n        RM(p2, p, d2, df2, RAY_STEPS_SECOND);\n        NF(n2, p2, df2);\n        \n        color.rgb += shading(p2, d2, n2) * fres;\n\n        if (df2(p2) > 0.1)\n        {\n            color.rgb += shading(p, dir, norm);\n        }\n    }\n    else\n    {\n        color.rgb = shading(p,dir, norm);\n    }\n    \n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 pos = vec3(0.0, 0.0, -8.0);\n    vec2 muvs = (iMouse.xy/iResolution.xy);\n    \n    if (dot(muvs, muvs) < 0.0005)\n    {\n        muvs.y = 0.7;\n        muvs.x = 0.15;\n    }\n    \n    //rotate the direction and position based on mouse\n\tmat2 rx = matr(muvs.y - 1.0);\n    mat2 ry = matr(muvs.x * 4.0 + 4.5);\n    pos.yz *= rx;\n    pos.xz *= ry;\n    \n#if AA<2\n    vec2 p = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    vec3 dir = normalize(vec3(p, 2.0));\n    dir.yz *= rx;\n    dir.xz *= ry;\n    \n    vec4 color = render(pos, dir);\n    float dist = color.w;\n#else\n    vec4 color = vec4(0.0);\n    for( int m=0; m<AA; m++ )\n\tfor( int n=0; n<AA; n++ )\n\t{\n        vec2 rr = vec2(float(m), float(n)) / float(AA) - 0.5;\n        vec2 p = (2.0 * (fragCoord.xy + rr) - iResolution.xy) / iResolution.y;\n        \n        vec3 dir = normalize(vec3(p, 2.0));\n        dir.yz *= rx;\n   \t\tdir.xz *= ry;\n        \n        color += render(pos, dir);\n    }\n    color.xyzw /= float(AA*AA);\n#endif\n    \n    // bad negative values, bad\n    color.rgb = max(color.rgb, 0.0);\n    \n    //store color(rgb) and depth (a)\n\tfragColor = vec4(color.rgb, color.w);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

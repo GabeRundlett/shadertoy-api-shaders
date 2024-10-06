@@ -1,0 +1,137 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1548373581",
+            "description": "Port of Dmitry Sokolov's Tiny Raytracer: [url]https://github.com/ssloy/tinyraytracer[/url]\n\nMouse: rotate viewpoint.\nup/down: zoom\n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "tsjGRW",
+            "likes": 19,
+            "name": "Tiny Raytracer",
+            "published": 3,
+            "tags": [
+                "raytracer",
+                "tiny",
+                "sokolov"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 1286
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Tiny Ray Tracer. Orginal C++ version by Dmitry Sokolov:\n// https://github.com/ssloy/tinyraytracer\n// Original License: WTFPL (https://en.wikipedia.org/wiki/WTFPL)\n//\n// GLSL version by Matthew Arcus, 2019:\n// I've tried to keep the logic the same as the original, some changes:\n//\n// Use a stack instead of recursion\n// Centre scene on origin to make view rotation easier\n// Mouse movement & rotation\n// Some fixes for single precision\n// Skip tracing eg. for opaque or non-reflective materials\n//\n////////////////////////////////////////////////////////////////////////////////\n\n#define PI 3.1415926536\n\nstruct Light {\n  vec3 position;\n  float intensity;\n};\n\nstruct Material {\n  float refractive_index;\n  vec4 albedo;\n  vec3 diffuse_color;\n  float specular_exponent;\n};\n\nstruct Sphere {\n  vec3 center;\n  float radius;\n  int material;\n};\n\nMaterial materials[] =\n  Material[](Material(1.0, vec4(0.5,  0.3, 0.1, 0.0), vec3(0.5, 0.5, 0.3),   50.0),\n             Material(1.5, vec4(0.0,  0.5, 0.1, 0.8), vec3(0.6, 0.7, 0.8),  125.0),\n             Material(1.0, vec4(0.9,  0.1, 0.0, 0.0), vec3(0.3, 0.1, 0.1),   10.0),\n             Material(1.0, vec4(0.0, 10.0, 0.8, 0.0), vec3(1.0, 1.0, 1.0), 1425.0),\n             Material(1.0, vec4(1,0,0,0),             vec3(.3, .2, .1),       1.0),\n             Material(1.0, vec4(1,0,0,0),             vec3(.3),               1.0));\n\nconst int IVORY = 0, GLASS = 1, RED_RUBBER = 2, MIRROR = 3, BOARD0 = 4, BOARD1 = 5;\n\nSphere spheres[] =\n  Sphere[](Sphere(vec3(-3,    0,   4), 2.0,      IVORY),\n           Sphere(vec3(-1.0, -1.5, 8), 2.0,      GLASS),\n           Sphere(vec3( 1.5, -0.5, 2), 3.0, RED_RUBBER),\n           Sphere(vec3( 7,    5,   2), 4.0,     MIRROR));\n\nLight lights[] =\n  Light[](Light(vec3(-20, 20, 40), 1.5),\n          Light(vec3( 30, 50, -5), 1.8),\n          Light(vec3( 30, 20, 50), 1.7));\n\nconst int NSPHERES = spheres.length();\nconst int NLIGHTS = lights.length();\n\nbool ray_intersect(Sphere s, vec3 orig, vec3 dir, out float t0) {\n  vec3 center = s.center;\n  float radius = s.radius;\n  vec3 L = center - orig;\n  float tca = dot(L,dir);\n  float d2 = dot(L,L) - tca*tca;\n  float disc = radius*radius - d2;\n  if (disc < 0.0) return false;\n  float thc = sqrt(disc);\n  // t0*t1 = tca^2 - thc^2 = tca^2 - disc\n  float t1, K = tca*tca - disc;\n  if (tca < 0.0) {\n    t0 = tca - thc;\n    t1 = K/t0;\n  } else {\n    t1 = tca + thc;\n    t0 = K/t1;\n  }\n  if (t0 < 0.0) t0 = t1;\n  if (t0 < 0.0) return false;\n  return true;\n}\n\n// Original refract function.\nvec3 refraction(vec3 I, vec3 N, float refractive_index) { // Snell's law\n  float cosi = -max(-1.0, min(1.0, dot(I,N)));\n  float etai = 1.0, etat = refractive_index;\n  vec3 n = N;\n  // if the ray is inside the object, swap the indices and\n  // invert the normal to get the correct result  \n  if (cosi < 0.0) {\n    cosi = -cosi;\n    float tmp = etai; etai = etat; etat = tmp; // swap\n    n = -N;\n  }\n  float eta = etai / etat;\n  float k = 1.0 - eta*eta*(1.0 - cosi*cosi);\n  return k < 0.0 ? vec3(0) : I*eta + n*(eta * cosi - sqrt(k));\n}\n\nbool scene_intersect(vec3 orig, vec3 dir, out vec3 hit, out vec3 N, out int material) {\n  float maxdist = 1e8;\n  float dist = maxdist;\n  for (int i=0; i < NSPHERES; i++) {\n    float dist_i;\n    if (ray_intersect(spheres[i],orig, dir, dist_i) && dist_i < dist) {\n      dist = dist_i;\n      hit = orig + dir*dist_i;\n      N = normalize(hit - spheres[i].center);\n      material = spheres[i].material;\n    }\n  }\n\n  if (abs(dir.y) > 1e-3)  {\n    float d = -(orig.y+4.0)/dir.y; // the checkerboard plane has equation y = -4\n    vec3 pt = orig + dir*d;\n    if (d > 0.0 && abs(pt.x) < 10.0 && abs(pt.z) < 10.0 && d < dist) {\n      dist = d;\n      hit = pt;\n      N = vec3(0,1,0);\n      int parity = (int(floor(0.5*hit.x)) + int(floor(0.5*hit.z))) & 1;\n      material = parity == 0 ? BOARD0 : BOARD1;\n    }\n  }\n  return dist < maxdist;\n}\n\nstruct StackEntry {\n  ivec3 iparams; // type, depth, material\n  vec3 value, dir, point, N;\n};\n\nvec3 background(vec3 dir) {\n#if 0\n  return vec3(0.05, 0.4, 0.5); // background color\n#elif 1\n  return pow(texture(iChannel3,dir).xyz,vec3(2.2));\n#else\n  dir = abs(dir);\n  dir /= dot(dir,vec3(1));\n  return pow(texture(iChannel2,dir.xy).xyz,vec3(2.2));\n#endif\n}\n\nconst int MAXDEPTH = 4;\nStackEntry stack[MAXDEPTH];\nint stackptr = 0;\n\nvec3 cast_ray(vec3 orig, vec3 dir) {\n  int depth = 0, state = 0, materialindex;\n  vec3 value,point, N,reflect_color,refract_color;\n  vec3 bg = background(dir);\n  while(true) {\n    if (state == 0) {\n      if (!scene_intersect(orig, dir, point, N, materialindex)) {\n        value = depth == 0 ? bg : background(dir);\n        state = 1;\n      } else if (depth == MAXDEPTH) {\n        reflect_color = refract_color = background(dir);\n        state = 2;\n      } else {\n        stack[stackptr++] = StackEntry(ivec3(0,depth,materialindex),vec3(0),dir,point,N);\n        if (materials[materialindex].albedo[2] == 0.0) {\n          // Go directly to unwind if no reflection\n          value = vec3(0);\n          state = 1;\n        } else {\n          vec3 reflect_dir = normalize(reflect(dir, N));\n          // offset the original point to avoid occlusion by the object itself    \n          vec3 reflect_orig = dot(reflect_dir,N) < 0.0 ? point - N*1e-3 : point + N*1e-3;\n          orig = reflect_orig;\n          dir = reflect_dir;\n          depth++;\n          // and loop\n        }\n      }\n    }\n    if (state == 1) {\n      if (stackptr == 0) return value;\n      int type = stack[stackptr-1].iparams[0];\n      depth = stack[stackptr-1].iparams[1];\n      materialindex = stack[stackptr-1].iparams[2];\n      dir = stack[stackptr-1].dir;\n      point = stack[stackptr-1].point;\n      N = stack[stackptr-1].N;\n      Material material = materials[materialindex];\n      if (type == 0) {\n        // Don't actually pop the stack, but modify the top item\n        stack[stackptr-1].value = value;\n        stack[stackptr-1].iparams[0] = 1; //type = 1\n        if (material.albedo[3] == 0.0) {\n          value = vec3(0);\n        } else {\n          vec3 refract_dir = normalize(refraction(dir, N, material.refractive_index));\n          vec3 refract_orig = dot(refract_dir,N) < 0.0 ? point - N*1e-3 : point + N*1e-3;\n          orig = refract_orig;\n          dir = refract_dir;\n          depth++;\n          state = 0;\n        }\n      } else {\n        reflect_color = stack[stackptr-1].value;\n        refract_color = value;\n        stackptr--;\n        state = 2;\n      }\n    }\n    if (state == 2) {\n      Material material = materials[materialindex];\n      float diffuse_light_intensity = 0.0;\n      float specular_light_intensity = 0.0;\n      for (int i=0; i<NLIGHTS; i++) {\n        vec3 light_dir       = normalize(lights[i].position - point);\n        float light_distance = length(lights[i].position - point);\n\n        // checking if the point lies in the shadow of the lights[i]\n        vec3 shadow_orig = dot(light_dir,N) < 0.0 ? point - N*1e-3 : point + N*1e-3;\n        vec3 shadow_pt, shadow_N;\n        int tmpmaterial;\n        if (scene_intersect(shadow_orig, light_dir, shadow_pt, shadow_N, tmpmaterial) &&\n            length(shadow_pt-shadow_orig) < light_distance){\n          continue;\n        }\n                            \n        diffuse_light_intensity  += lights[i].intensity * max(0.0, dot(light_dir,N));\n        specular_light_intensity += pow(max(0.0, -dot(reflect(-light_dir, N),dir)),\n                                        material.specular_exponent)*lights[i].intensity;\n      }\n      value = material.diffuse_color * diffuse_light_intensity * material.albedo[0] +\n                                              vec3(1,1,1)*specular_light_intensity * material.albedo[1] +\n                                              reflect_color*material.albedo[2] +\n                                              refract_color*material.albedo[3];\n      state = 1;\n    }\n  }\n}\n\nvec2 rotate(vec2 p, float t) {\n  return p * cos(t) + vec2(p.y, -p.x) * sin(t);\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,-theta);\n    p.zx = rotate(p.zx,phi);\n  }\n  p.zx = rotate(p.zx,-iTime * 0.2);\n  return p;\n}\n\nconst int KEY_UP = 38;\nconst int KEY_DOWN = 40;\n\nint keycount(int key) {\n  return int(texelFetch(iChannel1, ivec2(0,key),0).x);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  float fov = PI/3.0;\n  vec2 xy = (fragCoord + 0.5) - 0.5*iResolution.xy;\n  float z = -iResolution.y/(2.0*tan(0.5*fov));\n  vec3 dir = normalize(transform(vec3(xy,z)));\n  float camera = 18.0;\n  camera *= 0.1*float(10+keycount(KEY_DOWN)-keycount(KEY_UP));\n  vec3 origin = transform(vec3(0,0,camera));\n  vec3 color = cast_ray(origin, dir);\n  float maxc = max(color[0], max(color[1], color[2]));\n  if (maxc > 1.0) color = color/maxc;\n  color = pow(color,vec3(0.4545));\n  fragColor = vec4(color,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\nvoid mainImage(out vec4 t, vec2 uv) {\n#if __VERSION__ < 300\n    t = vec4(0);\n#else\n    \n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0 ) {\n        t = vec4(0);\n    } else {\n        t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n        \n#endif           \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

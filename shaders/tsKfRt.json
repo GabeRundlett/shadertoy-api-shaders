@@ -1,0 +1,60 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1607880102",
+            "description": "Working out nebula shading: dark dense dust with luminous silhouette + luminous nearby light gas\nref image: [img] https://i.imgur.com/L5z4F20.png [/img]\nmouse control or auto-rotate.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tsKfRt",
+            "likes": 12,
+            "name": "hypertextures 3: nebula",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "3d",
+                "raymarching",
+                "displacement",
+                "antialiasing",
+                "volumetric",
+                "nebula",
+                "preintegration",
+                "bokglobules",
+                "ism"
+            ],
+            "usePreview": 1,
+            "username": "FabriceNeyret2",
+            "viewed": 531
+        },
+        "renderpass": [
+            {
+                "code": "// variant of https://shadertoy.com/view/wstyzl\n// variant of https://shadertoy.com/view/tsdcRj\n\n   #define noise(x) texture(iChannel0, x )                    // positive smooth\n// #define noise(x) ( 2.* texture(iChannel0, x ) -1. )        // centered smooth\n// #define noise(x) abs( 2.* texture(iChannel0, x ) -1. )     // positive bulgy\n\n   #define turb(x)  ( noise(x)/2. + noise((x)*2.)/4. + noise((x)*4.)/8. ) // cascade\n// #define turb(x)  ( noise(x)/2. + noise((x)*2.)/4.                    )\n// #define turb(x)  ( noise(x) * noise((x)*2.) * noise((x)*4.) * 8. )     // mult. cascade\n// #define turb(x)  .5*( noise(x) * noise((x)*2.)                 * 4. )\n\n//float z;\nvec3 C = vec3(0); float rad = 3.;  // bounding sphere (0,0,0), 2.\nfloat map(vec3 p ) \n{\n    float f = 0.;\n    vec3 q = p;\n#if 1\n    q += .7*(2.* turb(q/vec3(20,10,10)+.02*iTime).xyz -1.);   // displacement noise\n#else\n    f -= 1.3*turb(q/8.+ .02*iTime).x;              // density noise\n#endif\n // f += smoothstep(1.,.8,length(q)/2.);           // main sphere ( mask )\n    f += 1.3 - 3.*( length(q)/2. - .7 );           // main sphere ( mask )\n                 \n\n // f*= smoothstep(.1,.2,abs(p.x));                // empty slice (derivable ) \n // z = length(q)/2.;                              // depth in sphere\n    return f;                        \n}\n\nvec3 sundir = normalize( vec3(0,0,-1) );\nvec2 coord;\n\n  #define SQR(x)   ( (x)*(x) )\n  #define CUB(x)   ( (x)*(x)*(x) )\n\n  #define sl  5.                               // transition slope transp/opaque\n  #define LUT(d) clamp( .5+sl*(d-.5), 0., 1. ) // transfer function\n\n                                               // integral of transfer function\n  #define intLUT(d0,d1) ( abs(d1-d0)<1e-5 ? 0. : ( I(d1) - I(d0) ) / (d1-d0) ) \n  #define C(d)    clamp( d, .5-.5/sl, .5+.5/sl )\n  #define I0(d) ( .5*d + sl*SQR(d-.5)/2. )\n  #define I(d)  ( I0(C(d)) + max(0.,d-(.5+.5/sl)) )\n\nfloat LUTs( float _d, float d ) { // apply either the simple or integrated transfer function\n    return intLUT(_d,d);\n // return LUT(d);\n/*  return coord.x > 0. \n             ?  LUT(d)        // right: just apply transfert function\n             :  intLUT(_d,d); // left: preintegrated transfert function\n*/\n}\n\nfloat intersect_sphere( vec3 O, vec3 D, vec3 C, float r )\n{\n\tfloat b = dot( O-=C, D ),\n\t      h = b*b - dot( O, O ) + r*r;\n\treturn h < 0. ? -1.             // no intersection\n\t              : -b - sqrt(h);\n}\n\nvec4 raymarch( vec3 ro, vec3 rd )\n{\n\tvec4 sum = vec4(0);\n\tfloat dt = .01,\n         den = 0., _den, lut,\n           t = intersect_sphere( ro, rd, C, rad );\n    if ( t == -1. ) return vec4(0); // the ray misses the object \n    t += 1e-5;                      // start on bounding sphere\n    \n    for(int i=0; i<500; i++) {\n        vec3 pos = ro + t*rd;\n        if(   sum.a > .99                // end if opaque or...\n           || length(pos) > rad ) break; // ... exit bounding sphere\n                                    // --- compute deltaInt-density\n        _den = den; den = map(pos); // raw density\n        \n     // float _z = z;               // depth in object\n        lut = LUTs( _den, den );    // shaped through transfer function\n\n        if( lut > 0.                // optim\n          ) {                       // --- compute shading \n            float h = .03;          // scale used for derivatives \n#if 0       // canonical decentered difference\n            vec2 e = vec2(h,0);\n            vec3 n = normalize( vec3( map(pos+e.xyy) - den,\n                                      map(pos+e.yxy) - den,\n                                      map(pos+e.yyx) - den ) +1e-5);\n#else       // centered tetrahedron difference: https://iquilezles.org/articles/normalsSDF\n            vec2 k = vec2(1,-1);\n            vec3 n = normalize( k.xyy*map( pos + k.xyy*h ) + \n                                k.yyx*map( pos + k.yyx*h ) + \n                                k.yxy*map( pos + k.yxy*h ) + \n                                k.xxx*map( pos + k.xxx*h ) +1e-5);\n#endif\n            float // dif = abs(dot(n, sundir)),                       // diffuse color\n                       s = length(cross(n,rd));                       // silhouette \n\n            vec3 col = vec3( 1,.7,.5) * pow(s, 10. );\n         // col = .5+.5*n;                                            // debug normals\n         // col = abs(n);\n   \n\n            sum += (1.-sum.a) * vec4(col,1)* (lut* dt*5.);            // ---blend\n        }\n        else \n            sum += .2*smoothstep(.5,0.,-den) * vec4(1,.7,.5, 1) * dt; // gaseous skin\n \n        t += dt;                                                      // stepping\n    }\n    return sum; \n}\n\nmat3 setCamera( vec3 ro, vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro),\n\t     cp = vec3(sin(cr), cos(cr),0),\n\t     cu = normalize( cross(cw,cp) ),\n\t     cv = cross(cu,cw);\n    return mat3( cu, cv, cw );\n}\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy,\n         p = ( 2.*U - R ) / R.y,\n         m = iMouse.z>0. ? 2.* iMouse.xy / R.xy\n                         : 1.+cos(.3*iTime+vec2(0,11));\n    coord = p;\n // O = vec4( map(vec3(4.*p,0)) ); return;                          // debug: show a slice of noise\n    \n    \n    vec3 ro = 4.*normalize(vec3(sin(3.*m.x), 3.*m.y, cos(3.*m.x))), // camera\n\t     ta = vec3(0);\n    mat3 ca = setCamera( ro, ta, 0. );\n    \n    vec3 rd = ca * normalize( vec3(p,1.5) );                        // ray\n    \n    O = raymarch( ro, rd );                                         // render nebula\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

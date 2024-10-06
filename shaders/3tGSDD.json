@@ -1,0 +1,104 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1582965272",
+            "description": "- Just having a bit of fun with the voxel setup from my earlier [url=https://www.shadertoy.com/view/wlG3RW]Volumetric 3D fluid[/url].\n- Nothing much to say about this one!",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "3tGSDD",
+            "likes": 104,
+            "name": "Swirling cube",
+            "published": 3,
+            "tags": [
+                "cube",
+                "voxel",
+                "volumetric",
+                "swirling"
+            ],
+            "usePreview": 0,
+            "username": "tmst",
+            "viewed": 1850
+        },
+        "renderpass": [
+            {
+                "code": "#define FIXED_UP vec3(0.0, 1.0, 0.0)\n#define TAN_HALF_FOVY 0.5773502691896257\n#define CAM_Z_NEAR 0.1\n#define CAM_Z_FAR 50.0\n\n#define BOX_MIN vec3(-1.0)\n#define BOX_MAX vec3(1.0)\n#define BOX_CENTER vec3(0.0)\n#define EPS 0.001\n\n#define INV_SQRT_2 0.70710678\n#define VIGNETTE_INTENSITY 0.25\n\n// ================\n// Generic helpers\n// ================\n\nfloat unmix(float a, float b, float x) {\n    return (x - a)/(b - a);\n}\n\nmat4 getClipToWorld(float aspectWoverH, vec3 nvCamFw) {\n    mat4 clipToEye = mat4(\n        aspectWoverH * TAN_HALF_FOVY, 0.0, 0.0, 0.0,\n        0.0, TAN_HALF_FOVY, 0.0, 0.0,\n        0.0, 0.0,  0.0, (CAM_Z_NEAR - CAM_Z_FAR)/(2.0 * CAM_Z_NEAR * CAM_Z_FAR),\n        0.0, 0.0, -1.0, (CAM_Z_NEAR + CAM_Z_FAR)/(2.0 * CAM_Z_NEAR * CAM_Z_FAR)\n    );\n\n    vec3 nvCamRt = normalize(cross(nvCamFw, FIXED_UP));\n    vec3 nvCamUp = cross(nvCamRt, nvCamFw);\n    mat4 eyeToWorld = mat4(\n         nvCamRt, 0.0,\n         nvCamUp, 0.0,\n        -nvCamFw, 0.0,\n        0.0, 0.0, 0.0, 1.0\n    );\n\n    return eyeToWorld * clipToEye;\n}\n\n// ========================\n// Marching through voxels\n// ========================\n\nvoid boxClip(\n    in vec3 boxMin, in vec3 boxMax,\n    in vec3 p, in vec3 v,\n    out vec2 tRange, out float didHit\n){\n    //for each coord, clip tRange to only contain t-values for which p+t*v is in range\n    vec3 tb0 = (boxMin - p) / v;\n    vec3 tb1 = (boxMax - p) / v;\n    vec3 tmin = min(tb0, tb1);\n    vec3 tmax = max(tb0, tb1);\n\n    //t must be > tRange.s and each tmin, so > max of these; similar for t1\n    tRange = vec2(\n        max(max(tmin.x, tmin.y), tmin.z),\n        min(min(tmax.x, tmax.y), tmax.z)\n    );\n\n    //determine whether ray intersects the box\n    didHit = step(tRange.s, tRange.t);\n}\n\nvec3 lmnFromWorldPos(vec3 p) {\n    vec3 uvw = (p - BOX_MIN) / (BOX_MAX - BOX_MIN);\n    return floor(uvw * vec3(BOX_N));\n}\n\nvoid readLMN(vec3 lmn, out vec3 normal, out float density) {\n    vec4 data = texture(iChannel0, vcubeFromLMN(1, lmn));\n    normal = 2.0*(data.xyz - 0.5);\n    density = clamp(unmix(0.0, 3.0, data.a), 0.0, 1.0);\n}\n\nvoid boxFromLMN(in vec3 lmn, out vec3 boxMin, out vec3 boxMax) {\n    vec3 boxSize = (BOX_MAX - BOX_MIN) / BOX_N;\n\n    boxMin = BOX_MIN + (floor(lmn)/BOX_N) * (BOX_MAX - BOX_MIN);\n    boxMax = boxMin + boxSize;\n}\n\nvoid march(\n    in vec3 p, in vec3 nv,\n    out vec4 color\n) {\n    vec2 tRange;\n    float didHitBox;\n    boxClip(BOX_MIN, BOX_MAX, p, nv, tRange, didHitBox);\n\n    color = vec4(0.0);\n    if (didHitBox < 0.5) {\n        return;\n    }\n\n    float t = tRange.s;\n    for (int i=0; i<500; i++) {\n        // Get voxel data\n        vec3 worldPos = p + (t+EPS)*nv;\n        vec3 lmn = lmnFromWorldPos(worldPos);\n        \n        vec3 nvNormal;\n        float density;\n        readLMN(lmn, nvNormal, density);\n\n        // Determine voxel rgba color (with premultiplied alpha)\n        vec3 lightPos = vec3(0.0, 10.0, 0.0);\n        vec3 nvFragToLight = normalize(lightPos - worldPos);\n        \n        float maxLen = 0.5*distance(BOX_MIN, BOX_MAX);\n        float curLen = length(BOX_CENTER - worldPos);\n        \n        float lamount = 1.0;\n        lamount *= mix( dot(nvNormal, nvFragToLight), 1.0, 0.65);\n        lamount *= smoothstep(0.1*maxLen, 0.6*maxLen, curLen);\n        \n        float calpha = pow(density, 3.0);\n        vec3 cbase = clamp(lamount, 0.0, 1.0) * mix(0.5 + 0.5*nvNormal, vec3(1.0), 0.5);\n        vec4 ci = vec4(cbase, 1.0)*calpha;\n\n        // Determine path to next voxel\n        vec3 curBoxMin, curBoxMax;\n        boxFromLMN(lmn, curBoxMin, curBoxMax);\n\n        vec2 curTRange;\n        float curDidHit;\n        boxClip(curBoxMin, curBoxMax, p, nv, curTRange, curDidHit);\n\n        // Adjust alpha for distance through the voxel\n        ci *= clamp((curTRange.t - curTRange.s)*15.0, 0.0, 1.0);\n\n        // Accumulate color\n        color = vec4(\n            color.rgb + (1.0-color.a)*ci.rgb,\n            color.a + ci.a - color.a*ci.a\n        );\n\n        // Move up to next voxel\n        t = curTRange.t;\n        if (t+EPS > tRange.t || color.a > 1.0) { break; }\n    }\n}\n\n// ================\n// Final rendering\n// ================\n\nvec3 skybox(vec3 nvDir) {\n    return ( mix(0.2, 0.25, smoothstep(-0.2,0.2, nvDir.y)) )*vec3(1.0);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n\n    float isMousePressed = clamp(iMouse.z, 0.0, 1.0);\n    vec2 mouseAng = mix(\n        vec2(0.1*iTime, 0.5*3.14159 + 0.3*cos(iTime*0.5)),\n        3.14159 * iMouse.xy / iResolution.xy,\n        isMousePressed\n    );\n    \n    vec3 camPos = 2.0 * (\n        sin(mouseAng.y) * vec3(cos(2.0*mouseAng.x), 0.0, sin(2.0*mouseAng.x)) +\n        cos(mouseAng.y) * vec3(0.0, 1.0, 0.0)\n    );\n    vec3 lookTarget = vec3(0.0);\n\n\tvec3 nvCamFw = normalize(lookTarget - camPos);\n    mat4 clipToWorld = getClipToWorld(iResolution.x/iResolution.y, nvCamFw);\n\n    vec4 vWorld = clipToWorld * vec4(uv*2.0 - 1.0, 1.0, 1.0);\n    vec3 nvCamDir = normalize(vWorld.xyz / vWorld.w);\n\n    vec3 bgColor = skybox(nvCamDir);\n\n    vec4 finalColor;\n    march(camPos, nvCamDir, finalColor);\n    fragColor = vec4(finalColor.rgb + (1.0 - finalColor.a)*bgColor, 1.0);\n    \n    // Vignette\n    vec2 radv = vec2(0.5, 0.5) - uv;\n    float dCorner = length(radv) / INV_SQRT_2;\n    float vignetteFactor = 1.0 - mix(0.0, VIGNETTE_INTENSITY, smoothstep(0.4, 0.9, dCorner));\n\n    fragColor = vignetteFactor * fragColor;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define BOX_N 128.0\n\n// Data is organized into 3 \"pages\" of 128x128x128 voxels.\n// Each \"page\" takes up 2 faces of the 1024x1024 cubemap,\n// each face storing 8x8=64 of the 128x128 slices.\n\nvec3 vcubeFromLMN(in int page, in vec3 lmn)\n{\n    // subtexture within [0,8)^2\n    float l = mod(floor(lmn.x), 128.0);\n    float tm = mod(l, 8.0);\n    float tn = mod((l - tm)/8.0, 8.0);\n    vec2 tmn = vec2(tm, tn);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(floor(lmn.yz), 128.0);\n\n    // pixel position on 1024x1024 face\n    vec2 fragCoord = 128.0*tmn + mn + 0.5;\n    vec2 p = fragCoord*(2.0/1024.0) - 1.0;\n\n    vec3 fv;\n    if (page == 1) {\n        fv = vec3(1.0, p);\n    } else if (page == 2) {\n        fv = vec3(p.x, 1.0, p.y);\n    } else {\n        fv = fv = vec3(p, 1.0);\n    }\n\n    if (l < 64.0) {\n        return fv;\n    } else {\n        return -fv;\n    }\n}\n\nvoid lmnFromVCube(in vec3 vcube, out int page, out vec3 lmn)\n{\n    // page and parity, and pixel position on 1024x1024 texture\n    vec2 p;\n    float parity;\n    if (abs(vcube.x) > abs(vcube.y) && abs(vcube.x) > abs(vcube.z)) {\n        page = 1;\n        p = vcube.yz/vcube.x;\n        parity = vcube.x;\n    } else if (abs(vcube.y) > abs(vcube.z)) {\n        page = 2;\n        p = vcube.xz/vcube.y;\n        parity = vcube.y;\n    } else {\n        page = 3;\n        p = vcube.xy/vcube.z;\n        parity = vcube.z;\n    }\n    vec2 fragCoord = floor((0.5 + 0.5*p)*1024.0);\n\n    // mn within [0,128)^2\n    vec2 mn = mod(fragCoord, 128.0);\n\n    // subtexture within [0,8)^2\n    vec2 tmn = floor(fragCoord/128.0);\n\n    float lAdd;\n    if (parity > 0.0) {\n        lAdd = 0.0;\n    } else {\n        lAdd = 64.0;\n    }\n    lmn = vec3(tmn.y*8.0 + tmn.x + lAdd, mn);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// --------------------------------------\n// Helpers for accessing volumetric data\n// --------------------------------------\n\nvec4 getDataNearest(vec3 lmn) {\n    return texture(iChannel0, vcubeFromLMN(1, lmn));\n}\n\nfloat getDensityInterp(vec3 lmn) {\n    vec3 flmn = floor(lmn);\n\n    float d000 = getDataNearest( flmn ).a;\n    float d001 = getDataNearest( flmn + vec3(0.0, 0.0, 1.0) ).a;\n    float d010 = getDataNearest( flmn + vec3(0.0, 1.0, 0.0) ).a;\n    float d011 = getDataNearest( flmn + vec3(0.0, 1.0, 1.0) ).a;\n    float d100 = getDataNearest( flmn + vec3(1.0, 0.0, 0.0) ).a;\n    float d101 = getDataNearest( flmn + vec3(1.0, 0.0, 1.0) ).a;\n    float d110 = getDataNearest( flmn + vec3(1.0, 1.0, 0.0) ).a;\n    float d111 = getDataNearest( flmn + vec3(1.0, 1.0, 1.0) ).a;\n\n    vec3 t = lmn - flmn;\n    float dY0Z0 = mix(d000, d100, t.x);\n    float dY1Z0 = mix(d010, d110, t.x);\n    float dY0Z1 = mix(d001, d101, t.x);\n    float dY1Z1 = mix(d011, d111, t.x);\n    float dZ0 = mix(dY0Z0, dY1Z0, t.y);\n    float dZ1 = mix(dY0Z1, dY1Z1, t.y);\n    return mix(dZ0, dZ1, t.z);\n}\n\n// ------------------------------\n// Some noise for the cube faces\n// ------------------------------\n\nfloat rand(in vec2 p) {\n    return fract(sin(dot(p,vec2(12.9898,78.233))) * 43758.5453);\n}\n\nfloat noise(vec2 p) {\n    vec2 pi = floor(p);\n    vec2 pf = fract(p);\n\n    float r00 = rand(vec2(pi.x    ,pi.y    ));\n    float r10 = rand(vec2(pi.x+1.0,pi.y    ));\n    float r01 = rand(vec2(pi.x    ,pi.y+1.0));\n    float r11 = rand(vec2(pi.x+1.0,pi.y+1.0));\n\n    vec2 m = pf*pf*(3.0-2.0*pf);\n    return mix(mix(r00, r10, m.x), mix(r01, r11, m.x), m.y);\n}\n\nfloat fbm(vec2 uv) {\n    vec2 p = uv*32.0;\n\n    float v = noise(p);\n\n    p *= 0.5;\n    v = mix(v, noise(p), 0.5);\n\n    p *= 0.5;\n    v = mix(v, noise(p), 0.5);\n\n    return v;\n}\n\n// ----------------------------------------------------------------------\n// Rodrigues' formula: v -> (v.n)n + (v-(v.n)n)c - (vxn)s\n// in matrix form: (1-c)[n*n^T] + cI - s[[0,n3,-n2][-n3,0,n1][n2,-n1,0]]\n// ----------------------------------------------------------------------\n\nmat3 glRotate(vec3 axis, float angle) {\n    float c = cos(angle);\n    float s = sin(angle);\n    vec3 n = normalize(axis);\n    \n    return mat3(\n        (1.0-c)*n.x*n.x + c,\n        (1.0-c)*n.y*n.x + s*n.z,\n        (1.0-c)*n.z*n.x - s*n.y,\n    \n       \t(1.0-c)*n.x*n.y - s*n.z,\n        (1.0-c)*n.y*n.y + c,\n        (1.0-c)*n.z*n.y + s*n.x,\n    \n        (1.0-c)*n.x*n.z + s*n.y,\n        (1.0-c)*n.y*n.z - s*n.x,\n        (1.0-c)*n.z*n.z + c\n    );\n}\n\n// -----------------------\n// Volumetric data update\n// -----------------------\n\n#define GD 3.0\n\nvoid doPage1(out vec4 fragColor, in vec3 lmn)\n{\n    // -----------------------------------\n    // Compute normal from previous frame\n    // -----------------------------------\n    float hLA = getDataNearest( lmn + vec3(-GD,  0.0,  0.0) ).a;\n    float hLB = getDataNearest( lmn + vec3( GD,  0.0,  0.0) ).a;\n    float hMA = getDataNearest( lmn + vec3( 0.0, -GD,  0.0) ).a;\n    float hMB = getDataNearest( lmn + vec3( 0.0,  GD,  0.0) ).a;\n    float hNA = getDataNearest( lmn + vec3( 0.0,  0.0, -GD) ).a;\n    float hNB = getDataNearest( lmn + vec3( 0.0,  0.0,  GD) ).a;\n    \n    vec3 gradA = vec3(hLB-hLA, hMB-hMA, hNB-hNA);\n    vec3 nvNormal = -gradA/( length(gradA) + 1e-5 );\n    \n    // ---------------\n    // Update density\n    // ---------------\n    float iTimeN = float(iFrame)/60.0;\n    \n    vec3 mid = vec3(63.5);\n    vec3 absd = abs(lmn-mid);\n    float dcorner = max(max(absd.x, absd.y), absd.z);\n    \n    float dNext = 0.0;\n    if (dcorner > 62.0) {\n        float noiseVal = 0.0;\n        \n        if (absd.x > 62.0) {\n            noiseVal = fbm(0.02*lmn.yz);\n        } else if (absd.y > 62.0) {\n            noiseVal = fbm(0.02*lmn.xz);\n        } else if (absd.z > 62.0) {\n            noiseVal = fbm(0.02*lmn.xy);\n        }\n        \n        float modTime = mod(iTimeN, 12.0);\n        float dofull = 1.0 - step(0.64, abs(modTime-3.0));\n        float doempty = 1.0 - step(0.45, abs(modTime-9.0));\n\n        dNext = 2.0*pow(noiseVal, 3.0);\n        dNext = mix(dNext, 0.5, mix(0.0, 0.8, dofull));\n        dNext = mix(dNext, 0.0, mix(0.0, 0.8, doempty));\n        \n    } else {\n        vec3 dlmn = lmn - mid;\n            \n        float axisAng = 0.75*iTimeN;\n        vec3 nvAxis = normalize( vec3(cos(axisAng),0.0,sin(axisAng)) );\n        \n        mat3 mr = glRotate(nvAxis, 0.075*cos(iTimeN));\n        vec3 dlmnrot = mr * dlmn;\n        vec3 lmnrot = mid + dlmnrot;\n        \n        float mamt = -0.015;\n        vec3 next = mix(lmnrot, mid, mamt);\n\n    \tdNext = 1.04 * getDensityInterp( next );\n    }\n    \n    fragColor = vec4(0.5*nvNormal + 0.5, dNext);\n}\n\nvoid mainCubemap( out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir )\n{\n    vec3 lmn;\n    int pageDst;\n    lmnFromVCube(rayDir, pageDst, lmn);\n\n    if (pageDst == 1) {\n        doPage1(fragColor, lmn);\n    } else {\n        discard;\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,41 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1721690949",
+            "description": "Simple burning effect mask, which I use as a custom shader when I close my windows, they \"burn up\" instead of fade out.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XfscDX",
+            "likes": 3,
+            "name": "Burning Mask Effect",
+            "published": 3,
+            "tags": [
+                "fire",
+                "fx",
+                "burning",
+                "sfx",
+                "cinder",
+                "maskspecialeffect"
+            ],
+            "usePreview": 0,
+            "username": "xvrqt",
+            "viewed": 93
+        },
+        "renderpass": [
+            {
+                "code": "// How much detail in the burning edges. \n// Performs exponential (2^LoD) function calls.\n#define LEVEL_OF_DETAIL 8.0\n// Change to burn differently\n#define SEED 10u\n// How long the burning should take. \n// Alternatively, set the `completion` variable [0.0, 1.0] directly.\n#define TIME_LOOP 8.0\n// Threshold for how much of the edges should be burning\n#define BURN_AMOUNT 0.004\n\n// Hash Functions for GPU Rendering, Jarzynski et al.\n// http://www.jcgt.org/published/0009/03/02/\nvec3 random_pcg3d(uvec3 v) {\n  v = v * 1664525u + 1013904223u;\n  \n  v.x += v.y * v.z;\n  v.y += v.z * v.x;\n  v.z += v.x * v.y;\n  \n  v ^= v >> 16u;\n  \n  v.x += v.y * v.z;\n  v.y += v.z * v.x;\n  v.z += v.x * v.y;\n  \n  return vec3(v) /float(0xffffffffu);\n}\n\n// Converts color to grayscale\nvec3 grayscale(vec3 color) {\n    float avg = (color.r + color.g + color.b) / 3.0;\n    return vec3(avg);\n}\n\n// Generates value only noise texture ([0,1] black and white) at each\n// pos(ition) by generating points limited number of points based on\n// on grid_size and interpolating between them. The higher the grid_size\n// the most detail (e.g. if grid_size == resolution, each pixel is random)\nvec3 value_noise(vec2 pos, float grid_size, uint seed) {\n  // Generate the new position based off the grid_size\n  // Split into integer and fractional parts (i,f)\n  vec2  grid_pos = pos * grid_size;\n  vec2  f = fract(grid_pos);\n  uvec2 i = uvec2(grid_pos);\n  \n  // Generated the values at corners of the grid\n  vec3 c1 = random_pcg3d(uvec3(i.x, i.y, seed));\n  vec3 c2 = random_pcg3d(uvec3(i.x + 1u, i.y, seed));\n  vec3 c3 = random_pcg3d(uvec3(i.x, i.y + 1u, seed));\n  vec3 c4 = random_pcg3d(uvec3(i.x + 1u, i.y + 1u, seed));\n  \n  // Slightly nicer than pure linear interpolation\n  f = smoothstep(0.0, 1.0, f);\n\n  // 2D Interpolation\n  vec3 q1 = mix(c1, c2, vec3(f.x));\n  vec3 q2 = mix(c3, c4, vec3(f.x));\n  vec3 p  = mix(q1, q2, vec3(f.y));\n  \n  return p;\n}\n\n// Call the noise funcation repeatedly, with finer grid_sizes\n// summing the higher frequency results exponentially less to\n// produce more detail and the final color of the texture at that pos(ition).\nvec3 fractal_value_noise(vec2 pos, float level_of_detail, uint seed) {\n  vec3 color = vec3(0.0);\n  \n  for (float i = 1.0; i <= level_of_detail; ++i) {\n      float frequency = pow(2.0, i);\n      float amplitude = (1.0 / frequency);\n      \n      color += amplitude * value_noise(pos, frequency, seed); \n  }\n  return color;\n}\n\n// Maps a range to another range in a linear fashion\n// Used to remap the burning edges from [0.0, 1.0]\nfloat map(float value, float in_min, float in_max, float out_min, float out_max) {\n  return out_min + (out_max - out_min) * (value - in_min) / (in_max - in_min);\n}\n\n// Maps a HSV encoded color to a RGB encoded color\nvec3 hsv2rgb(vec3 c)\n{\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n\n// The show\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 st = fragCoord/iResolution.y;\n    \n    // Different SEED per run to make it more appealing on ShaderToy\n    uint seed = SEED + uint(iTime / TIME_LOOP);\n    \n    // Calculate the color at that position, take average to turn the image grayscale\n    vec3 color = fractal_value_noise(st, LEVEL_OF_DETAIL, seed);\n    color = grayscale(color); \n    \n    // Create threshold; below which the texture is white, below which it is black, and \n    // a small between area where the fire can be drawn\n    \n    // This is to normalize the progression of time.\n    // At completion == 0.0 the mask is all white\n    // At completion == 1.0 the mask is all black\n    uint  time_sec   = uint(iTime);\n    float time_fract = fract(iTime);\n    float completion = (float(time_sec % uint(TIME_LOOP)) + time_fract) / TIME_LOOP;\n    \n    // Check if we're in an intermediate value, if so, apply burn effect\n    // if not, clamp to black or white.\n    float low_threshold   = max(0.0, completion - BURN_AMOUNT);\n    float high_threshold = min(1.0, completion + BURN_AMOUNT);\n    if (color.r > low_threshold && color.r < high_threshold) {\n        // Remap burning area from \"red\" for low temp flames, and \"yellow\" for \n        // hot temp flames (based on the HSV model of color).\n        float hue = map(color.r, low_threshold, high_threshold, 0.0, 55.0 / 255.0);\n        float value = 0.8 + map(color.r, low_threshold, high_threshold, 0.0, 0.2);\n        // Full saturation, and high value (these are flames we're simulating)\n        vec3 hsv = vec3(hue, value, value);\n        // Convert back to RGB because we are material girls and we live in a material world\n        color = hsv2rgb(hsv);\n    } else { color = vec3(step(completion, color.r)); } // Clamp to black/white mask values\n    \n    // Output to screen\n    fragColor = vec4(color, 1.0);\n}\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

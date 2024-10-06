@@ -1,0 +1,46 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1540606506",
+            "description": "mouse.x sets page size\nmouse.y sets \"book phase\"\ni failed at the boundary overlap area.\npage count and distance between page are also parametrized.\nbut i wanted a simpler ui demo.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4l3Bzs",
+            "likes": 4,
+            "name": "book conveyor tank paternosta ",
+            "published": 3,
+            "tags": [
+                "tank",
+                "book",
+                "conveyor",
+                "kinematic",
+                "pmod",
+                "kerning",
+                "paternosta",
+                "panzer",
+                "slinky",
+                "euclideanrythm",
+                "paramettrization"
+            ],
+            "usePreview": 0,
+            "username": "ollj",
+            "viewed": 552
+        },
+        "renderpass": [
+            {
+                "code": "/*\ni wanted\nhttps://www.shadertoy.com/view/XtcfRs\nwith more than 2 \"pages\" and with planks of any sdf shape.\nmostly to fix distorions of use cases like \nhttps://www.shadertoy.com/view/MXsSWn\n\nproblem:\n- flipping pages of a book, or items on a conveyor belt\n- should use mod() folding (5 years later, mod() seems irrelevant here)\n- simple approach has some sdf error cases.\n- to flatten pages on the top arch, i would still need a long mod() neighborhood.\n- - looping over the whole round top half may still be simpler and faster.\n(5 years later ,nope most of the above seems irrelevant to finding the soluton, that seems to mostly be arclength() calculating.\n\n- just normalizing a vector field of isoline-pages would likely much simpler here.\n- ,but not stretching the uvw map on that one\n- would involve arclength() calculations aslongside isolines.\n- - quadratic Bezier knee() function would likely be just fine and simpler \n   (still true after 5 years, just arclength a quad-bezier, its likely simpler)\n\nin its current state , its gradient is just horrible, barely useful for a tracing/fragment-shader\nor a rather shitty 2d texture.\n(not true, the bad outer bounds are easikly fixed, noticing this 5 years later)\nits not a complete distancefield, more a modular arithmetic playground.\n\nit made me realize that i had to develop a pModInterval with bounds:\nhttps://www.shadertoy.com/view/lt3Bzs\n(and then i got distracted for 5 years, not continuing wirth this shader)\n\n*/\n\n//_start_ constant irrationals\n#define pib acos(0.)\n#define pi acos(-1.)\n#define tau pi*2.\n//float tau=6.2831853071795864769252867665590057683943387987502116419;//trig definition can be better for smarter compilers.\n#define eul 2.7182818284590452353602874713526624977572470936999595749\n//eul=exp(1.)???\n//\"goldenRatio\"=phi+1=Phi :where: 1/phi=phi-1&&1/Phi=Phi-1\n//https://en.wikipedia.org/wiki/Golden_ratio\n#define phi (sqrt(5.)*.5-.5)\n//goldenRatio is great fun with fract(),good for hashes.\n#define Phi (sqrt(5.)*.5+.5)\n\n//__end__ constant irrationals\n//_start_ basics\n\n#define ve0 float\n#define ve1 vec2\n#define ve2 vec3\n#define ve3 vec4\n#define norma normalize\n#define dd(a) dot(a,a)\n#define u2(a) ((a)*2.-1.)\n#define u5(a) ((a)*.5+.5)\n#define sat(x)clamp(x,0.,1.)\n#define cosu5(a) u5(cos(a))\n\n#define viewZoom(t,u,r,m) 11.\n#define Aa(t,u,r,m) min(r.x,r.y)\n//(hl2(r)/floor(mix(1.,hl2(r)*.1,u5(-cos(t)))))\n//viewZoom() returns a float; is defined in a local channel context, to quickly modify its scaling\n//divide by/aa for hairline drawing and sharp smoothstep()\n//fta insists on TURM-parameters because it contains Viewzoom(), that (locally) insists on TURM\n#define fra(t,u,r,m) (u-.5*r.xy)*viewZoom(t,u,r,m)/(r.y)\n\nve0 ad(ve3 a){return dot(ve3(1),a);}ve0 ad(vec3 a){return dot(ve2(1),a);}ve0 ad(vec2 a){return a.x+a.y;}//add vector components\n//for deferred shading IDs:\n#define minx(a,b) mix(b,a,step(a.x,b.x))\n#define manx(a,b) mix(a,-b,step(a.x,-b.x))\n#define maxx(a,b) -minx(-a,-b)\n\nfloat ss(float a,float b){return smoothstep(b,-b,a);}\nvec2 ss(vec2 a,float b){return smoothstep(b,-b,a);}\nvec3 ss(vec3 a,float b){return smoothstep(b,-b,a);}\nvec4 ss(vec4 a,float b){return smoothstep(b,-b,a);}\n#define aA(t,u,r,m) min(r.x,r.y)\n\n/*i am overthinking this, dot radius shall be irrelevant\n//only distance between dots matters.\n*/\n\n// Repeat space along one axis. Use like this to repeat along the x axis:\n// <float cell = pMod1(p.x,5);> - using the return value is optional.\nfloat pMod(inout float p, float size//mercury.sexy hg_sdf \n){float halfsize = size*0.5;\n\tfloat c = floor((p + halfsize)/size);\n\tp = mod(p + halfsize, size) - halfsize;\n\treturn c;\n}\n\nfloat pModPolar(inout vec2 u,float t,float m//mercury.sexy hg_sdf\n){float g=pi/t\n ,a=atan(u.y,u.x)-g-m\n ,r=length(u)\n ,c=floor(a*.5/g)\n ;a=mod(a,g*2.)-g\n ;u=vec2(cos(a),sin(a))*r\n ;//if(abs(c)>=t*.5)c=abs(c)\n ;return c;}\n\n\nfloat arg(vec2 a){return atan(a.y,a.x);}\nvec2 c2p(vec2 a){return vec2(arg(a),length(a));}\nvec2 p2c(vec2 a){return vec2(cos(a.y),sin(a.y))*a.x;}\n\n\nfloat pageshape(vec2 u,float s){\n ;u.y=abs(u.y)\n ;float l=1.6\n ;u.x=abs(u.x-+l*s)\n ;u.x-=l\n ;return max(u.x,u.y)\n ;}\n\nbool bookBound(float e,float p//limits page numbers\n){return abs(e*2.+.5)<p\n ;}\n\n//return .xy is position of a dot, .zw a normalVector\n//m.x is distance between papers\n//m.y is m.y os phase (what pages are open)\n//m.z is number of pages \n//m.w is paper thickness\n//the upper bow is always a half-unitCircle around vec2(0)\nvec4 bookPaternosterBeta(float t,vec2 u,vec3 r,vec4 m\n){vec4 c=vec4(1)\n ;m.y=m.y*2.-1.\n ;m.y=1.-m.y*.5\n ;//m.x=(m.x*9.+1.)\n ;m.x=1./(abs(m.x*19.)+1.1)\n ;m.z=1.6/m.x\n ;m.w=min(abs(m.x),1.)\n ;m.x=m.w*.5\n ;float p=2. //p is half the number of pages\n ;float e\n ;if(u.y<0.//bottom\n ){c.z=abs(u.x)\n  ;if(u.x<0.//bottom left\n  ){\n   ;float g=2.\n   ;vec2 v=u\n   ;v.y=v.y-pi       \n   ;v.y=v.y+m.y\n   ;float e=pMod(v.y,m.x*2.*pi)\n   ;if(bookBound(e,m.z)\n   ){v=v+vec2(1,0)\n    ;c.x=pageshape(v,-1.)     \n   ;}\n  ;}else{//bottom right\n   ;vec2 v=u\n   ;v.y-=m.y\n   ;float e=pMod(v.y,m.x*2.*pi)\n   ;if(bookBound(e-1.,m.z)\n   ){v=v-vec2(1,0)\n    ;c.x=pageshape(v,1.)\n   ;}\n  ;}\n ;}\n ;if(u.y>0.){//top\n  ;vec2 v=u.yx*vec2(1,-1)//quater rotation and quater offset to rotate the atan() discontinuity \"down\"\n  ;float e = pModPolar(v,1./m.x,m.y-pi*.5); v -= vec2(1,0);\n  ;if(bookBound(e,m.z)\n  ){c.y=pageshape(v,1.)\n  ;}\n  ;c.z=length(u)\n ;}\n ;c.z=abs(c.z-1.)\n ;c.xy-=m.w\n ;c.z-=.03 \n ;//c.xy=min(c.xy,min(c.zz,min(c.yx,c.yy)))\n ;c.w=max(c.z,min(c.y,c.x))\n ;c.w=mix(ss(c.w,2./aA(t,u,r,m)),fract(c.w),.1)\n ;c.xyz=mix(ss(c.xyz,2./aA(t,u,r,m)),fract(c.xyz),.1)\n     \n ;c.xy+=c.ww\n ;//initial versions return .rgba to debug this shit\n ;return sat(c)\n ;}\n\nve3 mainEntry(ve0 t,ve1 u,ve2 r,ve3 m\n){ve3 c=ve3(1)\n ;u   =fra(t,u   ,r,m)\n ;if(m.z>0.\n ){m.xy=fra(t,m.xy,r,m)\n  ;m.zw=fra(t,m.zw,r,m)\n ;}else{\n  ;m.x=(cos(iTime)*.4-.5)*viewZoom(t,u,r,m)\n  ;m.y=sin(iTime*1.61)*.4*viewZoom(t,u,r,m)\n ;}\n ;c.w=length(u-m.xy)\n ;vec4 b=bookPaternosterBeta(t,u,r,m)\n ;//c.y=length(u-b.xy)\n ;c.xyzw-=.1\n ;c=mix(ss(c,2./aA(t,u,r,m)),fract(c),.1)\n ;c.xy+=c.ww\n ;c.w=1.\n ;c=sat(c)\n ;//c=max(c,b)\n ;c=b\n ;return c;}\n\nvoid mainImage(out ve3 o,in ve1 u){o=mainEntry(iTime,u,iResolution,iMouse);}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

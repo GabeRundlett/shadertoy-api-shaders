@@ -1,0 +1,104 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1621555771",
+            "description": "Another old shader I was working on. Raymarching portals is ridiculously tricky since the ray has to keep switching directions and marching right off the surface of portals=super_tiny_steps. Plus, if you write one faulty line of code the compiler crashes!",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "wlVyDm",
+            "likes": 10,
+            "name": "Portal Experiment",
+            "published": 3,
+            "tags": [
+                "experiment",
+                "portals",
+                "noneuclidean",
+                "teleport"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 238
+        },
+        "renderpass": [
+            {
+                "code": "struct PortalInfo {\n    bool isPortal;\n    vec3 inPosition;\n    vec3 outPosition;\n    vec2 portDirection; // Yaw, Pitch\n};\n\nstruct SurfInfo {\n    float dist;\n    vec3 color;\n    PortalInfo portalInfo;\n};\n\nfloat sdBox(vec3 p, vec3 b) {\n   vec3 q = abs(p) - b;\n   return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);\n}\n\nfloat sdCapsule(in vec3 p, in float h, in float r) {\n    return length(vec3(p.x, max(0.0, abs(p.y) - h), p.z)) - r;\n}\n\nSurfInfo mapScene(in vec3 p) {\n    vec3 lp = p + vec3(4.0, 0.0, 0.0);\n    float surf1 = sdBox(lp, vec3(2.0, 0.1, 3.0)) - 0.1;\n\n    vec3 rp = p - vec3(4.0, 0.0, 0.0);\n    float surf2 = sdBox(rp, vec3(2.0, 0.1, 3.0)) - 0.1;\n\n    SurfInfo baseScene = SurfInfo(surf1, vec3(1.0, 0.0, 0.0), PortalInfo(false, vec3(0.0), vec3(0.0), vec2(0.0)));\n    if (surf2 < surf1) {\n        baseScene = SurfInfo(surf2, vec3(0.0, 0.0, 1.0), PortalInfo(false, vec3(0.0), vec3(0.0), vec2(0.0)));\n    }\n\n    lp.yz -= vec2(1.6, -2.0);\n    float portalFrame1 = sdBox(lp, vec3(1.0, 1.5, 0.1)) - 0.1;\n    float portal1 = sdBox(lp, vec3(0.8, 1.3, 0.21));\n    float port1 = min(portalFrame1, portal1);\n    if (port1 < baseScene.dist) {\n        baseScene = SurfInfo(port1, vec3(0.0, 0.0, 1.0), PortalInfo(portal1 < portalFrame1, vec3(-4.0, 1.6, 0.0), vec3( 4.0, 1.6, 0.0), vec2(0.0, 0.0)));\n    }\n\n    rp.yz -= vec2(1.6, -2.0);\n    float portalFrame2 = sdBox(rp, vec3(1.0, 1.5, 0.1)) - 0.1;\n    float portal2 = sdBox(rp, vec3(0.8, 1.3, 0.21));\n    float port2 = min(portalFrame2, portal2);\n    if (port2 < baseScene.dist) {\n        baseScene = SurfInfo(port2, vec3(1.0, 0.0, 0.0), PortalInfo(portal2 < portalFrame2, vec3( 4.0, 1.6, 0.0), vec3(-4.0, 1.6, 0.0), vec2(0.0, 0.0)));\n    }\n\n    return baseScene;\n}\n\nvec3 getNormal(in vec3 p) {\n    return normalize(vec3(mapScene(p + GRAD_STEP.xyy).dist - mapScene(p - GRAD_STEP.xyy).dist,\n                          mapScene(p + GRAD_STEP.yxy).dist - mapScene(p - GRAD_STEP.yxy).dist,\n                          mapScene(p + GRAD_STEP.yyx).dist - mapScene(p - GRAD_STEP.yyx).dist));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n\n    vec3 ro = getViewPosition();\n    mat3 cam = getCamera(getViewDirection());\n    vec3 rd = normalize(FOCAL_LENGTH * cam[2] + uv.x * cam[0] + uv.y * cam[1]);\n\n    bool travelling = true;\n    int teleports = 0;\n    float tt = 0.0;\n    while (travelling) {\n        float t = 0.0;\n        bool stopTravelling = true;\n        for (int i=0; i < MAX_ITERATIONS; i++) {\n            vec3 p = ro + rd * t;\n            SurfInfo d = mapScene(p);\n            if (d.dist < MIN_HIT_DISTANCE) {\n                vec3 n = getNormal(p);\n\n                if (d.portalInfo.isPortal) {\n                    mat3 portalMat = getOriMat(d.portalInfo.portDirection);\n\n                    ro = p - d.portalInfo.inPosition;\n                    ro = portalMat * ro;\n                    ro += d.portalInfo.outPosition;\n                    ro += n * 10000.0 * MIN_HIT_DISTANCE; // WHYYYYYYY???\n\n                    rd = portalMat * rd;\n\n                    teleports++;\n                }\n\n                stopTravelling = false;\n                if (!d.portalInfo.isPortal) {\n                    vec3 l = normalize(vec3(-1.0, 1.0, 1.0));\n\n                    fragColor.rgb += d.color;\n                    fragColor.rgb *= max(0.0, dot(n, l));\n\n                    vec3 fogColor = mix(vec3(0.25, 0.25, 1.0), vec3(1.0), 0.5 + 0.5 * rd.y); // Same as sky color\n                    fragColor.rgb = mix(fragColor.rgb, fogColor, 1.0 - exp(-tt * 0.15)); // Fog technique from Inigo Quilez's fog article (https://iquilezles.org/articles/fog)\n\n                    stopTravelling = true;\n                    break;\n                }\n            }\n\n            if (t > MAX_TRACE_DISTANCE || teleports > MAX_TELEPORTS) {\n                vec3 skyColor = mix(vec3(0.25, 0.25, 1.0), vec3(1.0), 0.5 + 0.5 * rd.y);\n                fragColor.rgb += skyColor;\n                stopTravelling = true;\n                break;\n            }\n\n            t += d.dist;\n            tt += d.dist;\n        }\n\n        travelling = !stopTravelling; // Doing this in the if statements causes my compiler to crash x_x\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Raymarching constants:\nconst vec3 GRAD_STEP = vec3(0.001, 0.0, 0.0);\n\nconst float MAX_TRACE_DISTANCE = 200.0;\nconst int MAX_TELEPORTS = 3;\n\nconst float MIN_HIT_DISTANCE = 0.001;\nconst int MAX_ITERATIONS = 200;\n\nconst float FOCAL_LENGTH = 1.0;\n\n// Math constants:\nconst float TWO_PI = 6.2832;\nconst float PI = 3.1516;\n\n// Amount by which the camera moves and rotates:\nconst float STEP_SIZE = 0.1;\nconst float ROTATION_SPEED = 1.0;//0.5;\n\n// Addresses to viewing data:\nconst ivec2  VIEW_POSITION_ADDR = ivec2(0, 0);\nconst ivec2 VIEW_DIRECTION_ADDR = ivec2(1, 0);\n\n// Key codes from iq's keyboard input demo (https://www.shadertoy.com/view/lsXGzf):\nconst int    KEY_UP = 38;\nconst int  KEY_DOWN = 40;\nconst int KEY_RIGHT = 39;\nconst int  KEY_LEFT = 37;\n\n// Data fetching functions:\n#define  getViewPosition() texelFetch(iChannel0, VIEW_POSITION_ADDR, 0).xyz\n#define getViewDirection() texelFetch(iChannel0, VIEW_DIRECTION_ADDR, 0).xy\n\n#define     keyUpPressed() bool(texelFetch(iChannel1, ivec2(38, 0), 0).x)\n#define   keyDownPressed() bool(texelFetch(iChannel1, ivec2(40, 0), 0).x)\n#define  keyRightPressed() bool(texelFetch(iChannel1, ivec2(39, 0), 0).x)\n#define   keyLeftPressed() bool(texelFetch(iChannel1, ivec2(37, 0), 0).x)\n\n// Calculates camera axes:\nmat3 getCamera(in vec2 viewDirection) {\n    vec2 c = cos(viewDirection); vec2 s = sin(viewDirection);\n    return mat3(       c.x, 0.0,         s.x,  // Camera right axis (x)\n                s.x * -s.y, c.y, -c.x * -s.y,  // Camera up axis (y)\n                s.x *  c.y, s.y, -c.x *  c.y); // Camera forward axis (z)\n}\n\n// Calculates axes for yaw/pitch rotation:\nmat3 getOriMat(in vec2 ori) {\n    vec2 c = cos(ori); vec2 s = sin(ori);\n    return mat3(       c.x, 0.0,        s.x,  // Right axis (x)\n                 s.x * s.y, c.y, -c.x * s.y,  // Up axis (y)\n                -s.x * c.y, s.y,  c.x * c.y); // Forward axis (z)\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    ivec2 address = ivec2(fragCoord);\n    if (iFrame == 0) {\n        if (address == VIEW_POSITION_ADDR) {\n            fragColor = vec4(4.5, 2.0, 1.0, 1.0);\n        }\n\n        if (address == VIEW_DIRECTION_ADDR) {\n            fragColor = vec4(-0.8, -0.1, 0.0, 1.0);\n        }\n    }\n\n    if (iFrame > 0) {\n        if (address == VIEW_POSITION_ADDR) {\n            fragColor = vec4(getViewPosition(), 1.0);\n            mat3 cam = getCamera(getViewDirection());\n            if (keyUpPressed()) {\n                fragColor.xyz += cam[2] * STEP_SIZE;\n            }\n\n            if (keyDownPressed()) {\n                fragColor.xyz -= cam[2] * STEP_SIZE;\n            }\n\n            if (keyRightPressed()) {\n                fragColor.xyz += cam[0] * STEP_SIZE;\n            }\n\n            if (keyLeftPressed()) {\n                fragColor.xyz -= cam[0] * STEP_SIZE;\n            }\n        }\n\n        if (address == VIEW_DIRECTION_ADDR) {\n            vec2 viewDirection = getViewDirection();\n            if (iMouse.z > 0.0) {\n                viewDirection = (iMouse.xy - 0.5 * iResolution.xy) / iResolution.y * TWO_PI * ROTATION_SPEED;\n            }\n\n            fragColor = vec4(viewDirection, 0.0, 1.0);\n        }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

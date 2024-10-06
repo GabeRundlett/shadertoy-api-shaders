@@ -1,0 +1,37 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1479876681",
+            "description": "Just a bunch of Platonic and Archimedean solids.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MltSD4",
+            "likes": 24,
+            "name": "polyhedron playground",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "polyhedra"
+            ],
+            "usePreview": 0,
+            "username": "russ",
+            "viewed": 985
+        },
+        "renderpass": [
+            {
+                "code": "//marching parameters\n#define FAR 30.\n#define EPS 0.005\n#define STEPS 128\n\n//precomputed folding planes\nconst vec2 tetra = vec2(.5, 0.707106781);\t\t\t\t\t\t\nconst vec2 octa = vec2(0.707106781, .5);\nconst vec2 dodeca = vec2(0.80901699, .30901699);\n\nfloat length2(vec3 p){\n\treturn dot(p,p);    \n}\n\n//knighty's fold-n-cut polyhedra\nfloat poly(vec3 p, int type, vec3 uvw){\n\tvec2 m = type==0 ? tetra : type==1 ? octa : dodeca;\n    vec3 nc = vec3(-.5,-m.x, m.y);\n    for(int i=0;i<5;i++){\n        p.xy = abs(p.xy);\n        p-=2.*min(0.,dot(p,nc))*nc;\n    }\n \tvec3 pab = vec3(0.,0.,1.);\n    vec3 pbc = vec3(m.y, 0., .5);\n    vec3 pca = vec3(0., m.y, m.x);\n    p -= normalize(uvw.x*pab+uvw.y*pbc+uvw.z*pca);\n    pbc = normalize(pbc); pca = normalize(pca);\n    float dp = max(dot(p,pab),max(dot(p,pbc),dot(p,pca)));\n    float dla=length2(p-min(0.,p.x)*vec3(1.,0.,0.));\n\tfloat dlb=length2(p-min(0.,p.y)*vec3(0.,1.,0.));\n\tfloat dlc=length2(p-min(0.,dot(p,nc))*nc);\n\treturn min(dp-0.043,sqrt(min(min(dla,dlb),dlc))-0.05);\n}\n    \nfloat DE(vec3 p){\n    vec3 modp = floor(p*0.25);\n\tp -=  2.+ 4. * modp;\n    //made up hash of position to an integer 0-15 to yield 16 different polyhedra\n    float index= mod(5.*modp.x+7.*modp.y+13.*modp.z,16.);\n    float modindex = mod(index, 7.);\n    //choosing the 'active mirrors' in the coxeter diagram, can be 1, 2 or all 3\n    vec3 uvw = vec3( (mod(modindex,2.) == 1. || modindex ==6.) ? 1. : 0.,\n                     (modindex < 4.) ? 1. : 0.,\n                     (modindex >= 2. && modindex < 6.) ? 1. : 0. );\n    //there are 7 unique shapes with octahedral symmetry, 7 with dodecahedral, 2 remaining with tetrahedral \n    int type =  index<7. ? 1 : index < 14. ? 2 : 0;\t\t\t\t\t\t\t\n    return poly(p, type, uvw);\n}\n\n//bog standard raymarcher, nothing to see here\nfloat trace(vec3 ro, vec3 rd){   \n    float t = 0.0, iter= 0.0, d;    \n    for (int i = 0; i < STEPS; i++){\n        d = DE(ro + rd*t);        \n        if(abs(d)<EPS*t || t>FAR) break;        \n        t += d*.75;  \n    }\n    if (d>=EPS*t) t = FAR;\n    else t+= d;\n    return t;\n}\n\n//quicker dirtier march for reflections\nfloat traceRef(vec3 ro, vec3 rd){    \n    float t = 0.001, d; \n    for (int i = 0; i < STEPS/2; i++){\n        d = DE(ro + rd*t);       \n        if(abs(d)<EPS || t>FAR) break;        \n        t += d;\n    }   \n    if (d>=EPS*t) t = FAR;\n    else t+= d;\n    return t;\n}\n\n//classic soft shadows\nfloat softShadow(vec3 ro, vec3 lp, float k){\n    const int maxIterationsShad = 20;     \n    vec3 rd = (lp-ro); \n    float shade = 1.0;\n    float dist = 0.005;    \n    float end = max(length(rd), 0.001);\n    float stepDist = end/float(maxIterationsShad);   \n    rd *= 1./end;\n    for (int i=0; i<maxIterationsShad; i++){\n        float h = DE(ro + rd*dist);\n        shade = min(shade, smoothstep(0.0, 1.0, k*h/dist)); \n        dist += clamp( h, .02, stepDist*2. ); \n        if (h<0.005 || dist > end) break; \n    }\n    return min(max(shade, 0.) + 0.25, 1.0); \n}\n\n//6-tap gradient\nvec3 getNormal( in vec3 p ){\n    vec2 e = vec2(0.005, 0.); \n    return normalize(vec3(DE(p+e.xyy)-DE(p-e.xyy),DE(p+e.yxy)-DE(p-e.yxy),DE(p+e.yyx)-DE(p-e.yyx)));\n}\n\n//Another made-up hashfunction for color   \nvec3 getColor(vec3 p){    \n    vec3 col = vec3(1);\n    vec3 fl = floor(p*.25);    \n    return fract(fl*153.745 + fl.zxy*652.2356+ fl.yzx * 98.346); \t\t\t\n}\n\n//standard phong lighting but taking R instead of V to save a reflect \nvec3 light(vec3 sp, vec3 ref, vec3 sn, vec3 lp){  \n    vec3 ld = lp-sp; \n    float lDist = max(length(ld), 0.001); \n    ld /= lDist;    \n    float atten = 1. / (1.0 + lDist*0.2 + lDist*lDist*0.1);\n    float diff = max(dot(sn, ld), 0.);\n    float spec = pow(max( dot( ref , ld ), 0.0 ), 200.0);\n    vec3 col = getColor(sp);\n    return (col*((diff-spec) + 0.15) + spec*1.5) * atten;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n\n    //wide-angle camera ray\n\tvec2 uv = (fragCoord.xy - iResolution.xy*.5) / iResolution.y;\n    vec3 rd = normalize(vec3(uv, 0.4));\n    //trig identities for double angles, then yaw and pitch ray at different speeds\n    float c = cos(iTime * 0.15), s = sin(iTime * 0.15), c2 = 2.*c*c-1., s2 = 2.*s*c ;\n    rd.xy = mat2(c2, s2, -s2, c2)*rd.xy;\n    rd.xz = mat2(c, s, -s, c)*rd.xz;\n    vec3 ro = vec3(0., 0., iTime*1.5);\n    vec3 lp = ro + vec3(0., 1., -.5);    \n    float t = trace(ro, rd);\n    vec3 col = vec3(0.);\n    float fog = smoothstep(0., .95, t/FAR);\n    //do lights only if hit found\n    if(t<FAR){\n    \tro += rd*t;\n    \tvec3 sn = getNormal(ro);\n        rd = reflect(rd, sn);\n    \tcol += light(ro, rd, sn, lp);\n    \tfloat sh = softShadow(ro+EPS*sn, lp, 16.); \t\n    \tt = traceRef(ro +  rd, rd);\n        if(t<FAR){\n        \tro += rd*t;\n    \t\tsn = getNormal(ro);\n            rd = reflect(rd, sn);\n    \t\tcol += light(ro, rd, sn, lp)*.15;\n        }   \n    \tcol *= sh;\n    }\n    col = mix(col, vec3(0), fog); \n    fragColor = vec4(pow(col,vec3(0.45)), 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

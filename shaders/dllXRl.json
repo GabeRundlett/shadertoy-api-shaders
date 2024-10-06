@@ -1,0 +1,323 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1675315758",
+            "description": "Explore 4D physics! This is a simulation of 200 Lisa Frank colored hyperspheres in a hyperbox, but only one 3D slice is rendered at a time, with analytic soft shadows.\n\n*mouse to control sliders and grab/throw balls*\n*space to reset simulation*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "dllXRl",
+            "likes": 32,
+            "name": "4D Interactive Ball Pit",
+            "published": 3,
+            "tags": [
+                "3d",
+                "collision",
+                "simulation",
+                "interactive",
+                "shadow",
+                "particles",
+                "shadows",
+                "balls",
+                "4d",
+                "dynamics",
+                "physics",
+                "analytic",
+                "softshadow"
+            ],
+            "usePreview": 1,
+            "username": "fenix",
+            "viewed": 440
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2023\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  Explore 4D physics! This is a simulation of 200 Lisa Frank colored hyperspheres in a\n//  hyperbox, but only one 3D slice is rendered at a time, with analytic soft shadows.\n//  The 3D projection of the balls appears to shrink whenever we're rendering a slice\n//  that is not through their W centers.\n//\n//  Only the bare skeleton is shared with its predecessor this time, the simulation and\n//  rendering of course having to be modified to take the fourth dimension into account.\n//  I've done shadows with voronoi before, for example:\n//\n//    Cloth Draping + Shadows    https://shadertoy.com/view/cdjGRR\n//\n//  But previously I was rendering the particles into a depth buffer and creating shadows\n//  from that. Rendering the shadows directly from the voronoi buffer allows me to use\n//  analytic soft shadows, which I haven't done before. Everything casts shadows on\n//  everything else, barring failures of the voronoi tracking to find all the correct\n//  particles. I was inpsired to make this after watching this video of a project called\n//  4D Toys:\n//\n//    https://www.youtube.com/watch?v=0t4aKJuKP0Q\n//\n//  Their simulation is much more advanced than mine, with polyhedra in addition to\n//  spheres (and more stable for sure). But I've got two light sources :)\n//\n//  The reason the hyperspheres shrink and grow is that we are looking at different\n//  slices in the fourth dimension (W), as controlled by the right-side slider (which\n//  moves automatically at boot and after a period of inactivity). The balls will also\n//  knock each other in W directions as they collide, causing them to grow or shrink. At\n//  the ends of the W view range, you can see all the balls become the same size before\n//  they disappear; this is because those balls are pressed against one of the W walls\n//  in the physics simulation.\n//\n//  It was surprisingly easy to adapt the simulation to four dimensions. I just went thru\n//  replacing vec3s with vec4s basically. I was afraid that I'd need more than sixteen\n//  simulation neighbors per particle due to the extra dimension, but apparently this is\n//  enough (but this time, again, 8 neighbors is not really enough). I probably spent more\n//  time on the simulation trying to get it a bit more stable, with mixed results as you\n//  can see. The stack does seem to eventually settle down into a nice 4D sphere packing\n//  solution, so, good enough? I probably spent more time than that on the lighting.\n//\n//  The right slider controls the W slice being rendered, and the left slider controls\n//  the camera. You can drag the hyperspheres around, during which they are locked into\n//  the w slice where you grabbed them (so their 3D projections do not change size). You\n//  can also throw them (only in X, Y, Z directions) if you release them with a mouse drag.\n//\n//  I think it's interesting that while this shader displays a 3D view of a 4D scene, it's\n//  also responsible for displaying that 3D view onto your 2D screen. I guess I feel that's\n//  why all the shading helps, to make the 3D -> 2D projection easier to believe.\n//\n//  There are a few compile options at the top of the common tab that might be worth trying.\n//\n//  Buffer A simulates particles and tracks particle neighbors in 3D\n//  Buffer B computes nearest particles to each screen pixel\n//  Buffer C computes nearest particles to each light A space \"pixel\"\n//  Buffer D computes nearest particles to each light B space \"pixel\"\n//  Image performs rendering\n//\n// ---------------------------------------------------------------------------------------\n\n// some parameters for the four vertical cylinder \"posts\" that define the box visually\nconst float POST_RADIUS = .05;\nconst vec3 POST_AXIS = vec3(0, 1, 0);\n\n// compute the material color based on the id\n#define RGB(R, G, B) vec3(float(R), float(G), float(B)) / 255.0\nvec3 materialColor(int c)\n{\n    // sphere colors (Lisa Frank palette)\n    switch(c % 5)\n    {\n        case 0: return RGB(233,0,141);\n        case 1: return RGB(255,82,27);\n        case 2: return RGB(255,240,8);\n        case 3: return RGB(50,255,20);\n        case 4: return RGB(5,173,255); \n    }\n}\n\n// compute shadow cast by one particle\nfloat shadowFromParticle(vec3 pos, int id, float maxT, fxParticle p, vec3 ro, vec3 rd, float viewW)\n{\n    float size = sizeById(id);\n    float t = sphIntersect(vec4(ro, viewW), vec4(-rd, 0), p.pos, size * 1.1);\n    t = abs(t);\n    size = max(0., size - abs(viewW - p.pos.w));\n    if (size > 0. && t < maxT)\n        return sphSoftShadow(ro, -rd, vec4(p.pos.xyz, size), 100.);\n    \n    return 1.;\n}\n\n// compute the shadow cast by the entire scene onto one position in 3D\nfloat calcShadow(sampler2D vor, vec3 p, int exclId, int exclPost, vec3 pp, mat4 w2l, vec3 lightDir, vec3 lightPos, fxState state)\n{\n    vec3 sp = (w2l * vec4(p, 1)).xyz;\n    sp.xy /= sp.z;\n    \n    // render analytic shadows for the particles\n    float sh = 1.;\n    vec2 r = iResolution.xy;\n    vec2 coord = (sp.xy * .5 * vec2(r.y / r.x, 1) + .5) * r.xy;\n    if (coord.x >= 0. && coord.y >= 0. && coord.x < r.x && coord.y < r.y)\n    {\n#if RENDER_ALL_PARTICLES\n        for (int id = 0; id < MAX_PARTICLES; ++id)\n        {\n#else\n        ivec4 old = fxGetClosestImpl(vor, ivec2(coord));      \n        for (int j = 0; DONT_UNROLL && j < 4; j++)\n        {\n            int id = old[j];\n#endif\n            if (id == exclId) continue;\n            if (id < 0) break;\n            \n            fxParticle data = fxGetParticle(id);\n            if (dot(data.pos.xyz - pp, lightDir) > 0.)\n                sh *= shadowFromParticle(p, id, sp.z, data, lightPos, lightDir, state.viewW);\n                \n            if (sh <= 0.) break;\n        }\n        \n        sh = mix(sh, 1., smoothstep(r.y * .9, r.y, coord.y)); // fade in shadows at the top to prevent hard line\n    }\n    \n    // render analytic shadows for the posts\n    const float POST_SHADOW_K = 12.;\n    if (exclPost != 0) sh *= cylSoftShadow(p, lightDir, vec3( 1, 0,  1), POST_AXIS, POST_RADIUS, POST_SHADOW_K);\n    if (exclPost != 1) sh *= cylSoftShadow(p, lightDir, vec3(-1, 0,  1), POST_AXIS, POST_RADIUS, POST_SHADOW_K);\n    if (exclPost != 2) sh *= cylSoftShadow(p, lightDir, vec3( 1, 0, -1), POST_AXIS, POST_RADIUS, POST_SHADOW_K);\n    if (exclPost != 3) sh *= cylSoftShadow(p, lightDir, vec3(-1, 0, -1), POST_AXIS, POST_RADIUS, POST_SHADOW_K);\n\n    return sh;\n}\n\n// compute contribution of one light source\nvec3 oneLight(fxState state, sampler2D sampler, vec3 lightPos, vec3 lightColor, vec3 matColor, float shiny, vec3 hitPos, vec3 normal, int id, int postId, mat4 w2l, vec3 pc)\n{\n    vec3 lightDelta = lightPos - hitPos;\n    vec3 lightDir = normalize(lightDelta);\n    float lightDist2 = length2(lightDelta);\n    vec3 reflection = reflect(-lightDir, normal);\n    float spec = pow(max(dot(normal, reflection), 0.), 15.);\n    float diff = max(0., dot(normal, lightDir));\n    float sh = calcShadow(sampler, hitPos, id, postId, hitPos, w2l, lightDir, lightPos, state);\n    return 40. * (matColor * diff + spec * .5) * lightColor * sh / lightDist2;\n}\n\n// combine the two light sources\nvec3 lighting(vec3 hitPos, vec3 pc, int id, vec3 matColor, float shiny, int postId, vec3 normal, mat4 w2lA, mat4 w2lB, fxState state)\n{\n    vec3 lightA = oneLight(state, iChannel2, LIGHT_POSA, LIGHT_COLORA, matColor, shiny, hitPos, normal, id, postId, w2lA, pc);\n    vec3 lightB = oneLight(state, iChannel3, LIGHT_POSB, LIGHT_COLORB, matColor, shiny, hitPos, normal, id, postId, w2lB, pc);\n    \n    return lightA + lightB;\n}\n\n// https://www.shadertoy.com/view/4dffRH\nvec3 hash( vec3 p ) // replace this by something better. really. do\n{\n\tp = vec3( dot(p,vec3(127.1,311.7, 74.7)),\n\t\t\t  dot(p,vec3(269.5,183.3,246.1)),\n\t\t\t  dot(p,vec3(113.5,271.9,124.6)));\n\n\treturn -1.0 + 2.0*fract(sin(p)*43758.5453123);\n}\n\n// return value noise (in x) and its derivatives (in yzw)\nvec4 noised( in vec3 x )\n{\n    // grid\n    vec3 i = floor(x);\n    vec3 f = fract(x);\n    \n    #if 1\n    // quintic interpolant\n    vec3 u = f*f*f*(f*(f*6.0-15.0)+10.0);\n    vec3 du = 30.0*f*f*(f*(f-2.0)+1.0);\n    #else\n    // cubic interpolant\n    vec3 u = f*f*(3.0-2.0*f);\n    vec3 du = 6.0*f*(1.0-f);\n    #endif    \n    \n    // gradients\n    vec3 ga = hash( i+vec3(0.0,0.0,0.0) );\n    vec3 gb = hash( i+vec3(1.0,0.0,0.0) );\n    vec3 gc = hash( i+vec3(0.0,1.0,0.0) );\n    vec3 gd = hash( i+vec3(1.0,1.0,0.0) );\n    vec3 ge = hash( i+vec3(0.0,0.0,1.0) );\n\tvec3 gf = hash( i+vec3(1.0,0.0,1.0) );\n    vec3 gg = hash( i+vec3(0.0,1.0,1.0) );\n    vec3 gh = hash( i+vec3(1.0,1.0,1.0) );\n    \n    // projections\n    float va = dot( ga, f-vec3(0.0,0.0,0.0) );\n    float vb = dot( gb, f-vec3(1.0,0.0,0.0) );\n    float vc = dot( gc, f-vec3(0.0,1.0,0.0) );\n    float vd = dot( gd, f-vec3(1.0,1.0,0.0) );\n    float ve = dot( ge, f-vec3(0.0,0.0,1.0) );\n    float vf = dot( gf, f-vec3(1.0,0.0,1.0) );\n    float vg = dot( gg, f-vec3(0.0,1.0,1.0) );\n    float vh = dot( gh, f-vec3(1.0,1.0,1.0) );\n\t\n    // interpolations\n    return vec4( va + u.x*(vb-va) + u.y*(vc-va) + u.z*(ve-va) + u.x*u.y*(va-vb-vc+vd) + u.y*u.z*(va-vc-ve+vg) + u.z*u.x*(va-vb-ve+vf) + (-va+vb+vc-vd+ve-vf-vg+vh)*u.x*u.y*u.z,    // value\n                 ga + u.x*(gb-ga) + u.y*(gc-ga) + u.z*(ge-ga) + u.x*u.y*(ga-gb-gc+gd) + u.y*u.z*(ga-gc-ge+gg) + u.z*u.x*(ga-gb-ge+gf) + (-ga+gb+gc-gd+ge-gf-gg+gh)*u.x*u.y*u.z +   // derivatives\n                 du * (vec3(vb,vc,ve) - va + u.yzx*vec3(va-vb-vc+vd,va-vc-ve+vg,va-vb-ve+vf) + u.zxy*vec3(va-vb-ve+vf,va-vb-vc+vd,va-vc-ve+vg) + u.yzx*u.zxy*(-va+vb+vc-vd+ve-vf-vg+vh) ));\n}\n\nmat3 rot3Dx(float a)\n{\n    vec2 sc = vec2(sin(a), cos(a));\n    return mat3(sc.y, -sc.x, 0, sc.x, sc.y, 0, 0, 0, 1);\n}\n\nmat3 rot3Dz(float a)\n{\n    vec2 sc = vec2(sin(a), cos(a));\n    return mat3(1, 0, 0, 0, sc.y, -sc.x, 0, sc.x, sc.y);\n}\n\n// draw one ball\nvoid renderParticle(fxState state, int id, fxParticle p, vec3 ro, vec3 rd, inout vec4 pix, float viewW, mat4 w2lA, mat4 w2lB)\n{\n    float size = sizeById(id);\n    float t = sphIntersect(vec4(ro, viewW), vec4(rd, 0), p.pos, size);\n    if (t > 0. && t <= pix.w && p.pos != vec4(0))\n    {\n        vec3 hitPos = ro + rd * t;\n        vec3 normal = normalize(hitPos - p.pos.xyz);\n\n#if BUMPY_BALLS\n        // rotating the normal by xz gives the vague impression the balls can roll\n        // few people really have a good intuitive feel for what a 4D object really looks like when it rolls anyway,\n        // so maybe I'll fool a few people if they don't read this comment :)\n        vec3 noiseNormal = rot3Dx(p.pos.x * -3.) * rot3Dz(p.pos.z * 3.) * normal; \n        normal = normalize(normal + noised(noiseNormal * 10. + float(id)).xyz * .15);\n#endif\n\n        pix.rgb = lighting(hitPos, p.pos.xyz, id, materialColor(id), 1., -1, normal, w2lA, w2lB, state);\n        pix.w = t;\n    }\n}\n\n// draw a \"post\" (one of the four vertical cylinders surrounding the play area)\nvoid renderPost(vec3 cameraPos, vec3 rayDir, fxState state, inout vec4 pix, mat4 w2lA, mat4 w2lB, int postId, vec2 offset)\n{\n    float t = cylIntersect(cameraPos, rayDir, vec3(offset.x, 0, offset.y), POST_AXIS, POST_RADIUS).x;\n    \n    if (t > 0. && t < pix.w)\n    {\n        vec3 hitPos = cameraPos + t * rayDir;\n        vec3 normal = normalize(vec3(hitPos.x - offset.x, 0, hitPos.z - offset.y));\n        \n        pix.rgb = lighting(hitPos, vec3(offset.x, hitPos.y, offset.y), -1, vec3(1), 0., postId, normal, w2lA, w2lB, state);\n        pix.w = t;\n    }\n}\n\nfloat boxDist(vec2 a, vec2 b) { return max(abs(a.x - b.x), abs(a.y - b.y)); }\n\n// generates a checkerboard pattern\n// aa allows reduction of aliasing at steep angles\nfloat checker(vec2 p, float aa)\n{\n    vec2 m = mod(p, vec2(2.));\n    float sd = boxDist(vec2(1), m);\n    sd = min(sd, boxDist(vec2(0, 0), m));\n    sd = min(sd, boxDist(vec2(2, 2), m));\n    sd = min(sd, boxDist(vec2(2, 0), m));\n    sd = min(sd, boxDist(vec2(0, 2), m));\n    return smoothstep(-aa, aa, .5 - sd) * .25 + .75;\n}\n\n// render background\nvoid renderScene(vec3 cameraPos, vec3 rayDir, fxState state, inout vec4 pix, mat4 w2lA, mat4 w2lB)\n{\n    float t = -cameraPos.y / rayDir.y;\n    if (t > 0.)\n    {\n        vec3 hitPos = cameraPos + t * rayDir;\n        vec3 normal = vec3(0, 1, 0);\n        vec3 matColor = vec3(checker(hitPos.xz, t / iResolution.y));\n\n        pix.rgb = lighting(hitPos, vec3(0, -1000, 0), -1, matColor, 0., -1, normal, w2lA, w2lB, state);\n        pix.w = t;\n    }\n\n    renderPost(cameraPos, rayDir, state, pix, w2lA, w2lB, 0, vec2( 1,  1));\n    renderPost(cameraPos, rayDir, state, pix, w2lA, w2lB, 1, vec2(-1,  1));\n    renderPost(cameraPos, rayDir, state, pix, w2lA, w2lB, 2, vec2( 1, -1));\n    renderPost(cameraPos, rayDir, state, pix, w2lA, w2lB, 3, vec2(-1, -1));\n}\n\n// render one slider\nvoid renderSlider(inout vec4 fragColor, vec2 p, vec2 center, float val)\n{\n    float slider = sdRoundBox(p - center, SLIDER_SIZE, vec4(0));\n    float sliderShadow = sdRoundBox(p - center - vec2(-.002, -.002), SLIDER_SIZE, vec4(0));\n    fragColor = mix(fragColor, vec4(0), smoothstep(.002 + 3. / iResolution.y, .002, abs(sliderShadow - .02)));\n    fragColor = mix(fragColor, vec4(.3), smoothstep(.002 + 3. / iResolution.y, .002, abs(slider - .02)));\n\n    float thumb = sdRoundBox(p - center - vec2(0, .38 * val), vec2(.04, .01), vec4(0));\n    float thumbShadow = sdRoundBox(p - center - vec2(-.002, .38 * val - .002), vec2(.04, .01), vec4(0));\n\n    fragColor = mix(fragColor, vec4(0), smoothstep(.002 + 3. / iResolution.y, .002, thumbShadow));\n    fragColor = mix(fragColor, vec4(.3), smoothstep(.002 + 3. / iResolution.y, .002, thumb));\n}\n\n// render both sliders\nvoid renderUI(fxState state, inout vec4 fragColor, vec2 fragCoord)\n{\n    vec2 p = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n    \n    renderSlider(fragColor, p, vec2( .5 * iResolution.x / iResolution.y - SLIDER_DIST_FROM_X_SIDE, 0), state.viewW / W_SIZE);\n    renderSlider(fragColor, p, vec2(-.5 * iResolution.x / iResolution.y + SLIDER_DIST_FROM_X_SIDE, 0), state.camOrbit / ORBIT_SIZE);\n}\n\n// From https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0., 1.);\n}\n\nvoid mainRender(out vec4 fragColor, vec2 fragCoord, vec3 cameraPos, vec3 rayDir, fxState state, mat4 w2lA, mat4 w2lB)\n{\n    fragColor.w = FAR_CLIP;\n    renderScene(cameraPos, rayDir, state, fragColor, w2lA, w2lB);\n\n    // render particles\n#if RENDER_ALL_PARTICLES\n    for (int id = 0; id < MAX_PARTICLES; ++id)\n    {\n#else\n    ivec4 old = fxGetClosestCamera( ivec2(fragCoord) );      \n    for (int j = 0; DONT_UNROLL && j < 4; j++)\n    {\n        int id = old[j];\n#endif\n        if (id < 0) break;\n        fxParticle data = fxGetParticle(id);\n        renderParticle(state, id, data, cameraPos, rayDir, fragColor, state.viewW, w2lA, w2lB);\n    }\n    \n    renderUI(state, fragColor, fragCoord);\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{\n    fxState state = fxGetState();\n   \n    vec3 cameraFwd, cameraLeft, cameraUp;\n    vec3 cameraPos = fxCalcCameraPos(state);\n    fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    vec3 lightFwdA, lightLeftA, lightUpA;\n    fxCalcCamera(LOOK_AT, LIGHT_POSA, lightFwdA, lightLeftA, lightUpA);\n\n    // xform from world into light A space, used for shadows\n    mat4 l2wA = fxCalcCameraMat(iResolution, lightLeftA, lightUpA, lightFwdA, LIGHT_POSA, LIGHT_ZOOM);\n    mat4 w2lA = inverse(l2wA);\n\n    vec3 lightFwdB, lightLeftB, lightUpB;\n    fxCalcCamera(LOOK_AT, LIGHT_POSB, lightFwdB, lightLeftB, lightUpB);\n\n    // xform from world into light B space, used for shadows\n    mat4 l2wB = fxCalcCameraMat(iResolution, lightLeftB, lightUpB, lightFwdB, LIGHT_POSB, LIGHT_ZOOM);\n    mat4 w2lB = inverse(l2wB);\n\n    fragColor = vec4(0);\n    \n#if MSAA > 1\n    for (int x = 0; x < MSAA; ++x)\n    for (int y = 0; y < MSAA; ++y)\n    {\n        vec2 offset = vec2(x, y) / float(MSAA - 1) - .5 * float(MSAA - 1);\n        vec3 rayDir = fxCalcRay(fragCoord + offset, iResolution, cameraFwd, cameraUp, cameraLeft, CAM_ZOOM);\n\n        vec4 subsample;\n        mainRender(subsample, fragCoord + offset, cameraPos, rayDir, state, w2lA, w2lB);\n        \n        fragColor.rgb += subsample.rgb;\n    }\n    \n    fragColor.rgb /= float(MSAA * MSAA);\n#else\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft, CAM_ZOOM);\n\n    mainRender(fragColor, fragCoord, cameraPos, rayDir, state, w2lA, w2lB);\n#endif\n\n    fragColor.rgb = pow(ACESFilm(fragColor.rgb), vec3(1./2.2));\n    fragColor.a = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// CONSTANTS\n\n// fun/informative compile options\n#define VARIABLE_SIZED_BALLS 0 // make the balls vary from .5 to 1. in size...seemed like it just added confusion on top of the balls changing size\n#define MODE_3D 0 // tired of all those balls disappearing? turn this on to return to the comforting familiarity of 3D\n#define RENDER_ALL_PARTICLES 0 // test ground truth; disasble voroni tracking and render all particles\n#define EIGHT_NBS 0 // only track 8 physics neighbors per particle (vs 16)...enable for speed at considerable cost to simulation stability\n#define PARTICLE_SPAWN_FRAMES 5 // how many frames to space out the particle spawning after reset\n#define BUMPY_BALLS 1 // disable to make the balls smooth\n\n#define MSAA 1\n// set to 2+ to enable multisample antialiasing if your GPU is expensive enough: 2 is 4x, 3 is 9x, etc\n// In my tests, an iMac with a Radeon 570X can run 4xMSAA (MSAA == 2) with barely a slowdown (50+ FPS at 1600x900)\n// but MSAA > 2 slows it down which is not as much fun. Frame rate is so important in simulations.\n// On a PC with a GeForce RTX Super, it runs at 30 FPS at any normal resolution and MSAA == 4 doesn't even seem to\n// slow it down, but turning on MSAA seems to double the compile time. I guess it's unrolling the entire render loop?\n// Ultimately it's the PC compile time that causes me to leave this disabled, so it doesn't clog the public lists.\n// I'd set it to 2 (4xMSAA) on my iMac and 4 (16xMSAA) on my PC if compile times were not a consideration.\n\n// constants\nconst float PI = 3.141592653589793;\nconst float PARTICLE_SIZE = .21;\nconst float FAR_CLIP = 1e6; // a t value for when we miss something\nconst float W_SIZE = .5; // the W size of the box holding the hyperspheres\nconst float CAM_ZOOM = 1.;\nconst float LIGHT_ZOOM = .75; // zoomed out more than camera to give wider (taller) coverage\nconst float ORBIT_SIZE = 2. * PI; // scalar on the camera orbit rate\nconst vec3 LIGHT_POSA = vec3(-3, 10, -6); // position of light A\nconst vec3 LIGHT_COLORA = vec3(1, .4, .7); // color of light A\nconst vec3 LIGHT_POSB = vec3(3, 10, -6);  // position of light B\nconst vec3 LIGHT_COLORB = vec3(.4, 1, 1); // color of light B\nconst vec3 LOOK_AT = vec3(0, 1, 0); // where the party at\n\n// ui related\nconst float SLIDER_DIST_FROM_X_SIDE = .2; // how far away the sliders are from the edges\nconst vec2 SLIDER_SIZE = vec2(0, .4); // how big are the sliders\n\n// PARTICLES\n\n// returns the ids of the four closest particles from the input\nivec4 fxGetClosestImpl(sampler2D sampler, ivec2 xy)\n{\n    return ivec4(texelFetch(sampler, xy, 0));\n}\n\n#define fxGetClosestCamera(X) fxGetClosestImpl(iChannel1, X)\n\n#if EIGHT_NBS\n#define L_NEIGHBORS 0\n#define R_NEIGHBORS 1\n#define POS 2\n#define RPOS 3\n#define VEL 4\n#define NUM_PARTICLE_DATA_TYPES 5\n#else\n#define UL_NEIGHBORS 0\n#define UR_NEIGHBORS 1\n#define LL_NEIGHBORS 2\n#define LR_NEIGHBORS 3\n#define POS 4\n#define VEL 5\n#define NUM_PARTICLE_DATA_TYPES 7\n#endif\n\n// returns the location of the particle within the particle buffer corresponding with the input id \nivec2 fxLocFromID(int width, int id, int dataType)\n{\n    int index = id * NUM_PARTICLE_DATA_TYPES + dataType;\n    return ivec2( index % width, index / width);\n}\n\nstruct fxParticle\n{\n    vec4 pos;\n    vec4 vel;\n#if EIGHT_NBS\n    ivec4 nbs[2];\n#else\n    ivec4 nbs[4];\n#endif\n};\n\n// get the particle corresponding to the id\nfxParticle fxGetParticleImpl(sampler2D sampler, int resolutionWidth, int id)\n{\n#if EIGHT_NBS\n    vec4 particleData0 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, L_NEIGHBORS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, R_NEIGHBORS), 0);\n    vec4 particleData2 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, POS), 0);\n    vec4 particleData3 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, VEL), 0);\n\n    fxParticle particle;\n    particle.nbs[0] = ivec4(particleData0);\n    particle.nbs[1] = ivec4(particleData1);\n    particle.pos = particleData2;\n    particle.vel = particleData3;\n#else\n    vec4 particleData0 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, UL_NEIGHBORS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, UR_NEIGHBORS), 0);\n    vec4 particleData2 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, LL_NEIGHBORS), 0);\n    vec4 particleData3 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, LR_NEIGHBORS), 0);\n    vec4 particleData4 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, POS), 0);\n    vec4 particleData5 = texelFetch(sampler, fxLocFromID(resolutionWidth, id, VEL), 0);\n\n    fxParticle particle;\n    particle.nbs[0] = ivec4(particleData0);\n    particle.nbs[1] = ivec4(particleData1);\n    particle.nbs[2] = ivec4(particleData2);\n    particle.nbs[3] = ivec4(particleData3);\n    particle.pos = particleData4;\n    particle.vel = particleData5;\n#endif\n\n    return particle;\n}\n\n#define fxGetParticle(X) fxGetParticleImpl(iChannel0, int(iResolution.x), X)\n\nvec4 fxSaveParticle(fxParticle p, int dataType)\n{    \n    switch(dataType)\n    {\n#if 0 // we don't actually call this function for neighbors, since it's a different code path, but it's notionally handled here\n#if EIGHT_NBS\n    case L_NEIGHBORS:\n        return vec4(p.nbs[0]);\n    case R_NEIGHBORS:\n        return vec4(p.nbs[1]);\n#else\n    case UL_NEIGHBORS:\n        return vec4(p.nbs[0]);\n    case UR_NEIGHBORS:\n        return vec4(p.nbs[1]);\n    case LL_NEIGHBORS:\n        return vec4(p.nbs[2]);\n    case LR_NEIGHBORS:\n        return vec4(p.nbs[3]);\n#endif\n#endif\n    case POS:  \n        return vec4(p.pos);\n    case VEL:  \n        return vec4(p.vel);\n    }\n}\n\nvec4 fxGetParticleDataImpl(sampler2D sampler, int resolutionWidth, int id, int dataType)\n{\n    return texelFetch(sampler, fxLocFromID(resolutionWidth, id, dataType), 0);\n}\n\n#define fxGetParticleData(X, Y) fxGetParticleDataImpl(iChannel0, int(iResolution.x), X, Y)\n\n// global variables, initialized via computeMaxParticles\nconst int IDEAL_MAX_PARTICLES = 200;\nint MAX_PARTICLES = IDEAL_MAX_PARTICLES; // how many particles, total\n\n// computes the real number of particles that we can simulate in case our buffer isn't big enough\nvoid computeMaxParticlesImpl(vec3 res)\n{\n    MAX_PARTICLES = IDEAL_MAX_PARTICLES;\n    MAX_PARTICLES = min(MAX_PARTICLES, int(res.x * res.y) / NUM_PARTICLE_DATA_TYPES);\n}\n\n#define computeMaxParticles() computeMaxParticlesImpl(iResolution)\n\n// returns the size of a particlar ball (which is a constant if we have same-sized balls)\n#if VARIABLE_SIZED_BALLS\n#define sizeById(id) (PARTICLE_SIZE * (sin(float(id)) * .25 + .75))\n#else\n#define sizeById(id) PARTICLE_SIZE\n#endif\n\n// PERSISTENT STATE\n\nstruct fxState\n{\n    vec4 grabOffset;\n    vec2 lastMouse;\n    vec2 lastLastMouse;\n    float resolution;\n    float camOrbit;\n    float viewW;\n    int grabId;\n    int attractCounter;\n    bool wSliderActive;\n    bool orbitSliderActive;\n};\n\nvoid fxInitStateImpl(inout fxState state, vec3 iResolution)\n{\n    state.grabOffset = vec4(0);\n    state.lastMouse = vec2(0);\n    state.lastLastMouse = vec2(0);\n    state.resolution = -iResolution.x * iResolution.y;\n    state.camOrbit = 0.;\n    state.viewW = 0.;\n    state.grabId = -1;\n    state.attractCounter = 0;\n    state.wSliderActive = false;\n    state.orbitSliderActive = false;\n}\n\n#define fxInitState(state) fxInitStateImpl(state, iResolution)\n\nconst int W_SLIDER_ACTIVE_BIT     = 1<<0;\nconst int ORBIT_SLIDER_ACTIVE_BIT = 1<<1;\nconst int MAX_ATTRACT_COUNTER     = 0x3ff;\n\nfxState fxGetStateImpl(sampler2D sampler)\n{\n    vec4 data0 = texelFetch(sampler, ivec2(0, 0), 0);\n    vec4 data1 = texelFetch(sampler, ivec2(1, 0), 0);\n    vec4 data2 = texelFetch(sampler, ivec2(2, 0), 0);\n    vec4 data3 = texelFetch(sampler, ivec2(3, 0), 0);\n    \n    fxState state;\n    state.grabOffset = data0;\n    state.lastMouse = data1.xy;\n    state.lastLastMouse = data1.zw;\n    state.resolution = data2.x;\n    state.camOrbit = data2.y;\n    state.viewW = data2.z;\n    state.grabId = int(data2.w);\n    state.attractCounter = int(data3.x);\n    state.wSliderActive = data3.y != 0.;\n    state.orbitSliderActive = data3.z != 0.;\n    \n    return state;\n}\n\n#define fxGetState() fxGetStateImpl(iChannel1)\n\nvec4 fxPutState(fxState state, ivec2 ifc)\n{\n    if (ifc == ivec2(0))\n    {\n        return state.grabOffset;\n    }\n    else if (ifc == ivec2(1, 0))\n        return vec4(state.lastMouse, state.lastLastMouse);\n    else if (ifc == ivec2(2, 0))\n        return vec4(state.resolution, state.camOrbit, state.viewW, state.grabId);\n    else\n        return vec4(state.attractCounter, state.wSliderActive ? 1. : 0., state.orbitSliderActive ? 1. : 0., 0);\n}\n\n// CAMERA\n\nmat2 rotMat(float a)\n{\n    vec2 sc = vec2(sin(a), cos(a));\n    return mat2(sc.y, -sc.x, sc.x, sc.y);\n}\n\nvec3 fxCalcCameraPos(fxState state)\n{\n    vec3 p = vec3(4, 3, 0);\n    p.xz *= rotMat(state.camOrbit - PI * .5);\n    return p * 1.;\n}\n\nvoid fxCalcCamera(in vec3 cameraLookAt, in vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos, float zoom)\n{\n    return mat4(vec4(-0.5 * cameraLeft, 0.0) * zoom,\n                vec4(-0.5*cameraUp, 0.0) * zoom,\n                vec4(cameraFwd, 0.0),\n                vec4(cameraPos, 1.0));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft, in float zoom)\n{\n\tvec2 screenPos = (fragCoord.xy - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft * zoom - screenPos.y * cameraUp * zoom);\n}\n\n// SDFS\n\nfloat sdBox(vec4 p, vec4 s)\n{\n    p = abs(p) - s;\n\treturn length(max(p, 0.)) + min(max(p.x, max(p.y, max(p.z, p.w))), 0.);\n}\n\nfloat sdCappedCylinder( vec3 p, float h, float r )\n{\n    vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h);\n    return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nfloat physicsScene(vec4 p)\n{\n    return -sdBox(p - vec4(0, 20, 0, 0), vec4(1, 20, 1, W_SIZE));\n}\n\nvec4 physicsNormal(vec4 p)\n{\n    const vec2 e = vec2(1,0)*0.1;\n    return normalize( vec4(physicsScene(p + e.xyyy) - physicsScene(p - e.xyyy), \n                           physicsScene(p + e.yxyy) - physicsScene(p - e.yxyy),\n                           physicsScene(p + e.yyxy) - physicsScene(p - e.yyxy),\n                           physicsScene(p + e.yyyx) - physicsScene(p - e.yyyx) ));\n}\n\n// UTILITY\n\n#define DONT_UNROLL min(iFrame,0) >= 0\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SHIFT 16\n#define KEY_CTRL 17\n#define KEY_SPACE 32\n#define KEY_UP 38\n#define KEY_DOWN 40\n#define KEY_LEFT 37\n#define KEY_RIGHT 39\n#define KEY_A 65\n#define KEY_S 83\n\nuvec4 hash(uvec4 x){\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\n// Integer Hash - II by iq\n// https://www.shadertoy.com/view/XlXcW4\nconst uint k = 1103515245U;  // GLIB C\n\nvec3 hash3( uvec3 x )\n{\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    \n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\nfloat length2(vec2 v) { return dot(v, v); }\nfloat length2(vec3 v) { return dot(v, v); }\n\n// https://iquilezles.org/articles/spherefunctions/\nfloat sphSoftShadow( in vec3 ro, in vec3 rd, in vec4 sph, in float k )\n{\n\tvec3 oc = ro - sph.xyz;\n\tfloat b = dot( oc, rd );\n\tfloat c = dot( oc, oc ) - sph.w*sph.w;\n\tfloat h = b*b - c;\n\t\n\tfloat d = -sph.w + sqrt( max(0.0,sph.w*sph.w-h));\n\tfloat t = -b     - sqrt( max(0.0,h) );\n\treturn (t<0.0) ? 1.0 : smoothstep( 0.0, 1.0, k*d/t );\n}\n\n// https://iquilezles.org/articles/spherefunctions/\nfloat sphIntersect( in vec4 ro, in vec4 rd, in vec4 sc, in float r )\n{\n\tvec4 oc = ro - sc;\n\tfloat b = dot( oc, rd );\n\tfloat c = dot( oc, oc ) - r * r;\n\tfloat h = b*b - c;\n\tif( h<0.0 ) return -1.0;\n\treturn -b - sqrt( h );\n}\n\n// https://iquilezles.org/articles/intersectors/\nvec2 cylIntersect( in vec3 ro, in vec3 rd, in vec3 cb, in vec3 ca, float cr )\n{\n    vec3  oc = ro - cb;\n    float card = dot(ca,rd);\n    float caoc = dot(ca,oc);\n    float a = 1.0 - card*card;\n    float b = dot( oc, rd) - caoc*card;\n    float c = dot( oc, oc) - caoc*caoc - cr*cr;\n    float h = b*b - a*c;\n    if( h<0.0 ) return vec2(-1.0); //no intersection\n    h = sqrt(h);\n    return vec2(-b-h,-b+h)/a;\n}\n\n// I made this by combining cylIntersect with sphSoftShadow...it's not right...help?\n// Need some other special exit condition other than t < 0.\nfloat cylSoftShadow( in vec3 ro, in vec3 rd, in vec3 cb, in vec3 ca, float cr, float k )\n{\n    if (ro.z < -2.) return 1.; // nasty hack to fix shadow in the wrong direction...need \n    vec3  oc = ro - cb;\n    float card = dot(ca,rd);\n    float caoc = dot(ca,oc);\n    float a = 1.0 - card*card;\n    float b = dot( oc, rd) - caoc*card;\n    float c = dot( oc, oc) - caoc*caoc - cr*cr;\n    float h = b*b - a*c;\n    \n\tfloat d = -cr + sqrt( max(0.0,cr*cr-h));\n\tfloat t = -b     - sqrt( max(0.0,h) );\n\treturn (t < 0. /*|| ??? */ ) ? 1. : smoothstep(0., 1., k*d/t);\n}\n\n// https://iquilezles.org/articles/distfunctions2d/\nfloat sdRoundBox( in vec2 p, in vec2 b, in vec4 r ) \n{\n    r.xy = (p.x>0.0)?r.xy : r.zw;\n    r.x  = (p.y>0.0)?r.x  : r.y;\n    vec2 q = abs(p)-b+r.x;\n    return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r.x;\n}\n\n// VORONOI\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_)\n{\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nfloat fxLineRayDist2(vec3 a, vec3 b, vec3 p)\n{\n    p -= a, b -= a;\n    float h = dot(p, b) / dot(b, b);// proj coord on line\n    return length2(p - b * h); // squared dist to segment\n}\n\nfloat distance2Particle(sampler2D sampler, int resWidth, int id, vec3 ro, vec3 rd, float viewW, bool forShadow)\n{\n    if(id < 0) return FAR_CLIP;\n    \n    // compute screen space position\n    vec4 worldPos = fxGetParticleDataImpl(sampler, resWidth, id, POS);\n    float size = sizeById(id);\n    float VOR_EPS = 1.01; // tiny additional margin to make sure the voronoi region does not define the edge of the sphere, so aa works\n    float t = sphIntersect(vec4(ro, viewW), vec4(rd, 0), worldPos, size * VOR_EPS);\n    \n    // if we actually hit the sphere, the distance (priority) is the t value\n    if (t > 0. && worldPos != vec4(0))\n    {\n        return t;\n    }\n\n    if (forShadow)\n    {\n        // if we missed the sphere, and this is for a shadow, keep the next particles that are closest to the ray, if they hit the penumbra\n        float ss = sphSoftShadow(ro, rd, vec4(worldPos.xyz, max(0., size - abs(viewW - worldPos.w))), 80.);\n        if (ss < 1.)\n        {\n            float d = fxLineRayDist2(ro, ro + rd, worldPos.xyz) - size;\n            float x = dot(rd, worldPos.xyz - ro);\n            return 1e3 + d + x * x;\n        }\n    }\n    \n    return FAR_CLIP;\n}\n\n// Originally derived, many shaders ago, from:\n// Gijs's Basic : Voronoi Tracking: https://www.shadertoy.com/view/WltSz7\nvec4 voronoiImpl(sampler2D particles, vec3 res, int frame, fxState state, sampler2D self, ivec2 ifc, vec3 cameraPos, vec2 fragCoord, bool forShadow, float zoom)\n{\n    vec3 cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    vec3 rayDir = fxCalcRay(fragCoord, res, cameraFwd, cameraUp, cameraLeft, zoom);\n\n    ivec4 new = ivec4(-1);\n    vec4 dis = vec4(1e6);\n    int resWidth = int(res.x);\n\n    if (frame > 0)\n    {\n        ivec4 old = fxGetClosestImpl(self, ifc);\n        for (int j = 0; j < 4; j++)\n        {\n            int id = old[j];\n            if (id < 0) break;\n            \n            // make sure we consider whatever the previous best were for this pixel, to keep continuity\n            float d2 = distance2Particle(particles, resWidth, id, cameraPos, rayDir, state.viewW, forShadow);\n            insertion_sort( new, dis, id, d2 );\n\n            // randomly check one of the physics neighbors of the particle, it's likely to be of interest\n            ivec4 h = ivec4(hash(uvec4(ifc.x, ifc.y * 3, frame, j)));\n            ivec4 nbs = ivec4(fxGetParticleDataImpl(particles, int(res.x), id, h.x % 4));\n            int nid = nbs[h.y % 4];\n\n            if (nid >= 0)\n            {\n                float d2 = distance2Particle(particles, resWidth, nid, cameraPos, rayDir, state.viewW, forShadow);\n                insertion_sort( new, dis, nid, d2 );\n            }\n        }\n\n        // search nearby pixels for particles that should really also be in our pixel\n        float searchRange = .5 * res.y;\n        uint searchCount = 8u + uint(.0025 * res.y);\n\n        for(uint i=0u; i<searchCount; ++i)\n        {\n            vec2 h = hash3(uvec3(ifc.x * ifc.y, frame, i)).xy;\n            h -= .5;\n            h *= h * h; // favor closer samples, but take a few farther away too\n            ivec4 old = fxGetClosestImpl(self, ifc + ivec2( h * searchRange) );      \n\n            for (int j = 0; j < 1; j++)\n            {\n                int id = old[j];\n                if (id < 0) break;\n                float d2 = distance2Particle(particles, resWidth, id, cameraPos, rayDir, state.viewW, forShadow);\n                insertion_sort( new, dis, id, d2 );\n            }        \n        }\n\n        // random searching to kick start the process\n        int searchIterations = 4 + int(.001 * res.y);\n        for(int k = 0; k < searchIterations; k++)\n        {\n            int id = int(hash(uvec4(ifc.x, ifc.y * 3, frame, k)).x) % MAX_PARTICLES;\n            insertion_sort(new, dis, id, distance2Particle(particles, resWidth, id, cameraPos, rayDir, state.viewW, forShadow));\n        }\n    }\n    \n    return vec4(new);\n}\n\n#define voronoi(A, B, C, D, E, F, G) voronoiImpl(iChannel0, iResolution, iFrame, A, B, C, D, E, F, G)\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// 4D Particle simulation\n// ---------------------------------------------------------------------------------------\n\nconst vec4 GRAVITY = vec4(0,-.0005,0,0);\n\nvoid particleStep(inout fxParticle p, int id, fxState state)\n{\n    vec3 h = hash3( uvec3(id, id * iFrame, iFrame) );\n    vec3 h2 = hash3( uvec3(h.x, id, iFrame) );\n\n    // init\n    const vec4 LIMBO = vec4(0, -10, 0, 0);\n    if (iFrame == 0 || state.resolution < 0.)\n    {\n        // init particles in the holding pen\n        p.pos = LIMBO;\n        p.vel = vec4(0);\n        for (int i = 0; i < 4; ++i) p.nbs[i] = ivec4(-1);\n        \n        return;\n    }\n    \n    // deactivate particles off the screen until we want to drop them\n    if (p.pos.y <= LIMBO.y)\n    {        \n        if ((iFrame % (MAX_PARTICLES * PARTICLE_SPAWN_FRAMES)) == id * PARTICLE_SPAWN_FRAMES)\n        {\n            // selected for being dropped\n            p.pos = vec4(2.*h.y - 1., 6., 2.*h.z - 1., W_SIZE * (h2.x - .5));\n            p.vel = vec4(0, -.01, 0, 0);\n            for (int i = 0; i < 4; ++i) p.nbs[i] = ivec4(-1);\n        }\n        else\n        {\n            // off-screen holding pen\n            p.pos = LIMBO;\n            p.vel = vec4(0);\n        }\n        \n        return;\n    }\n\n    // particle update\n    p.vel *= .995; // damping\n    float velMag = length(p.vel);\n    const float MAX_SPEED = .1; // clamping\n    const float MIN_SPEED = GRAVITY.y * -.5;\n    if (velMag > MAX_SPEED)\n    {\n        p.vel = p.vel * MAX_SPEED / velMag;\n    }\n    else if (velMag < MIN_SPEED)\n    {\n        p.vel = vec4(0); // combat jitters by zeroing out small velocities\n    }\n    p.vel += GRAVITY;\n    p.pos += p.vel; // integrate (this is done before collision so that the rendered results are position-corrected)\n    float size = sizeById(id);\n    \n    // handle mouse grab\n    if (state.grabId == id)\n    {\n        vec3 cameraPos = fxCalcCameraPos(state);\n        vec3 cameraFwd, cameraLeft, cameraUp;\n        fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n        // need xform matrix in camera space to figure out where the user is pulling the ball\n        mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos, CAM_ZOOM);\n        vec2 m = (iMouse.xy * 2. - iResolution.xy) / iResolution.y;\n\n        // compute new world space 4D position of particle being grabbed\n        vec3 cp = vec3(m, 0) + state.grabOffset.xyz;\n        cp.xy *= cp.z;\n        vec3 wp = (c2w * vec4(cp, 1)).xyz;\n        p.pos.xyz = wp;\n        p.pos.w = state.viewW + state.grabOffset.w;\n        \n        // compute world space velocity based on mouse velocity\n        vec3 cv = 1.*vec3(m - state.lastLastMouse, 0);\n        cv.xy *= cp.z;\n        vec3 wv = (c2w * vec4(cv, 0)).xyz; // nb: 0 in W component because here we transform a normal\n        p.vel = vec4(wv, 0);\n    }\n\n    // solve for new position and velocity\n    for (int iter = 0; DONT_UNROLL && iter < 10; ++iter)\n    {\n        // collide with boundary\n        float boundary = physicsScene(p.pos);\n        if (boundary < size)\n        {\n            vec4 normal = physicsNormal(p.pos);\n\n            // position correction\n            if (iter < 5)\n                p.pos += normal * (size - boundary);\n\n            // clip velocity\n            p.vel -= min(0., dot(p.vel, normal)) * normal * 1.;\n        }\n\n        // collide with neighbors\n        for (int i = 0; DONT_UNROLL && i < ((EIGHT_NBS == 1) ? 2 : 4); ++i)\n        {\n            for (int j = 0; DONT_UNROLL && j < 4; ++j)\n            {\n                int nid = p.nbs[i][j];\n                if (nid < 0 ) break;\n                fxParticle nb = fxGetParticle(nid);\n                vec4 dir = p.pos - nb.pos;\n                float dist = distance(nb.pos, p.pos) + 0.001;\n                dir = normalize(dir);\n                float nbSize = sizeById(nid);\n                float relMass = nbSize * nbSize / (nbSize * nbSize + size * size);\n\n                if (dist < size + nbSize)\n                {\n                    float f = 1.; // relVel factor\n                    float r = 1.; // restitution\n                    if (dir.y > 0.)\n                    {\n                        // position correction (only applied on particles below us; stability hack)\n                        if (iter < 5)\n                            p.pos = mix(p.pos, nb.pos + dir * (size + nbSize), .1 * relMass);\n                    }\n                    else\n                    {\n                        // particles above us can barely move us (stability hack)\n                        f = .5;\n                        r = .5;\n                    }\n\n                    // velocity correction\n                    vec4 relVel = p.vel - nb.vel * f;\n                    p.vel -= dot(relVel, dir) * dir * r * relMass;\n                }\n            }\n        }\n    }\n    \n#if MODE_3D\n    p.pos.w = 0.; // in 3D mode, all particles stay on the w == 0. plane\n#endif\n}\n\nbool iscoincidence(in ivec4 bestIds, int currentId, int id)\n{\n    return id == currentId || any(equal(bestIds,ivec4(id)));\n}\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int dataType, int currentId, int searchId, in fxParticle myParticle)\n{\n    if(iscoincidence(bestIds, currentId, searchId)) return; //particle already sorted\n    \n    vec3 nbX = fxGetParticleData(searchId, POS).xyz; \n\n    vec3 dx = nbX.xyz - myParticle.pos.xyz;\n    \n#if EIGHT_NBS\n    int dir = int(float(dx.x > 0.) * .5 + .5);\n#else\n    int dir = int(2.*(atan(dx.z, dx.x)+PI)/PI); \n#endif\n    if(dir != dataType) return; //not in this quadrant\n\n    float t = length2(dx);\n    \n    insertion_sort(bestIds, bestDists, searchId, t);\n}\n\nvec4 neighborUpdate(fxParticle p, fxState state, int dataType, ivec2 ifc, int id)\n{\n    // nearest neighbors tracking\n    // each particle tracks its 16 closest neighbors, 4 in each xz quadrant (ignoring y and w)\n    // dataType determines which quadrant we are computing\n    ivec4 bestIds = ivec4(-1);\n    vec4 bestDists = vec4(1e6);\n\n    if (iFrame > 0 && state.resolution > 0.)\n    {\n        // consider existing neighbors\n        for (int i = 0; i < ((EIGHT_NBS == 1) ? 2 : 4); ++i)\n        {\n            for (int j = 0; j < 4; ++j)\n            {\n                int nid = p.nbs[i][j];\n                if (nid < 0) break;\n                sort0(bestIds, bestDists, dataType, id, nid, p);\n\n                // randomly consider one of the neighbors' neighbors\n                int h = int(hash(uvec4(ifc.x * i, ifc.y * int(iResolution.x), iFrame, j)).x);\n                int dir = h % ((EIGHT_NBS == 1) ? 2 : 4);\n                ivec4 nbsNbs = ivec4(fxGetParticleData(nid, dir));\n                for (int y = 0; y < 2; ++y)\n                {\n                    int nbNid = nbsNbs[y];\n                    if (nbNid < 0) break;\n                    sort0(bestIds, bestDists, dataType, id, nbNid, p);\n                }\n            }\n        }\n\n        // random search\n        int searchIterations = 10;\n        for(int k = 0; k < searchIterations; k++)\n        {\n            int h = int(hash(uvec4(ifc.x, ifc.y * int(iResolution.x), iFrame, k)).x);\n            int hi = h % MAX_PARTICLES;\n            sort0(bestIds, bestDists, dataType, id, hi, p);\n        }\n    }\n    \n    return vec4(bestIds);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ifc = ivec2(fragCoord);\n    int index = ifc.x + ifc.y * int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES; // which particle is this\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES; // which field of this particle are we working on\n    computeMaxParticles();\n    if(id>=MAX_PARTICLES) return;\n\n    fxState state = fxGetState();\n    fxParticle p = fxGetParticle(id);\n    \n    if (dataType < POS)\n    {\n        fragColor = neighborUpdate(p, state, dataType, ifc, id);\n        return;\n    }\n    \n    particleStep(p, id, state);\n    fragColor = fxSaveParticle(p, dataType);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Voronoi particle tracking buffer for particle render, also state update\n// ---------------------------------------------------------------------------------------\n\n// Originally derived, many shaders ago, from:\n// Gijs's Basic : Voronoi Tracking: https://www.shadertoy.com/view/WltSz7\n\n// Voronoi Buffer\n// every pixel stores the 4 closest particles to it\n// every frame this data is shared between neighbours\n\nvec4 updateState(fxState state, ivec2 ifc)\n{\n    if (iFrame == 0)\n    {\n        fxInitState(state);\n    }\n    else\n    {\n        if (abs(state.resolution) != iResolution.x * iResolution.y || keyDown(KEY_SPACE))\n        {\n            state.resolution = -iResolution.x * iResolution.y; // resolution going negative signals balls to reset (necessary on resolution changes)\n        }\n        else\n        {\n            state.resolution = abs(state.resolution);\n        }\n\n        vec2 m = (iMouse.xy - .5 * iResolution.xy) / iResolution.y;\n\n        if (iMouse.z > 0.)\n        {\n            state.attractCounter = MAX_ATTRACT_COUNTER; // user clicked, reset attract counter\n            \n            // rember last mouse so we can compute velocity\n            state.lastLastMouse = state.lastMouse;\n            state.lastMouse = (2. * iMouse.xy - iResolution.xy) / iResolution.y;\n\n            if (iMouse.w > 0.)\n            {\n                // check for slider interaction\n                if (abs(m.x - (.5 * iResolution.x / iResolution.y - SLIDER_DIST_FROM_X_SIDE)) < SLIDER_SIZE.x + .1)\n                {\n                    state.wSliderActive = true;\n                }\n                else if (abs(m.x + (.5 * iResolution.x / iResolution.y - SLIDER_DIST_FROM_X_SIDE)) < SLIDER_SIZE.x + .1)\n                {\n                    state.orbitSliderActive = true;\n                }\n                else\n                {\n                    // set up mouse grab using screen space voronoi\n                    ivec4 old = fxGetClosestCamera(ivec2(iMouse.xy));      \n                    int cid = old[0];\n                    if (cid >= 0)\n                    {\n                        state.grabId = cid;\n\n                        fxParticle p = fxGetParticle(cid);\n\n                        vec3 cameraPos = fxCalcCameraPos(state);\n                        vec3 cameraFwd, cameraLeft, cameraUp;\n                        fxCalcCamera(LOOK_AT, cameraPos, cameraFwd, cameraLeft, cameraUp);\n    \n                        // get xform matrix from world to camera\n                        mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos, CAM_ZOOM);\n                        mat4 w2c = inverse(c2w);\n\n                        m *= 2.;\n                        \n                        // compute screen space position of ball\n                        vec3 sp = (w2c * vec4(p.pos.xyz, 1)).xyz;\n                        sp.xy /= sp.z;\n\n                        // compute grab offset\n                        state.grabOffset.xyz = sp;\n                        state.grabOffset.xy -= m; \n                        state.grabOffset.w = p.pos.w - state.viewW;\n                    }\n                }\n                \n                state.lastLastMouse = state.lastMouse; // we just clicked so lastLastMouse is state, don't use it\n            }\n        }\n        else\n        {\n            // no mouse click, reset grab and sliders\n            state.grabId = -1;\n            state.grabOffset = vec4(0);\n            state.orbitSliderActive = state.wSliderActive = false;\n        }\n\n        // handle attract mode\n        if (state.attractCounter > 0)\n        {\n            --state.attractCounter;\n        }\n        else\n        {\n            float dt = float(iFrame);\n            state.camOrbit += cos(dt * .002) * .001;\n            state.viewW += cos(dt * .005) * .0023;\n            state.viewW *= .999; // apply some drag so we don't bump into the ends every time we swing\n        }\n\n        // handle slider interaction\n        if (state.wSliderActive)\n        {\n            state.viewW = m.y * W_SIZE / SLIDER_SIZE.y;\n        }\n\n        if (state.orbitSliderActive)\n        {\n            state.camOrbit = m.y * ORBIT_SIZE / SLIDER_SIZE.y;\n        }\n\n        state.viewW = clamp(state.viewW, -W_SIZE * 1.01, W_SIZE * 1.01); // go a little past so shadows disappear\n #if MODE_3D\n        state.viewW = 0.;\n #endif\n        state.camOrbit = clamp(state.camOrbit, -ORBIT_SIZE, ORBIT_SIZE);\n    }\n    \n    return fxPutState(state, ifc);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord)\n{\n    computeMaxParticles();\n    fxState state = fxGetState();\n    \n   \tivec2 ifc = ivec2(fragCoord);\n    if(ifc == ivec2(0) ||\n       ifc == ivec2(1, 0) ||\n       ifc == ivec2(2, 0) ||\n       ifc == ivec2(3, 0))\n    {\n        fragColor = updateState(state, ifc);\n        return;\n    }\n\n    fragColor = voronoi(state, iChannel1, ifc, fxCalcCameraPos(state), fragCoord, false, CAM_ZOOM);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Voronoi particle tracking buffer for light source A\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord)\n{\n    computeMaxParticles();\n\n    fragColor = voronoi(fxGetState(), iChannel2, ivec2(fragCoord), LIGHT_POSA, fragCoord, true, LIGHT_ZOOM);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Voronoi particle tracking buffer for light source B\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord)\n{\n    computeMaxParticles();\n\n    fragColor = voronoi(fxGetState(), iChannel2, ivec2(fragCoord), LIGHT_POSB, fragCoord, true, LIGHT_ZOOM);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

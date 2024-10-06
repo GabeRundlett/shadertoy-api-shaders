@@ -1,0 +1,56 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1725614311",
+            "description": "See top comment in the code",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lc2BDc",
+            "likes": 4,
+            "name": "Ink lines (B&W hatching)",
+            "published": 3,
+            "tags": [
+                "imageprocessing",
+                "antialiasing",
+                "bw",
+                "ink",
+                "hatching",
+                "multisampling"
+            ],
+            "usePreview": 0,
+            "username": "Michel_Rouzic",
+            "viewed": 93
+        },
+        "renderpass": [
+            {
+                "code": "/*\nThis turns the input image into thin black and white lines, much like hatching.\nThis works by comparing a saw function that goes between 0 and 1 to the grey value of the image,\nif the image is brighter than the saw at that position it's white, otherwise it's black.\nAntialiasing is achieved by multisampling with Gaussian weighting.\nI added a periodic zoom so you can get a better look at how the hatches look.\nYou can modify the number of hatches right below. In the hundreds it produces a more life-like\nimage with a scanline effect, and single digit hashes it produces something more abstract.\n*/\n\nconst float hatches = 40.;\t\t\t\t// Set number of hatches (lines) here\nconst float aa_scale = 0.8;\t\t\t\t// Set antialiasing scale in pixels\nconst vec2 aa_lim = vec2(2., 12.);\t\t// This determines the number of samples per pixels: (2*aa_lim+1)^2\nconst vec2 aa_range_mul = 2.2/aa_lim;\nconst float aa_mul = 7.318 / ((2.*aa_lim.x+1.)*(2.*aa_lim.y+1.));\n\nconst float zoom_period = 8.;\t// How many seconds the zoom loop takes\n\nuint rand_xsm32(uint x)\n{\n\tx ^= x >> 16;\n\tx *= 0x21f0aaadu;\n\tx ^= x >> 15;\n\tx *= 0x735a2d97u;\n\tx ^= x >> 15;\n\treturn x;\n}\n\nfloat gaussian(float x)\n{\n\treturn exp(-x*x);\n}\n\nfloat erf_fast(float x)\n{\n\tfloat y, xa = abs(x);\n\n\t// erf(x) ~= 1 - exp(<polynomial>) for x >= 0, max error 1/4249\n\t// 2 mad, 1 mul, 1 +-, 1 copysign, 1 exp = ~9 FR\n\ty = ((-0.06388*xa - 0.66186)*xa - 1.123613)*xa;\n\ty = 1. - exp(y);\n\ty *= sign(x);\n\n\treturn y;\n}\n\nfloat slrgb(float s)\n{\n    float curve = pow((s + 0.055) * (1./1.055), 2.4);\n    float line = s * (1./12.92);\n\treturn s <= 0.04045 ? line : curve;\n}\n\nfloat lsrgb(float l)\t// converts a [0.0, 1.0] linear value into a [0.0, 1.0] sRGB value\n{\n\tfloat x, line, curve;\n\n\tline = l * 12.92;\n\tx = sqrt(l);\n\tcurve = ((((0.455*x - 1.48)*x + 1.92137)*x - 1.373254)*x + 1.51733216)*x - 0.0404733783;\t// error 0.145 sRGB units\n\n\treturn l <= 0.0031308 ? line : curve;\t// 3 FR\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 ig, go, gpos, gmul;\n    vec2 aa_scale_mul = vec2(aa_scale) / iResolution.xy;\n    float sum = 0.;\n    \n    // Adjust aspect ratio and zoom\n    float zoom = iTime / zoom_period;\n    zoom = 1. / (1. + 1.6*(1. + erf_fast((abs(zoom - floor(zoom) - 0.5)-0.33)*40.)));\n    uv -= vec2(0.5);\n    vec2 res_div = iChannelResolution[0].xy / iResolution.xy;\n    uv.x *= res_div.y / res_div.x;\n    aa_scale_mul.x *= res_div.y / res_div.x;\n    uv *= zoom;\n    aa_scale_mul *= zoom;\n    uv += vec2(0.5);\n    \n    for (ig.y = -aa_lim.y; ig.y <= aa_lim.y; ig.y += 1.)\n    {\n        gmul.y = gaussian(ig.y * aa_range_mul.y);\n        \n        // Add vertical jitter\n        uint prng_pos = (uint(iFrame)*uint(iResolution.y) + uint(fragCoord.y))*uint(iResolution.x) + uint(fragCoord.x);\n        prng_pos = prng_pos * 100u + uint(ig.y);\n        float jitter = ((float(rand_xsm32(prng_pos)) - 2147483647.5) * 4.656612874e-10) * 0.5f;\t\t// ]-0.5 , 0.5[\n        \n        go.y = (ig.y + jitter) * aa_range_mul.y;\t\t\t// [-aa_lim , aa_lim] → [-2.3 , 2.3]\n        gpos.y = uv.y + go.y * aa_scale_mul.y;\n        \n        // Calculate the saw function that defines the hatching pattern\n        float ym = gpos.y * hatches;\n        float saw = abs(ym - floor(ym) - 0.5) * 2.;\n        \n        for (ig.x = -aa_lim.x; ig.x <= aa_lim.x; ig.x += 1.)\n        {\n            go.x = ig.x * aa_range_mul.x;\n            gpos.x = uv.x + go.x * aa_scale_mul.x;\n            gmul.x = gaussian(go.x);\n            \n            // Sample image and convert to grey\n            vec4 im = texture(iChannel0, gpos);\n            im.x = slrgb(im.x);\n            im.y = slrgb(im.y);\n            im.z = slrgb(im.z);\n            im *= vec4(gpos.x >= 0. && gpos.x <= 1. && gpos.y >= 0. && gpos.y <= 1.);\t\t// clip edges\n            //im = vec4(distance(gpos, vec2(0.5, 0.5)) < 0.02);\n            float grey = 0.16*im.x + 0.73*im.y + 0.11*im.z;\n            \n            // Hatch by comparison with the saw function and Gaussian-weight the sample\n            sum += float(grey > saw) * gmul.y * gmul.x;\n        }\n    }\n\n    fragColor = vec4(lsrgb(sum * aa_mul));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "video",
+                        "id": 12,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/e81e818ac76a8983d746784b423178ee9f6cdcdf7f8e8d719341a6fe2d2ab303.webm"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1695901946",
+            "description": "Raymarching practice with extended features: colors, texture and displacement mapping, reflective surface, soft shadows, fog effect.\n\nGo to https://github.com/HantosNorbert/Raymarching-in-Jack to see the whole project.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "csVyz1",
+            "likes": 1,
+            "name": "Extended raymarching practice",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "reflection",
+                "displacementmapping"
+            ],
+            "usePreview": 0,
+            "username": "Renslay",
+            "viewed": 190
+        },
+        "renderpass": [
+            {
+                "code": "// Parameters\nconst int MAX_MARCHING_STEPS = 128;\nconst float MIN_DIST = 0.0;\nconst float MAX_DIST = 128.0;\nconst float PRECISION = 0.001;\nconst float EPSILON = 0.005;\n\nconst float PI = 3.14159265359;\n\nconst vec3 BACKGROUND_COLOR = vec3(0.6, 0.6, 0.835);\nconst vec3 TORUS_COLOR = vec3(1.0, 1.0, 1.0);\n\nconst vec3 AMBIENT = vec3(0.5, 0.5, 0.5);\n\nconst vec3 CAM_LOOK_AT = vec3(0, 0, 0);\nconst vec3 LIGHT_POS = vec3(2., 5, -1.0);\n\n\nvec3 textColor(vec3 p, vec3 normal) {\n    float b = dot(normal, vec3(0.0, 0.0, 1.0));\n    vec2 q = vec2(0.5 - 0.5 * atan(normal.z, normal.x) / PI, -acos(p.y) / PI);\n    return texture(iChannel0, vec2(iTime / 5.0, 0.0) + q).xyz;\n}\n\nstruct Surface {\n    float id;\n    float sd; // signed distance value\n    vec3 col; // color\n};\n\n// https://iquilezles.org/articles/distfunctions/\nSurface sdSphere( vec3 p, float r, vec3 offset ) {\n  p = p - offset;\n  vec3 n = normalize(p);\n  vec3 color = textColor(p, n);\n  \n  // displacement mapping based on the texture\n  // not the best, but the simplest\n  p = p - 0.05*(0.21*color.r + 0.71*color.g + 0.07*color.b);\n  \n  float d = length(p)-r;\n  return Surface(1.0, d, color);\n}\n\nSurface sdTorus( vec3 p, vec2 t, vec3 offset, vec3 col ) {\n  p = p - offset;\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  float d = length(q)-t.y;\n  return Surface(2.0, d, col);\n}\n\nSurface sdFloor(vec3 p, vec3 col) {\n  float d = p.y + 1.;\n  return Surface(0.0, d, col);\n}\n\nSurface unionSDF(Surface obj1, Surface obj2) {\n    if (obj1.sd < obj2.sd) return obj1;\n    return obj2;\n}\n\nSurface sdScene(vec3 p) {\n  vec3 floorColor = vec3(0.5, 1. + 0.7*mod(floor(p.x) + floor(p.z), 2.0), 0.5);\n  Surface flooor = sdFloor(p, floorColor);\n\n  Surface sphere = sdSphere(p, 1., vec3(-1.5*cos(iTime), 0, 1.5*sin(iTime)));\n  Surface torus = sdTorus(p, vec2(1.0, 0.25), vec3(1.5*cos(iTime), 0, -1.5*sin(iTime)), TORUS_COLOR);\n  //Surface sphere = sdSphere(p, 1., vec3(-1.5, 0, 0));\n  //Surface torus = sdTorus(p, vec2(1.0, 0.25), vec3(1.5, 0, 0), BALL_COLOR);\n\n  Surface co = sphere;\n  co = unionSDF(co, torus);\n  co = unionSDF(co, flooor);\n  return co;\n}\n\nSurface rayMarch(vec3 ro, vec3 rd) {\n  float depth = MIN_DIST;\n  Surface co; // closest object\n\n  for (int i = 0; i < MAX_MARCHING_STEPS; i++) {\n    vec3 p = ro + depth * rd;\n    co = sdScene(p);\n    depth += co.sd;\n    if (co.sd < PRECISION || depth > MAX_DIST) break;\n  }\n  \n  co.sd = depth;\n  \n  return co;\n}\n\n// https://iquilezles.org/articles/rmshadows/\nfloat softshadow( in vec3 ro, in vec3 rd, float mint, float maxt, float w )\n{\n    float res = 1.0;\n    float ph = 1e20;\n    float t = mint;\n    for( int i=0; i<256 && t<maxt; i++ )\n    {\n        float h = sdScene(ro + rd*t).sd;\n        if( h<0.001 )\n            return 0.0;\n        float y = h*h/(2.0*ph);\n        float d = sqrt(h*h-y*y);\n        res = min( res, d/(w*max(0.0,t-y)) );\n        ph = h;\n        t += h;\n    }\n    return res;\n}\n\n// https://iquilezles.org/articles/normalsSDF/\nvec3 calcNormal(in vec3 p) {\n    vec2 e = vec2(1, -1) * EPSILON;\n    return normalize(\n      e.xyy * sdScene(p + e.xyy).sd +\n      e.yyx * sdScene(p + e.yyx).sd +\n      e.yxy * sdScene(p + e.yxy).sd +\n      e.xxx * sdScene(p + e.xxx).sd);\n}\n\nmat3 camera(vec3 cameraPos, vec3 lookAtPoint) {\n\tvec3 forward = normalize(cameraPos - lookAtPoint); // camera direction\n\tvec3 right = normalize(cross(vec3(0, 1, 0), forward)); // camera right\n\tvec3 up = normalize(cross(forward, right)); // camera up\n\treturn mat3(right, up, forward);\n}\n\n\nfloat angle(vec3 v1, vec3 v2) {\n    return clamp(dot(v1, v2), 0.0, 1.0);\n}\n\n// Phong reflection model\nfloat lightIntensity(vec3 p, vec3 norm, vec3 camPos, vec3 lightPos) {\n    float kd = 0.9;\n    float ks = 0.7;\n    float id = 0.7;\n    float is = 0.5;\n    float a = 4.0;\n    \n    vec3 lightDir = normalize(lightPos - p);\n    vec3 camDir = normalize(camPos - p);\n    \n    vec3 reflectDir = 2.0 * angle(lightDir, norm) * norm - lightDir;\n    float diffuseLight = kd * angle(lightDir, norm) * id;\n    float specularLight = ks * pow(angle(reflectDir, camDir), a) * is;\n    \n    float color = (diffuseLight + specularLight);\n    return color;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ){\n  vec3 camPos = vec3(4.0*sin(iTime/5.0), 1.5, 4.0*cos(iTime/5.0));\n\n  vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n\n  vec3 col;\n  \n  mat3 camMatrix = camera(camPos, CAM_LOOK_AT);\n  vec3 rd = camMatrix * normalize(vec3(uv, -1.)); // ray direction\n\n  Surface co = rayMarch(camPos, rd); // closest object\n  \n  float dist = co.sd;\n\n  if (co.sd > MAX_DIST) {\n    col = BACKGROUND_COLOR; // ray didn't hit anything\n  } else {\n    vec3 p = camPos + rd * co.sd; // point on object or floor we discovered from ray marching\n    vec3 normal = calcNormal(p);\n    \n    col = co.col * (0.5*lightIntensity(p, normal, camPos, LIGHT_POS) + AMBIENT);\n\n    vec3 lightDir = normalize(LIGHT_POS - p);\n    vec3 newRayOrigin = p + normal * PRECISION * 2.;\n\n    // if torus, we have a reflective surface:\n    // cast a secondary ray\n    if (co.id == 2.0) {\n        rd = reflect(rd, normal);\n        co = rayMarch(newRayOrigin, rd);\n        if (co.sd < MAX_DIST) {\n          col = 0.5*col + 0.5*co.col;\n        }\n        else\n          col = 0.5*col + 0.5*BACKGROUND_COLOR;\n    }\n    \n    // cast shadow ray to the light source\n    // https://iquilezles.org/articles/rmshadows/\n    float shadow = softshadow(newRayOrigin, lightDir, 0.01, 3.0, 0.2);\n    shadow = clamp(0.0, 1.0, shadow + 0.3);\n    col = shadow*col;\n  }\n  \n  // apply fog effect\n  // https://iquilezles.org/articles/fog/\n  float fogAmount = 1.0 - exp( -dist*0.05 );\n  vec3  fogColor  = vec3(0.5,0.6,0.7);\n  col = mix( col, fogColor, fogAmount );\n\n  // Output to screen\n  fragColor = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

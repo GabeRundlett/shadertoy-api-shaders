@@ -1,0 +1,246 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1631201395",
+            "description": "Fog Volumetric pass\nInspired by both killzone shadow fall and \"inside\" games\n(small steps + dithering + low res + linear upscaling + bilateral blur + temporal accumulation)\n\nValues to play with are on the common tab.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ssV3zh",
+            "likes": 22,
+            "name": "Volumetric Light Fog",
+            "published": 3,
+            "tags": [
+                "noise",
+                "blur",
+                "volumetric",
+                "fog",
+                "blue",
+                "bilateral",
+                "temporal"
+            ],
+            "usePreview": 1,
+            "username": "NoxWings",
+            "viewed": 2672
+        },
+        "renderpass": [
+            {
+                "code": "// Volumetric fog shader\n// \n// I made this shader because I have always been amazed by volumetric light effect\n// This shader is inspired by the awesome article on GPU Pro 5,\n// \"Volumetric Light Eﬀects in Killzone: Shadow Fall\"\n// and also by the fantastic gdc talk on \n// \"Low Complexity, High Fidelity: The Rendering of INSIDE\"\n// https://www.youtube.com/watch?v=RdN06E6Xn9E\n// \n// The main insights here are:\n// - Buffer A:\n//     - Render scene as usual, usual raymarching in this case\n// - Buffer B:\n//     - Render the volumetric pass into another buffer to control res independently of the main render (for perf)\n//     - Raytrace fixed steps per pixel and sample light visibility from each point\n//     - Use noise to offset the ray start (blue noise preferably)\n//     - Here I'm storing raw % of samples reaching light but ideally you should \n//       use some kind of scattering factor like Henyey-Greenstein phase function\n// - Buffer C\n//     - Upsample (ideally bilateral but linear works just fine for this)\n//     - Also I'm using previous frame data here to accumulate more samples if the depth from prev frame \n//       does not differ too much\n// - Buffer D\n//     - Bilateral blur. Same as gausian but using depth to discard samples.\n// - Image\n//     - Main image & volumetric compositing\n//     - Tone mapping\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    // Main scene\n    vec4 mainScene = texture(iChannel0, uv);\n    vec4 volumetric = texture(iChannel1, uv);\n    \n    vec3 col = mainScene.rgb;\n    col += volumetric.rgb;\n    \n    col = ACESFilm(col);\n    col = pow(col, vec3(1.0/2.2));\n    fragColor = vec4(col, 0.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Main Scene Pass\n//\n// Outputs scene color and Depth on alpha channel\n\nfloat checkerboard(vec3 p) {\n    return mod(floor(p.x) + floor(p.y) + floor(p.z), 2.0);\n}\n\nfloat sampleCheckerboard(vec3 uv) {\n    float detail = 15.;\n    int maxSamples = 4;\n    \n    vec3 uvX = dFdx(uv);\n    vec3 uvY = dFdy(uv);\n    \n    int sx = 1 + int( clamp(detail * length(uvX), 0.0, float(maxSamples - 1)) );\n    int sy = 1 + int( clamp(detail * length(uvY), 0.0, float(maxSamples - 1)) );\n    \n    float value = 0.0;\n    for(int i=0; i<sx; i++)\n    for(int j=0; j<sy; j++) {\n        vec2 offset = vec2(float(i), float(j)) / vec2(float(sx), float(sy));       \n        value += checkerboard(uv + offset.x * uvX + offset.y * uvY);\n    }\n    \n    #ifdef DEBUG_TEXTURE_FILTERING\n    return float(sx*sy) / float(maxSamples * maxSamples);\n    #endif\n    \n    return value / float(sx*sy);\n}\n\nMaterial matFromId(vec3 ro, vec3 rd, Hit hit) {\n    vec3 p = ro + rd * hit.dist;\n\n    if (hit.id == 1) {\n        return Material(\n            vec3(0.5),\n            250.0,\n            vec3(0.0)\n        );     \n    }\n\n    // triangular tiling\n    // float a = (mod(p.x, 3.0) - mod(p.z, 3.0)) > 0.0 ? 0.9 : 0.5;\n    float a = sampleCheckerboard(p * 0.5) * .5 + 0.25; \n\n    return Material(\n        vec3(a),\n        250.0,\n        vec3(0.0)\n    );\n}\n\nstruct RenderInfo {\n    vec3 color;\n    float d;\n};\n\nRenderInfo render(vec3 ro, vec3 rd) {\n    Hit hit = trace(ro, rd, 512, FAR_PLANE, SURF_HIT);\n    \n    // Sky\n    vec3 skyColorTop = vec3(0.1, 0.5, 1.0);\n    vec3 skyColorBottom = vec3(1.0);\n    vec3 skyColor = mix(skyColorBottom, skyColorTop, clamp(pow(rd.y +.2, 0.18), 0.0, 1.0));\n    vec3 sunColor = vec3(1);\n\n    if (hit.dist >= FAR_PLANE) { \n        float sunPercent = clamp(dot(rd, lightDir), 0.0, 1.0);\n        return RenderInfo(\n            mix(skyColor, sunColor, pow(sunPercent, 100.))\n        , \n        FAR_PLANE); \n    }\n\n    // Common terms\n    vec3 P = ro + rd * hit.dist;\n    vec3 V = -rd;\n    vec3 N = mapNormal(P);\n    vec3 L = lightDir;\n    vec3 H = normalize(V + L);\n    vec3 R = normalize(reflect(L, N));\n    Material m = matFromId(ro, rd, hit);\n    \n    // Shadow\n    vec3 shadowOrigin = P + N * SURF_HIT * 2.0;\n    float shadow = traceShadow(shadowOrigin, L, 28.0, 32, FAR_PLANE, SURF_HIT);\n    \n    // Regular surface shading\n    float ao = calcAO(P, N);\n    \n    float lambert = max(0.0, dot(N, L));\n    float blinnPhong = max(0.0, dot(N, H));\n    \n    vec3 ambient = skyColorTop * 0.2 * ao * m.albedo;\n    vec3 diffuse = lambert * lightColor * m.albedo * shadow;  \n    vec3 specular = vec3(pow(blinnPhong, m.specular)) * shadow;\n    \n    return RenderInfo(ambient + diffuse + specular, hit.dist);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 fakeScreen = uv * 2.0 - 1.0;\n    fakeScreen.x *= iResolution.x / iResolution.y;\n    \n    Camera cam = createOrbitCamera(\n        fakeScreen,\n        iMouse.xy, \n        iResolution.xy, \n        60.0 * DEG2RAD, \n        vec3(5,0,0), \n        1.0, \n        50.0 - 45.0 * iMouse.y/iResolution.y,\n        iTime\n    );\n    \n    vec3 ro = cam.position;\n    vec3 rd = cam.direction;\n    \n    RenderInfo info = render(ro, rd);\n    \n    fragColor = vec4(info.color, info.d);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Volumetric fog pass (low res)\n//\n// Outputs fog color and sampled used depth on alpha channel\n\nvec3 traceFog(vec3 ro, vec3 rd, float hitDistance, vec3 l, vec2 pixel) {\n    float startOffset = 0.0;\n\n    #if VOLUME_USE_NOISE == 1\n    int frame = 0;\n        #if VOLUME_ANIMATE_NOISE == 1\n            frame = iFrame % 64;\n        #endif\n    \n    float goldenRatio = 1.61803398875;\n    float invGoldenRatio = 1.0/goldenRatio;\n    \n    float blue = texture(iChannel1, pixel / 1024.0f).r;\n    startOffset = blue * 1.0;\n    startOffset = fract(blue + float(frame) * invGoldenRatio);\n    #endif\n\n    float fogLitPercent = 0.0;\n    for (int i = 0; i < VOLUME_MAX_STEPS; ++i) {\n        float rayPercent = (startOffset + float(i)) / float(VOLUME_MAX_STEPS);\n        float rayStep = rayPercent * hitDistance;\n        \n        vec3 o = ro + rd * rayStep;\n        Hit h = trace(o, l, 64, FAR_PLANE, SURF_HIT);\n        \n        fogLitPercent = mix(fogLitPercent, (h.dist >= FAR_PLANE) ? 1.0 : 0.0, 1.0f / float(i+1));\n    }\n    \n    vec3 fogColor = mix(vec3(0, 0, 0), lightColor, fogLitPercent);\n    float absorb = exp(-hitDistance * VOLUME_FOG_DENSITY);\n    \n    // return mix(fogColor, vec3(0, 0, 0), absorb);\n    return clamp(1.-absorb, 0.0, VOLUME_BRIGHTNESS_CLAMP) * fogColor;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 res = iResolution.xy;\n    res *= VOLUME_RES;\n    if( fragCoord.x > res.x || fragCoord.y > res.y )\n        return;\n\n    vec2 uv = fragCoord / res.xy;\n    vec2 fakeScreen = uv * 2.0 - 1.0;\n    fakeScreen.x *= res.x / res.y;\n    \n    Camera cam = createOrbitCamera(\n        fakeScreen, \n        iMouse.xy, \n        iResolution.xy, \n        60.0 * DEG2RAD, \n        vec3(5,0,0), \n        1.0, \n        50.0 - 45.0 * iMouse.y/iResolution.y,\n        iTime\n    );\n    \n    vec3 ro = cam.position;\n    vec3 rd = cam.direction;\n        \n    float dist = texture(iChannel0, uv).w;\n    vec3 fog = traceFog(ro, rd, dist, lightDir, fragCoord);\n    \n    fragColor = vec4(fog, dist);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define YES 1\n#define NO  0\n\n#define SHOT_CAMERA                NO\n#define LOCKED_CAMERA              YES\n\n#define VOLUME_FOG_DENSITY         0.02\n#define VOLUME_BRIGHTNESS_CLAMP    0.3\n\n#define VOLUME_RES                 0.5\n#define VOLUME_MAX_STEPS           16\n\n#define VOLUME_USE_NOISE           YES\n#define VOLUME_ANIMATE_NOISE       YES\n\n#define VOLUME_USE_BILATERAL_BLUR  YES\n#define VOLUME_BLUR_SIZE           0.0025\n#define VOLUME_BLUR_QUALITY        2.0\n#define VOLUME_BLUR_DIRECTIONS     8.0\n\n#define VOLUME_USE_TAA             YES\n#define VOLUME_DEBUG_TAA           NO\n#define VOLUME_TAA_MAX_REUSE       0.9\n#define VOLUME_TAA_MAX_DIST        0.5\n\n\n// #define DEBUG_TEXTURE_FILTERING\n\n// Bilateral common stuff\n\nstruct BilateralSample {\n    vec2 pixel;\n    float importance;\n    vec4 result;\n};\n\nfloat bilateralImportance(vec2 samplePixel, float sampleDepth, vec2 pixel, float pixelDepth) {\n    float xImportance = 1.0 - abs(samplePixel.x - pixel.x);\n    float yImportance = 1.0 - abs(samplePixel.y - pixel.y);\n    float spatialImportance = xImportance * yImportance;\n    \n    float depthImportance = clamp(1.0 / abs(sampleDepth - pixelDepth), 0.0, 1.0);\n    return spatialImportance * depthImportance;\n}\n\n// COMMON THINGS\n\n#define S(x, y, z) smoothstep(x, y, z)\n#define A(v1,v2,t1,t2) mix(v1,v2,S(t1,t2,iTime))\n\nconst float PI = 3.14159;\nconst float HALF_PI = PI * 0.5;\nconst float TAU = PI * 2.0;\nconst float DEG2RAD = TAU/360.;\n\nmat3 lookAtMatrix(in vec3 lookAtDirection) {\n\tvec3 ww = normalize(lookAtDirection);\n    vec3 uu = cross(ww, vec3(0.0, 1.0, 0.0));\n    vec3 vv = cross(uu, ww);\n    return mat3(uu, vv, -ww);\n}\n\nstruct Camera {\n    vec3 position;\n\tvec3 direction;\n};\n\nCamera createOrbitCamera(vec2 uv, vec2 mouse, vec2 resolution, float fov, vec3 target, float height, float distanceToTarget, float iTime)\n{\n    #if SHOT_CAMERA == 1 \n    mouse = resolution * vec2(0.4);\n    distanceToTarget = 12.0;\n    #else\n    #if LOCKED_CAMERA == 1\n    // Used for fixed camera screenshots\n    float aStart = 0.0;\n    float aEnd = 0.0;\n    iTime = mod(iTime, 35.0);\n\n    aStart = aEnd;\n    aEnd += 8.0;\n    mouse = resolution * A(vec2(.35), vec2(0.37), aStart + 2.0, aEnd);\n    distanceToTarget = A(35.0, 16.0, aStart, aEnd);\n\n    aStart = aEnd;\n    aEnd += 12.0;\n    mouse = A(mouse, resolution * vec2(.65), aStart - 2.0, aEnd);\n    distanceToTarget = A(distanceToTarget, 12.0, aStart - 2.0, aEnd);\n\n    aStart = aEnd;\n    aEnd += 0.0;\n    mouse = A(mouse, resolution * vec2(0.65), aStart - 7.0, aEnd);\n    distanceToTarget = A(distanceToTarget, 35.0, aStart - 5.0, aEnd);\n\n    aStart = aEnd;\n    aEnd += 15.0;\n    mouse = A(mouse, resolution * vec2(0.35), aStart - 3.0, aEnd);\n    distanceToTarget = A(distanceToTarget, 35.0, aStart - 3.0, aEnd);\n    #endif\n    #endif\n\n    vec2 r = mouse / resolution * vec2(3.0 * PI, 0.5 * PI);\n    float halfFov = fov * 0.5;\n    float zoom = cos(halfFov) / sin(halfFov);\n    \n    vec3 position = target + vec3(sin(r.x), 0.0, cos(r.x)) * distanceToTarget + vec3(0, height, 0);\n    vec3 direction = normalize(vec3(uv, -zoom));\n    direction = lookAtMatrix(target - position) * direction;\n       \n    return Camera(position, direction);\n}\n\nmat2 rot2d(float a) {\n    float ca = cos(a), sa = sin(a);\n    return mat2(ca, sa, -sa, ca);\n}\n\nfloat rand(vec2 co) {\n    return fract(sin(dot(co.xy,vec2(12.9898,78.233))) * 100000.5453);\n}\n\n// Dist functions\n\nfloat sdPlane(vec3 p, float height) {\n    return p.y - height;\n}\n\nfloat sdSphere( vec3 p, float s )\n{\n  return length(p)-s;\n}\n\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\n// Hit\n\nstruct Hit {\n    int id;\n    float dist;\n};\n\nHit hmin(Hit a, Hit b) { if (a.dist < b.dist) return a; return b; }\nHit hmax(Hit a, Hit b) { if (a.dist < b.dist) return b; return a; }\nHit hnegate(Hit a) { return Hit(a.id, -a.dist); }\nHit opUnion(Hit a, Hit b) { return hmin(a, b); }\nHit opSubtraction(Hit a, Hit b) { return hmax(hnegate(a), b); }\nHit opIntersection(Hit a, Hit b) { return hmax(a, b); }\n\n// Material\n\nstruct Material {\n    vec3 albedo;\n    float specular;\n    vec3 emissive;\n};\n\n// Map\n\nconst float FAR_PLANE = 100.0;\nconst float SURF_HIT = 0.01;\n\nvec3 lightDir = normalize(vec3(1, 0.4, .5));\nvec3 lightColor = vec3(0.7, 0.55, 0.45) * 2.0;\n\nHit map(vec3 p) {\n    Hit floorPlane = Hit(0, sdPlane(p, -2.0));\n    \n    vec3 wallP = p;\n    wallP.x = abs(wallP.x);\n    wallP -= vec3(10, 0, 0);\n    \n    vec3 wallP2 = p;\n    wallP2.z = abs(wallP.z);\n    wallP2 -= vec3(0, 0, 18);\n    \n    vec3 ventP = wallP;\n    \n    float wall = sdBox(wallP, vec3(0.1,5,18));\n    float wall2 = sdBox(wallP2, vec3(10.0,5,0));\n    \n    float roof = sdBox(wallP - vec3(0, 5, 0), vec3(5, 0.1, 18));\n    float roof2 = sdBox(wallP2 - vec3(0, 5, 0), vec3(10, 0.1, 6));\n    \n    // Vents\n    float rep = 5.0;\n    if (abs(ventP.z) < 18.0) {\n        ventP.z = mod(ventP.z + (rep*.5), rep) - rep*.5;\n    }\n    float vent = sdBox(ventP, vec3(1, 1, 1));\n    vent = min(vent, length(ventP.zy - vec2(0,1.5)) - 1.0);\n    \n    // door\n    vec3 doorP2 = wallP2;\n    float door = sdBox(doorP2, vec3(2, 2, 2));\n    door = min(door, length(doorP2.xy - vec2(0, 2.)) - 2.0);\n    \n    float d = min(wall, wall2);\n    d = min(d, roof);\n    d = min(d, roof2);\n    d = max(-door, d);\n    d = max(-vent, d);\n    \n    Hit s = Hit(1, d - 0.05);\n\n    return hmin(s, floorPlane);\n}\n\nvec3 mapNormal(vec3 p) {\n    vec2 e = vec2(0.01, 0);\n    float d = map(p).dist;\n    \n    return normalize(vec3(\n        d - map(p - e.xyy).dist,\n        d - map(p - e.yxy).dist,\n        d - map(p - e.yyx).dist\n    ));\n}\n\nfloat calcAO( in vec3 pos, in vec3 nor ) {\n\tfloat occ = 0.0;\n    float sca = 1.0;\n    for( int i=0; i<5; i++ ) {\n        float hr = 0.01 + 0.12*float(i)/4.0;\n        vec3 aopos =  nor * hr + pos;\n        float dd = map( aopos ).dist;\n        occ += -(dd-hr)*sca;\n        sca *= 0.95;\n    }\n    return clamp( 1.0 - 3.0*occ, 0.0, 1.0 ) * (0.5+0.5*nor.y);\n}\n\nHit trace(vec3 ro, vec3 rd, int maxIter, float farPlane, float surfHit) {\n    Hit d = Hit(0, 0.0);\n    for (int i = 0; i < maxIter && d.dist <= farPlane; i++) {\n        vec3 p = ro + rd * d.dist;\n        Hit s = map(p);\n        d.id = s.id;\n        d.dist += s.dist;\n        if (s.dist < surfHit) break;\n    }\n    return d;\n}\n\nfloat traceShadow(vec3 ro, vec3 rd, float hardness, int maxIter, float farPlane, float surfHit)\n{\n    float d = surfHit * 2.0;\n    float k = hardness;\n    float res = 1.0;\n    \n    for (int i=0; i < 128 && d <= farPlane; i++) {\n        vec3 p = ro + rd * d;\n        float stepDistance = map(p).dist;\n        \n        if (stepDistance < surfHit) return 0.0;\n        \n        res = min(res, k * stepDistance / d);\n        d += stepDistance;\n    }\n    \n    return clamp(res, 0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Upscale volumetric pass\n// \n// Simple linear upsample (todo: update to bilateral)\n// Also some kind of very basic temporal accumulation (without reprojection)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec2 fakeScreen = uv * 2.0 - 1.0;\n    fakeScreen.x *= iResolution.x / iResolution.y;\n    \n    Camera prevCam = createOrbitCamera(\n        fakeScreen,\n        iMouse.xy, \n        iResolution.xy, \n        60.0 * DEG2RAD,\n        vec3(5,0,0), \n        1.0, \n        50.0 - 45.0 * iMouse.y/iResolution.y,\n        iTime - iTimeDelta\n    );\n    \n    Camera currentCam = createOrbitCamera(\n        fakeScreen,\n        iMouse.xy, \n        iResolution.xy, \n        60.0 * DEG2RAD, \n        vec3(5,0,0), \n        1.0, \n        50.0 - 45.0 * iMouse.y/iResolution.y,\n        iTime\n    );\n    \n    vec4 scene = texture(iChannel0, uv);\n    vec4 volumetric = texture(iChannel1, uv * VOLUME_RES);\n    vec4 prevSample = texture(iChannel2, uv);\n    \n    vec3 prevPoint = prevCam.position + prevCam.direction * prevSample.w;\n    vec3 currentPoint = currentCam.position + currentCam.direction * volumetric.w;\n    \n    float diff = distance(prevPoint, currentPoint);\n    float diffPercent = clamp(1.0 - diff / VOLUME_TAA_MAX_DIST, 0.0, 1.0);\n    float success = clamp(diffPercent * diffPercent, 0.0, VOLUME_TAA_MAX_REUSE);\n    float failure = 1.0 - success;\n    \n    vec3 taa = success * prevSample.rgb + failure * volumetric.rgb;\n    \n    #if VOLUME_USE_TAA == 1 \n        #if VOLUME_DEBUG_TAA == 1\n        fragColor = vec4(vec3(failure, success, 0), volumetric.w);\n        return;\n        #endif\n    \n        fragColor = vec4(taa, volumetric.w);\n    #else \n        fragColor = volumetric;\n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Main image\n//\n// Applies Bilateral blur to the upscaled volumetric light\n\nvec4 sampleBlur(\n    sampler2D tex, \n    vec2 res, \n    vec2 pos, \n    float sceneDepth,\n    float directions, \n    float quality, \n    float size\n) {\n    vec2 radius = size / res.xy;\n    vec2 uv = pos / res.xy;\n    \n    vec4 color = texture(tex, uv);\n    \n    float directionStep = TAU/directions;\n    float qualityStep = 1.0/quality;\n    \n    float importance = 1.0;\n    \n    for(float arc = 0.0; arc < TAU; arc += directionStep)\n    for(float q = 1.0; q > 0.0; q -= qualityStep) {\n        vec2 offset = vec2(cos(arc),sin(arc)) * q * radius * res.y;\n        vec2 cuv = uv + offset;\n        \n        // Avoid sampling outside the edges\n        if (\n            cuv.x < 0.0 ||\n            cuv.y < 0.0 ||\n            cuv.x > res.x ||\n            cuv.y > res.y\n        ) {\n            continue;\n        }\n        \n        vec4 fog = texture(tex, cuv);\n        float spatialImportance = 1.0 + (1.0 - q); // linear fallof\n        float depthImportance = clamp(1.0 / abs(sceneDepth - fog.w), 0.0, 1.0);\n        #if VOLUME_USE_BILATERAL_BLUR == 0\n            depthImportance = 1.0;\n        #endif\n        float sampleImportance = spatialImportance * depthImportance;\n        importance += sampleImportance;\n        color += texture(tex, cuv) * sampleImportance;\n    }\n    \n    return color / importance;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    // Main scene\n    vec4 mainScene = texture(iChannel0, uv);\n    fragColor = sampleBlur(\n        iChannel1, \n        iResolution.xy, \n        fragCoord, \n        mainScene.w,\n        VOLUME_BLUR_DIRECTIONS, \n        VOLUME_BLUR_QUALITY, \n        VOLUME_BLUR_SIZE / VOLUME_RES\n    );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

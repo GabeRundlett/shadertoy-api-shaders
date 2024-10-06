@@ -1,0 +1,65 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1677432152",
+            "description": "CC0: Hard light grid tracer\nInspired by this tweet: https://twitter.com/lainmell/status/1629414269019357184?s=20\nVery different from how I usually do stuff so wanted to make a try for something \nthat looked like it.\n",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DscGzB",
+            "likes": 29,
+            "name": "Hard light grid tracer",
+            "published": 3,
+            "tags": [
+                "grid"
+            ],
+            "usePreview": 1,
+            "username": "mrange",
+            "viewed": 383
+        },
+        "renderpass": [
+            {
+                "code": "// CC0: Hard light grid tracer\n//  Inspired by this tweet: https://twitter.com/lainmell/status/1629414269019357184?s=20\n//  Very different from how I usually do stuff so wanted to make a try for something \n//  that looked like it.\n\n#define TIME        iTime\n#define RESOLUTION  iResolution\n#define PI          3.141592654\n#define TAU         (2.0*PI)\n#define ROT(a)      mat2(cos(a), sin(a), -sin(a), cos(a))\n\nconst vec3 LightDir0  = normalize(vec3(2.0, 2.0, 1.0));\nconst int   MaxIter   = 40;\nconst float Bottom    = 0.0;\nconst float MinHeight = 0.25;\nconst float MaxHeight = 7.0;\nconst float sz        = 0.475;\nconst float eps       = 1E-3;\n\n// License: Unknown, author: Claude Brezinski, found: https://mathr.co.uk/blog/2017-09-06_approximating_hyperbolic_tangent.html\nfloat tanh_approx(float x) {\n  //  Found this somewhere on the interwebs\n  //  return tanh(x);\n  float x2 = x*x;\n  return clamp(x*(27.0 + x2)/(27.0+9.0*x2), -1.0, 1.0);\n}\n\n// License: MIT, author: Inigo Quilez, found: https://www.iquilezles.org/www/articles/spherefunctions/spherefunctions.htm\nvec2 rayBox(vec3 ro, vec3 rd, vec3 boxSize, out vec3 outNormal )  {\n    vec3 m = 1.0/rd; // can precompute if traversing a set of aligned boxes\n    vec3 n = m*ro;   // can precompute if traversing a set of aligned boxes\n    vec3 k = abs(m)*boxSize;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n    float tN = max( max( t1.x, t1.y ), t1.z );\n    float tF = min( min( t2.x, t2.y ), t2.z );\n    if( tN>tF || tF<0.0) return vec2(-1.0); // no intersection\n    outNormal = (tN>0.0) ? step(vec3(tN),t1) : // ro ouside the box\n                           step(t2,vec3(tF));  // ro inside the box\n    outNormal *= -sign(rd);\n    return vec2( tN, tF );\n}\n\nvec3 baseCol(vec2 p) {\n  p *= 0.00125;\n  float h = texture(iChannel1, p).x;\n  h -= 0.5;\n  h *= 2.0;\n  vec3 sc = h > 0.0 ? vec3(0.1) : vec3(1.0, 0.0, 0.0);\n  return mix(vec3(1.0), sc, smoothstep(0.33, 0.66, abs(h))); \n}\n\nfloat height(vec2 p) {\n//  p += TIME*0.5;\n  float w = sin(0.1*(p.x+p.y)+0.3*TIME);\n  p *= 0.001;\n  float h = texture(iChannel1, p).x;\n//  h += 0.5*texture(iChannel1, 2.0*p).x;\n  h *= h;\n  h *= smoothstep(-2.0, 0.9, w);\n  h = smoothstep(0.0, 0.75, h);\n  return mix(MinHeight, MaxHeight, h)*0.5;\n}\n\nfloat cellTrace(\n    vec3      ro\n  , vec3      rd\n  , float     near\n  , float     far\n  , out int   iter\n  , out vec2  cell\n  , out vec2  boxi\n  , out vec3  boxn\n  ) {\n  vec2 rd2  = rd.xz;\n  vec2 ird2 = 1.0/rd.xz;\n  vec2 stp  = step(vec2(0.0), rd2);\n\n  float ct = near;\n  iter = MaxIter;\n  vec2 bi = vec2(-1.0);\n  vec3 bn = vec3(0.0);\n  vec2 np2 = vec2(0.0);\n  float ft = far;\n\n  for (int i; i < MaxIter; ++i) {\n    vec3 cp = ro+rd*ct;\n    np2 = floor(cp.xz);\n    float h = height(np2);\n    vec3 bdim = vec3(sz, h, sz);\n    vec3 coff = vec3(np2.x+0.5, h, np2.y+0.5);\n    vec3 bro = ro-coff;\n    bi = rayBox(bro, rd, bdim, bn);\n\n    if (bi.x> 0.0) {\n      vec3 bp = bro+rd*bi.x+coff;\n      float bt = distance(bp,ro);\n      if (bt >= far) {\n        break;\n      }\n      ft = bt;\n      iter = i;\n      break;\n    }\n\n    // Step to next cell\n    vec2 dif = np2 - cp.xz;\n    dif += stp;\n    dif *= ird2;\n    float dt = min(dif.x, dif.y);\n    ct += dt+eps;\n\n    if (ct >= far) {\n      break;\n    }\n  }\n  cell = np2;\n  boxi = bi;\n  boxn = bn;\n  return ft;\n}\n\nvec3 render(vec3 ro, vec3 rd) {\n  vec3 sky = vec3(1.0);\n\n  float skyt = 1E3;\n  float bottom  = -(ro.y-Bottom)/rd.y;  \n  float near    = -(ro.y-(MaxHeight))/rd.y;  \n  float far     = bottom >= 0.0 ? bottom : skyt;\n\n  int iter;\n  vec2 cell;\n  vec2 boxi;\n  vec3 boxn;\n  float ct = cellTrace(ro, rd, near, far, iter, cell, boxi, boxn);\n  if (ct == skyt) {\n    return sky;\n  }\n\n  vec3 p = ro + ct*rd;\n\n  int siter;\n  vec2 scell;\n  vec2 sboxi;\n  vec3 sboxn;\n  float sfar  = -(p.y-MaxHeight)/LightDir0.y;  \n  float sct   = cellTrace((p-2.0*eps*rd), LightDir0, eps, sfar, siter, scell, sboxi, sboxn);\n\n  vec3 n = vec3(0.0, 1.0, 0.0);\n  vec3 bcol = vec3(0.5);\n\n  if (iter < MaxIter) {\n    n = boxn;\n    bcol = baseCol(cell);\n    bcol *= smoothstep(0.0, 0.1, boxi.y-boxi.x);\n  }\n  float dif0 = max(dot(n, LightDir0), 0.0);\n  dif0 = sqrt(dif0);\n  float sf = siter < MaxIter ? tanh_approx(0.066*sct) : 1.0; \n  bcol *= mix(0.3, 1.0, dif0*sf);\n\n  vec3 col = bcol;\n  col = mix(col, sky, 1.0-exp(-0.125*max(ct-50.0, 0.0)));\n  \n  return col;\n}\n\nvec3 effect(vec2 p, vec2 pp) {\n  const float fov = tan(TAU/6.0);\n  \n  vec3 ro = 4.0*vec3(0.0, 4.0, -4.);\n  float off = 2.0*TIME;\n  ro.z += off; \n  const vec3 up = vec3(0.0, 1.0, 0.0);\n  const vec3 ww = normalize(vec3(0.5,-1., 1.0));\n  vec3 uu = normalize(cross(up, ww));\n  vec3 vv = cross(ww,uu);\n  vec3 rd = normalize(-p.x*uu + p.y*vv + fov*ww);\n\n  vec3 col = render(ro, rd);\n  col -= 0.1;\n  col *= 1.1;\n  col = clamp(col, 0.0, 1.0);\n  col = sqrt(col);\n  return col;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 q = fragCoord/RESOLUTION.xy;\n  vec2 p = -1. + 2. * q;\n  vec2 pp = p;\n  p.x *= RESOLUTION.x/RESOLUTION.y;\n  vec3 col = effect(p, pp);;  \n  fragColor = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 4,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

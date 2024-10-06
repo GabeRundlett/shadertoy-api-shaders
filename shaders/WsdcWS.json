@@ -1,0 +1,59 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1601638086",
+            "description": "using divergence-free random 3D displacement  to pull \"hairs from a simple distribution ( here, a sphere ).\n( inspired by [url]https://mrl.nyu.edu/~perlin/doc/hypertexture/[/url] )\n\nmouse control or auto-rotate.",
+            "flags": 1,
+            "hasliked": 0,
+            "id": "WsdcWS",
+            "likes": 30,
+            "name": "hypertextures div-free displace2",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "3d",
+                "raymarching",
+                "displacement",
+                "antialiasing",
+                "volumetric",
+                "vr",
+                "hairs",
+                "preintegration"
+            ],
+            "usePreview": 1,
+            "username": "FabriceNeyret2",
+            "viewed": 934
+        },
+        "renderpass": [
+            {
+                "code": "// disp of not-noise variant of https://shadertoy.com/view/wddczl\n// divergence-free variant of https://shadertoy.com/view/wstyzl\n// variant of https://shadertoy.com/view/tsdcRj\n\n// - Introduce transfer function ( i.e. LUT(dens) ) to shape the look (much like doctors do for scan data)\n// - Rely on preintegrated density on segment.\n//     inspired by preintegrated segment rendering ( see http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.10.3079&rep=rep1&type=pdf )\n//     NB: they store a small texture(_dens,dens), but here I do it analytically.\n\n#define noise(x) texture(iChannel0, x ).xyz\n#define SQR(x)   ( (x)*(x) )\n#define CUB(x)   ( (x)*(x)*(x) )\n\nvec3 divfreenoise( vec3 q ) { // fluid-like noise = div-free -> curl\n    vec2 e = vec2(1./16.,0);\n    q += .1*iTime;            // animated flow\n    vec3 v = noise(q); \n // return 2.*(v -.5);             // regular\n    return vec3( noise(q+e.yxy).z-v.z - v.y+noise(q+e.yyx).y, // curl\n                 noise(q+e.yyx).x-v.x - v.z+noise(q+e.xyy).z,\n                 noise(q+e.xyy).y-v.y - v.x+noise(q+e.yxy).x\n                ) *1.;\n}\n             \nfloat z, BR = 2.5;   // bounding sphere (0,0,0), 2.\nfloat map(vec3 p )\n{\n    vec3 q = p;\n // vec3 N = 2.* noise(q/10.) -1.;                // displacement\n    vec3 N = divfreenoise(   q/5.)\n      ; // + divfreenoise(2.*q/5.) /2.\n        // + divfreenoise(4.*q/5.) /4.\n        // + divfreenoise(8.*q/5.) /8.;\n    q += N;\n    float f = // ( 1.2*noise(q/2.+ .1*iTime).x -.2 ) * // source noise\n               smoothstep(1.,.8,dot(q,q)/1.5);   // source sphere\n\n // f*= smoothstep(.1,.2,abs(p.x));               // empty slice (derivable ) \n    z = length(q)/2.;                             // depth in sphere\n    return f;                        \n}\n\nvec3 sundir = normalize( vec3(0,0,-1) );\nvec2 coord;\n\n  #define sl  5.                               // transition slope transp/opaque\n  #define LUT(d) clamp( .5+sl*(d-.5), 0., 1. ) // transfer function\n\n                                               // integral of transfer function\n  #define intLUT(d0,d1) ( abs(d1-d0)<1e-5 ? 0. : ( I(d1) - I(d0) ) / (d1-d0) ) \n  #define C(d)    clamp( d, .5-.5/sl, .5+.5/sl )\n  #define I0(d) ( .5*d + sl*SQR(d-.5)/2. )\n  #define I(d)  ( I0(C(d)) + max(0.,d-(.5+.5/sl)) )\n\nfloat LUTs( float _d, float d ) { // apply either the simple or integrated transfer function\n    return intLUT(_d,d);\n/*  return coord.x > 0. \n             ?  LUT(d)        // right: just apply transfert function\n             :  intLUT(_d,d); // left: preintegrated transfert function\n*/\n}\n\nfloat intersect_sphere( vec3 O, vec3 D, vec3 C, float r )\n{\n\tfloat b = dot( O-=C, D ),\n\t      h = b*b - dot( O, O ) + r*r;\n\treturn h < 0. ? -1.             // no intersection\n\t              : -b - sqrt(h);\n}\n\nvec4 raymarch( vec3 ro, vec3 rd, vec3 bgcol, ivec2 px )\n{\n\tvec4 sum = vec4(0);\n\tfloat dt = .01,\n         den = 0., _den, lut,\n           t = intersect_sphere( ro, rd, vec3(0), BR );\n    if ( t == -1. ) return vec4(0); // the ray misses the object \n    t += 1e-5;                      // start on bounding sphere\n    \n    for(int i=0; i<500; i++) {\n        vec3 pos = ro + t*rd;\n        if(   sum.a > .99               // end if opaque or...\n           || length(pos) > BR ) break; // ... exit bounding sphere\n                                    // --- compute deltaInt-density\n        _den = den; den = map(pos); // raw density\n        float _z = z;               // depth in object\n        lut = LUTs( _den, den );    // shaped through transfer function\n        if( lut > .0                // optim\n          ) {                       // --- compute shading                  \n#if 0                               // finite differences\n            vec2 e = vec2(.3,0);\n            vec3 n = normalize( vec3( map(pos+e.xyy) - den,\n                                      map(pos+e.yxy) - den,\n                                      map(pos+e.yyx) - den ) );\n         // see also: centered tetrahedron difference: https://iquilezles.org/articles/normalsSDF\n            float dif = clamp( -dot(n, sundir), 0., 1.);\n#else                               // directional difference https://iquilezles.org/articles/derivative\n         // float dif = clamp((lut - LUTs(_den, map(pos+.3*sundir)))/.6, 0., 1. ); // pseudo-diffuse using 1D finite difference in light direction \n            float dif = clamp((den - map(pos+.3*sundir))/.6, 0., 1. );             // variant: use raw density field to evaluate diffuse\n#endif\n/*\n            vec3  lin = vec3(.65,.7,.75)*1.4 + vec3(1,.6,.3)*dif,          // ambiant + diffuse\n                  col = vec3(.2 + dif);\n            col = mix( col , bgcol, 1.-exp(-.003*t*t) );   // fog\n*/            \n            vec3 col = exp(- vec3(3,3,2) *(1.-z));     // dark with shadow\n         // vec3 col =   exp(- vec3(3,3,2) *(.8-_z));  // dark with depth\n                   //      *  exp(- 1.5 *(1.-z));\n            sum += (1.-sum.a) * vec4(col,1)* (lut* dt*5.); // --- blend. Original was improperly just den*.4;\n        }\n        t += dt;  // stepping\n    }\n\n    return sum; \n}\n\nmat3 setCamera( vec3 ro, vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro),\n\t     cp = vec3(sin(cr), cos(cr),0),\n\t     cu = normalize( cross(cw,cp) ),\n\t     cv = cross(cu,cw);\n    return mat3( cu, cv, cw );\n}\n\nvec4 render( vec3 ro, vec3 rd, ivec2 px )\n{\n    // background sky  \n\tfloat sun = max( dot(sundir,rd), 0. );\n\tvec3 col = // vec3(.6,.71,.75) - rd.y*.2*vec3(1,.5,1) + .15*.5\n\t           //  + .2*vec3(1,.6,.1)*pow( sun, 8. );\n            +  vec3( .8 * pow( sun, 8. ) ); // dark variant\n\n    // clouds    \n    vec4 res = raymarch( ro, rd, col, px );  // render clouds\n    col = res.rgb + col*(1.-res.a);          // blend sky\n    \n    // sun glare    \n\tcol += .2*vec3(1,.4,.2) * pow( sun,3.);\n\n    return vec4( col, 1. );\n}\n\nvoid mainImage( out vec4 O, vec2 U )\n{\n    vec2 R = iResolution.xy,\n         p = ( 2.*U - R ) / R.y,\n         m = iMouse.z>0. ? 2.* iMouse.xy / R.xy\n                         : 1.+cos(.3*iTime+vec2(0,11));\n    coord = p;\n // O = vec4( map(vec3(4.*p,0)) ); return;\n    \n    // camera\n    vec3 ro = 4.*normalize(vec3(sin(3.*m.x), .4*m.y, cos(3.*m.x))),\n\t     ta = vec3(0, 0, 0);\n    mat3 ca = setCamera( ro, ta, 0. );\n    // ray\n    vec3 rd = ca * normalize( vec3(p,1.5) );\n    \n    O = render( ro, rd, ivec2(U-.5) );\n // if (floor(U.x)==floor(R.x/2.)) O = vec4(1,0,0,1); // red separator\n}\n\n#define mainVR(O,U,C,D) O = render( C, D, ivec2(U-.5) )",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 40,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/aea6b99da1d53055107966b59ac5444fc8bc7b3ce2d0bbb6a4a3cbae1d97f3aa.bin"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,124 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1621421283",
+            "description": "Display Gaussian approx of color histogram  ( i.e. mean col + covariant matrix = ellipsoid ).\n\ncan be used for normalizing colors before blending textures, cf https://www.shadertoy.com/view/XtjBDw  /  https://hal.inria.fr/hal-00765799",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "slX3zr",
+            "likes": 10,
+            "name": "color histogram Gaussian approx",
+            "published": 3,
+            "tags": [
+                "color",
+                "filtering",
+                "lod",
+                "gpmipmap"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 397
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of private \"color histogram: Gaussian approx\" https://shadertoy.com/view/7sBXWc\n\n#define rot(a) mat2( cos( a + vec4(0,11,33,0) ) )\n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    vec2 r = iResolution.xy,\n         U = u/r,\n         V = 2.*U - 1.;\n         \n    // accessing CubeMaps is such a pain !\n    vec3 cC[] = vec3[]( vec3( V.x,-V.y, 1), vec3( -V.x,-V.y, 1).zyx, vec3( V.x,V.y, 1).xzy ),\n         cM[] = vec3[]( vec3(  0 ,  0 , 1), vec3(   0 ,  0 , 1).zyx, vec3(  0 , 0 , 1).xzy ),\n         cS[] = vec3[]( vec3(  .5, .5, -1), vec3( -.5 , .5, -1).zyx, vec3( -.5, .5,-1).xzy ),\n         cT[] = vec3[]( vec3( -.5,-.5, -1), vec3(  .5 ,-.5, -1).zyx, vec3(  .5,-.5,-1).xzy );\n         \n    int i= int(iTime/2.)%3;                                 // alternate textures 0,1,2\n    vec4 C = texture   (iChannel0, cC[i]     ),             // texture\n         M = textureLod(iChannel0, cM[i], 10.),             // means.\n         S = textureLod(iChannel0, cS[i],  9.) - M*M,       // variances\n         T = textureLod(iChannel0, cT[i],  9.) - M*M.yzxw;  // covariances\n         \n    // covariant matrix.\n    // to get ellipsoid axes and radius, compute eigenvectors and eigenvalues of Q such that G = Q^t.Q = R^t.D².R\n    mat3 G = mat3( S.x,T.x,T.z,  T.x,S.y,T.y, T.z,T.y,S.z); \n\n    // Implicit display of the ellipsoid\n    G = inverse(4.*G);\n    O -= O;\n    vec2 m = iMouse.xy;\n    m = length(m)>10. ? 3.14*(2.*m/r-1.) : vec2(iTime);                // mouse control or auto-demo\n    for( float t=-1.5; t<1.5; t+= .01 ) {                              // ray-march in the RGB volume\n        vec3 X = 1.05*vec3( ( 2.*u-r)/r.y ,t ), A,S;                   // candidate voxel\n        X.xz *= rot( m.x);\n        X.xy *= rot(-m.y);\n        if ( dot(X,G*X) <= 1. && O.a==0.) O.rgb = M.rgb + .5*X, O.a++; // trace ellipsoid as quadratic form\n        A = abs(X), S = step( .02, abs(1. - A)  ); S*=S.yzx;\n        if ( max(S.x,max(S.y,S.z)) < 1. &&  max(A.x,max(A.y,A.z)) < 1. && O.a==0.) O.rgb = .5+.5*X, O.a++; // box\n    }\n    O += (1.-O.a) * C;\n     \n    O = pow( O, vec4(1./2.2) );                                        // convert to sRGB    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// color analysis of 3 textures in parallel ( for static textures, could be done just once ).\n// 3 axes = 3 texture.\n// face + : flat-space texture.  max LOD = order 1 statistics\n// face - :  maxLOD - 1 = order 2 statistics. corner (0,0): R²,G²,B²  corner(1,1): RG,GB,BR\n\n// attention: noise texture & fonts, set gamma = 1.\n// ( strange: blue noise let with gamma 2.2 is not an ellipsoid: sigma < 0. probably Half precision issue. )\n\n#define read(ch) pow( texture( ch, U ), vec4(2.2) ) // read texture and convert to flat color space\n\nvoid mainCubemap( out vec4 O,  vec2 U, vec3 c, vec3 D )\n{\n    U /= 1024.;\n    vec3 A = abs(D);\n    int i =  A.x > max(A.y,A.z) ? 0                 // 3 faces directions manage 3 textures\n           : A.y > max(A.x,A.z) ? 1                 // max LOD = order 1 statistics ( R,G,B means ).\n                                : 2;\n    if ( D[i] < 0. ) U *= 2.;                         \n    O =   i == 0 ? read(iChannel0)\n        : i == 1 ? read(iChannel1)\n                 : read(iChannel2);\n              \n    if ( D[i] < 0. )                                // anti-faces store order 2 statistics.\n        O *= max(U.x,U.y) < 1. ? O : O.gbra;        // corner (0,0): R²,G²,B²  corner(1,1): RG,GB,BR\n     \n  //if ( D[i] < 0. ) O = vec4(max(U.x,U.y) < 1.,  min(U.x,U.y)>1., 0,0); // to test correct mapping\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 16,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,202 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1704191747",
+            "description": "iMouse.x -> size of the patch\niMouse.y -> size of the directional convolution\n\nPixelized destruction. I found cool dithering effect when the SigmaG is large.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "lc23Dh",
+            "likes": 4,
+            "name": "Directional Destruction",
+            "published": 3,
+            "tags": [
+                "blur",
+                "volumetric",
+                "aa",
+                "lic"
+            ],
+            "usePreview": 0,
+            "username": "rubioh",
+            "viewed": 195
+        },
+        "renderpass": [
+            {
+                "code": "#define R iResolution\n#define T(u) texture(iChannel0, u/R.xy).rgb\n#define D(u) texture(iChannel1, u/R.xy).xy\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord;\n\n    vec3 I = vec3(0.0);\n    float sum = .0;\n    \n   \n    float depth = texture(iChannel0, uv/R.xy).a;\n    float sigmaL = min(depth*depth*0.06, 8.);\n    sigmaL  = 7.;\n    \n    float w = gaussian(sigmaL, 0.);\n    I += T(uv)*w;\n    sum += w;\n\n    vec2 dir = D(uv);\n    vec2 where = uv + dir;\n\n    // LIC first side\n    for (float i = 1. ; i<(2.*sigmaL + 1.) ; i++){\n        w = gaussian(sigmaL, i);\n        I += T(where)*w;\n        sum += w;\n        dir = D(where); \n        where += dir;\n\n    }\n    // LIC second side\n    dir = D(uv);\n    where = uv - dir.xy;\n    for (float i = 1. ; i<(2.*sigmaL + 1.) ; i++){\n        w = gaussian(sigmaL, i);\n        I += T(where)*w;\n        sum += w;\n        dir = D(where);\n        where -= dir;\n    }\n    I /= sum;    \n    fragColor = vec4(1.-tanh(pow(I, vec3(1.4, 1.7, 1.4))*4.), 1.0);\n    //fragColor = vec4(D(uv)*.1, .0,.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define PI 3.14159\n#define S(a,b,c) smoothstep(a,b,c)\n#define SCALE .75\n#define ROT mat3(cos(.7), 0., sin(.7), 0., 1., 0., -sin(.7), 0., cos(.7))\n#define START 11.\n#define rotate2d(a) mat2(cos(a), sin(a), -sin(a), cos(a))\n\n\nfloat noise(vec3 p)\n{\n\tconst vec3 s = vec3(7, 157, 113);\n\tvec3 ip = floor(p);\n    vec4 h = vec4(0., s.yz, s.y + s.z) + dot(ip, s);\n\tp -= ip; \n    p = p*p*(3. - 2.*p);\n    h = mix(fract(sin(h)*43758.5453), fract(sin(h + s.x)*43758.5453), p.x);\n    h.xy = mix(h.xz, h.yw, p.y);\n    return mix(h.x, h.y, p.z); \n}\n\n\nfloat hash11(float p){\n    return fract(sin(p*12.789)*7896.4563);\n}\n\nfloat noise1(float p)\n{\n    float i = floor(p);\n    float f = fract(p);\n    return mix(hash11(i), hash11(i+1.), smoothstep(0., 1., f));\n}\n\nconst int MAX_MARCHING_STEPS = 120;\n\nvec3 hash33(vec3 p){ \n    float n = sin(dot(p, vec3(7, 157, 113)));    \n    return fract(vec3(2097152, 262144, 32768)*n); \n}\n\nfloat fbm(vec3 p){\n    return (noise(p)-.1)*.5 + noise(p*ROT*2.)*.5 + noise(p*ROT*8.)*.25 + noise(p*ROT*16.)*.25 + noise(p*ROT*32.)*.25-.1;\n}\n\nfloat fbm2(vec3 p){\n    return noise(p) + noise(p*ROT*2.)*.5;\n}\n\nfloat sdGyroid(vec3 p, vec3 offset, float scale, float thickness){\n    p += offset;\n    p *= scale;\n    return abs(dot(cos(p), sin(p.zxy)))/scale - thickness;\n}\n\nfloat getGyr(vec3 p){\n    float gyr = sdGyroid(p, vec3(10.,10.5,iTime), SCALE, 1.5);\n    return gyr;\n}\n\n\nvec2 map(vec3 p)\n{\n  p.xz *= rotate2d(p.y*.4);\n  float gyr = getGyr(p);\n  return vec2(abs(gyr)*fbm(p+iTime/40.), gyr);//*S(2.5, 0., length(p)));\n}\n\nfloat flicker(){\n    return pow(noise1(iTime*4.), 4.)*.75+.25;\n}\n\nvoid rayMarch(vec3 ro, vec3 rd, out vec4 col, inout float depth) {  \n\n  //Vol March in Fog\n  float t = START; // Starting point\n  float fogT0 = 0.;\n  \n  vec3 lp = vec3(0., .0,2.) + ro;\n  vec3 ld; ld-=ld;\n  \n  float thresh= .35;\n  float lDe, w;\n  float td = 0.;\n  float dit = fract(sin(dot(rd+ro, vec3(14.456, 17.2154, 73.156))*45678.123));\n  float dt = 0.;\n  vec3 p = ro;\n  for (int i = 0; i < MAX_MARCHING_STEPS; i++){\n  \n      if (td > .99){\n          break;\n      }\n      p = ro + (t+dit*.0)*rd;\n\n      vec2 d = map(p) * smoothstep(START, START*1.1, length(p-ro));\n      \n      vec3 ncol = vec3(0.);\n      \n      float f = flicker();\n      float df = S(START*1.1-2.*f, START*1.5-2.5*f, length(p-ro)); //Dist flick\n      vec3 flick_col = vec3(0.094,0.561,0.122)*f*df;\n      \n      // Inspire by Shane's Cheap Cloud Flytrhough:  https://www.shadertoy.com/view/Xsc3R4\n      // And Protean clouds by Nimitz : https://www.shadertoy.com/view/3l23Rh\n      // Not as accurate as theirs but i will keep trying to improve the rendering and the fog texture\n      if (d.x>thresh){\n          float den = pow(d.x-thresh, 1.);\n          td += den;\n          \n          ld = lp-p;\n          float lDist = length(ld);\n          ld = normalize(ld);\n          \n          vec3 sn = -rd + .1*hash33(p);\n          float atten = 1./(1.+.125*pow(den, 2.) + .125*den + .25*length(p-ro));\n          float interp = max(abs(getGyr(p)/1.3) -.45, 0.);\n          float diff = max(dot(sn, ld), 0.);\n          vec3 interior = mix(vec3(0.502,0.000,1.000)*.5, vec3(0.506,0.349,0.247)*.5, fbm2(p*8.)*.7);\n          vec3 exterior = mix(vec3(.1, .05, .05), flick_col+interior*.5, df*.5);\n          ncol = mix(exterior*(diff*.5+.25), interior*1., interp)*atten*(1.+den);\n          col.rgb += ncol*(1.-td)*smoothstep(START, START*1.2, length(p-ro));\n      }\n      else{\n          col.rgb += (vec3(1.)+flick_col)*dt*.03;\n          td += .005;\n      }\n      dt = (.07-.06*S(thresh-.1, thresh, d.x))+fract(sin(dot(p, vec3(14.456, 17.2154, 73.156))*45678.123))*.005;\n      \n      t += dt;\n  }\n  depth = t-START;\n}\n\n\nmat2 rot(float a)\n{\n    float s = sin(a);\n    float c = cos(a);\n    return mat2(c, -s, s, c);\n}\n\nvec4 render(vec3 ro, vec3 rd, inout float depth){\n  vec3 backgroundColor = vec3(0.1, .1, .1);\n  vec4 col = vec4(0.);\n  rayMarch(ro, rd, col, depth); \n  return col;\n}\n\nmat3 camera(vec3 cameraPos, vec3 lookAtPoint) {\n\tvec3 cd = normalize(lookAtPoint - cameraPos); // camera direction\n\tvec3 cr = normalize(cross(vec3(0, 1, 0), cd)); // camera right\n\tvec3 cu = normalize(cross(cd, cr)); // camera up\n\treturn mat3(-cr, cu, -cd);\n}\n\nvec3 path(float t){\n    return vec3(.0,-t*1., 0.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n  vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n  \n  vec3 ro = vec3(0, 0, -4); \n  vec2 m = iMouse.xy/iResolution.xy;\n  m *= .0;\n  vec3 lookat = vec3(0., 0.,0. );\n  ro.yz = ro.yz * 1. * rot(mix(PI/2., 0., m.y));\n  ro.xz = ro.xz * rot(mix(-PI, PI, m.x)) + vec2(lookat.x, lookat.z);\n  vec3 rd = camera(ro, lookat)*normalize(vec3(uv, -.5));\n  \n  ro += path(iTime);\n  float depth = 0.;\n  vec4 col = render(ro, rd, depth);\n\n  fragColor = vec4(pow(vec3(col.rgb), vec3(1.5))*1./(1. + (depth-START)*.1), depth-START);\n  fragColor = .5*fragColor + .5*texture(iChannel0, fragCoord/iResolution.xy); \n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define R iResolution\n#define T(u) texture(iChannel0, u).rgb\n\nvec4 SST(vec2 uv){\n    vec2 d = 1./R.xy;\n    //Sobel\n    vec3 Gx =  (\n           -1.0 * T(uv + vec2(-d.x, -d.y)) +\n           -2.0 * T(uv + vec2(-d.x,  0.0)).xyz + \n           -1.0 * T(uv + vec2(-d.x,  d.y)).xyz +\n           +1.0 * T(uv + vec2( d.x, -d.y)).xyz +\n           +2.0 * T(uv + vec2( d.x,  0.0)).xyz + \n           +1.0 * T(uv + vec2( d.x,  d.y)).xyz\n           ) / 4.0;\n    vec3 Gy = (\n           -1.0 * T(uv + vec2(-d.x, -d.y)).xyz + \n           -2.0 * T(uv + vec2( 0.0, -d.y)).xyz + \n           -1.0 * T(uv + vec2( d.x, -d.y)).xyz +\n           +1.0 * T(uv + vec2(-d.x,  d.y)).xyz +\n           +2.0 * T(uv + vec2( 0.0,  d.y)).xyz + \n           +1.0 * T(uv + vec2( d.x,  d.y)).xyz\n           ) / 4.0;\n    return vec4(dot(Gx, Gx), dot(Gy, Gy), dot(Gy, Gx), .0);         \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy/R.xy;\n    vec4 sst = SST(uv); // Compute Structure Space Tensor\n    \n    fragColor = vec4(sst)*.05 + .95*texture(iChannel1, uv);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "float gaussian(float s, float pos){\n    return exp(-(pos*pos)/(2.*s*s));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define T(u) texelFetch(iChannel0, u, 0).rgb\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    ivec2 uv = ivec2(fragCoord.xy);\n    vec3 G = vec3(0.0);\n      \n      \n    vec2 uvl = (fragCoord-.5*iResolution.xy)/iResolution.y;\n\n    vec2 m = iMouse.xy/iResolution.xy;\n    float sigmaG = 1./(1.+20.*length(uvl)*length(uvl))*(18. + 6.*cos(m.x*3.14159));\n    \n    float sum = .0;\n\n    float w = gaussian(sigmaG, 0.);\n    G += T(uv)*w;\n    sum += w;\n    // Gaussian Blur Vertical\n    for (float i = 1. ; i<(2.*sigmaG+2.) ; i++){\n        w = gaussian(sigmaG, float(i));\n        G += T(uv + ivec2(0,i))*w;\n        G += T(uv - ivec2(0,i))*w;\n        sum += 2.*w;\n    }\n    G /= sum;\n    fragColor = vec4(G, .0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define T(u) texelFetch(iChannel0, u, 0).rgb\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    ivec2 uv = ivec2(fragCoord.xy);\n    vec3 G = vec3(0.0);\n    \n    vec2 m = iMouse.xy/iResolution.xy;\n    vec2 uvl = (fragCoord-.5*iResolution.xy)/iResolution.y;\n    float sigmaG = 1./(1.+20.*length(uvl)*length(uvl))*(18. + 6.*cos(m.x*3.14159));\n   \n    float sum = .0;\n\n    float w = gaussian(sigmaG, 0.);\n    G += T(uv)*w;\n    sum += w;\n    // Gaussian Blur Horizontal\n    for (float i = 1. ; i<(2.*sigmaG+2.) ; i++){\n        w = gaussian(sigmaG, float(i));\n        G += T(uv + ivec2(i,0))*w;\n        G += T(uv - ivec2(i,0))*w;\n        sum += 2.*w;\n    }\n    G /= sum;\n    \n    // Compute eigen vector\n    float lambda = .5*(G.x + G.y + sqrt((G.y-G.x)*(G.y-G.x) + 4.*G.z*G.z));\n    vec2 d = vec2(-G.x + lambda, -G.z);\n\n    vec4 res = (length(d) > 0.0001) ? vec4(\n        mix(\n            normalize(d)*(sqrt(lambda)*(.2+.8*smoothstep(.7, .2, length(uvl))))*.001*(.5+.5*cos(m.y*3.14159)),\n            normalize(d), \n            smoothstep(.0, .3, length(uvl)))\n                    , sqrt(lambda), 1.)\n                     : vec4(.0,1.,0.,1.);\n    fragColor = res;    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

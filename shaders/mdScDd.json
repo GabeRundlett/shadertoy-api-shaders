@@ -1,0 +1,159 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1688331306",
+            "description": "Click on the scene to see the tangent to the curve (ie., stoke direction) at that point.\n\nBufA: Per-pixel stroke direction estimate\nBufC: hblur of BufA (time-varying strength)\nBufD: vblur of BufC (as above)\nImage: pixels blurred in BufD direction",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mdScDd",
+            "likes": 4,
+            "name": "Brushstroke tangent finder",
+            "published": 3,
+            "tags": [
+                "blur",
+                "filtering",
+                "bilateral"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 274
+        },
+        "renderpass": [
+            {
+                "code": "float distanceToSegment( vec2 a, vec2 b, vec2 p )\n{\n\tvec2 pa = p - a, ba = b - a;\n\tfloat h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n\treturn length( pa - ba*h );\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    float filter_len = smoothstep(-1.0, 0.0, cos(iTime * 0.7 + dot(uv, vec2(-0.3, 0.4)))) * 0.002;\n\n    // Time varying pixel color\n    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));\n    vec4 blurry = texture(iChannel0, uv);\n    float len = length(blurry.xy);\n    if (len < 0.0001) {\n        col = texture(iChannel1, uv).rgb;\n    } else if (any(isnan(blurry.xy))) {\n        col = vec3(0.0);\n    } else {\n        float t = atan(blurry.y, blurry.x) * 0.5;\n        vec2 dir = vec2(cos(t), sin(t)) * filter_len;\n        vec4 sum = vec4(0.0);\n        for (int i = -stroke_length; i <= stroke_length; ++i) {\n            sum += texture(iChannel1, uv + dir * float(i));\n        }\n        col = sum.rgb / float(2 * stroke_length + 1);\n#if 0\n        if (fract(uv.y * 10.0) < 0.1) {\n            col.g = blurry.x < 0.0 ? 0.1 : 0.9;\n        } else if (fract(uv.y * 10.0) < 0.2) {\n            col.r = blurry.y < 0.0 ? 0.1 : 0.9;\n        }\n#endif\n    }\n\n    vec4 undermouse = texture(iChannel0, iMouse.xy / iResolution.xy);\n    len = length(undermouse.xy);\n    bool highlight = false;\n    if (len < 0.0001) {\n        highlight = length(iMouse.xy - fragCoord.xy) < 10.0;\n    } else if (any(isnan(blurry.xy))) {\n        highlight = length(iMouse.xy - fragCoord.xy) < 5.0;\n    } else {\n        float t = atan(undermouse.y, undermouse.x) * 0.5;\n        vec2 dir = vec2(cos(t), sin(t)) * 80.0 * len;\n        highlight = distanceToSegment(iMouse.xy - dir, iMouse.xy + dir, fragCoord.xy) < 3.0;\n    }\n    if (highlight) col = vec3(0.0, 1.0, 0.0);\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec4 getPixel(vec2 uv) {\n    return textureLod(iChannel0, uv, 0.0);\n}\n\n// Simple sRGB->Y\nfloat srgb_to_y(in vec3 colour)\n{\n    return dot(vec3(0.2126, 0.7152, 0.0722), colour);\n}\n\n// Simple polynomial weighting functions.\nfloat linear_weight(in float ref, in float val, in float threshold)\n{   \n    float dist = 1.0 - (abs(ref - val) / threshold);\n    \n    return max(dist, 0.0);\n}\n\nfloat quadratic_weight(in float ref, in float val, in float threshold)\n{\n    float lw = linear_weight(ref, val, threshold);\n    return lw * lw;\n}\n\nvec2 csquare(vec2 v) {\n    return vec2(v.x * v.x - v.y * v.y, 2.0 * v.x * v.y);\n}\n\nvec4 bilat(vec2 uv)\n{\n    vec2 max_siz = vec2(24) / iResolution.xy;\n\n    // reference value at centre of filter.\n    vec4 ref = getPixel(uv);\n    float ref_intensity = srgb_to_y(ref.xyz);\n#if 1\n    vec4 sum = vec4(0);\n\n    for (int i = 0; i < estimator_taps; i++)\n    {\n        vec4 seed = vec4(1.2, 4.5, 6.7, 8.9) * float(i);\n        vec2 ofs = vec2(gaussian(uv.xyyx, seed),\n                        gaussian(uv.yxxy, seed));\n \n        // point sample and intensity.\n        vec4 spl = getPixel(uv + ofs * max_siz);\n        float spl_intensity = srgb_to_y(spl.xyz);\n\n        // Weight depends on sample distance from reference intensity.\n        const float THRESHOLD = 0.4;\n        float weight = quadratic_weight(ref_intensity, spl_intensity, THRESHOLD);\n\n        weight *= 1.0 - clamp(abs(ref.a - spl.a), 0.0, 1.0);\n        if (dot(ofs, ofs) > 0.0000001) sum.xy += normalize(csquare(ofs)) * weight;\n    }\n#else\n    vec2 cs = vec2(cos(uv.x + iTime), sin(uv.x + iTime));\n    vec2 sum = csquare(cs);\n#endif\n    return vec4(sum.xy, ref.aa);\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n\n    fragColor = vec4(bilat(uv).rgb, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 seed2 = uv.xyyx + vec4(1.2, 4.5, 6.7, 8.9) + fract(iTime);\n    float radius = blur_radius * (0.5 - 0.5 * cos(iTime * 0.5 + dot(uv, vec2(0.4, 0.3))));\n\n    fragColor = gsample(iChannel0, uv, vec2(0.1, 0.0), radius);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 seed2 = uv.xyyx + vec4(1.2, 4.5, 6.7, 8.9) + fract(iTime);\n    float radius = blur_radius * (0.5 - 0.5 * cos(iTime * 0.5 + dot(uv, vec2(0.4, 0.3))));\n\n    fragColor = gsample(iChannel0, uv, vec2(0.0, 0.1), radius);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float blur_radius = 1.0;\nconst int blur_taps = 31;\nconst int stroke_length = 6;\nconst int estimator_taps = 64;\n\n\nfloat nrand( vec2 n ) {\treturn fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453); }\nvec2 nrand2( vec2 n ) { return vec2(nrand(n * vec2(-3.2145, 1.2345)),\n                                    nrand(n * vec2(-5.4321, 3.4521))); }\n\nfloat gaussian(vec4 seed1, vec4 seed2) {\n    return (nrand(seed1.zz + seed2.xy)\n          + nrand(seed1.ww + seed2.yz)\n          - nrand(seed1.xx + seed2.zw)\n          - nrand(seed1.yy + seed2.wx)) * 0.25;\n}\n\nfloat pdf(float x) {\n#if 0\n    // pdf for s=0.1667: `sum(uniform(-.5,.5, 3)/3)`\n    return 2.39365*exp(-18. * x * x);\n#else\n    // pdf for s=0.144: `sum(uniform(-.5,.5, 4)/4)`\n    return 2.77043 * exp(-24.1126 * x * x);\n#endif\n}\n\n\nvec4 gsample(sampler2D tex, vec2 uv, vec2 v, float radius) {\n#if 1\n    vec4 sum = vec4(0);\n    float den = 0.0;\n\n    for (int i=-blur_taps; i <= blur_taps; i++) {\n        float f = float(i) / float(blur_taps);\n        float w = pdf(f / radius);\n        vec2 ofs = v * f;\n        sum += texture(tex, uv + ofs) * w;\n        den += w;\n    }\n    return sum / den;\n#else\n    return texture(tex, uv);\n#endif\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

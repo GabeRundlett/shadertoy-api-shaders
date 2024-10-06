@@ -1,0 +1,108 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1507634649",
+            "description": "Shadertoy illustrating:\nhue shifting (left) vs hue preserving (right) tonemapping\nconstant color (top) vs blackbody gradient (bottom) colors\n\nclick in window to change exposure",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "llSyRD",
+            "likes": 25,
+            "name": "Blackbody Palette",
+            "published": 3,
+            "tags": [
+                "blackbody",
+                "filmic"
+            ],
+            "usePreview": 1,
+            "username": "P_Malin",
+            "viewed": 1699
+        },
+        "renderpass": [
+            {
+                "code": "// Blackbody Palette\n// @P_Malin\n// https://www.shadertoy.com/view/llSyRD\n\n// Some fire / flame VFX work by having a monochrome texture that is tinted a particular\n// hue and scaled up to a bright intensity.\n// When (filmic) tonemapping is applied, as the intensity is increased, each \n// color channel will saturate at a different point. This changes the ratios between the \n// red, green and blue intensities causing a hue shift.\n\n// https://www.desmos.com/calculator/8gsdanfrpu\n\n// As an example, as we increase the brightness of a dark orange color, in the scene it\n// is represented as different intensities of orange, but when we tonemap these increasing\n// intensities, each channel will max out at a different point giving a hue shift to yellow \n// then white.\n \n \n// Filmic tonemapping produces a hue shift as intensity is increased\n\n// The end result is something which has the appearance of the hues of a flame (top left panel)\n\n// But there are a couple of issues with this approach:\n\n// •\tThe resulting hue is dependent on the current exposure (an underexposed image will not \n//          be hue shifted, an overexposed image will hue shift earlier)\n// •\tBloom and other postprocessing colors are subtly incorrect (all the colors in the scene\n//          before tonemapping are different intensities of orange)\n// •\tThe colors chosen are arbitrary\n// •\tThe final colors are dependent on the tonemapping function\n// •\tThe final colors produced do not necessarily correspond to the colors of hot materials.\n\n// A bigger issue when transitioning to HDR is that the tonemapping function for HDR may not\n// match the SDR one producing different hues. Even worse, a hue preserving tonemapping function\n// can be used which does not alter the hues at all. This means our flame made from different\n// intensities of orange just ends up with different intensities of orange (top right panel)\n\n// This issue and a solution were mentioned in the GDC 2017 presentation \n// \"High Dynamic Range color grading and display in Frostbite\"\n//  by Alex Fry (from ~slide 35)\n// https://www.slideshare.net/DICEStudio/high-dynamic-range-color-grading-and-display-in-frostbite\n\n// The idea is that we can make fire / flame VFX more physically based by using black-body radiation\n// simulation to produce the hue.\n\n// A black body in physics is a substance that absorbs all light that falls on it (and so appears\n// black). https://en.wikipedia.org/wiki/Black-body_radiation A black body with a constant temperature \n// emits light with a spread of frequencies that depend only on the temperature. Hot things \n// glow \"red hot\" then as they get hotter they glow yellow, then \"white hot\", then blue. \n// The relationship between temperature and color is very specific.\n\n// Color Temperature measured as a temperature in Kelvin(K) is the color that a black body would \n// emit if it were heated to that temperature.\n\n// We can use this in our VFX system by modeling intensity and temperature and using this to lookup \n// the hue from a specified range in a precomputed blackbody radiation gradient texture (e.g. fire \n// would only use part of the orange section).\n \n// This technique works for fires, sparks, embers, muzzle flashes etc.\n\n// •\tNo longer dependent on current exposure\n// •\tBloom effects now take the correct color for different parts of the flame\n// •\tMore physically plausible results\n// •\tVery hot things transition from white hot to slightly blue\n// •\tEffects like sparks can change hue as they fade\n\n// Having this change to VFX looks fine with filmic or hue preserving tonemapping whereas not having \n// this change looks bad when we use hue preserving tonemapping (or give the tonemapper a different \n// range) so using this does not adversely affect the look if we still use filmic tonemapping.\n\n// A more generic take on this would be to provide an arbitrary selectable color gradient texture\n// for use on VFX with a blackbody gradient being just one option. This would allow blue flames \n// (which are produced by a chemical reaction and not just blackbody radiation) or less physically \n// based color gradient effects.\n\nvec3 BlackBody( float t )\n{\n    float h = 6.6e-34; // Planck constant\n    float k = 1.4e-23; // Boltzmann constant\n    float c = 3e8;// Speed of light\n\n    vec3 w = vec3( 610.0, 549.0, 468.0 ) / 1e9; // sRGB approximate wavelength of primaries\n    \n    // This would be more accurate if we integrate over a range of wavelengths\n    // rather than a single wavelength for r, g, b\n    \n    // Planck's law https://en.wikipedia.org/wiki/Planck%27s_law\n    \n    vec3 w5 = w*w*w*w*w;    \n    vec3 o = 2.*h*(c*c) / (w5 * (exp(h*c/(w*k*t)) - 1.0));\n\n    return o;\n}\n\n\n\nfloat fHuePreservingFactor = 1.0;\nfloat fDesaturateFactor = 0.8;\n\nconst float CtoK = 273.15;\n\nconst float fTempMinK = 600.0 + CtoK;\nconst float fTempMaxK = 5000.0 + CtoK;\n\nvec2 vFlameResolution = vec2( 320, 200 );\n\n\nvec3 SampleEnvironment( vec3 vDir )\n{\n    vec3 vEnvMap = texture(iChannel1, vDir).rgb;\n    vEnvMap = vEnvMap * vEnvMap;\n    \n    float kEnvmapExposure = 0.999;\n    vec3 vResult = -log2(1.0 - vEnvMap * kEnvmapExposure);    \n\n    return vResult;\n}\n\nfloat TonemapCompressRangeNorm( float x )\n{\n\treturn 1.0f - exp( -x );\n}\n\nfloat TonemapCompressRangeFloat( float x, float t )\n{\n\treturn ( x < t ) ? x : t + TonemapCompressRangeNorm( (x-t) / (1.0f - t) ) * (1.0f - t);\n}\n\nvec3 TonemapCompressRangeFloat3( vec3 x, float t )\n{\n\tx.r = TonemapCompressRangeFloat( x.r, t );\n\tx.g = TonemapCompressRangeFloat( x.g, t );\n\tx.b = TonemapCompressRangeFloat( x.b, t );\n\treturn x;\n}\n\n\nvec3 Tonemap( vec3 x )\n{\n    return TonemapCompressRangeFloat3( x, 0.6 );\n}\n\nfloat max3( vec3 vCol )\n{\n    //return dot( vCol, vLumaCoeff );\n    \n    return max( vCol.r, max( vCol.g, vCol.b ) );\n}\n\n/////////////////////\n// Font stuff\n/////////////////////\n\n\n// Font characters\nconst uint\n   \t// HTML Entity Names\n    \n    _SP = 0x20u,\t\t// ' '\n    _EXCL = 0x21u, \t\t// '!' \n    _QUOT = 0x22u, \t\t// '\"'\n    _NUM = 0x23u,  \t\t// '#'\n    _DOLLAR = 0x24u, \t// '$'\n    _PERCNT = 0x25u, \t// '%'\n    _AMP = 0x26u, \t\t// '&'\n    _APOS = 0x27u,\t\t// '''    \n    _LPAR = 0x28u, \t\t// '('\n    _RPAR= 0x29u, \t\t// ')'\n    _AST = 0x2Au,\t\t// '*'\n    _PLUS = 0x2Bu,\t\t// '+'\n    _COMMA = 0x2Cu,\t\t// ','    \n    _MINUS = 0x2Du,\t\t// '-'\n    _PERIOD = 0x2Eu,\t// '.'\n    _SOL = 0x2Fu,\t\t// '/' \n\n    _0 = 0x30u, _1 = 0x31u, _2 = 0x32u, _3 = 0x33u, _4 = 0x34u, \n    _5 = 0x35u, _6 = 0x36u, _7 = 0x37u, _8 = 0x38u, _9 = 0x39u, \n\n    _COLON = 0x3Au,\t\t// ':' \n    _SEMI = 0x3Bu,\t\t// ';' \n    _LT = 0x3Cu,\t\t// '<' \n    _EQUALS = 0x3Du,\t// '=' \n    _GT = 0x3Eu,\t\t// '>' \n    _QUEST = 0x3Fu,\t\t// '?' \n    _COMAT = 0x40u,\t\t// '@' \n    \n    _A = 0x41u, _B = 0x42u, _C = 0x43u, _D = 0x44u, _E = 0x45u, \n    _F = 0x46u, _G = 0x47u, _H = 0x48u, _I = 0x49u, _J = 0x4Au,\n    _K = 0x4Bu, _L = 0x4Cu, _M = 0x4Du, _N = 0x4Eu, _O = 0x4Fu,\n    _P = 0x50u, _Q = 0x51u, _R = 0x52u, _S = 0x53u, _T = 0x54u,\n    _U = 0x55u, _V = 0x56u, _W = 0x57u, _X = 0x58u, _Y = 0x59u,\n    _Z = 0x5Au,\n\n    _LSQB = 0x5Bu,\t\t// '[' \n    _BSOL = 0x5Cu,\t\t// '\\'\n    _RSQB = 0x5Du,\t\t// ']' \n    _CIRC = 0x5Eu,\t\t// '^' \n_LOWBAR = 0x5Fu,\t// '_' \n    _GRAVE = 0x60u,\t\t// '`' \n    \n    _a = 0x61u, _b = 0x62u, _c = 0x63u, _d = 0x64u, _e = 0x65u,\n    _f = 0x66u, _g = 0x67u, _h = 0x68u, _i = 0x69u, _j = 0x6Au,\n    _k = 0x6Bu, _l = 0x6Cu, _m = 0x6Du, _n = 0x6Eu, _o = 0x6Fu,\n    _p = 0x70u, _q = 0x71u, _r = 0x72u, _s = 0x73u, _t = 0x74u,\n    _u = 0x75u, _v = 0x76u, _w = 0x77u, _x = 0x78u, _y = 0x79u,\n    _z = 0x7Au,\n\n\t_LCUB = 0x7Bu,\t\t// '{'\n    _VERBAR = 0x7Cu,\t// '|'\n    _RCUB = 0x7Du,\t\t// '}'\n    _TILDE = 0x7Eu,\t\t// '~'\n    \n        \n    _EOL = 0x1000u, \t// End of Line - Carriage Return & Line Feed    \n    _BOLDON = 0x1001u,\t// Special\n    _BOLDOFF = 0x1002u,\t// Special\n    _ITALON = 0x1003u,\t// Special\n    _ITALOFF = 0x1004u\t// Special\n;\n\n\nvoid PrintChar( inout vec2 vOutCharUV, vec2 vUV, uint uChar )\n{\n    if ( any( lessThan( vUV, vec2(0) ) ) ) return;\n    if ( any( greaterThanEqual( vUV, vec2(1) ) ) ) return;\n        \n    uint uCharX = uChar % 16u;\n    uint uCharY = uChar / 16u;\n    \n    vec2 vCharPos = vec2(uCharX, uCharY) / 16.0;\n    vec2 vCharSize = vec2(1,1) / 16.0;\n    \n    vec2 vInset = vec2( 0.25, 0.0 );\n    \n    if ( uChar == 87u || uChar == 119u )\n        vInset.x -= 0.05; // thinner 'W'\n    \n    vCharPos += vCharSize * vInset;\n    \n    vCharSize *= 1.0 - vInset * 2.0;\n    \n    vOutCharUV = vUV * vCharSize + vCharPos;    \n}\n\nstruct TextString\n{\n    int firstChar;\n    int charCount;\n};\n\nstruct TextStrings\n{\n    TextString strings[6];\n    uint characters[47];\n};\n    \nconst TextStrings textStrings = TextStrings (\n   TextString[6](\n       \tTextString( 0, 6 ),\n       \tTextString( 6, 14 ),\n       \tTextString( 20, 8 ),\n       \tTextString( 28, 9 ),\n        TextString( 37, 7 ),\n       \tTextString( 44, 3 )\n       ),\n       \n   uint[47] ( _F, _i, _l, _m, _i, _c, \n              _H, _u, _e, _SP, _P, _r, _e, _s, _e, _r, _v, _i, _n, _g,\n            _C, _o, _n, _s, _t, _a, _n, _t,\n            _B, _l, _a, _c, _k, _b, _o, _d, _y,\n            _P, _a, _l, _e, _t, _t, _e,\n            _H, _u, _e)\n);\n    \nvoid PrintString( inout vec2 vCharUV, vec2 vFontUV, int stringIndex )\n{\n    int lineCharPos = int(floor(vFontUV.x));\n    int lineIndex = int(floor(vFontUV.y));\n    \n\tif ( lineIndex != 0 )\n\t\treturn;\n    \n    TextString currString = textStrings.strings[stringIndex];\n    \n\tif ( lineCharPos < 0 || lineCharPos >= currString.charCount )\n        return;\n    \n    int charIndex = currString.firstChar + lineCharPos;\n    \n    uint char = textStrings.characters[ charIndex ];\n    \n    PrintChar( vCharUV, fract(vFontUV), char );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 vUV = fragCoord.xy / iResolution.xy;\n    ivec2 vQuadrant = ivec2( floor( vUV * 2.0 ) );\n    int iQuadrant = vQuadrant.x + vQuadrant.y * 2;\n    \n    vec2 vQuadrantUV = fract( vUV * 2.0 ) * 1.2 - 0.1;\n    \n    float fIntensity = texture( iChannel0, vQuadrantUV * vFlameResolution / iChannelResolution[0].xy ).r;    \n\n\tvec3 vCol = vec3(0);\n    \n    // Draw Intensity Color Bar\n    if ( vQuadrantUV.y < 0.1 )\n    {\n        fIntensity = vQuadrantUV.x;\n    }\n    \n    float fFlameLinear = -log2( 1.0 - fIntensity * fIntensity * 0.999);\n    \n    float fFlameBrightness = fFlameLinear * 10.0;\n    \n    vec3 vFlameColor = vec3(0);\n    vec3 vFlame = vec3(0);\n    if ( vQuadrant.y > 0 )\n    {\n        // Constant color        \n        vFlameColor = normalize(vec3(1.0, 0.25, 0.01));\n    }\n    else\n    {\n        // blackbody color\n        float fTemperature = fFlameLinear * (fTempMaxK - fTempMinK) + fTempMinK;\n        vFlameColor = normalize( BlackBody( fTemperature ) );\n\n        // Hack blue flame color (not based on black body equations)\n        //vFlameColor = 1.0 - exp( -fTemperature * (vec3(.0002, .0004, .02)));        \n    }    \n        \n    vec3 vEnvironment = SampleEnvironment( vec3(vQuadrantUV.x - 0.5, vQuadrantUV.y - 0.9, 0.8) ) * 0.3;\n    //vEnvironment *= 0.0f;\n    vCol = vEnvironment + vFlameColor * fFlameBrightness;    \n\n    float fExposure = 1.0f;\n    if ( iMouse.z > 0.0 )\n    {\n    \tfExposure *= 10.0 * iMouse.x / iResolution.x;\n    }  \n    \n    //fExposure = 2.0;\n    \n    vCol *= fExposure;\n\n    // Desaturate bright colors\n    float L = max3(vCol);\n    float fDesaturateStrength = 0.01;\n    if ( vQuadrant.x > 0 )\n    {\n        // Hue preserving tonemap\n        fDesaturateStrength = 0.2;\n    }\n    float fDesaturate = 1.0 - exp2( L * -fDesaturateStrength);\n    vCol = mix( vCol, vec3(L), fDesaturate * fDesaturateFactor );            \n    \n    if ( vQuadrant.x > 0 )\n    {\n        // Hue preserving tonemap\n        \n        //if ( fLuma > 0.0 )\n        {            \n\t        float fLuma = max3(vCol);\n            vec3 vHue = vCol / fLuma;\n            \n            vec3 vHueShifted = Tonemap( vCol );\n            \n            float vTonemapLuma = Tonemap( vec3( fLuma ) ).x;            \n            vec3 vHuePreserved = vHue * vTonemapLuma;\n            \n            vCol = mix( vHueShifted, vHuePreserved, fHuePreservingFactor);\n        }\n    }\n    else\n    {\n        // Filmic tonemap\n\t    vCol = Tonemap( vCol );\n    }\n    \n    // Output gamma\n    vCol = pow( vCol, vec3(1.0 / 2.4) );\n    \n    \n    if ( any( lessThan( vQuadrantUV, vec2(0) ) ) || any( greaterThan( vQuadrantUV, vec2(1) ) ) )\n    {\n        vCol = vec3(0.0, 0.0, 0.0);\n    }       \n    \n    vec2 vFontUV = fragCoord / iResolution.xy;    \n    vFontUV.y = 1.0 - vFontUV.y;\n    vFontUV -= 0.5;\n    \n    vFontUV *= 15.0;\n    vFontUV.x *= 3.0;\n    \n    vec2 vCharUV = vec2(0);\n    \n    PrintString( vCharUV, vFontUV - vec2(-14, -0.5), 0 );\n    PrintString( vCharUV, vFontUV - vec2(4, -0.5), 1 );\n\n    PrintString( vCharUV, vFontUV - vec2(-4, -5), 2 );\n    PrintString( vCharUV, vFontUV - vec2(-1.5, -4), 5 );\n    PrintString( vCharUV, vFontUV - vec2(-4.5, 4), 3 );\n    PrintString( vCharUV, vFontUV - vec2(-3.5, 5), 4 );\n    float fFont = textureLod( iChannel2, vCharUV, 0.0 ).w;    \n\n    float fOutline = clamp ( (0.56 - fFont) * 20.0, 0.0, 1.0 );\n    float fMain = clamp ( (0.52 - fFont) * 20.0, 0.0, 1.0 );\n    \n    vCol = mix( vCol, vec3(0), fOutline );\n    vCol = mix( vCol, vec3(1,1,1), fMain );    \n    \n    //vCol = vec3(fIntensity);\n    \n\tfragColor = vec4(vCol,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "vec2 vFlameResolution = vec2( 320, 200 );\n\nfloat SampleBackbuffer( vec2 vCoord )\n{\n    if ( any( greaterThanEqual( vCoord, vFlameResolution ) ) )\n    {\n        return 0.0;\n    }\n\n    if ( vCoord.x < 0.0 )\n    {\n        return 0.0;\n    }\n    \n\treturn clamp( texture(iChannel0, vCoord / iResolution.xy).r, 0.0, 1.0 );\n}\n \n// Average pixels surrounding vCoord\nfloat GetIntensityAverage( vec2 vCoord )\n{\n\tfloat fDPixel = 1.0;\n\t\n\tfloat fResult \t= SampleBackbuffer( vCoord + vec2(0.0, 0.0) )\n\t\t\t+ SampleBackbuffer( vCoord + vec2( fDPixel, 0.0) )\n\t\t      \t+ SampleBackbuffer( vCoord + vec2(-fDPixel, 0.0) )\n\t\t\t+ SampleBackbuffer( vCoord + vec2(0.0,  fDPixel) )\n\t\t\t+ SampleBackbuffer( vCoord + vec2(0.0, -fDPixel) );\n\t\n\treturn fResult / 5.0;       \n}\n \n\nvec2 GetIntensityGradient(vec2 vCoord)\n{\n\tfloat fDPixel = 1.0;\n\t\n\tfloat fPX = SampleBackbuffer(vCoord + vec2( fDPixel, 0.0));\n\tfloat fNX = SampleBackbuffer(vCoord + vec2(-fDPixel, 0.0));\n\tfloat fPY = SampleBackbuffer(vCoord + vec2(0.0,  fDPixel));\n\tfloat fNY = SampleBackbuffer(vCoord + vec2(0.0, -fDPixel));\n\t\n\treturn vec2(fPX - fNX, fPY - fNY);              \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n#if 0\n    // pause update\n    fragColor = texelFetch( iChannel0, ivec2(fragCoord), 0 );\n    return;\n#endif    \n    \n\tvec2 vCoord = fragCoord.xy;\n\n    if ( any( greaterThanEqual( vCoord, vFlameResolution ) ) )\n    {\n        fragColor = vec4(0);\n        return;\n    }\n\n    \n\t// get the intensity at the current pixel\n\tfloat fCurrPixelValue = SampleBackbuffer(vCoord);\n\t\n\tvec2 vFlamePos = vCoord;\n    vec2 vFlameUV = vFlamePos / vFlameResolution;\n\t\n\t// move 'down' more the 'hotter' the pixel we sampled was\n\t// this is the main trick to get flame effect looking interesting\n\tvFlamePos.y -= fCurrPixelValue * 32.0;\n\t\n\t// always sample at least one pixel below\n\tvFlamePos.y -= 1.0;\n\t\n\t// move down the intensity gradient\n\t// (not really necessary for effect but gives the flames some sideways movement + a better shape)\n\tvFlamePos -= GetIntensityGradient(vCoord) * 5.0; \n\t\n\t// average the surrounding pixels at the new position\n\tfloat fIntensity = GetIntensityAverage(vFlamePos);\n\t\n\t// fade\n\tfIntensity *= 0.95f;\n    //fIntensity -= 0.01f;\n\t\n\t// \"random\" junk in the bottom few pixels\n\tif(gl_FragCoord.y < 2.0)\n\t{\n        if ( vFlameUV.x > 0.4 && vFlameUV.x < 0.6)\n        {\n\t\t\tfIntensity = fract(sin(fract(iTime + fragCoord.x * 124.1231243) * 32.3242 + sin(iTime * 23.234234 + fragCoord.x * 1.451243)));\n        }\n\t}\n\t\n    fragColor = vec4(fIntensity);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

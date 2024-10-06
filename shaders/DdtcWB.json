@@ -1,0 +1,53 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1695413670",
+            "description": "Sphere projection (equirectangular projection) with ray casting.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DdtcWB",
+            "likes": 5,
+            "name": "Simple Sphere projection",
+            "published": 3,
+            "tags": [
+                "raycasting",
+                "sphere",
+                "projection"
+            ],
+            "usePreview": 1,
+            "username": "jsulpis",
+            "viewed": 291
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================================================//\n//\n// Simple Sphere projection\n// by Julien Sulpis (https://twitter.com/jsulpis)      \n// https://www.shadertoy.com/view/DdtcWB\n//\n//=======================================================================================//\n\n\n// Sphere params\n#define SPHERE_POSITION vec3(0, 1, 6)\n#define SPHERE_RADIUS 2.\n#define ROTATION_SPEED .3\n#define INFINITY 1e10\n#define PI acos(-1.)\n\n//===============================================//\n//  Generic utilities stolen from smarter people //\n//===============================================//\n\n// https://iquilezles.org/articles/intersectors/\n// sphere of size ra centered at point ce\nfloat sphIntersect(in vec3 ro, in vec3 rd, in vec3 ce, float ra) {\n  vec3 oc = ro - ce;\n  float b = dot(oc, rd);\n  float c = dot(oc, oc) - ra * ra;\n  float h = b * b - c;\n  if(h < 0.0)\n    return INFINITY; // no intersection\n  return -b - sqrt(h);\n}\n\n// Inigo Quilez - https://www.shadertoy.com/view/4djSDy\nfloat sphOcclusion(in vec3 pos, in vec3 nor, in vec3 origin, in float radius) {\n  vec3 di = origin - pos;\n  float l = length(di);\n  float nl = dot(nor, di / l);\n  float h = l / radius;\n  float h2 = h * h;\n  float k2 = 1.0 - h2 * nl * nl;\n\n  // above/below horizon\n  // EXACT: Quilez - https://iquilezles.org/articles/sphereao\n  float res = max(0.0, nl) / h2;\n\n  // intersecting horizon \n  if(k2 > 0.001) {\n    // EXACT : Lagarde/de Rousiers - https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf\n    res = nl * acos(-nl * sqrt((h2 - 1.0) / (1.0 - nl * nl))) - sqrt(k2 * (h2 - 1.0));\n    res = res / h2 + atan(sqrt(k2 / (h2 - 1.0)));\n    res /= 3.141593;\n  }\n\n  return res;\n}\n\nmat3 rotateY(float angle) {\n  float c = cos(angle);\n  float s = sin(angle);\n  return mat3(\n      vec3(c, 0, s),\n      vec3(0, 1, 0),\n      vec3(-s, 0, c)\n  );\n}\n\n//================//\n//  Project code  //\n//================//\n\nstruct Hit {\n  float dist;\n  vec3 color;\n  vec3 normal;\n};\n\nvec2 sphereProjection(vec3 p, vec3 origin) {\n  vec3 dir = normalize(p - origin);\n  float longitude = atan(dir.x, dir.z); // ]-PI, PI]\n  float latitude = asin(dir.y); // [-PI/2, PI/2]\n\n  return vec2(\n    (longitude + PI) / (2. * PI), // ]0, 1]\n    (latitude + PI / 2.) / PI // [0, 1]\n  );\n}\n\nfloat sphereDist(in vec3 ro, in vec3 rd, out vec2 textureCoord) {\n  float simpleSphereDist = sphIntersect(ro, rd, SPHERE_POSITION, SPHERE_RADIUS);\n  vec3 intersection = ro + simpleSphereDist * rd;\n  vec3 intersectionWithRotation = (intersection - SPHERE_POSITION) * rotateY(iTime * ROTATION_SPEED) + SPHERE_POSITION;\n  \n  textureCoord = sphereProjection(intersectionWithRotation, SPHERE_POSITION); \n\n  float bump = length(vec3(texture(iChannel0, textureCoord))) * .02;\n  float dist = sphIntersect(ro, rd, SPHERE_POSITION, SPHERE_RADIUS + bump);\n  \n  return dist;\n}\n\nfloat sphereDist(in vec3 ro, in vec3 rd) {\n  vec2 tmp = vec2(0.);\n  return sphereDist(ro, rd, tmp);\n}\n\nvec3 getNormal(vec3 p) {\n  vec3 rd = SPHERE_POSITION - p;\n  float dist = sphereDist(p, rd);\n  vec2 e = vec2(.001, 0);\n\n  vec3 normal = dist - vec3(\n      sphereDist(p - e.xyy, rd), \n      sphereDist(p - e.yxy, rd), \n      sphereDist(p + e.yyx, rd)\n  );\n  return normalize(normal);\n}\n\nfloat checker(vec2 coord) {\n  float size = 6.;\n  float verticalStripes = step(fract(size * 2. * coord.x), 0.5) - 0.5;\n  float horizontalStripes = step(fract(size * coord.y), 0.5) - 0.5;\n  return step(verticalStripes * horizontalStripes, 0.0);\n}\n\nHit interspectObject(in vec3 ro, in vec3 rd) {\n  vec2 textureCoord = vec2(0.);\n  float dist = sphereDist(ro, rd, textureCoord);\n  vec3 intersection = ro + dist * rd;\n  \n  vec3 normal = getNormal(intersection);\n  vec3 color = vec3(texture(iChannel0, textureCoord));\n  //color = vec3(checker(textureCoord) + .03);\n  \n  float sphereAO = sphOcclusion(intersection, normal, SPHERE_POSITION, SPHERE_RADIUS);\n  color *= vec3(pow(sphereAO, 1.5));\n\n  return Hit(dist, color, normal);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 uv = (fragCoord / iResolution.xy - 0.5) * iResolution.xy / iResolution.y;\n\n  vec3 ro = vec3(0, 1, 0);\n  vec3 rd = normalize(vec3(uv, 1));\n\n  // background\n  vec3 color = vec3(0.01);\n\n  // sphere\n  Hit hit = interspectObject(ro, rd);\n\n  color = mix(hit.color, color, step(INFINITY, hit.dist));\n\n  // gamma\n  color = pow(color, vec3(1.0 / 2.2));\n\n  fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

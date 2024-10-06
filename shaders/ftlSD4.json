@@ -1,0 +1,134 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1625711236",
+            "description": "Turns out creating the memory is less efficient",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ftlSD4",
+            "likes": 7,
+            "name": "attempting ocean 60fps",
+            "published": 3,
+            "tags": [
+                "sea",
+                "sun",
+                "clouds",
+                "fbm",
+                "water",
+                "cirrus"
+            ],
+            "usePreview": 0,
+            "username": "jhylands",
+            "viewed": 531
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n\tfragColor = texture(iChannel0, uv);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/*\nReal time PBR Volumetric Clouds by robobo1221.\nSingle scattering\nAlso includes volumetric light.\nhttp://shadertoy.com/user/robobo1221\n\nFirst ever somewhat PBR effect I decided to work on.\nIt uses the same algorithm to calculate the worldPosition as in: https://www.shadertoy.com/view/lstfR7\n\nFeel free to fork and edit it. (Credit me please.)\nHope you enjoy!\n*/\n\n#define CLOUDS 0\n#define WAVE_DETAIL 1\n#define cloudSpeed 0.02\n#define cloudHeight 3000.0\n#define cloudThickness 1000.0\n#define cloudDensity 0.01\n\n#define fogDensity 0.0001\n\n#define volumetricCloudSteps 32\t\t\t//Higher is a better result with rendering of clouds.\n#define volumetricLightSteps 1\t\t\t//Higher is a better result with rendering of volumetric light.\n\n#define cloudShadowingSteps 1\t\t\t//Higher is a better result with shading on clouds.\n\n\n#define rayleighCoeff (vec3(0.27, 0.5, 1.0) * 1e-5)\t//Not really correct\n#define mieCoeff vec3(0.5e-6)\t\t\t\t\t\t//Not really correct\n\nconst float sunBrightness = 10.0;\n\n#define earthRadius 6371000.0\nfloat waterlevel = 70.0;        // height of the water\nfloat wavegain   = 1.0;       // change to adjust the general water wave level\nfloat large_waveheight = 1.0; // change to adjust the \"heavy\" waves (set to 0.0 to have a very still ocean :)\nconst float small_waveheight = 1.0; // change to adjust the small waves\n\n\n\n///////////////////////////////////////////////////////////////////////////////////\n\n#define d0(x) (abs(x)+ 1e-8 )\n#define d02(x) (abs(x) + 1e-3)\n\nconst vec3 totalCoeff = rayleighCoeff + mieCoeff;\n\nvec3 scatter(vec3 coeff, float depth){\n\treturn coeff * depth;\n}\n\nvec3 absorb(vec3 coeff, float depth){\n\treturn exp2(scatter(coeff, -depth));\n}\n\nfloat calcParticleThickness(float depth){\n   \t\n    depth = depth * 2.0;\n    depth = max(depth + 0.01, 0.01);\n    depth = 1.0 / depth;\n    \n\treturn 100000.0 * depth;   \n}\n\nfloat calcParticleThicknessH(float depth){\n   \t\n    depth = depth * 2.0 + 0.1;\n    depth = max(depth + 0.01, 0.01);\n    depth = 1.0 / depth;\n    \n\treturn 100000.0 * depth;   \n}\n\nfloat calcParticleThicknessConst(const float depth){\n    \n\treturn 100000.0 / max(depth * 2.0 - 0.01, 0.1);   \n}\n\nfloat rayleighPhase(float x){\n\treturn 0.375 * (1.0 + x*x);\n}\n\nfloat hgPhase(float x, float g)\n{\n    float g2 = g*g;\n\treturn 0.25 * ((1.0 - g2) * pow(1.0 + g2 - 2.0*g*x, -1.5));\n}\n\nfloat miePhaseSky(float x, float depth)\n{\n \treturn hgPhase(x, exp2(-0.000003 * depth));\n}\n\nfloat powder(float od)\n{\n\treturn 1.0 - exp2(-od * 2.0);\n}\n\nfloat calculateScatterIntergral(float opticalDepth, float coeff){\n    float a = -coeff * rLOG2;\n    float b = -1.0 / coeff;\n    float c =  1.0 / coeff;\n\n    return exp2(a * opticalDepth) * b + c;\n}\n\nvec3 calculateScatterIntergral(float opticalDepth, vec3 coeff){\n    vec3 a = -coeff * rLOG2;\n    vec3 b = -1.0 / coeff;\n    vec3 c =  1.0 / coeff;\n\n    return exp2(a * opticalDepth) * b + c;\n}\n\n\nvec3 calcAtmosphericScatter(positionStruct pos, out vec3 absorbLight){\n    const float ln2 = log(2.0);\n    \n    float lDotW = dot(pos.sunVector, pos.worldVector);\n    float lDotU = dot(pos.sunVector, vec3(0.0, 1.0, 0.0));\n    float uDotW = dot(vec3(0.0, 1.0, 0.0), pos.worldVector);\n    float m = 1.;\n    if(uDotW<0.){\n     m = 0.5*(1.+abs(uDotW));\n     uDotW*=-1.;\n     \n    }\n    \n\tfloat opticalDepth = calcParticleThickness(uDotW);\n    float opticalDepthLight = calcParticleThickness(lDotU);\n    \n    vec3 scatterView = scatter(totalCoeff, opticalDepth);\n    vec3 absorbView = absorb(totalCoeff, opticalDepth);\n    \n    vec3 scatterLight = scatter(totalCoeff, opticalDepthLight);\n         absorbLight = absorb(totalCoeff, opticalDepthLight);\n    \t \n    vec3 absorbSun =  abs(absorbLight - absorbView) / d0((scatterLight - scatterView) * ln2);\n    \n    vec3 mieScatter = scatter(mieCoeff, opticalDepth) * miePhaseSky(lDotW, opticalDepth);\n    vec3 rayleighScatter = scatter(rayleighCoeff, opticalDepth) * rayleighPhase(lDotW);\n    \n    vec3 scatterSun = mieScatter + rayleighScatter;\n    \n    vec3 sunSpot = smoothstep(0.9996, 0.99993, lDotW) * absorbView * sunBrightness;\n    \n    return (scatterSun * absorbSun + sunSpot) * sunBrightness * m;\n}\n\nvec3 calcAtmosphericScatterTop(positionStruct pos){\n    const float ln2 = log(2.0);\n    \n    float lDotU = dot(pos.sunVector, vec3(0.0, 1.0, 0.0));\n    \n\tfloat opticalDepth = calcParticleThicknessConst(2.5);\n    float opticalDepthLight = calcParticleThickness(lDotU);\n    \n    vec3 scatterView = scatter(totalCoeff, opticalDepth);\n    vec3 absorbView = absorb(totalCoeff, opticalDepth);\n    \n    vec3 scatterLight = scatter(totalCoeff, opticalDepthLight);\n    vec3 absorbLight = absorb(totalCoeff, opticalDepthLight);\n    \n    vec3 absorbSun = d02(absorbLight - absorbView) / d02((scatterLight - scatterView) * ln2);\n    \n    vec3 mieScatter = scatter(mieCoeff, opticalDepth) * 0.25;\n    vec3 rayleighScatter = scatter(rayleighCoeff, opticalDepth) * 0.375;\n    \n    vec3 scatterSun = mieScatter + rayleighScatter;\n    \n    return (scatterSun * absorbSun) * sunBrightness;\n}\n\nfloat Get3DNoise(vec3 pos) \n{\n    //return 1.;\n    float p = floor(pos.z);\n    float f = pos.z - p;\n    \n    const float invNoiseRes = 1.0 / 64.0;\n    \n    float zStretch = 17.0 * invNoiseRes;\n    \n    vec2 coord = pos.xy * invNoiseRes + (p * zStretch);\n    \n    vec2 noise = vec2(texture(iChannel3, coord).x,\n\t\t\t\t\t  texture(iChannel3, coord + zStretch).x);\n    \n    return mix(noise.x, noise.y, f);\n}\n\nfloat getClouds(vec3 p)\n{\n    p = vec3(p.x, length(p + vec3(0.0, earthRadius, 0.0)) - earthRadius, p.z);\n\n    \n    \n    float time = iTime * cloudSpeed;\n    vec3 movement = vec3(time, 0.0, time);\n    \n    vec3 cloudCoord = (p * 0.001) + movement;\n    vec4 noise_weight = vec4(0.5, 0.25, 0.125, 0.0625);\n\tvec4 noise = vec4(\n            Get3DNoise(cloudCoord),\n    \t  Get3DNoise(cloudCoord * 2.0 + movement),\n    \t  Get3DNoise(cloudCoord * 7.0 - movement),\n    \t  Get3DNoise((cloudCoord + movement) * 16.0));\n        \n    //noise *= 1./0.8;\n    const float top = 0.004;\n    const float bottom = 0.01;\n    \n    float horizonHeight = p.y - cloudMinHeight;\n    float treshHold = (1.0 - exp2(-bottom * horizonHeight)) * exp2(-top * horizonHeight);\n    \n    float clouds = smoothstep(0.55, 0.6, dot(noise, noise_weight));\n          clouds *= treshHold;\n    \n    return clouds * cloudDensity;\n}\n\n\nfloat getSunVisibility(vec3 p, positionStruct pos)\n{\n\tconst int steps = cloudShadowingSteps;\n    const float rSteps = cloudThickness / float(steps);\n    \n    vec3 increment = pos.sunVector * rSteps;\n    vec3 position = increment * 0.5 + p;\n    \n    float transmittance = 0.0;\n    \n    for (int i = 0; i < steps; i++, position += increment)\n    {\n\t\ttransmittance += getClouds(position);\n    }\n    \n    return exp2(-transmittance * rSteps);\n}\n\nfloat phase2Lobes(float x)\n{\n    const float m = 0.6;\n    const float gm = 0.8;\n    \n\tfloat lobe1 = hgPhase(x, 0.8 * gm);\n    float lobe2 = hgPhase(x, -0.5 * gm);\n    \n    return mix(lobe2, lobe1, m);\n}\n\nvec3 getVolumetricCloudsScattering(\n    float opticalDepth, float phase, vec3 p, vec3 sunColor, vec3 skyLight, positionStruct pos)\n{\n    float intergal = calculateScatterIntergral(opticalDepth, 1.11);\n    \n    float beersPowder = powder(opticalDepth * log(2.0));\n    \n\tvec3 sunlighting = (sunColor * getSunVisibility(p, pos) * beersPowder) * phase * hPi * sunBrightness;\n    vec3 skylighting = skyLight * 0.25 * rPi;\n    \n    return (sunlighting + skylighting) * intergal * pi;\n}\n\nfloat getHeightFogOD(float height)\n{\n\tconst float falloff = 0.001;\n    \n    return exp2(height * falloff) * fogDensity;\n}\n\n\nvec3 calculateVolumetricClouds(positionStruct pos, vec3 color, float dither, vec3 sunColor)\n{\n\tconst int steps = volumetricCloudSteps;\n    const float iSteps = 1.0 / float(steps);\n    \n    if (pos.worldVector.y < 0.0)\n       return color;\n    \n    float bottomSphere = rsi(vec3(0.0, 1.0, 0.0) * earthRadius, pos.worldVector, earthRadius + cloudMinHeight).y;\n    float topSphere = rsi(vec3(0.0, 1.0, 0.0) * earthRadius, pos.worldVector, earthRadius + cloudMaxHeight).y;\n    \n    vec3 startPosition = pos.worldVector * bottomSphere;\n    vec3 endPosition = pos.worldVector * topSphere;\n    \n    vec3 increment = (endPosition - startPosition) * iSteps;\n    vec3 cloudPosition = increment * dither + startPosition;\n    \n    float stepLength = length(increment);\n    \n    vec3 scattering = vec3(0.0);\n    float transmittance = 1.0;\n    \n    float lDotW = dot(pos.sunVector, pos.worldVector);\n    float phase = phase2Lobes(lDotW);\n    \n    vec3 skyLight = calcAtmosphericScatterTop(pos);\n    \n    for (int i = 0; i < steps; i++, cloudPosition += increment)\n    {\n        float opticalDepth = getClouds(cloudPosition) * stepLength;\n        \n        if (opticalDepth <= 0.0)\n            continue;\n        \n\t\tscattering += getVolumetricCloudsScattering(opticalDepth, phase, cloudPosition, sunColor, skyLight, pos) * transmittance;\n        transmittance *= exp2(-opticalDepth);\n    }\n    \n    return mix(color * transmittance + scattering, color, clamp(length(startPosition) * 0.00001, 0.0, 1.0));\n}\n\nvec3 robobo1221Tonemap(vec3 color)\n{\n    #define rTOperator(x) (x / sqrt(x*x+1.0))\n\n    float l = length(color);\n\n    color = mix(color, color * 0.5, l / (l+1.0));\n    color = rTOperator(color);\n\n    return color;\n}\nfloat voronoise( in vec2 p, in float t_metric)\n{\n    const vec2 temp = 0.5 - 0.5 * -1.8*vec2(1.0,0.5) ;\n    const float u = temp.x;\n    const float v = temp.y;\n\tfloat k = 1.0+63.0*pow(1.0-v,6.0);\n    \n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    vec2 t = 10.*vec2(cos(0.001*t_metric), cos(0.002*t_metric+0.34));\n\tvec2 a = vec2(0.0,0.0);\n    const int stepr = 2;\n    for( int y=-stepr; y<=stepr; y++ )\n    for( int x=-stepr; x<=stepr; x++ )\n    {\n        vec2  g = vec2( x, y );\n\t\tvec3  o = texture(iChannel1, (i + g)* 0.5/64.+ 0.5*t).rgb;\n\t\tvec2  d = g - f + o.xy;\n\t\tfloat w = pow( 1.0-smoothstep(0.0,1.414,length(d)), k );\n\t\ta += vec2(o.z*w,w);\n    }\n    return a.x/a.y;\n}\nvec3 calcFlatClouds(positionStruct pos,in vec3 color, in vec3 sunColor)\n{\n    float distance_metric = tan(0.4*3.1415926*length(pos.worldVector.xz))+1.;\n    vec2 p = distance_metric*pos.worldVector.xz*24.;\n    float time_metric = 0.1*(iTime+0.);\n\n    vec2 un = vec2(0.01,0.00432)*p;\n    float mixer = .8-length(sin(un+vec2(0.+0.005*time_metric))+sin(un+vec2(2.+0.005*time_metric)));\n\t\n    return mix(color,10.*sunColor,smoothstep(0.9-smoothstep(0.,1.3,abs(mixer)),1.1,mix(voronoise(p*10., 0.),voronoise(p, time_metric),0.7)));\n}\nvec3 getSky(in positionStruct pos )\n{\n    \n    float dither = bayer16(pos.texcoord*iResolution.xy);\n    \n    vec3 lightAbsorb = vec3(0.0);\n\n    vec3 color = vec3(0.0);\n         color = calcAtmosphericScatter(pos, lightAbsorb);\n#if CLOUDS\n         color = calcFlatClouds(pos, color, lightAbsorb);\n         color = calculateVolumetricClouds(pos, color, dither, lightAbsorb);\n#endif\n\n    return color;\n}\n\nfloat hash( vec2 p ) {\n    return fract(sin(dot(p,vec2(1177.1,2711.7)))*43758.5453123);\n}\n\nfloat noise( in vec2 p ) {\n    vec2 i = floor( p );\n    vec2 f = fract( p );\t\n\tvec2 u = f * f * (3.0-2.0 * f);\n    return mix( mix( hash( i + vec2(0.0,0.0) ), \n                     hash( i + vec2(1.0,0.0) ), u.x),\n                mix( hash( i + vec2(0.0,1.0) ), \n                     hash( i + vec2(1.0,1.0) ), u.x), u.y);\n}\n\n\nfloat wv(in vec2 uv, vec2 d, float t, float A)\n{\n    return sin ( dot(d, uv) / 4.0 + t) * A;\n}\n\n// water\nfloat fbm(in vec2 uv, float lod)\n{\t\n    float f =  textureLod(iChannel2, uv, lod).r * 0.5;\n    \t  f += textureLod(iChannel2, uv*2.0, lod).r * 0.5*0.5;\n    \t  f += textureLod(iChannel2, uv*4.0, lod).r * 0.5*0.5*0.5;\n    \t  f += textureLod(iChannel2, uv*8.0, lod).r * 0.5*0.5*0.5*0.5;\n\n    f = f*f*f*f;\n    return f;\n}\nconst mat2 m2 = mat2(1.6,-1.2,1.2,1.6);\nfloat noiseo(vec2 p)\n{\n  return textureLod(iChannel0,p*vec2(1./256.),0.0).x;\n}\n// Fractional Brownian motion\nfloat fbm( vec2 p )\n{\n  float f = 0.5000*noiseo( p ); p = m2*p;\n  f += 0.2500*noiseo( p ); p = m2*p;\n  f += 0.1666*noiseo( p ); p = m2*p;\n  f += 0.0834*noiseo( p );\n  return f;\n}\nfloat wavesLo(const in vec3 rp, float t, float A)\n{\n    vec2 p = rp.xz*100.1;\n    \n  vec2 shift2 = 0.001*vec2( iTime*190.0*2.0, -iTime*130.0*2.0 );\n    \n  // coarse crossing 'ocean' waves...\n  float wave = 0.0;\n  wave += sin(p.x*0.021  + shift2.x)*4.5;\n  wave += sin(p.x*0.0172+p.y*0.010 + shift2.x*1.121)*4.0;\n  wave -= sin(p.x*0.00104+p.y*0.005 + shift2.x*0.121)*4.0;\n  // ...added by some smaller faster waves...\n  wave += sin(p.x*0.02221+p.y*0.01233+shift2.x*3.437)*5.0;\n  wave += sin(p.x*0.03112+p.y*0.01122+shift2.x*4.269)*2.5 ;\n  wave *= 0.01;//large_waveheight;\n  //wave -= fbm(p*0.004-shift2*.5)*small_waveheight*24.;\n  return wave;\n}\n\n// high detail waves\nconst mat2 m_0 = mat2(1.6,-1.2,1.2,1.6)*0.9331;\nfloat waves(const in vec3 rp, float t, float A)\n{\n#if WAVE_DETAIL\n    const float small_waveheight = 0.015;\n     vec2 shift1 = 0.3*0.001*vec2( iTime*160.0*2.0, iTime*120.0*2.0 );\n     mat4x2 shift2 = mat4x2(shift1, shift1, shift1, shift1);\n     const mat4x2 shiftmul = mat4x2(\n         vec2(1.),\n         vec2(1.841),\n         vec2(1.841)*vec2(1.841),\n         vec2(1.841)*vec2(1.841)*vec2(1.841));\n    shift2 = matrixCompMult(shift2, shiftmul);\n    vec2 p = rp.xz;\n  mat4x2 pesa = mat4x2(p, p*m2, p*(m2*m2), p*(m2*m2*m2));\n  const float amp = 6.*small_waveheight;\n  vec4 noisevals = vec4(0.);\n  const vec4 amps = vec4(amp, amp*.51, amp*(.51*.51),amp*(.51*.51*.51));\n  mat4x2 key = 1.1*pesa + shift2;\n  for (int i=0; i<4; i++)\n  {\n    noisevals[i] = noise(key[i]);\n  }\n  float wave = dot(abs(sin((noisevals-.5)*3.14))*amps, vec4(1.));\n    return wavesLo(rp, t, A) - wave;// +w3+w4+w7+w8+w5+w6;\n#else\n    return wavesLo(rp, t, A);\n#endif\n}\n\nfloat mapLo(in vec3 rp)\n{\n    return rp.y - wavesLo(rp, 2.0+iTime*.5, .04);\n}\n\n\nfloat map(in vec3 rp)\n{\n    return rp.y - waves(rp, 2.0+iTime*.5, .04);\n}\n\n\nvec3 grad(vec3 rp, float preci)\n{\n    vec2 off = vec2(preci, 0.0);\n    vec3 g = vec3(map(rp + off.xyy) - map(rp - off.xyy),\n\t\t\t\t  map(rp + off.yxy) - map(rp - off.yxy),                  \n\t\t\t\t  map(rp + off.yyx) - map(rp - off.yyx));\n    return normalize(g);\n}\n\n// scanning the surroundings for differences in heights on the heightmap\nvec2 sub(vec3 rp, float preci)\n{\n    vec2 off = vec2(preci, 0.0);\n    vec2 g = vec2(map(rp + off.xyy) + map(rp - off.xyy),\n\t\t\t\t  map(rp + off.yyx) + map(rp - off.yyx));\n    return g;\n}\n\n\n\n\nconst vec3 up = vec3(0.0, 1.0, 0.0);\n\n\nvoid trace(in positionStruct pos, in vec3 rp, in vec3 rd, inout vec4 color)\n{\n    \n    if (dot(rd, up)>0.0){\n        color.rgb = getSky(pos);\n        return;\n    }\n    \n    // trace to plane on top of waves\n    vec3 ro = rp;\n    float t = -(0.155+dot(rp, -up)) / dot(-up, rd);\n    if (t < 0.0) \n    {\n        return;\n    }\n    \n\trp += rd*t;    \n    bool hit = false;\n    float dist = 0.0;\n    \n    // actual tracing\n    \n    // low freq\n    for (int i = 0; i < 10; ++i)\n    {\n        float travelledSq=dot(ro-rp, ro-rp);\n        dist = mapLo(rp);\n        \n        if(dist < 0.01)\n        {\n            hit = true;\n            break;\n        }\n        rp += rd * max(dist * (log2(2.+travelledSq)), 0.01);\n        if(travelledSq > 9000.0) break;\n    }\n    \n    //detail tracing\n    for (int i = 0; i < 10; ++i)\n    {\n        rp += dist * rd;\n        if (abs(dist) < 0.0001) break;\n        dist = map(rp);\n    }\n    \n    // shadings    \n        vec3 sun = pos.sunVector;\n        vec3 g = grad(rp, 0.002 * (1.0+log2(length(ro-rp) * 100.)));\n        // base color\n        float rddg = dot(rd, g);\n        pos.worldVector = rd-2.*rddg*g;\n        pos.worldVector = normalize(pos.worldVector);\n        float F = clamp(max(0.0, 1.+rddg), 0.0, 1.);\n        vec3 water_color = 0.5*vec3(.05, 0.22, .4);\n\n        color.rgb = F* getSky(pos) + (1.-F)*water_color;\n\n\n\n    \n    color.a = 1.;//length(ro-rp);\n    \n}\n\n\nmat3 lookat(vec3 from, vec3 to)\n{\n    vec3 f = normalize(to - from);\n    vec3 _tmpr = normalize(cross(f, vec3(0.0, .999, 0.0)));\n    vec3 u = normalize(cross(_tmpr, f));\n    vec3 r = normalize(cross(u, f));\n    return mat3(r, u, f);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    gatherPositions(pos, fragCoord, iMouse.xy, iResolution.xy);\n;\n    vec2 uv = (fragCoord.xy-iResolution.xy*.5) / iResolution.x;\n    \n    //ray direction \n    vec3 rd = pos.worldPosition;\n    \n    //ray position\n    vec3 rp = vec3(0.0, 2.3, 0.0);\n    vec3 _rp = rp;\n\t    \n    trace(pos, rp, rd, fragColor);\n    vec3 color = fragColor.rgb;\n    color = pow(color, vec3(1.0 / 2.2)); //Fitting to regular colorspace\n    color = robobo1221Tonemap(color);\n    fragColor.rgb = clamp(color, 0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 15,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0a40562379b63dfb89227e6d172f39fdce9022cba76623f1054a2c83d6c0ba5d.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define VOLUMETRIC_LIGHT\n//#define SPHERICAL_PROJECTION\n\n#define cameraMode 1 \t\t\t\t\t//1 is free rotation, 2 is still camera but free sun rotation\n\n\n//////////////////////////////////////////////////////////////////\n\nfloat bayer2(vec2 a){\n    a = floor(a);\n    return fract( dot(a, vec2(.5, a.y * .75)) );\n}\n\nvec2 rsi(vec3 position, vec3 direction, float radius) {\n    float PoD = dot(position, direction);\n    float radiusSquared = radius * radius;\n\n    float delta = PoD * PoD + radiusSquared - dot(position, position);\n    if (delta < 0.0) return vec2(-1.0);\n          delta = sqrt(delta);\n\n    return -PoD + vec2(-delta, delta);\n}\n\n#define bayer4(a)   (bayer2( .5*(a))*.25+bayer2(a))\n#define bayer8(a)   (bayer4( .5*(a))*.25+bayer2(a))\n#define bayer16(a)  (bayer8( .5*(a))*.25+bayer2(a))\n#define bayer32(a)  (bayer16(.5*(a))*.25+bayer2(a))\n#define bayer64(a)  (bayer32(.5*(a))*.25+bayer2(a))\n#define bayer128(a) (bayer64(.5*(a))*.25+bayer2(a))\n\n//////////////////////////////////////////////////////////////////\n\n#define cloudMinHeight cloudHeight\n#define cloudMaxHeight (cloudThickness + cloudMinHeight)\n\n#define sunPosition vec3(1.0, 0.9, 0.0)\n\nconst float pi = acos(-1.0);\nconst float rPi = 1.0 / pi;\nconst float hPi = pi * 0.5;\nconst float tau = pi * 2.0;\nconst float rLOG2 = 1.0 / log(2.0);\n\nmat3 rotationMatrix(vec3 axis, float angle)\n{\n    axis = normalize(axis);\n    float s = sin(angle);\n    float c = cos(angle);\n    float oc = 1.0 - c;\n    \n    float xx = axis.x * axis.x;\n    float yy = axis.y * axis.y;\n    float zz = axis.z * axis.z;\n    \n    float xy = axis.x * axis.y;\n    float xz = axis.x * axis.z;\n    float zy = axis.z * axis.y;\n    \n    return mat3(oc * xx + c, oc * xy - axis.z * s, oc * xz + axis.y * s,\n                oc * xy + axis.z * s, oc * yy + c, oc * zy - axis.x * s, \n                oc * xz - axis.y * s, oc * zy + axis.x * s, oc * zz + c);\n}\n#define PI 3.14159265358\n\nmat3 rotx(float a) { return rotationMatrix(vec3(1.,0.,0.), a); }\nmat3 roty(float a) { return rotationMatrix(vec3(0.,1.,0.), a); }\nmat3 rotz(float a) { return rotationMatrix(vec3(0.,0.,1.), a); }\n\nstruct positionStruct\n{\n\tvec2 texcoord;\n    vec2 mousecoord;\n    vec3 worldPosition;\n    vec3 worldVector;\n    vec3 sunVector;\n} pos;\n\nvec3 sphereToCart(vec3 sphere) {\n    vec2 c = cos(sphere.xy);\n    vec2 s = sin(sphere.xy);\n    \n    return sphere.z * vec3(c.x * c.y, s.y, s.x * c.y);\n}\n\nvec3 calculateWorldSpacePosition(vec2 p)\n{\n\tp = p * 2.0 - 1.0;\n    \n    vec3 worldSpacePosition =  vec3(p.x, p.y, 1.0);\n    \n    #ifdef SPHERICAL_PROJECTION\n\t\tworldSpacePosition = sphereToCart(worldSpacePosition * vec3(pi, hPi, 1.0));\n\t#endif\n    \n    return worldSpacePosition;\n}\n\nvoid gatherPositions(inout positionStruct pos, vec2 fragCoord, vec2 mouseCoord, vec2 screenResolution)\n{\n\tpos.texcoord = fragCoord / screenResolution;\n    pos.mousecoord = mouseCoord / screenResolution;\n    \n    pos.mousecoord = pos.mousecoord.x < 0.001 ? vec2(0.4, 0.64) : pos.mousecoord;\n    \n    vec2 rotationAngle = radians(vec2(360.0, 180.0) * pos.mousecoord - vec2(0.0, 90.0));\n\n    \n    mat3 rotateH = rotationMatrix(vec3(0.0, 1.0, 0.0), rotationAngle.x);\n    mat3 rotateV = rotationMatrix(vec3(1.0, 0.0, 0.0), -rotationAngle.y);\n    \n    pos.worldPosition = calculateWorldSpacePosition(pos.texcoord);\n    \n    if (cameraMode == 1) {\n    \tpos.worldPosition = rotateH * (rotateV * pos.worldPosition);\n        \n        // Sun position\n    \tpos.sunVector = normalize(sunPosition);\n    }\n    if (cameraMode == 2) {\n    \tpos.sunVector = normalize(calculateWorldSpacePosition(pos.mousecoord));\n    }\n    \n    pos.worldVector = normalize(pos.worldPosition);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

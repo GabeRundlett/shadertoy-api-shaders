@@ -1,0 +1,107 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1685364913",
+            "description": "Implicit octree traversal using SDFs to define occupancy of a given cell\n\nThe basic idea is to query the SDF at the cell center, and check if the distance is less than the cell size, if so the cell is occupied\n\nMouse drag to look around\nDefines in Common",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "DlGGDd",
+            "likes": 91,
+            "name": "Octree Traversal using SDF",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raytracing",
+                "grid",
+                "sdf",
+                "voxel",
+                "box",
+                "octree"
+            ],
+            "usePreview": 0,
+            "username": "gelami",
+            "viewed": 2874
+        },
+        "renderpass": [
+            {
+                "code": "\n// Octree Traversal using SDF - gelami\n// https://www.shadertoy.com/view/DlGGDd\n\n/* \n * Implicit octree traversal using SDFs to define occupancy of a given cell\n * \n * The basic idea is to query the SDF at the cell center,\n * and check if the distance is less than the cell size, if so the cell is occupied\n * \n * Mouse drag to look around\n * Defines in Common\n *\n * Probably my slowest shader yet, runs at 30-40 fps/25-33 ms on my GTX 1650 T_T\n * I really wanted to show the big open spaces of the terrain,\n *   but I guess this isn't really the method for that\n * \n * Though another method which might work better is a hybrid SDF/voxel traversal\n * Using sphere tracing for the initial traversal, then switching to voxel traversal\n * when the distance is less than the voxel size, as done in this shader by nimitz:\n * \n * Moon voxels - nimitz\n * https://www.shadertoy.com/view/tdlSR8\n * \n * Another shader that uses an SDF for the octree,\n * but uses a stack-based traversal instead:\n * Voxel Mandelbulb - thorn0906\n * https://www.shadertoy.com/view/3d2XRd\n * \n * This shader introduced me into octree traversal back then\n * Also used their exit condition as I couldn't figure it out v _ v\n * random octree - abje\n * https://www.shadertoy.com/view/4sVfWw\n * \n */\n\n// Fork of \"Gelami Raymarching Template\" by gelami. https://shadertoy.com/view/mslGRs\n// 2023-05-23 12:49:41\n\nvec3 getCameraPos(float t)\n{\n    return vec3(\n        (cos(t * 0.35 * CAMERA_SPEED) + sin(t * 0.25 * CAMERA_SPEED) * 0.5) * 0.55,\n        (sin(t * 0.25 * CAMERA_SPEED) + cos(t * 0.2 * CAMERA_SPEED) * 0.4) * 0.35,\n        t * CAMERA_SPEED);\n}\n\nfloat map(vec3 p, float s)\n{\n    float d = MAX_DIST;\n    \n    float sc = 0.3;\n    \n    vec3 q = sc * p / iChannelResolution[1].xyz;\n    q -= vec3(0.003, -0.006, 0.0);\n    \n    d  = texture(iChannel1, q*1.0).r*0.5;\n    d += texture(iChannel1, q*2.0).r*0.25;\n    d += texture(iChannel1, q*4.0).r*0.125;\n    \n    d = (d/0.875 - SURFACE_FACTOR) / sc;\n    \n    #ifdef TOP_PLANE\n    d = smax(d, p.y - MAX_HEIGHT, 0.3);\n    #endif\n    \n    float c = 0.75 - length(p.xy - getCameraPos(p.z / CAMERA_SPEED).xy);\n    \n    d = smax(d, c, 0.75);\n    \n    //d = min(d, sdBox(p - vec3(1,0,-3), vec3(0.5, 0.2, 0.1)));\n    //d = min(d, length(p - vec3(-2, 0, -4)) - 1.0);\n    \n    return d;\n}\n\nvec3 grad(vec3 p)\n{\n    const float s = exp2(-MAX_LOD);\n    const vec2 e = vec2(0, s);\n    return (map(p, s) - vec3(\n        map(p - e.yxx, s),\n        map(p - e.xyx, s),\n        map(p - e.xxy, s))) / e.y;\n}\n\nstruct HitInfo\n{\n    float t;\n    vec3 n;\n    vec3 id;\n    float lod;\n    int i;\n};\n\nbool trace(vec3 ro, vec3 rd, out HitInfo hit, const float tmax)\n{\n    hit.t = tmax;\n    hit.n = vec3(0);\n    hit.i = STEPS;\n    \n    vec3 ird = 1.0 / rd;\n    vec3 srd = sign(ird);\n    vec3 ard = abs(ird);\n    \n    vec3 iro = ro * ird;\n    \n    vec3 id = floor(ro);\n    vec3 pid = id;\n\n    float s = 1.0;\n    float lod = MAX_LOD;\n    vec3 pos = ro;\n    \n    vec3 nrd = vec3(0);\n    float t = 0.0;\n    float minlod = 0.0;\n    \n    bool exit = false;\n    for (int i = 0; i < STEPS; i++)\n    {   \n        if (exit)\n        {\n            id = floor(id*0.5);\n            pid = id;\n            s *= 2.0;\n            lod++;\n            \n            // Thank u abje for the exit condition\n            // random octree - abje\n            // https://www.shadertoy.com/view/4sVfWw\n            exit = abs(dot(mod(id+0.5,2.0)-1.0 + nrd*0.5, abs(nrd))) == 0.0 && lod < MAX_LOD;\n            \n            i--;\n            continue;\n        }\n        \n        vec3 p = (id + 0.5) * s;\n        \n        float d = map(p, s);\n        \n        vec3 n = iro - p * ird;\n        vec3 k = ard * s * 0.5;\n        \n        vec3 t2 = -n + k;\n        \n        float nt = min(min(t2.x, t2.y), t2.z);\n        \n        vec3 npos = ro + rd * nt;\n        \n        if (d * 2.0 < s)\n        {\n            if (lod > minlod)\n            {\n                id *= 2.0;\n                id += step(vec3(0), pos - p);\n                pid = id;\n                \n                s *= 0.5;\n                lod--;\n                continue;\n            } else\n            {\n                hit.t = t;\n                #ifndef ROUNDED_NORMALS\n                hit.n = -nrd;\n                #else\n                float r = s * 0.05;\n                hit.n = sign(pos - p) * normalize(max(abs(pos - p) - vec3((s - r) * 0.5), 0.0));\n                //hit.n *= t2.x <= t2.y && t2.x <= t2.z ? vec3(1, srd.x, srd.x) :\n                //         t2.y <= t2.z ? vec3(srd.y) : vec3(srd.z);\n                #endif\n                hit.id = id;\n                hit.lod = lod;\n                hit.i = i;\n                return true;\n            }\n        }\n        \n        if (nt >= tmax)\n            return false;\n        \n        #ifdef TOP_PLANE\n        if (rd.y > 0.0 && ro.y + rd.y * nt > MAX_HEIGHT)\n            return false;\n        #endif\n        \n        // Change min LOD with distance, doesn't reduce perf much\n        #ifdef DYNAMIC_LOD\n        minlod = clamp(floor(log2(nt * 0.12)), 0.0, MAX_LOD);\n        #endif\n        \n        // Step check with tie break when two components are equal\n        #if 0\n        t2 += vec3(0, EPS, EPS+EPS);\n        nrd = srd * step(t2, t2.yzx) * step(t2, t2.zxy);\n        #else\n        nrd = t2.x <= t2.y && t2.x <= t2.z ? vec3(srd.x,0,0) :\n              t2.y <= t2.z ? vec3(0,srd.y,0) : vec3(0,0,srd.z);\n        #endif\n        \n        pos = npos;\n        t = nt;\n        \n        pid = id;\n        id += nrd;\n        \n        #if 1\n        if (floor(pid*0.5) != floor(id*0.5) && lod < MAX_LOD)\n            exit = true;\n        #endif\n        \n    }\n\n    return false;\n}\n\nvec3 triplanar(sampler2D tex, vec3 p, vec3 n, const float k)\n{\n    n = pow(abs(n), vec3(k));\n    n /= dot(n, vec3(1));\n\n    vec3 col = texture(tex, p.yz).rgb * n.x;\n    col += texture(tex, p.xz).rgb * n.y;\n    col += texture(tex, p.xy).rgb * n.z;\n    \n    return col;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pv = (2. * (fragCoord) - iResolution.xy) / iResolution.y;\n    vec2 uv = fragCoord / iResolution.xy;\n    \n    const float fov = 67.5;\n    const float invTanFov = 1.0 / tan(radians(fov) * 0.5);//1.5;\n    \n    #ifdef MOTION_BLUR\n    float mb = MOTION_BLUR * dot(pv, pv) / invTanFov * hash13(vec3(fragCoord, iFrame));\n    vec3 ro = getCameraPos(iTime + mb);\n    #else\n    vec3 ro = getCameraPos(iTime);\n    #endif\n    vec3 lo = vec3(0,0,-1);\n    \n    vec2 m = iMouse.xy / iResolution.xy;\n    \n    float ax = -m.x * TAU + PI;\n    float ay = -m.y * PI + PI * 0.5;\n    \n    if (iMouse.z > 0.0)\n    {\n        lo.yz *= rot2D(ay);\n        lo.xz *= rot2D(ax);\n        lo += ro;\n    } else\n    {\n        #ifdef MOTION_BLUR\n        lo = getCameraPos(iTime + mb + 0.12);\n        #else\n        lo = getCameraPos(iTime + 0.12);\n        #endif\n    }\n    \n    mat3 cmat = getCameraMatrix(ro, lo);\n\n    vec3 rd = normalize(cmat * vec3(pv, invTanFov));\n    \n    vec3 col = vec3(0);\n    \n    HitInfo hit;\n    bool isHit = trace(ro, rd, hit, MAX_DIST);\n    \n    vec3 pos = ro + rd * hit.t;\n    vec3 pid = hit.id * exp2(-(MAX_LOD - hit.lod));\n    \n    vec3 n = hit.n;\n    vec3 g = grad(pos);\n    vec3 nv = normalize(grad(pid));\n    float d = map(pos, exp2(-MAX_LOD)) / length(g);\n    \n    vec3 ref = reflect(rd, hit.n);\n    \n    vec3 uvw = 2.0 * (pos - pid) / exp2(-(MAX_LOD - hit.lod));\n    vec2 buv = abs(hit.n.x) * uvw.yz + abs(hit.n.y) * uvw.xz + abs(hit.n.z) * uvw.xy;\n    buv /= dot(abs(hit.n), vec3(1));\n    \n    vec3 id = 0.11*hit.id * exp2(-hit.lod);\n    float k = fract(sin(id.x *0.33)*0.6 + cos(id.y*0.25) * sin(id.z*0.3) - sin(id.z*0.2));\n    \n    vec3 alb = triplanar(iChannel2, 0.15*pid, nv, 4.0);\n    \n    float k2 = sin(id.z *0.09)*0.6 + cos(id.x*0.12) * sin(id.y*0.15) - sin(id.y*0.1);\n    k2 = abs(fract(k2) * 2.0 - 1.0);\n    k2 = 1.0-smoothstep(0.4, 0.8, k2);\n    //k2 = smoothstep(0.0, 1.0, abs(pid.y + 1.0));\n    \n    alb = mix(alb*0.9+0.1, (1.0-alb) * vec3(1, 0.85, 0.75), k2);\n    \n    float tk = triplanar(iChannel3, 0.1*pid, nv, 4.0).r;\n    alb = mix(alb, alb*palette2(k), (1.0-smoothstep(0.05, 0.5, tk)) * 0.8);\n    \n    col = alb;\n    col *= dot(abs(hit.n), vec3(0.8, 1, 0.9));\n    \n    #ifdef VOXEL_NORMALS\n    n = nv;\n    #endif\n    \n    const vec3 lcol = vec3(1, 0.95, 0.9) * 1.8;\n    const vec3 ldir = normalize(vec3(0.85, 1.2, 1));\n    \n    HitInfo hitL;\n    bool isHitL = trace(pos + hit.n * EPS, ldir, hitL, 5.0);\n    \n    float dif = max(dot(n, ldir), 0.0) * float(!isHitL);\n    float ao = smoothstep(-0.06, 0.12, d);\n    \n    col *= (dif * 0.6 + 0.4) * lcol;\n    \n    float spot = smoothstep(0.78, 0.96, dot(rd, cmat[2])) * max(dot(-rd, hit.n), 0.0);\n    spot *= 0.8 / (hit.t*hit.t);\n    \n    col += alb * spot * vec3(1, 0.8, 0.6);\n    \n    const float r0 = 0.08;\n    float fre = r0 + (1.0 - r0) * pow(1.0 - dot(-rd, hit.n), 5.0);\n    \n    vec3 refcol = 0.6*sRGBToLinear(texture(iChannel0, ref).rgb) / vec3(1, 0.65, 0.4);\n    \n    col = mix(col, refcol, fre * 0.5 * (k2*0.8+0.2));\n    \n    col *= ao * 0.7 + 0.3;\n    \n    vec3 fogCol = vec3(0.4, 0.65, 1) * 0.12;\n    \n    #ifdef FOG\n    \n    #if 1\n    float fog = 1.0 - exp(-hit.t*hit.t * 0.003);\n    #else\n    const float a = 0.032;\n    const float b = 0.005;\n    float fog = (a / b) * exp(-max(ro.y + 35.0, 0.0) * b) * (1.0 - exp(-hit.t * rd.y * b)) / rd.y;\n    #endif\n    \n    col = mix(col, fogCol, saturate(fog));\n    #endif\n    \n    if (!isHit)\n        col = fogCol;\n    \n    #ifdef SHOW_STEPS\n    #if 0\n    col = vec3(float(hit.i) / float(STEPS));\n    if (fragCoord.y < 10.0)\n        col = vec3(uv.x);\n    #else\n    col = palette(float(hit.i) / float(STEPS));\n    \n    if (fragCoord.y < 10.0)\n        col = palette(uv.x);\n    #endif\n    #endif\n    \n    col = max(col, vec3(0));\n    \n    col = ACESFilm(col * 0.35);\n    \n    fragColor = vec4(linearTosRGB(col), 1);\n    fragColor += (dot(hash23(vec3(fragCoord, iTime)), vec2(1)) - 0.5) / 255.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 10,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/92d7758c402f0927011ca8d0a7e40251439fba3a1dac26f5b8b62026323501aa.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define FOG\n//#define ROUNDED_NORMALS\n//#define TOP_PLANE\n//#define DYNAMIC_LOD\n//#define VOXEL_NORMALS\n\n//#define MOTION_BLUR 0.05\n\n#define SURFACE_FACTOR 0.435\n\n#define CAMERA_SPEED -1.35\n\n#ifdef TOP_PLANE\n#define MAX_HEIGHT 10.0\n#endif\n\n#define MAX_LOD 4.0\n\n//#define SHOW_STEPS\n\n#define STEPS 512\n#define MAX_DIST 35.0\n#define EPS 1e-4\n\n#define PI (acos(-1.))\n#define TAU (PI*2.)\n\nfloat sdBox( in vec3 p, in vec3 rad )\n{\n    p = abs(p) - rad;\n    return max(max(p.x, p.y), p.z);\n}\n\nmat3 getCameraMatrix(vec3 ro, vec3 lo)\n{\n    vec3 cw = normalize(lo - ro);\n    vec3 cu = normalize(cross(cw, vec3(0, 1, 0)));\n    vec3 cv = cross(cu, cw);\n\n    return mat3(cu, cv, cw);\n}\n\nfloat safeacos(float x) { return acos(clamp(x, -1.0, 1.0)); }\n\nfloat saturate(float x) { return clamp(x, 0., 1.); }\nvec2 saturate(vec2 x) { return clamp(x, vec2(0), vec2(1)); }\nvec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }\n\nfloat sqr(float x) { return x*x; }\nvec2 sqr(vec2 x) { return x*x; }\nvec3 sqr(vec3 x) { return x*x; }\n\nfloat luminance(vec3 col) { return dot(col, vec3(0.2126729, 0.7151522, 0.0721750)); }\n\nmat2 rot2D(float a)\n{\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, s, -s, c);\n}\n\n// https://iquilezles.org/articles/smin/\nfloat smin( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n    \nfloat smax( float d1, float d2, float k ) {\n    float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) + k*h*(1.0-h); }\n\n\n// https://iquilezles.org/articles/palettes/\nvec3 palette(float t)\n{\n    return .5 + .5 * cos(TAU * (vec3(1, 1, 1) * t + vec3(0, .33, .67)));\n}\n\nvec3 palette2(float t)\n{\n    return .45 + .55 * cos(TAU * (vec3(1, 0.8, 0.6) * t + vec3(0, 0.3, 0.5)));\n}\n\n// Hash without Sine\n// https://www.shadertoy.com/view/4djSRW\nfloat hash12(vec2 p)\n{\n\tvec3 p3  = fract(vec3(p.xyx) * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash14(vec4 p4)\n{\n\tp4 = fract(p4  * vec4(.1031, .1030, .0973, .1099));\n    p4 += dot(p4, p4.wzxy+33.33);\n    return fract((p4.x + p4.y) * (p4.z + p4.w));\n}\n\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec2 hash23(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nvec3 sRGBToLinear(vec3 col)\n{\n    return mix(pow((col + 0.055) / 1.055, vec3(2.4)), col / 12.92, lessThan(col, vec3(0.04045)));\n}\n\nvec3 linearTosRGB(vec3 col)\n{\n    return mix(1.055 * pow(col, vec3(1.0 / 2.4)) - 0.055, col * 12.92, lessThan(col, vec3(0.0031308)));\n}\n\n// ACES tone mapping curve fit to go from HDR to LDR\n//https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0.0f, 1.0f);\n}\n\nvec3 ReinhardExtLuma(vec3 col, const float w)\n{\n    float l = luminance(col);\n    float n = l * (1.0 + l / (w * w));\n    float ln = n / (1.0 + l);\n    return col * ln / l;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

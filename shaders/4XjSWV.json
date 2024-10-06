@@ -1,0 +1,88 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1711103240",
+            "description": "Renders slices of a volume into a buffer and then raymarches it. ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4XjSWV",
+            "likes": 6,
+            "name": "Rendering to Volume Texture",
+            "published": 3,
+            "tags": [
+                "3d",
+                "volume",
+                "lookup"
+            ],
+            "usePreview": 1,
+            "username": "sdfgeoff",
+            "viewed": 186
+        },
+        "renderpass": [
+            {
+                "code": "/**\nLighting volumetrics can be quite wasteful to render by traditional\nraymarching: you calculate the lighting for the same point in\nspace multiple times.\n\nConsider marching a ray and sampling lighting towards a directional\nlight:\n\n< ------*-----*-----*-----*-----*\n         \\     \\     \\     \\    \n          \\     \\     \\     \\    \n(2)        *     *     *     *    \n            \\     \\     \\     \\    \n             \\     \\     \\     \\    \n              *     *     *     *    \n               \\     \\     \\     \\   \n\nThe camera on the left looks out and at various points samples\nthe volume. At each point the light needs to be calculated, so\nit marches volume samples for each of those. \n\nImagine if you took another ray and marched it starting at point\n2 (also marching horizontally). You'd also hit the same points\nin the volume, and calculate some density/scattering information.\nThis gets worse the more lights you have.\n\n\nWhat if we could pre-cache this in a volumetric texture? Then\nwe could avoid evaluating our volume distance field and calculating\nlighting quite so many times.\n\nYou could store other information in the volume. Eg:\n - Shadowing from sun light\n - Which lights contribute the most to this voxel\n - Local Volume modifiers\n \nThis effectively allows a defferred/clustered renderer for volumes. \n\nBut that's all longer-term stuff. This is just the very first\nstage: render and sample a volume texture. Shadertoy doesn't\nsupport rendering to volume textures natively, so we'll make\ndo by writing our own 3d -> 2d -> 3d lookup functions.\n\n\nThis scene expects the viewport to be at least 640x360 pixels or so.\nSmaller than that and it'll start clipping the volume texture in\nbuffer A. There's probably an intelligent way to pick that texture\nresolution, but for now I'm running with a volume of 64x64x45\n\n**/\n\n\nconst float FOV = 0.5;\nconst vec3 absorbtion = vec3(1.0, 0.0, 0.8);\n\nint num_steps = 50;\nfloat step_size = 0.08;\nfloat max_dist = 3.0;\n\n\n\nvec3 calculate_transmitance(float material_to_pass_through, vec3 input_energy) {\n    // Beer Lambert\n    return input_energy * exp(-material_to_pass_through * absorbtion);\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (all(lessThan(fragCoord, iResolution.xy / 3.0))) {\n        // Volume Texture Preview\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord * 3.0), 0);\n        return;\n    }\n    \n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.y - iResolution.xy / iResolution.y / 2.0;\n    uv *= iResolution.x / iResolution.y;\n    vec2 coords = uv * 0.5 + 0.5;\n    \n    vec2 angles = iMouse.xy / iResolution.xy * 3.14 * vec2(2.0, 1.0) + vec2(0.0, -1.5) ;//iTime * 0.2;\n    \n    vec2 s = sin(angles);\n    vec2 c = cos(angles);\n    mat4 camera_pivot_origin = mat4(\n        c.x,0,-s.x,0,\n        0,1,0,0,\n        s.x,0,c.x,0,\n        0,0,0,1\n    ) * mat4(\n        1,0,0,0,\n        0,c.y,-s.y,0,\n        0,s.y,c.y,0,\n        0,0,0,1\n    );\n    \n    vec3 ray_start = (camera_pivot_origin * vec4(0,0,-2,1)).xyz + vec3(0.5);\n    vec3 ray_direction = (camera_pivot_origin * normalize(vec4(uv * FOV, 1.0, 0.0))).xyz;\n    \n    ivec2 noiseCoords = ivec2(mod(fragCoord + iTime * 689.7, vec2(1024)));\n    float noise = texelFetch(iChannel1, noiseCoords, 0).r;\n    ray_start += ray_direction * step_size * noise;\n    \n    // Raymarch the volume;\n    float material_to_camera = 0.0;\n    float density_here = 0.0;\n    float reached_end = 1.0;\n    \n    \n    \n    vec3 from = ray_start;\n    vec3 direction = ray_direction;\n        \n    vec3 color = vec3(0.0);\n    \n    for (int i=0; i<num_steps; i++) {\n        float dist = float(i) * step_size;\n        if (dist > max_dist) {\n            reached_end = 0.0;\n            break;\n        }\n        vec3 position = from + direction * dist;\n        vec4 data = vec4(0);\n        if (any(lessThan(position, vec3(0)))  || any(greaterThan(position, vec3(1)))) {\n            data = vec4(0.0);\n        } else {\n            vec2 coordIn2D = coordToSlice(position);\n            data = texelFetch(iChannel0, ivec2(coordIn2D), 0);\n        }\n         \n        density_here = data.r;\n        material_to_camera += density_here * step_size;\n        \n        vec3 light_towards_camera_at_particle = vec3(density_here * step_size);\n        \n        // vec3 light_towards_camera_at_particle = calculate_lighting(position, density_here, direction) * step_size;\n        vec3 light_reaching_camera = calculate_transmitance(material_to_camera, light_towards_camera_at_particle);\n        \n        color += light_reaching_camera;\n    }\n    \n    fragColor = vec4(color, material_to_camera);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Volume buffer. This buffer renders 3D space into a 2D texture\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    \n    if (any(greaterThanEqual(fragCoord, SLICES * SLICE_PIXELS))) {\n        fragColor = vec4(0,1,1,0);\n        return;\n    }\n    // Find out what 3d position the slice represents;\n    vec3 position = sliceToCoord(fragCoord);\n        \n    // Output to screen\n    fragColor = volumeMap(position);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const vec2 SLICE_PIXELS = vec2(64.0);\nconst vec2 SLICES = vec2(9,5);\nconst float SLICE_COUNT = SLICES.x * SLICES.y;\n\n\n// Convert from a 3D position in space into a texture coordinate\nvec2 coordToSlice(vec3 coord) {\n    vec2 positionInCell = coord.xy * SLICE_PIXELS;\n    float cellId = coord.z * SLICE_COUNT;\n    float rowId = floor(mod(cellId / SLICES.y, 1.0) * SLICES.y);\n    float colId = floor((cellId - rowId) / SLICES.y);\n    // colId is the position on the horizontal axis: ie X axis\n    vec2 cellOffsets = vec2(colId, rowId) * SLICE_PIXELS;\n    \n    return cellOffsets + positionInCell;\n    \n}\n\n// Convert from a texture coordinate into a 3D position in space\nvec3 sliceToCoord(vec2 cell) {\n    vec2 cellIds = cell / SLICE_PIXELS;\n    vec2 positionInCell = mod(cellIds, vec2(1));\n    cellIds = floor(cellIds);\n    if (any(greaterThanEqual(cellIds, SLICES))) {\n        return vec3(-1);\n    }\n    float cellId = cellIds.y + cellIds.x * SLICES.y;\n    \n    return vec3(positionInCell, cellId / SLICE_COUNT);\n}\n\n\n\nvec4 volumeMap(vec3 position) {\n    float shape = 0.5 - length(position - 0.5);\n    \n    return vec4(step(shape, 0.0)) * 1.0;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

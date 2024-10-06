@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1700317435",
+            "description": "Implementation of Shell Texturing using a SDF, with technique described by Acerola: https://www.youtube.com/watch?v=9dr-tRQzij4\nNOTE: still a WIP!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "dlVyWm",
+            "likes": 8,
+            "name": "[WIP] Shell Texturing (furball)",
+            "published": 3,
+            "tags": [
+                "fuzzy",
+                "shell",
+                "acerolafurrychallenge"
+            ],
+            "usePreview": 0,
+            "username": "Falken",
+            "viewed": 364
+        },
+        "renderpass": [
+            {
+                "code": "// an implementation of Shell Texturing, as described by Acerola: https://www.youtube.com/watch?v=9dr-tRQzij4\n// coded by Michael Tedder (@_falken / brs^bas)\n//\n// (note: still a work in progress)\n// grass version is here: https://www.shadertoy.com/view/DsyBWd\n//\n// hat tips to:\n// 1. sdf/lighting: https://www.shadertoy.com/view/stcGRX\n// 2. noise: https://www.shadertoy.com/view/4dS3Wd\n\n// feel free to tweak any of these values below:\nconst int kSubsampleFactor = 1;         // sampling quality, any positive integer > 0\nconst int kNumberOfLayers = 48;         // number of shell layers, any positive integer > 0\nconst float kShellDensity = 100.0;      // detail of points in each layer, any positive value > 0\nconst float kShellLayerSpacing = 0.15;  // spacing between each layer, any positive value > 0\nconst int kNoiseOctaves = 5;            // number of iterations for noise function, any positive integer > 0\n\n// precision-adjusted variations of https://www.shadertoy.com/view/4djSRW\nfloat hash(float p) { p = fract(p * 0.011); p *= p + 7.5; p *= p + p; return fract(p); }\nfloat hash(vec2 p) {vec3 p3 = fract(vec3(p.xyx) * 0.13); p3 += dot(p3, p3.yzx + 3.333); return fract((p3.x + p3.y) * p3.z); }\n\nfloat noise(vec3 x)\n{\n    const vec3 step = vec3(110, 241, 171);\n    vec3 i = floor(x);\n    vec3 f = fract(x);\n \n    // for performance, compute the base input to a 1D hash from the integer part of the argument and the \n    // incremental change to the 1D based on the 3D -> 1D wrapping\n    float n = dot(i, step);\n\n    vec3 u = f * f * (3.0 - 2.0 * f);\n    return mix(mix(mix( hash(n + dot(step, vec3(0, 0, 0))), hash(n + dot(step, vec3(1, 0, 0))), u.x),\n                   mix( hash(n + dot(step, vec3(0, 1, 0))), hash(n + dot(step, vec3(1, 1, 0))), u.x), u.y),\n               mix(mix( hash(n + dot(step, vec3(0, 0, 1))), hash(n + dot(step, vec3(1, 0, 1))), u.x),\n                   mix( hash(n + dot(step, vec3(0, 1, 1))), hash(n + dot(step, vec3(1, 1, 1))), u.x), u.y), u.z);\n}\n\nfloat fbm(vec3 x)\n{\n\tfloat v = 0.0;\n\tfloat a = 0.5;\n\tvec3 shift = vec3(100);\n\tfor (int i = 0; i < kNoiseOctaves; ++i)\n    {\n\t\tv += a * noise(x);\n\t\tx = x * 2.0 + shift;\n\t\ta *= 0.5;\n\t}\n\treturn v;\n}\n\nfloat sdBox(vec3 position, vec3 halfSize)\n{\n\tposition = abs(position) - halfSize;\n\treturn length(max(position, 0.0)) + min(max(max(position.x, position.y), position.z), 0.0);\n}\n\nfloat sdSphere(vec3 position, float size)\n{\n    return length(position) - size;\n}\n\nfloat sdf(in vec3 position, float size)\n{\n    return sdSphere(position, size);\n}\n\nvec3 normal(vec3 position, float scale)\n{\n\tfloat epsilon = 0.001;\n\tvec3 gradient = vec3(\n\t\tsdf(position + vec3(epsilon, 0, 0), scale) - sdf(position + vec3(-epsilon, 0, 0), scale),\n\t\tsdf(position + vec3(0, epsilon, 0), scale) - sdf(position + vec3(0, -epsilon, 0), scale),\n\t\tsdf(position + vec3(0, 0, epsilon), scale) - sdf(position + vec3(0, 0, -epsilon), scale)\n\t);\n\treturn normalize(gradient);\n}\n\nfloat raycast(vec3 rayOrigin, vec3 rayDirection, float scale)\n{\n\tint stepCount = 128 * 2;\n\tfloat maximumDistance = 5.0;\n\tfloat t = 0.0;\n\tfor (int i = 0; i < stepCount; i++) {\n\t\tif (t > maximumDistance) {\n\t\t\tbreak;\n\t\t}\n\t\tvec3 position = rayOrigin + rayDirection * t;\n\t\tfloat d = sdf(position, scale);\n\t\tif (d < 0.0001) {\n\t\t\treturn t;\n\t\t}\n\t\tt += d;\n\t}\n\treturn 0.0;\n}\n\nmat3 lookAtMatrix(vec3 from, vec3 to)\n{\n\tvec3 forward = normalize(to - from);\n\tvec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));\n\tvec3 up = cross(right, forward);\n\treturn mat3(right, up, forward);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n\tfloat angle = 0.5 * (iTime - 8.0);\n\tvec3 cameraOrigin = vec3(1.0 * cos(angle), 0.4, 1.0 * sin(angle));\n\tvec3 cameraTarget = vec3(0.0);\n\tmat3 cameraTransform = lookAtMatrix(cameraOrigin, cameraTarget);\n\tvec3 result = vec3(0.0);\n    \n    const float layerYInc = 1.0 / float(kNumberOfLayers);\n    \n\tivec2 sampleCount = ivec2(kSubsampleFactor, kSubsampleFactor);\n\tfor (int y = 0; y < sampleCount.y; y++)\n    {\n\t\tfor (int x = 0; x < sampleCount.x; x++)\n        {\n\t\t\tvec2 uv = fragCoord + (vec2(float(x), float(y)) / vec2(sampleCount) - 0.5);\n\t\t\tuv = uv / iResolution.xy;\n\t\t\tuv = (uv * 2.0) - 1.0;\n\t\t\tuv.x *= iResolution.x / iResolution.y;\n\n            vec3 rayDirection = normalize(vec3(uv, 1.5));\n\t\t\trayDirection = cameraTransform * rayDirection;\n            \n\t\t\tvec3 color = vec3(0.0);\n            float layerY = 0.0;\n            for (int layerIndex = 0; layerIndex < kNumberOfLayers; ++layerIndex)\n            {\n                float scale = (layerY * kShellLayerSpacing) + 0.4;\n                float t = raycast(cameraOrigin, rayDirection, scale);\n                if (t > 0.0)\n                {\n                    // same style that iq uses in his shaders\n                    vec3 position = cameraOrigin + rayDirection * t;\n                    vec3 lightDirection = vec3(0.57735);\n                    vec3 n = normal(position, scale);\n                    float diffuseAngle = max(dot(n, lightDirection), 0.0);\n\n                    float v = fbm(normalize(position) * kShellDensity);\n                    if (v > max(0.1, layerY)) {\n                        float r = 0.82 * layerY;\n                        float g = 0.71 * layerY;\n                        float b = 0.43 * layerY;\n                        color = vec3(r, g, b) * (diffuseAngle + 0.05);\n                    }\n                }\n                layerY += layerYInc;\n            }\n\t\t\t// gamma        \n\t\t\tcolor = sqrt(color);\n\t\t\tresult += color;\n\t\t}\n\t}\n\tresult /= float(sampleCount.x * sampleCount.y);\n\tfragColor = vec4(result, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

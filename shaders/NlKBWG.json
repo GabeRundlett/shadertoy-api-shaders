@@ -1,0 +1,316 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665349430",
+            "description": "A demonstration of k-means clustering on particles in a cube.\n\nhttps://en.wikipedia.org/wiki/K-means_clustering\n\n*space to reset and advance to next scene*\n*mouse to move camera, also pauses scene advance*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "NlKBWG",
+            "likes": 12,
+            "name": "K-Means Cluster Blobs",
+            "published": 3,
+            "tags": [
+                "3d",
+                "voronoi",
+                "blobs",
+                "particles",
+                "kmeans",
+                "cluster"
+            ],
+            "usePreview": 1,
+            "username": "fenix",
+            "viewed": 516
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Created by fenix in 2022\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n// Demonstration of a k-means clustering algorithm:\n//\n//     https://en.wikipedia.org/wiki/K-means_clustering\n//\n// K-means clustering is a sort of particle sim, where the particles are the centers\n// of clusters. The points themselves are fixed in space and cannot move, but they\n// each keep track of which cluster they're in, which is the cluster with the closest\n// center. This is therefore a type of voronoi diagram. The simulation part is that \n// the cluster centers shift around, moving away from where they're not needed,\n// eventually producing an even-ish distribution of points between clusters.\n//\n// I realize there are still some artifacts at the edges between clusters...if anyone\n// has any advice about those, I'm all ears!\n//\n// Buffers A, C and D update cluster centers and perform neighbor searching\n// Buffer B computes nearest cluster to each screen pixel to accelerate rendering\n// Image renders\n//\n// --------------------------------------------------------------------------------------------\n\n\n// https://www.shadertoy.com/view/llySRh\nint char_id = -1; vec2 char_pos, dfdx, dfdy; \nvec4 char(vec2 p, int c) {\n    vec2 dFdx = dFdx(p/16.), dFdy = dFdy(p/16.);\n // if ( p.x>.25&& p.x<.75 && p.y>.0&& p.y<1. )  // normal char box\n    if ( p.x>.25&& p.x<.75 && p.y>.1&& p.y<.85 ) // thighly y-clamped to allow dense text\n        char_id = c, char_pos = p, dfdx = dFdx, dfdy = dFdy;\n    return vec4(0);\n}\nvec4 draw_char() {\n    int c = char_id; vec2 p = char_pos;\n    return c < 0 \n        ? vec4(0,0,0,1e5)\n        : textureGrad( iChannel2, p/16. + fract( vec2(c, 15-c/16) / 16. ), \n                       dfdx, dfdy );\n}\n\nvec4 pInt(vec2 p, float n) {  // webGL2 variant with dynamic size\n    vec4 v = vec4(0);\n    for (int i = int(n); i>0; i/=10, p.x += .5 )\n        v += char(p, 48+ i%10 );\n    return v;\n}\n\nint CAPS=0;\n#define low CAPS=32;\n#define caps CAPS=0;\n#define spc  U.x-=.5;\n#define C(c) spc O+= char(U,64+CAPS+c);\n\nconst float SDF_EPSILON = 0.001;\n\n// Holds positions for each cluster as we render\nvec3 posArray[33];\nint arrayCount;\n\nfloat sdSphere(vec3 p, float s)\n{\n    return length(p) - s;\n}\n\n// https://iquilezles.org/articles/smin/\nfloat smin( float a, float b, float k )\n{\n    float res = exp2( -k*a ) + exp2( -k*b );\n    return -log2( res )/k;\n}\n\nfloat sphereSize, sminK;\n\nfloat scene(vec3 p)\n{\n    float d = 1e6;\n    for (int i = 0; i < arrayCount; ++i)\n    {\n        d = smin(d, sdSphere(p - posArray[i], sphereSize), sminK);\n    }\n    \n    return d;\n}\n\nvec3 rayMarch(vec3 pos, vec3 dir, out float t)\n{\n    t = 0.;\n    for (int i = 0; i < 250; ++i)\n    {\n        float d = scene(pos);\n        \n        if (d < SDF_EPSILON || t > MAX_T)\n        {\n            break;\n        }\n        \n        float slowdown = 1.;//max(d * 1., 0.1);\n        t += d * slowdown;\n\n        pos += dir * d * slowdown;\n    }\n \n    return pos;\n}\n\nvec3 grad(vec3 p, float d)\n{\n    vec2 delta = vec2(d, 0);\n    return normalize(\n           vec3(scene(p + delta.xyy) - scene(p - delta.xyy),\n                scene(p + delta.yxy) - scene(p - delta.yxy),\n                scene(p + delta.yyx) - scene(p - delta.yyx)));\n}\n\nvoid doText(vec2 uv, inout vec4 O, vec4 state)\n{\n    vec2 R = iResolution.xy, U;\n    uv /= R.y;    \n    int lod = int(mod(iTime,10.));\n    \n    U = ( uv - vec2(.0,.9) ) * 16.;  caps C(14) U.x -= 0.3; C(-3)  // \"K=\"\n    U.x -= 3.3; O += pInt(U, DEMOS[int(state.z)].x); \n\n    U = ( uv - vec2(.0,.8) ) * 16.;  caps C(11)  U.x -= 0.3; C(-3)  // \"K=\"\n    U.x -= 3.3; O += pInt(U, DEMOS[int(state.z)].y); \n                             \n    O += draw_char().xxxx;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n\tvec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    ivec4 old = fxGetClosest( ivec2(fragCoord) );   \n    arrayCount = 0;\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    \n    sphereSize = DEMOS[int(state.z)].z;\n    sminK = DEMOS[int(state.z)].w;\n\n    fragColor = vec4(0,0,0,1);\n\n    float minT = MAX_T;\n    int hitId = int(1e6);\n    for(int j=0; j<4; j++)\n    {\n        int id = old[j];\n        if (id != 0 && id != -1)\n        {\n            fxParticle p = fxGetParticle(id);\n            \n            arrayCount = 1;\n            posArray[0] = p.pos;\n            \n            for (int i = 0; i < 8; ++i)\n            {\n                for (int k = 0; k < 4; ++k)\n                {\n                    int nid = p.neighbors[i][k];\n                    \n                    vec4 nb = fxGetParticleData(nid, POS);\n                    \n                    if (nb.w == float(id))\n                    {\n                        posArray[arrayCount++] = nb.xyz;\n                    }\n                }\n            }\n            \n            float t;\n            vec3 hit = rayMarch(cameraPos, rayDir, t);\n\n            if (t < minT)// * 0.999 || t < minT * 1.001 && id < hitId)\n            {\n                minT = t;\n                hitId = id;\n                \n                vec3 lightDir = normalize(vec3(1,1,1));\n                vec3 g = grad(hit, 0.001);\n                float dp = dot(g, lightDir);\n                float spec = dp > 0.0 ? pow(dp, 25.0) : 0.;\n                float ambient = 0.5;\n                float phong = abs(dp) * (1.-ambient) + ambient;\n                vec3 color = (sin(p.color * vec3(3, 99, 49)) + 1.) * 0.5;\n                \n                fragColor.xyz = phong * color + spec;\n                fragColor.a = 1.;\n            }\n        }\n    }\n    \n    fragColor.xyz = mix(fragColor.xyz, vec3(0.4), smoothstep(MAX_T * 0.8, MAX_T, minT));\n \n    doText(fragCoord, fragColor, state);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float MAX_T = 13.;\n\nconst int NUM_DEMOS = 5;\nconst vec4[NUM_DEMOS] DEMOS = vec4[NUM_DEMOS](\n    // N, K, sphere size, smin k\n    vec4(5000, 500, 0.2, 9.),\n    vec4(10000, 2000, 0.1, 8.),\n    vec4(1000, 200, 0.3, 7.),\n    vec4(5000, 1000, 0.2, 8.),\n    vec4(10000, 500, 0.1, 8.)\n);\n\nconst float PI = 3.141592653589793;\n\nuvec4 hash(uvec4 x){\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nuvec4 hash(uvec3 x0){\n    uvec4 x = x0.xyzz;\n    x = ((x >> 16u) ^ x.yzxy) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxz) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nvec4 noise(ivec4 p){\n    const float scale = pow(2., -32.);\n    uvec4 h = hash(uvec4(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec3 p){\n    const float scale = 1.0/float(0xffffffffU);\n    uvec4 h = hash(uvec3(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec2 p){\n    return noise(ivec3(p, 0));\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\nvoid fxCalcCamera(in float iTime, in vec4 iMouse, in vec3 iResolution, out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    vec2 mouse = iMouse.xy / iResolution.xy;\n    \n    float animate = (iMouse.x / iResolution.x) * 2.0 - 0.5;\n    \n    cameraLookAt = vec3(0.0, 0.0f, 0.0);\n    float angleX = iMouse.z > 0.0 ? 6.28 * mouse.x : 1.1*3.14 + iTime * 0.01;\n    float angleY = iMouse.z > 0.0 ? (mouse.y * 6.28) - 0.4 : 0.75*3.14;\n    cameraPos\t= (vec3(sin(angleX)*cos(angleY), sin(angleY), cos(angleX)*cos(angleY))) * 15.0;\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft  = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd)) * 0.5;\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return mat4(vec4(-0.5*resolution.y / resolution.x * cameraLeft, 0.0),\n        vec4(-0.5*cameraUp, 0.0),\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord.xy / iResolution.xy) * 1.0 - 0.5;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nconst float MAX_TEMP = 1000.0;\n\nvec3 fxBlackBody(float _t)\n{\n    vec3 temp = vec3(min(1.0, _t / MAX_TEMP), min(1.0, _t / (2.0 * MAX_TEMP)), min(1.0, _t / (3.0 * MAX_TEMP)));\n    return temp * temp * temp * temp;\n}\n\nfloat fxLinePointDist2(in vec2 newPos, in vec2 oldPos, in vec2 fragCoord, in vec3 resolution)\n{\n    vec2 pDelta = (fragCoord - oldPos);\n    vec2 delta = newPos - oldPos;\n    float deltaLen2 = dot(delta, delta);\n\n    // Find the closest point on the line segment from old to new\n    vec2 closest;\n    if (deltaLen2 > 0.0000001)\n    {\n        float deltaInvSqrt = inversesqrt(deltaLen2);\n        vec2 deltaNorm = delta * deltaInvSqrt;\n        closest = oldPos + deltaNorm * max(0.0, min(1.0 / deltaInvSqrt, dot(deltaNorm, pDelta)));\n    }\n    else\n    {\n        closest = oldPos;\n    }\n\n    // Distance to closest point on line segment\n    vec2 closestDelta = closest - fragCoord;\n    //closestDelta *= resolution.xy / resolution.y;\n    return dot(closestDelta, closestDelta);\n}\n\n//returns the ids of the four closest particles from the input\nivec4 fxGetClosestInternal(sampler2D sampler, ivec2 xy)\n{\n    return ivec4(texelFetch(sampler, xy, 0));\n}\n\n#define fxGetClosest(X) fxGetClosestInternal(iChannel1, X)\n\n#define FUL_NEIGHBORS 0\n#define FUR_NEIGHBORS 1\n#define FLL_NEIGHBORS 2\n#define FLR_NEIGHBORS 3\n#define BUL_NEIGHBORS 4\n#define BUR_NEIGHBORS 5\n#define BLL_NEIGHBORS 6\n#define BLR_NEIGHBORS 7\n#define POS 8\n#define VEL 9\n#define NUM_PARTICLE_DATA_TYPES 10\n\n//returns the location of the particle within the particle buffer corresponding with the input id \nivec2 fxLocFromIDInternal(int width, int id, int dataType)\n{\n    int index = id * NUM_PARTICLE_DATA_TYPES + dataType;\n    return ivec2( index % width, index / width);\n}\n\n#define fxLocFromID(X, Y) fxLocFromIDInternal(int(iResolution.x), X, Y)\n\nstruct fxParticle\n{\n    vec3 pos;\n    float color;\n    float cluster;\n    \n    ivec4 neighbors[8];\n};\n\n//get the particle corresponding to the input id\nfxParticle fxGetParticleInternal(sampler2D sampler, int resolutionWidth, int id)\n{\n    vec4 particleData0 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, FUL_NEIGHBORS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, FUR_NEIGHBORS), 0);\n    vec4 particleData2 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, FLL_NEIGHBORS), 0);\n    vec4 particleData3 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, FLR_NEIGHBORS), 0);\n    vec4 particleData4 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, BUL_NEIGHBORS), 0);\n    vec4 particleData5 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, BUR_NEIGHBORS), 0);\n    vec4 particleData6 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, BLL_NEIGHBORS), 0);\n    vec4 particleData7 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, BLR_NEIGHBORS), 0);\n    vec4 particleData8 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, POS), 0);\n    vec4 particleData9 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, VEL), 0);\n\n    fxParticle particle;\n    particle.neighbors[0] = ivec4(particleData0);\n    particle.neighbors[1] = ivec4(particleData1);\n    particle.neighbors[2] = ivec4(particleData2);\n    particle.neighbors[3] = ivec4(particleData3);\n    particle.neighbors[4] = ivec4(particleData4);\n    particle.neighbors[5] = ivec4(particleData5);\n    particle.neighbors[6] = ivec4(particleData6);\n    particle.neighbors[7] = ivec4(particleData7);\n    particle.pos = particleData8.xyz;\n    particle.cluster = float(particleData8.w);\n    particle.color = particleData9.w;\n    \n    return particle;\n}\n\n\nvec4 fxSaveParticle(fxParticle p, int dataType)\n{    \n    switch(dataType)\n    {\n    case FUL_NEIGHBORS:\n        return vec4(p.neighbors[0]);\n    case FUR_NEIGHBORS:\n        return vec4(p.neighbors[1]);\n    case FLL_NEIGHBORS:\n        return vec4(p.neighbors[2]);\n    case FLR_NEIGHBORS:\n        return vec4(p.neighbors[3]);\n    case BUL_NEIGHBORS:\n        return vec4(p.neighbors[4]);\n    case BUR_NEIGHBORS:\n        return vec4(p.neighbors[5]);\n    case BLL_NEIGHBORS:\n        return vec4(p.neighbors[6]);\n    case BLR_NEIGHBORS:\n        return vec4(p.neighbors[7]);\n    case POS:  \n        return vec4(p.pos, int(p.cluster));\n    case VEL:\n        return vec4(0, 0, 0, p.color);\n    }\n}\n\n#define fxGetParticle(X) fxGetParticleInternal(iChannel0, int(iResolution.x), X)\n\nvec4 fxGetParticleDataInternal(sampler2D sampler, int resolutionWidth, int id, int dataType)\n{\n    return texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, dataType), 0);\n}\n\n#define fxGetParticleData(X, Y) fxGetParticleDataInternal(iChannel0, int(iResolution.x), X, Y)\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n#define keyClick(ascii)   ( texelFetch(iChannel3,ivec2(ascii,1),0).x > 0.)\n\n#define KEY_SPACE 32\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_){\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position and velocity of each particle, one per texture fragment. Buffers\n// A, C and D are chained for triple convergence speed.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(0.0,0.0,0.0);\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int id, int searchId, int dataType, in fxParticle myPos);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    int maxParticles = int(DEMOS[int(state.z)].x);\n    int clusterParticles = int(DEMOS[int(state.z)].y);\n    if(id>=maxParticles) return;\n    \n    fxParticle p = fxGetParticle(id);\n    \n    if (dataType >= POS)\n    {\n        float closestColor = 0.;\n        float closestDist = 1e30;\n        float closestCluster = -1.;\n        vec3 center = vec3(0);\n        float count = 0.;\n        for(int i = 0; i < 8; i++)\n        {\n            ivec4 neighbors = p.neighbors[i];\n            for (int j = 0; j < 4; ++j)\n            {\n                int cid = neighbors[j];\n                if(cid==id || cid==-1 || cid == 0 || cid >= maxParticles) continue;\n\n                vec4 n = fxGetParticleData(cid, POS);\n                \n                if (n.w == float(id))\n                {\n                    center += n.xyz;\n                    count++;\n                }\n\n                vec3 deltaPos = p.pos - n.xyz;\n                float dist2 = dot(deltaPos, deltaPos) + 0.0001;\n                \n                if (dist2 < closestDist)\n                {\n                    closestDist = dist2;\n                    closestColor = fxGetParticleData(cid, VEL).w;\n\n                    closestCluster = float(cid);\n                }\n            }\n        }\n        \n        if (p.cluster == -1.)\n        {\n            if (count > 0.)\n            {\n                p.pos = center / count;\n            }\n        }\n        else if (closestCluster != -1.)\n        {\n            p.color = closestColor;\n            p.cluster = closestCluster;\n        }\n\n        // Reset particles\n        if ((iFrame % 3000) == 0 || state.y < 0.)\n        {\n            const float XZ_SPREAD = 1.01;\n            const float Y_SPREAD = 1.01;\n\n            p.pos = (noise(ivec2(fragCoord) + iFrame) - 0.5).xyz * 8.;\n\n            vec4 h = noise(ivec2(fragCoord) + iFrame + 3);\n            p.color = h.y;\n            p.cluster = id < clusterParticles ? -1. : 0.;\n        }\n\n        fragColor = fxSaveParticle(p, dataType);\n    }\n    else\n    {\n        // Nearest particle sort inspired by michael0884's Super SPH: https://www.shadertoy.com/view/tdXBRf\n        //sort neighbors and neighbor neighbors\n        ivec4 bestIds = ivec4(-1);\n        vec4 bestDists = vec4(1e6);\n        \n        for (int i = 0; i < 4; ++i)\n        {\n            sort0(bestIds, bestDists, id, int(p.neighbors[0][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[1][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[2][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[3][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[4][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[5][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[6][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[7][i]), dataType, p);  //sort this\n        }\n        \n        int searchIterations = 15;\n        for(int k = 0; k < searchIterations; k++){\n            //random hash. We should make sure that two pixels in the same frame never make the same hash!\n            float h = hash(\n                iFragCoord.x + \n                iFragCoord.y*int(iResolution.x) + \n                iFrame*int(iResolution.x*iResolution.y) +\n                k\n            );\n            //pick random id of particle\n            int hi;\n            if (p.cluster == -1.)\n            {\n                hi = int(mod(h*34534.0, float(maxParticles - clusterParticles))) + clusterParticles;\n            }\n            else\n            {\n                hi = int(mod(h*34534.0, float(clusterParticles)));\n            }\n            sort0(bestIds, bestDists, id, int(hi), dataType, p);  //sort this\n        }\n        fragColor = vec4(bestIds);\n    }\n}\n\nbool iscoincidence(in ivec4 bestIds, int currentId, int id)\n{\n    return id < 0 ||\n      \tid == currentId ||\n        any(equal(bestIds,ivec4(id)));\n}\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int currentId, int searchId, int dataType, in fxParticle myParticle)\n{\n    if(iscoincidence(bestIds, currentId, searchId)) return; //particle already sorted\n    \n    vec4 nbX = fxGetParticleData(searchId, POS); \n    const float CLUSTER = intBitsToFloat(-1);\n    if (myParticle.cluster != -1. && nbX.w != -1.) return; // particle only neighbors with cluster particles\n    if (myParticle.cluster == -1. && (nbX.w != float(currentId))) return; // cluster particles only neighbors with particles\n\n    vec3 dx = nbX.xyz - myParticle.pos;\n    int dir = int(2.*(atan(dx.y, dx.x)+PI)/PI) + (dx.z > 0. ? 4 : 0); \n\n    if(dir != dataType) return; //not in this sector\n    \n    float t = dot(dx, dx);\n    \n    insertion_sort(bestIds, bestDists, searchId, t);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float SWITCH_DEMO_TIME = 20.0;\n\n// Gijs's Basic : Voronoi Tracking: https://www.shadertoy.com/view/WltSz7\n\n// Voronoi Buffer\n// every pixel stores the 4 closest particles to it\n// every frame this data is shared between neighbours\n\n\nfloat distance2Particle(int id, vec2 fragCoord, mat4 w2cNew){\n\n    if(id==-1) return 1e20;\n    //vec4 worldPos = fxGetParticleData(id, POS);\n    fxParticle p = fxGetParticle(id);\n    float d = 1e6;\n    for(int i = 0; i < 8; i++)\n    {\n        ivec4 neighbors = p.neighbors[i];\n        for (int j = 0; j < 4; ++j)\n        {\n            vec4 worldPos = fxGetParticleData(neighbors[j], POS);\n            if (worldPos.w != float(id)) continue;\n            vec3 screenPos = (w2cNew * vec4(worldPos.xyz,1.0)).xyz;\n            screenPos.xy = screenPos.xy / screenPos.z;\n            if (screenPos.z > MAX_T) continue; // Discard beyond far clip\n            vec2 delta = (screenPos.xy)-fragCoord;\n            float dist = dot(delta, delta)+0.013*screenPos.z;\n            d = min(d, dist);\n        }\n    }\n\n    return d;\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n   \tivec2 iFragCoord = ivec2(fragCoord);\n    if(iFragCoord == ivec2(0))\n    {\n        // Reset if resolution changes\n        vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n        if (iFrame == 0 || state.y > SWITCH_DEMO_TIME || iResolution.x * iResolution.y != state.x || keyClick(KEY_SPACE))\n        {\n            state.xyw = vec3(iResolution.x * iResolution.y, -1, 0);\n\n            if (iFrame == 0)\n            {\n                state.z = 0.;\n            }\n            else\n            {\n                state.z = float((int(state.z) + 1) % NUM_DEMOS);\n            }\n        }\n        else if (iMouse.z <= 0.)\n        {\n            state.y += iTimeDelta;\n        }\n        \n        fragColor = state;\n        return;\n    }\n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n\n    //in this vector the four new closest particles' ids will be stored\n    ivec4 new = ivec4(-1);\n    //in this vector the distance to these particles will be stored \n    vec4 dis = vec4(1e6);\n\n    ivec4 old   = fxGetClosest( iFragCoord );      \n    for(int j=0; j<4; j++){\n        int id = old[j];\n        float dis2 = distance2Particle(id, p, w2c);\n        insertion_sort( new, dis, id, dis2 );\n    }\n\n    uint searchRange = 15u;\n    uint searchCount = 2u;\n    \n    for(uint i=0u; i<searchCount; ++i)\n    {\n        uvec4 h0 = hash(uvec4(fragCoord, iFrame, iResolution.x) * i);\n\n        ivec4 old   = fxGetClosest( iFragCoord + ivec2( h0.xy % searchRange - searchRange / 2u) );      \n        for(int j=0; j<2; j++){\n            int id = old[j];\n            float dis2 = distance2Particle(id, p, w2c);\n            insertion_sort( new, dis, id, dis2 );\n        }        \n    }\n\n    int searchIterations = (iFrame % 4) == 0 ? 1 : 0;\n    if (iFrame < 5)\n    {\n        searchIterations = 4;\n    }\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    int clusterParticles = int(DEMOS[int(state.z)].y);\n    for(int k = 0; k < searchIterations; k++){\n        //random hash. We should make sure that two pixels in the same frame never make the same hash!\n        float h = hash(\n            iFragCoord.x + \n            iFragCoord.y*int(iResolution.x) + \n            iFrame*int(iResolution.x*iResolution.y) +\n            k\n        );\n\n        //pick random id of particle\n        int id = int(h * float(clusterParticles));\n        insertion_sort(new, dis, id, distance2Particle(id, p, w2c));\n    }\n    \n    fragColor = vec4(new);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position and velocity of each particle, one per texture fragment. Buffers\n// A, C and D are chained for triple convergence speed.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(0.0,0.0,0.0);\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int id, int searchId, int dataType, in fxParticle myPos);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    int maxParticles = int(DEMOS[int(state.z)].x);\n    int clusterParticles = int(DEMOS[int(state.z)].y);\n    if(id>=maxParticles) return;\n    \n    fxParticle p = fxGetParticle(id);\n    \n    if (dataType >= POS)\n    {\n        float closestColor = 0.;\n        float closestDist = 1e30;\n        float closestCluster = -1.;\n        vec3 center = vec3(0);\n        float count = 0.;\n        for(int i = 0; i < 8; i++)\n        {\n            ivec4 neighbors = p.neighbors[i];\n            for (int j = 0; j < 4; ++j)\n            {\n                int cid = neighbors[j];\n                if(cid==id || cid==-1 || cid == 0 || cid >= maxParticles) continue;\n\n                vec4 n = fxGetParticleData(cid, POS);\n                \n                if (n.w == float(id))\n                {\n                    center += n.xyz;\n                    count++;\n                }\n\n                vec3 deltaPos = p.pos - n.xyz;\n                float dist2 = dot(deltaPos, deltaPos) + 0.0001;\n                \n                if (dist2 < closestDist)\n                {\n                    closestDist = dist2;\n                    closestColor = fxGetParticleData(cid, VEL).w;\n\n                    closestCluster = float(cid);\n                }\n            }\n        }\n        \n        if (p.cluster == -1.)\n        {\n            if (count > 0.)\n            {\n                p.pos = center / count;\n            }\n        }\n        else if (closestCluster != -1.)\n        {\n            p.color = closestColor;\n            p.cluster = closestCluster;\n        }\n\n        // Reset particles\n        if ((iFrame % 3000) == 0 || state.y < 0.)\n        {\n            const float XZ_SPREAD = 1.01;\n            const float Y_SPREAD = 1.01;\n\n            p.pos = (noise(ivec2(fragCoord) + iFrame) - 0.5).xyz * 8.;\n\n            vec4 h = noise(ivec2(fragCoord) + iFrame + 3);\n            p.color = h.y;\n            p.cluster = id < clusterParticles ? -1. : 0.;\n        }\n\n        fragColor = fxSaveParticle(p, dataType);\n    }\n    else\n    {\n        // Nearest particle sort inspired by michael0884's Super SPH: https://www.shadertoy.com/view/tdXBRf\n        //sort neighbors and neighbor neighbors\n        ivec4 bestIds = ivec4(-1);\n        vec4 bestDists = vec4(1e6);\n        \n        for (int i = 0; i < 4; ++i)\n        {\n            sort0(bestIds, bestDists, id, int(p.neighbors[0][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[1][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[2][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[3][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[4][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[5][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[6][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[7][i]), dataType, p);  //sort this\n        }\n        \n        int searchIterations = 15;\n        for(int k = 0; k < searchIterations; k++){\n            //random hash. We should make sure that two pixels in the same frame never make the same hash!\n            float h = hash(\n                iFragCoord.x + \n                iFragCoord.y*int(iResolution.x) + \n                iFrame*int(iResolution.x*iResolution.y) +\n                k\n            );\n            //pick random id of particle\n            int hi;\n            if (p.cluster == -1.)\n            {\n                hi = int(mod(h*34534.0, float(maxParticles - clusterParticles))) + clusterParticles;\n            }\n            else\n            {\n                hi = int(mod(h*34534.0, float(clusterParticles)));\n            }\n            sort0(bestIds, bestDists, id, int(hi), dataType, p);  //sort this\n        }\n        fragColor = vec4(bestIds);\n    }\n}\n\nbool iscoincidence(in ivec4 bestIds, int currentId, int id)\n{\n    return id < 0 ||\n      \tid == currentId ||\n        any(equal(bestIds,ivec4(id)));\n}\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int currentId, int searchId, int dataType, in fxParticle myParticle)\n{\n    if(iscoincidence(bestIds, currentId, searchId)) return; //particle already sorted\n    \n    vec4 nbX = fxGetParticleData(searchId, POS); \n    const float CLUSTER = intBitsToFloat(-1);\n    if (myParticle.cluster != -1. && nbX.w != -1.) return; // particle only neighbors with cluster particles\n    if (myParticle.cluster == -1. && (nbX.w != float(currentId))) return; // cluster particles only neighbors with particles\n\n    vec3 dx = nbX.xyz - myParticle.pos;\n    int dir = int(2.*(atan(dx.y, dx.x)+PI)/PI) + (dx.z > 0. ? 4 : 0); \n\n    if(dir != dataType) return; //not in this sector\n    \n    float t = dot(dx, dx);\n    \n    insertion_sort(bestIds, bestDists, searchId, t);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position and velocity of each particle, one per texture fragment. Buffers\n// A, C and D are chained for triple convergence speed.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(0.0,0.0,0.0);\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int id, int searchId, int dataType, in fxParticle myPos);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    int maxParticles = int(DEMOS[int(state.z)].x);\n    int clusterParticles = int(DEMOS[int(state.z)].y);\n    if(id>=maxParticles) return;\n    \n    fxParticle p = fxGetParticle(id);\n    \n    if (dataType >= POS)\n    {\n        float closestColor = 0.;\n        float closestDist = 1e30;\n        float closestCluster = -1.;\n        vec3 center = vec3(0);\n        float count = 0.;\n        for(int i = 0; i < 8; i++)\n        {\n            ivec4 neighbors = p.neighbors[i];\n            for (int j = 0; j < 4; ++j)\n            {\n                int cid = neighbors[j];\n                if(cid==id || cid==-1 || cid == 0 || cid >= maxParticles) continue;\n\n                vec4 n = fxGetParticleData(cid, POS);\n                \n                if (n.w == float(id))\n                {\n                    center += n.xyz;\n                    count++;\n                }\n\n                vec3 deltaPos = p.pos - n.xyz;\n                float dist2 = dot(deltaPos, deltaPos) + 0.0001;\n                \n                if (dist2 < closestDist)\n                {\n                    closestDist = dist2;\n                    closestColor = fxGetParticleData(cid, VEL).w;\n\n                    closestCluster = float(cid);\n                }\n            }\n        }\n        \n        if (p.cluster == -1.)\n        {\n            if (count > 0.)\n            {\n                p.pos = center / count;\n            }\n        }\n        else if (closestCluster != -1.)\n        {\n            p.color = closestColor;\n            p.cluster = closestCluster;\n        }\n\n        // Reset particles\n        if ((iFrame % 3000) == 0 || state.y < 0.)\n        {\n            const float XZ_SPREAD = 1.01;\n            const float Y_SPREAD = 1.01;\n\n            p.pos = (noise(ivec2(fragCoord) + iFrame) - 0.5).xyz * 8.;\n\n            vec4 h = noise(ivec2(fragCoord) + iFrame + 3);\n            p.color = h.y;\n            p.cluster = id < clusterParticles ? -1. : 0.;\n        }\n\n        fragColor = fxSaveParticle(p, dataType);\n    }\n    else\n    {\n        // Nearest particle sort inspired by michael0884's Super SPH: https://www.shadertoy.com/view/tdXBRf\n        //sort neighbors and neighbor neighbors\n        ivec4 bestIds = ivec4(-1);\n        vec4 bestDists = vec4(1e6);\n        \n        for (int i = 0; i < 4; ++i)\n        {\n            sort0(bestIds, bestDists, id, int(p.neighbors[0][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[1][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[2][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[3][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[4][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[5][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[6][i]), dataType, p);  //sort this\n            sort0(bestIds, bestDists, id, int(p.neighbors[7][i]), dataType, p);  //sort this\n        }\n        \n        int searchIterations = 15;\n        for(int k = 0; k < searchIterations; k++){\n            //random hash. We should make sure that two pixels in the same frame never make the same hash!\n            float h = hash(\n                iFragCoord.x + \n                iFragCoord.y*int(iResolution.x) + \n                iFrame*int(iResolution.x*iResolution.y) +\n                k\n            );\n            //pick random id of particle\n            int hi;\n            if (p.cluster == -1.)\n            {\n                hi = int(mod(h*34534.0, float(maxParticles - clusterParticles))) + clusterParticles;\n            }\n            else\n            {\n                hi = int(mod(h*34534.0, float(clusterParticles)));\n            }\n            sort0(bestIds, bestDists, id, int(hi), dataType, p);  //sort this\n        }\n        fragColor = vec4(bestIds);\n    }\n}\n\nbool iscoincidence(in ivec4 bestIds, int currentId, int id)\n{\n    return id < 0 ||\n      \tid == currentId ||\n        any(equal(bestIds,ivec4(id)));\n}\n\nvoid sort0(inout ivec4 bestIds, inout vec4 bestDists, int currentId, int searchId, int dataType, in fxParticle myParticle)\n{\n    if(iscoincidence(bestIds, currentId, searchId)) return; //particle already sorted\n    \n    vec4 nbX = fxGetParticleData(searchId, POS); \n    const float CLUSTER = intBitsToFloat(-1);\n    if (myParticle.cluster != -1. && nbX.w != -1.) return; // particle only neighbors with cluster particles\n    if (myParticle.cluster == -1. && (nbX.w != float(currentId))) return; // cluster particles only neighbors with particles\n\n    vec3 dx = nbX.xyz - myParticle.pos;\n    int dir = int(2.*(atan(dx.y, dx.x)+PI)/PI) + (dx.z > 0. ? 4 : 0); \n\n    if(dir != dataType) return; //not in this sector\n    \n    float t = dot(dx, dx);\n    \n    insertion_sort(bestIds, bestDists, searchId, t);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,227 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1505939457",
+            "description": "parent: https://www.shadertoy.com/view/XtXyW4\n\nchild:\nhttps://www.shadertoy.com/view/MlByWh",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "4tfcRf",
+            "likes": 9,
+            "name": "Courtyard physics b",
+            "published": 3,
+            "tags": [
+                "3d",
+                "sdf",
+                "camera",
+                "keyboard",
+                "first",
+                "physics",
+                "firstperson",
+                "ssao",
+                "canvas"
+            ],
+            "usePreview": 0,
+            "username": "ollj",
+            "viewed": 890
+        },
+        "renderpass": [
+            {
+                "code": "/*\nparent: https://www.shadertoy.com/view/XtXyW4\n License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n by Steven Sell (ssell) / 2017\n \"My goal was never to create a camera or physics\"\n \"it just kind of happened.\"\nself  : https://www.shadertoy.com/view/4tfcRf\n Parent code is pretty good, but too repetitive.\n Ollj merged buffers together, much less duped code.\n Ollj optimized a few things, not much to do besides reducing dupes.\n Ollj main optimization is removal of [normal-packing, compressing vec3 to float]\n Ollj changed style a lot\n\nCamera / Movement\n* relative mouse drag (properly initialized)\n* WASD/Arrows for movement\n* SPACE to jump\n* SHIFT to run\n* Y-Axis Inversion available\n* Three modes (see Buf A #defines):\n* Physics; camera collides with world, +2 modes;\n* * No physics, y-limited to start position.\n* * No physics, free-fly\n* camera position cats shadow\n\nShortcomings:\n collision detection gradient is pretty bad, gets stuck in concave areas too easily.\n should be ESDF and not WASD\n Has quaternion structzure, but does only Euler-Rotation.\n SSAO is not good AO. fails when camera is close to a wall.\n SSAO implementation collides with shader shadows, as usual.\n Debug UI is very minimal\n Could use some Bounding Volumes for performance.\n Could reduce iterations relative to camera rotation \n  to at least increase fps duing movement.\n\nTODO;\n maybe reboot this thing, starting from: https://www.shadertoy.com/view/4dSBzW\n Mix \"image\" into \"BuffA\"\n Mix \"BuffB\" into \"BuffA\"\n include most recent almost-library stuff.\n replaceMarch() look with dynamiceps.\n do the quaterionn slerp camera control thing,you can debug this now. using this shader!\n make some nice 3d shapes for the quaternion thing. more than that pacman arrow!\n implement wallwalking vehicle: http://ollj.turboherz.de/walking-on-walls-with-a-saddle-on\n Make collision boxes obsolete. make \"smart autp-collision-meshing\".\n Add All the mirrors! , self identity is important here?\n Implement relativistic effects.\n Implement 4d automatic differentiation.\n One way portals (2 of them togerther for a 2way).\n  https://www.shadertoy.com/view/lsSGRz\n*/\n\n// SSAO Settings (a bit strong, but there is only one texture in the scene...)\n#define AOSampleRadius  1.\n#define AOSampleN       16\n#define AODistScale     25.\n#define AOIntensity     3.\n#define AOBias          .1\n\n//paint the bad bad overlay.\n#define DRAW_DEBUG_OVERLAY\n\n#define eps  .001\n#define ClipNear 0.\n#define ClipFar  300.\n\n// Sky and Lighting Values\nconst vec3 SunLightCol =vec3(1);\nconst vec3 AmbLightCol =vec3(1,1,.7);\nconst vec3 SkyColor    =vec3(.5,.7,.5);\nconst vec3 SkyLightCol =vec3(.7,.7,.3);\nconst vec3 HorizonColor=vec3(.3,.6,.0);//ollj reduced blue. turns stuff yellow.\nconst vec3 SunLightDir =normalize(vec3(1,2,-2));\nconst vec3 AmbLightDir =normalize(SunLightDir*vec3(-1,0,-1));\nconst vec3 SkyLightDir =vec3(0,1,0);\n\n/* end__.Head\n   start.Manual.Parameters\n*/\n//  set period,interval==[i]~0, not just VERY small, but actually divide by 0.\n//   Just to screw with (or implement basiccalculus) analysis on a fundamental level!\n//   TestDivideByZeroCase==0 will calculate; .0*vec2(fract(a/.0),floor(a/.0));\n//  Effects of settings depend on implementation:\n//              Leonard Euler : ==0  \"This is fine, I invented this\"\n//fract(Congruental Generator): ==0  \"No it is not fine! Null-State equals death!\"\n//          Low IEEE precision: ==1  \"Where is my hash! Screw you, all of you!\"\n//     Heuristic large epsilon: ==2  \"Whatever, this is as close as we can get!\"\n//       Euclidean Unit circle: ==-1 \"Null-State-death only affects me tangentially\"\n#define TestDivideByZeroCase -1\n\n//control speed of time, to make time static or negative.\n#define TimeS (iTime-1.)\n//-1. makes a better thumbnail for the first frame\n//-1. also offsets from [the initial VOID-state]:\n// Because Shadertoy has the PATHETIC error that iTime and iGlobalTime are not initialized.\n// iTime and iGlobalTime are initially ==NullPointer != 0. \n// This confuses many webgl implementations, eg: when using i=cos(acos(-1.)+iTime);\n// cos(acos(-1.)+0.)==-1. is fine.\n// (NullPointer +0.)!= 0. confuses many implementations. -> black screen on iTime==0.\n\n//  ColorgGradient==x>0, shows different gradients, index[1..4], points to a 2*2 matrix:\n//   2 gradients are euclidean sqrt(a), 2 of them 1/dot(a,a)\n//   2 gradients them are fract(a), 2 of them are not.\n//  ColorgGradient==0  is, by your powers combined, Captain Planet, all of the above.\n//  ColorgGradient==-1 is, a (disappearing) ring-variant of ColorgGradient==0\n//  ColorgGradient==-1 shows a spherical [Bounding Volume] in white/yellow\n#define ColorGradient 0\n\n//  HasMix linear interpolates between a hasn and a PolynomialWithExponent3\n#define MixHashPoly3 u5(cos(TimeS*0.61))\n//#define MixHashPoly3 .0\n\n//sub-pixel blur\n#define fsaa 14./min(iResolution.x,iResolution.y)\n\n//swivel view, make .y horizontal, more horizontal ScreenSpace for higher exponents.\n#define ViewSvivel\n//View.Zoom\n#define ViewZoom 5.\n//View.Frame\n//#define fra(u) (u-.5*iResolution.xy)*ViewZoom/iResolution.y\n\n/* end__.Manual.Parameters\n   start.Const.Comm\n*/\n\n//These buffer addresses must be the same for all pages\n// or else contexts and pointers are a mess.\n// Comments describe what to expect to read from these addresses:\n//\n//Current Position\n#define LastPosition   ivec2(0, 5)\n//Current Forward Vector\n#define LastForward    ivec2(0, 1)\n//Last Mouse Click  .x = Click X [0, 1], \n//                  .y = Click Y [0, 1], \n//                  .z = Is Clicking [0 = false])\n#define LastMouseClick ivec2(0, 2)\n//Last Mouse Position .xy = Relative Delta Since Last Frame, \n//                    .zw = Total Delta Since Last Click\n#define LastMouseDelta ivec2(0, 3)\n//Last Rotation       (Quaternion form)\n#define LastRotation   ivec2(0, 4)\n\n#define dtl(p,b) length(p-((b)* sat(dot(p,b)/dd(b))))\n#define line(p,a,b) dtl(p-a,b-a)\n\n\n/* start.Const.Comm\n   start.Lib.Frame.9\n*/\n//library of often used functions: //ounting, index starts at 0!\n#define PI 3.14159265\n#define v0 float\n#define v1 vec2\n#define v2 vec3\n#define v3 vec4\n#define dd(a) dot(a,a)\n#define u5(a) (a*.5+.5)\n#define u2(a) (a*2.-1.)\n//dot(1,a) is a faster sum_of_vector_components in most implements:\nv0 suv(v3 a){return dot(v3(1),a);}v0 suv(v2 a){return dot(v2(1),a);}\nv0 suv(v1 a){return a.x+a.y;}//sum_of_vector_components\nv0 mav(v1 a){return max(a.y,a.x);}//max of vector\nv0 mav(v2 a){return max(a.z,mav(a.xy));}\nv0 mav(v3 a){return max(mav(a.zw),mav(a.xy));}\n#define miv(a) -mav(-a)\n//triangle wave //euclidean grid\n#define tri(a) a=abs(u2(fract(a)))\n#define grid(a) mav(tri(a))\n//clamp().special clamp.general; //clamp().pseudo.inverse\n#define sat(a) clamp(a,0.,1.)\nv0 sat2(v0 a,v1 m){a=.5*(sign(a)+m.x)*a+m.y;a=(sign(2.-a)+1.)*(a-2.)+2.;return a*.5;}\n//stretch, sphere to pill; mirror_centric, most common, atomic;\n#define stretch(u,m) .5*(sign(u)*m-u)*((sign(abs(u)-m))+1.)\n//stretchMinus; positive values do not change; stretchPlus; negatives do not change.\n#define stretchM(u,m) stretch((u*2.+m),m)*.5\n#define stretchP(u,m) stretch((u*2.-m),m)*.5\n//perpendicular ==90deg rotation\nv1 perp(v1 a){return v1(-a.y,a.x);}\n//return [perpendicular dot product], relevant for distance to line\nv0 dotp(v1 a,v1 b){return dot(perp(a),b);}\n//return distance of [u] from segment, from [a] to [b]\nv0 dSegment(v1 p,v1 a,v1 b){p-=a;b-=a;return length(p-b*sat(dot(p,b)/dd(b)));}\n//---trigonometry, rotations and (distance to) Quadratic functions.\n//(distance to quadratic is a cubic with less than 2 intersections==roots)\n#define cs(a) vec2(cos(a),sin(a))\n//mirror p at half rotated axis == cheap SINGLE 2d rotation.\n#define rs(r) mat2(sin(r+vec4(1,0,0,-1)*asin(1.)))\n//golden ratios are the best factors for hashes; phi.xy-1.=1/phi.xy\nconst v1 phi=v1(sqrt(5.)*.5)+v1(-.5,.5);\n//Not too work-save plotter for quadratic functions.\nv1 evalQuad(v1 t,v1 A,v1 B,v1 C){A=(1.-t)*(A/B+C/A);return A*A;}\n//return all x where y=f(x)=0.; Solve quadratic equation for roots \nv2 SolveQuad(v2 a){v0 e=-a.x/3.;v0 p=a.y+a.x*e,t=p*p*p\n,q=-(2.*a.x*a.x-9.*a.y)*e/9.+a.z,d=q*q+4.*t/27.;if(d>.0)\n{v1 x=(v1(1,-1)*sqrt(d)-q)*.5;return v2(suv(sign(x)\n*pow(abs(x),v1(1./3.)))+e);}v1 m=cs(acos(-sqrt(-27./t)*q*.5)/3.)\n*v1(1,sqrt(3.));return v2(m.x+m.x,-suv(m),m.y-m.x)*sqrt(-p/3.)+e;}\n//return squared distance to line segment, no normalization needed.\nv0 dLine(v1 a,v1 b,v1 p){a=a-p;b-=p;p=b-a;return dd(a+p*sat(-dot(a,p)/dd(p)));}\n#define ddb(a) (dd(d+(c+b*t.a)*t.a))\n//Get distance of [p] to palnar bezier curve (ellipse) trough Cv[A,B,C]\nv0 dBezier(v1 p,v1 A,v1 B,v1 C)//B=mix(B+v1(1e-4), B, abs(sign(B * 2.0 - A - C)));//colinear CV triviality\n{v1 a=B-A,b=A-B*2.+C,c=a*2.,d=A-p;v2 k=v2(3.*dot(a,b),2.*dd(a)+dot(d,b),dot(d,a))/dd(b),\n t=sat(SolveQuad(k));return sqrt(miv(v2(ddb(x),ddb(y),ddb(z))));}\n//---window function & curve fittings.y:  https://www.shadertoy.com/view/Xtscz7\n#define bma(b,a,c) (((b)-(a))*(c)+a)\n// float Cosine(float x, float a, float b){return (b-a)*(1.-cos(x*acos(-1.)))*.5 + a;}\n#define wCosine(x,a,b) (bma(b,a,(1.-cos(x*acos(-1.)))*.5)\n// float Linear(float x, float a, float b){return  a*(x*(b/a-1.)+1.);}//doesnt look too good.\n#define wLinear(x,a,b) a*(x*(b/a-1.)+1.)\n//Smoothstep(0,1,x), without sat(a), unclamped scaled Hermite3;\n#define wSs2(x) (x)*(x)*(3.-2.*(x))\n#define wSs(x,a,b) wSs2((x)-(a)/((b)-(a)))\n//this is not too useful, without sat it sucks, unless you tsselate with simple interval.\n//\n//lower lipschitz == less likely spheretracking overestimation.\n//most general, smoothest most excessive, most zigzag, lowest lipschitz\n#define wHermiteD(x,a,b,e,f) (b+.5*x*(e+b-a+x*(a-b+e+x*3.*(e*3.+f+x*5./3.*(-e*3.-f+x*.4*(e*3.+f))))))\n#define wHermite(x,a,b,c,d) HermiteD(x,a,b,(c-b),(a-d))\n//special case of Hermite(), with a smooth .5 average. medium zigzag\n#define wCatmullRom(x,a,b,c,d) ((((d-a+3.*(b-c))*x+(2.*(a+c+c)-d-5.*b))*x+(c-a))*.5*x+b)\n//efficient and smooth 2nd derivative, least zigzag, highest lipschitz \n#define wCubic(x,a,b,c,d) ((((d-c-a+b)*(x-1.)+a-b)*x+(c-a))*x+b)\n//Cosine() is smoother than Cubic()\n//fast good monochrome distance field visualization.\nv3 rg(v3 c){v3 b=smoothstep(fsaa,-fsaa,c);\n return mix(fract(c*4.),b,.5+(atan(c))/acos(-1.));}\n//return y=f(a,m); m.xyzw coefficients of GeneralPoynomWithExponent3==f();\nv0 p3(v0 a,v3 m)\n//{return m.x+a*m.y+a*a*m.z+a*a*a*m.w;//lazy, worst\n//{return dot(vec4(1),m*vec4(1.,a*vec3(1,a*vec2(1.,a))));//overly explicit vector processor\n{return dot(vec4(1),m*vec4(1.,a,a*a,a*a*a));//explicit vector processor\n//{return m.x+a*(m.y+a*(m.z+a* m.w));//explixit MAD() (better precision)\n ;}//#define p3(u,f) (f.x+u*f.y+(u*u)*f.z+(u*u*u)*f.w)\n//---hash\n#define hs vec4(1031,.1030,.0973,.1099)\n//h* hashes, fast mediocre, better for mobile gpu, Sans Euclid, without trigonometry.\nv0 h11(v0 p){v2 f=fract(v2(p)*hs.y);f+=dot(f,f.yzx+19.19)\n;return fract((f.x+f.y)*f.z);}\nv2 hash33(v2 a){a=fract(a*hs.xyz);a+=dot(a,a.yxz+19.19);\n return fract(a.zyx*(a.xxy+a.yzz));}//https://www.shadertoy.com/view/4djSRW\n\nv3 h44(v3 a){a=fract(a*hs);a+=dot(a,a.wzxy+19.19);\n return fract(a.zywx*(a.xxyz+a.yzzw));\n}//https://www.shadertoy.com/view/4djSRW\n\n/* End__.Lib.Frame.9\n   Start.Special\n*/\n\n//subroutines that are too special to enter the Library,\n// to not be generalized or specialized (for now).\n\n//a mix (interpolate between) a polynom.y and a hash.y\n//float ph(float a,vec4 m){return mix(h11(a),p3(a,m),MixHashPoly3);}\n\nfloat sharp(float d,float b){float r=(1./min(iResolution.x,iResolution.y))*b\n;return smoothstep(r,-r,d);}\n\nfloat lineS(vec2 uv, vec2 a, vec2 b,float t){return sharp(line(uv,a,b)-t,1.);}\n\n/* End__.Special\n   Start.Main\n*/\n\n//optics\nstruct Ray{vec3 o,d;};    \nstruct Cam{vec3 right,up,forward,origin;};    \nRay CamGetRay(in Cam camera, vec2 u) \n{u=u2(u)\n;u.x*=(iResolution.x / iResolution.y)\n;Ray r\n;r.o=camera.origin\n;r.d=normalize(u.x*camera.right+u.y*camera.up+camera.forward*2.5)\n;return r;}\nCam CamBuild()\n{Cam c\n;c.origin =texelFetch(iChannel0, LastPosition, 0).xyz\n;c.forward=texelFetch(iChannel0, LastForward, 0).xyz\n;c.right  =normalize(cross(c.forward, vec3(0,1,0)))\n;c.up     =normalize(cross(c.right,c.forward))\n;return c;}\n\n// Scene\nvec3 RotX(in vec3 p, float a){float s=sin(a);float c=cos(a)\n;return vec3(p.x,(c*p.y)-(s*p.z),(s*p.y)+(c*p.z));}\nvec3 RotY(in vec3 p, float a){float s=sin(a);float c=cos(a)\n;return vec3((c*p.x)+(s*p.z),p.y,(-s*p.x)+(c*p.z));}\n\nvec3 Repeat(vec3 p, vec3 c){return mod(p,c)-(.5*c);}\n\nfloat Box(vec3 p,vec3 b){vec3 d=abs(p)-b\n;return min(max(d.x,max(d.y,d.z)),.0)+length(max(d,.0));}\nfloat RoundBox(vec3 p,vec3 b){return length(max(abs(p)-b,.0));}\nfloat HexPrism(vec3 p, vec2 h, float s){\n vec3 q=abs(p);return max(q.z-h.y,max((q.x*s+q.y*.5),q.y)-h.x);}\n\nfloat Steps(vec3 p)\n{vec3  o=vec3(0)\n;float s=ClipFar\n,w=14.\n;for(int i=0;i<10;++i) \n {s=min(s,Box(p+o-vec3(0,0,w),vec3(8,.25,w))) \n ;o-=vec3(0,.35,1);w-=1.;\n}float g=HexPrism(RotY(p+vec3(-8.5,0,-14),PI*.5),vec2(3.4,.5), .2)\n,b=Box(p-vec3(8.5,0,-1.5),vec3(.5,1,1.5))\n;return min(s,min(g,b));}\n\nfloat Base(vec3 p)\n{float h=mix(.0,cos(p.x*.15),step(20.,p.y))\n,l=Box(p-vec3(10,0  ,44),vec3(33,3.4  ,33))\n,u=Box(p-vec3(10,3.4,61),vec3(21,3.4  ,33))\n,r=Box(p-vec3(10,19 ,41),vec3(21,6.5+h,13))\n;return min(l,min(u,r));}\n\nfloat Walls(vec3 p)//h=height modifier    w=wall  c=cutout  r=ramp\n{float h=cos(clamp((p.z+40.)*.03,.0,PI*.5))*2.\n,wA=Box(p-vec3(24  ,0   , 10 ),vec3( 3., 6.8+h,50.))\n,wB=Box(p-vec3(28  ,0   , 10 ),vec3( 1.,13.5  ,50.))\n,wC=Box(p-vec3(20  ,0   , 50 ),vec3(20.,13.5  , 1.))\n,wD=Box(p-vec3(21.5,0   ,-14 ),vec3(.5 , 7.8+h,26.))\n,rA=Box(p-vec3(21  ,6.7 ,-15 ),vec3( .2,  .1  ,27.))\n,rB=Box(p-vec3(14  ,13.4, 28 ),vec3(14.,  .1  , .2))\n,wE=Box(p-vec3(10  ,0   ,28.5),vec3(20.,13.5  , .5))\n;vec2 c=2.-vec2(RoundBox(Repeat(p-vec3(0,1.5, 0),vec3(0  ,0,8)),vec3(22,1  ,1)),\n                RoundBox(Repeat(p-vec3(0,8  ,30),vec3(9.6,0,0)),vec3( 1,1.5,4)));\n wE=max(wE,c.y)\n;float w=min(wA,min(wB,min(wC,min(wD,wE))))\n,r=min(rA,rB)\n;return min(r, max(w,c.x));}\n\nfloat Hallway(vec3 p){return min\n(Box(p-vec3(24,0,-30),vec3( 2,5,70))\n,Box(p-vec3( 0,0, 40),vec3(26,5, 2)));}\n\n//distance field gradient\nvec2 df(vec3 p){vec3 q=vec3(abs(p.x),p.y,abs(p.z))-vec3(0,0,40)\n;float r=ClipFar\n;r=min(r,min(Steps(q),Steps(RotY(q+vec3(-12,-3.4,-20),PI*1.5))))\n;r=min(r,Base(q))\n;r=min(r,Walls(q))\n;r=max(r,-Hallway(q))\n;return vec2(min(p.y,r),u5(sign(p.y-r)));}//p q <- mirror symmetry\n//distance field gradient + player object (is simple sphere)\nvec2 dfs(vec3 p,vec3 c){return min(df(p),length(p-c)//a sphere around cameraPosition\n-1.);}//casts a shperical shaddow, radius 1.\n//dfs()is only used to cast shadows.\n//seeing self slows down spheretracking \n//animating self is low priority\n\nvec2 March(in Ray r)\n{vec2 d=vec2(ClipNear,-1)\n;for(;d.x<ClipFar;)//this is VERY bad... i am surprised that it runs as well as it does.\n {vec3 p=r.o+r.d*d.x\n ;vec2 sdf=df(p)\n ;if(sdf.x<eps)return vec2(d.x,sdf.y)\n ;d.x+=sdf.x;\n}return d;}\n\n//return normal at p, == first derivative of distance field\nvec3 dfd1(vec3 p,float d){vec2 e=vec2(1e-3*d,0)\n;return normalize(vec3(df(p+e.xyy).x-df(p-e.xyy).x,\n                       df(p+e.yxy).x-df(p-e.yxy).x,\n                       df(p+e.yyx).x-df(p-e.yyx).x));}\n\nfloat Shadow(vec3 p,float d,vec3 c)\n{float s=1.,h=mix(1.,.3,sat(d/3.))\n;for(int i=0;i<64;++i)\n {float e=dfs(p+(SunLightDir*h),c).x\n ;s=min(s,(32.*e)/h);h+=e\n ;if(e<0.001)break;\n}return sat(s);}\n\n//this is not gradientAO //this is only SSAO;  https://www.shadertoy.com/view/Xd2BDt\nfloat SampleAO(in Cam c,vec3 p, vec3 n, vec2 u,float O){Ray r=CamGetRay(c,u)\n;vec3 v=r.o+r.d*O-p;return sat(max(.0,dot(n,normalize(v))-AOBias)\n*(1./(1.+length(v)*AODistScale))*AOIntensity);}\n\nfloat AmbientOcclusion(in Cam c,vec2 u,vec3 p,vec3 n,float O)\n{float a=.0,s=(AOSampleRadius/p.z)/float(AOSampleN),r=s,t=(O /ClipFar)*(PI*2.)\n;for(int i=0;i<AOSampleN;++i,r+=s,t+=2.4)a+=SampleAO(c,p,n,u+vec2(sin(t),cos(t))*r,O)\n;return sat(a/float(AOSampleN));}\n\nvec3 Sky(in Ray r)\n{float sun=pow(abs(dot(r.d, SunLightDir)),32.)\n;vec3 sky=mix(vec3(.3,.6,.9),vec3(.2,.4,.7),sat(abs(r.d.y)*2.))\n;return mix(sky,vec3(1),sun);}\n\n//norm, dir, shadow,ao,roughness\nvec3 Lighting(in vec3 n,in vec3 d,float s,float a,float r)\n{return SunLightCol*s*1.*max(.0,dot(n,SunLightDir))\n       +AmbLightCol*a*.1*max(.0,dot(n,AmbLightDir))\n       +SkyLightCol*a*.3*sat(.5+(.5 * n.y));\n       +vec3(pow(max(.0,dot(d,reflect(SunLightDir,n))),r)*s);}\n\nvec3 CalcExpFog(vec3 c, vec3 p, Ray r)\n{return mix(c,Sky(r),1.-exp(-distance(r.o,p)*.0025));}\n\n////https://www.shadertoy.com/view/XlcSz2\nvec2 CheckerIntegral(vec2 x){x*=.5;return floor(x)+max(u2(fract(x)),.0);}\nfloat Checkers(in vec2 p){vec2 fw = fwidth(p)//=max(abs(dFdx(p)),abs(dFdy(p))); \n;float w =max(fw.x,fw.y);vec2 i=(CheckerIntegral(p+0.5*w)-CheckerIntegral(p-0.5*w))\n;i/=w;return i.x+i.y-(2.0*i.x*i.y);}\n\nvec3 Texture(in vec3 p, in vec3 n, in float m)\n{vec3 checker=vec3(clamp(Checkers(p.xz),.4,.7))\n;vec3 blank  =vec3(1.)\n;return mix(checker,blank,m);}\nvec3 Shade(in Cam c,in vec2 u,in Ray r,in vec3 n,vec3 m)//m=(depth,id,shadow)\n{vec3 s=Sky(r);if(m.x < (ClipFar*.9))\n {vec3 p=r.o+r.d*m.x\n ;s=Texture(p,n,m.y)//diffuse\n ;s*=Lighting(n,r.d,m.z,pow(1.-AmbientOcclusion(c,u,p,n,m.x),3.),s.r*22.)//AO\n ;s=CalcExpFog(s,p,r);//fog\n}return pow(s,vec3(1./2.2));}\n\n//debug overlay. this was in buffD.\n#ifdef DRAW_DEBUG_OVERLAY\nvec4 drawMouse(in vec2 U){vec4 c=vec4(0)\n;vec2 u=U/iResolution.xy\n;vec3 m = texelFetch(iChannel0, LastMouseClick, 0).xyz\n;float clickCircle=sharp(distance(u,m.xy)-.01,1.)\n;c=mix(c,vec4(0,0,0,1),clickCircle)\n;if(m.z>.5)\n {vec2 totalDelta  =(iMouse.xy / iResolution.xy) - m.xy\n ;vec4 lastDelta   =texelFetch(iChannel0, LastMouseDelta, 0)\n ;vec2 currentDelta=totalDelta - lastDelta.zw\n ;float lastDeltaLine = lineS(u, m.xy, m.xy + lastDelta.zw, 0.005)\n ;c=mix(c,vec4(0,1,0,1),lastDeltaLine)\n ;float dt=lineS(u,m.xy + lastDelta.zw, m.xy + lastDelta.zw + currentDelta, 0.005)\n ;c=mix(c,vec4(1,0,0,1),dt);\n }return c;}\nvec4 drawAxis(in vec2 p)// Draw the right-handed coordinate axis\n{vec4 c=vec4(0)\n;if(all(lessThan(p,vec2(200.))))//if(xy.x<200.&& xy.y<200.){\n {vec3 f=texelFetch(iChannel0,LastForward,0).xyz\n  //todo, fix some leftover duped camera fetching of above line\n ,r=normalize(cross(f,vec3(0,1,0)))\n ;vec2 u=normalize(cross(r,f)).xy\n ;vec4 x=vec4(1,0,0,1)*lineS(p, r.xy*vec2(50)+50.,vec2(50.),1.)\n ,     y=vec4(0,1,0,1)*lineS(p, u   *vec2(50)+50.,vec2(50.),1.)        \n ,     z=vec4(0,0,1,1)*lineS(p,-f.xy*vec2(50)+50.,vec2(50.),1.)    \n ;c=mix(c,y,y.a); c=mix(c,x,x.a);c=mix(c,z,z.a);\n }return c;}\nvec4 debugOverlay(vec4 O,vec2 u)\n{O=vec4(1,1,1,0)\n;vec4 m=drawMouse(u),a=drawAxis(u);O=mix(O,m,m.a);O=mix(O,a,a.a);return O;}\n#endif\n\n//[r] input is a Ray (of a fragment)\n//[c] input is a camera position (camera casts a shadow)\n//[n] outout <- surface Normal\n//returns vec3(non_normalized_distance,SurfaceID,shadowIntensity)\n// these values are what you may want to store in a few \n// deferred buffers, in lower resolutions or lower color depth...\nvec3 MarchB(inout vec3 n,Ray r,vec3 c) //used to be mainimage of buffC\n{float i=.0,s=1.\n;vec2  m=March(r)//todo, March() should just return p and d?\n;if(m.x<ClipFar)//if a surface was hit\n {vec3 p=r.o+r.d*m.x\n ;n=dfd1(p,m.x)//get surface normal\n ;s=Shadow(p,m.x,c);//get shadow\n}return vec3(m.xy,s);}\n\n//note;\n//camera is bufered, because Shade() does SSAO, and not gradientAO\n// and SSAO needs the camera data.\nvoid mainImage(out vec4 O,in vec2 U)\n{vec2 u=U.xy/iResolution.xy\n;Cam c=CamBuild();\n;Ray r=CamGetRay(c,u)\n;vec3 n=vec3(0)\n,s=MarchB(n,r,c.origin)\n,f=Shade(c,u,r,n,s)//SSAO and fog\n#ifdef DRAW_DEBUG_OVERLAY\n;vec4 d=debugOverlay(O,U)\n;O.rgb=mix(f,d.rgb,d.a*.85)\n#else\n;O.rgb=f\n#endif    \n;O.w=1.;}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//parent: https://www.shadertoy.com/view/XtXyW4\n\n//notes to self:\n//- The  trick is to seperate user inpput and physics in 2 buffers.\n//- if(momentum is strange) unpause time, dummy! (hapens too often)\n\n/*\nfirst person camera and SDF-based physics. \nRough and definitely unoptimized.\nMouse: Look Around \nWASD/Arrows: Movement\nSpace: Jump \nShift: Speed Boost \n*/\n\n//#define INVERT_Y \n//#define FREE_FLY           // Only if physics is disabled\n#define PHYSICS_ENABLED\n\n//Current Position\n#define LastPosition   ivec2(0, 5)\n//Current Forward Vector\n#define LastForward    ivec2(0, 1)\n//Last Mouse Click  .x = Click X [0, 1], \n//                  .y = Click Y [0, 1], \n//                  .z = Is Clicking [0 = false])\n#define LastMouseClick ivec2(0, 2)\n//Last Mouse Position .xy = Relative Delta Since Last Frame, \n//                    .zw = Total Delta Since Last Click\n#define LastMouseDelta ivec2(0, 3)\n//Last Rotation       (Quaternion form)\n#define LastRotation   ivec2(0, 4)\n//See the other buffers (except for Buf D) for an example \n\n#define Is(x) (ivec2(U)==x)\n\n//todo, default must be ESDF\nconst float KEY_SHIFT=16.\n,KEY_W=87.,KEY_A=65.,KEY_S=83.,KEY_D=68.\n,KEY_LEFT =37.,KEY_UP=38.,KEY_RIGHT=39.,KEY_DOWN=40.\n,walk=4.,run=8.\n;const vec3 StartPos=vec3(0,4,0)\n,StartDir=vec3(0,0,1)\n;const vec2 StartMouse=vec2(.5)\n,CameraSensitivity=vec2(3,1);\n\nvec4 Quat(vec3 a,float b){return normalize(vec4(b*.5*sin(a),cos(a)));}\nvec4 QxQ(vec4 a,vec4 b){return normalize(vec4((a.w*b.xyz)\n+(b.w*a.xyz)+cross(a.xyz,b.xyz),(a.w*b.w)-dot(a.xyz,b.xyz)));}\nvec3 Rotate(vec4 q,vec3 v){vec3 t=2.*cross(q.xyz,v)\n;return v+(q.w*t)+cross(q.xyz,t);}\n\nvec3 GetLastPosition()  {return texelFetch(iChannel0,LastPosition  ,0).xyz;}\nvec3 GetLastForward()   {return texelFetch(iChannel0,LastForward   ,0).xyz;}\nvec3 GetLastMouseClick(){return texelFetch(iChannel0,LastMouseClick,0).xyz;}\nvec4 GetLastMouseDelta(){return texelFetch(iChannel0,LastMouseDelta,0);}\nvec4 GetLastRotation()  {return texelFetch(iChannel0,LastRotation, 0);} \nfloat kp(float key){return texture(iChannel3,vec2((key+.5)/256.,0)).r;}\n\n//Cam.update\nvoid SetupFirstFrame(in vec2 U, inout vec4 O)\n{     if(Is(LastPosition  ))O.xyz=StartPos\n;else if(Is(LastForward   ))O=-vec4(0,0,1,0)\n;else if(Is(LastMouseClick))O.xyz=vec3(StartMouse,0)\n;else if(Is(LastMouseDelta))O=vec4(0)\n;else if(Is(LastRotation  ))O=vec4(0,0,0,1)\n;return;}\n\n#ifdef PHYSICS_ENABLED\nvoid UpdatePosition(inout vec4 pos)\n{pos.xyz=texelFetch(iChannel1, ivec2(0),0).xyz;}//read from buffB\n#else\nvoid UpdatePosition(inout vec4 pos)\n{vec3 lastPos   =GetLastPosition()\n;vec3 dirForward=GetLastForward()\n;vec3 dirRight  =ross(dirForward,vec3(0,1,0))\n;float pressForward=max(kp(KEY_W),kp(KEY_UP))  -max(kp(KEY_S),kp(KEY_DOWN))\n;float pressRight  =max(kp(KEY_A),kp(KEY_LEFT))-max(kp(KEY_D),kp(KEY_RIGHT))\n;vec3 direction=dirForward*pressForward-dirRight*pressRight\n;float delta=walk*iTimeDelta*step(.001,length(direction))\n;if(delta>.0)\n {delta*=max(1.,kp(KEY_SHIFT)*run)\n ;direction=normalize(direction)\n ;pos.xyz=lastPos+(direction*delta);        \n #ifndef FREE_FLY\n pos.y=StartPos.y;\n #endif\n }}\n#endif\n\nvec4 UpdateForward(vec4 o){return vec4(Rotate(GetLastRotation(),vec3(0,0,1)),.0);}\n\nvec4 UpdateMouseClick(vec4 o, vec2 m)\n{float l=GetLastMouseClick().z\n;float isClicked = step(.5,iMouse.z)//todo: mouse and iMouse, i smell bad style\n;if((isClicked>.5)&& l<.5)o.xy=vec2(m.xy/iResolution.xy)\n;o.z=isClicked\n;return o;}\n\nvec4 UpdateMouseDelta(inout vec4 o,vec2 mouse)\n{vec3 m=GetLastMouseClick()\n;vec2 t=mouse.xy/iResolution.xy-m.xy\n,l =GetLastMouseDelta().zw\n;if(m.z<.5)return vec4(o.xy,0,0)\n;return vec4(t-l,t);}\n\nvec4 UpdateRotation(inout vec4 fragColor)\n{if(GetLastMouseClick().z<.5)return fragColor\n;vec4 lastQuat  =GetLastRotation()\n;\n vec2 mouseDelta=GetLastMouseDelta().xy*CameraSensitivity\n     ;\n#ifdef INVERT_Y\n;mouseDelta=-mouseDelta\n#endif\n;vec3 forw=GetLastForward()\n;vec3 righ=normalize(cross(forw,vec3(0,1,0)))\n;vec3 up  =normalize(cross(righ,forw))\n;lastQuat=QxQ(Quat(up,-mouseDelta.x),lastQuat)\n;return QxQ(Quat(righ,mouseDelta.y),lastQuat);}\n//todo: am i seeing this right,. it uses quaternion rotation math and types,\n//       for 2 euler rotations?\n//no, its 22 o clock, i must be hallucinating.\n\nvoid mainImage(out vec4 O, in vec2 U)\n{O=texelFetch(iChannel0,ivec2(U),0)\n;if(iFrame==0)SetupFirstFrame(U,O)\n;else if(Is(LastPosition  ))UpdatePosition(O)\n;else if(Is(LastForward   ))O=UpdateForward(O)\n;else if(Is(LastMouseClick))O=UpdateMouseClick(O,iMouse.xy)\n;else if(Is(LastMouseDelta))O=UpdateMouseDelta(O,iMouse.xy)\n;else if(Is(LastRotation  ))O=UpdateRotation(O);}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//parent: https://www.shadertoy.com/view/XtXyW4\n\n/**\n * -----------------------------------------------------------\n * -- Physics Buffer\n * -----------------------------------------------------------\n *\n *     [0, 0] : Physics Position\n *     [0, 1] : Current Velocity\n *     [0, 2] : Last Space Button Press\n *\n * -- Known Issues\n *\n *     - Corners (both outward and inward) are trouble spots. There is\n *       code that tries to prevent any issues from them, but it is not flawless.\n *     - Jumping (primarily head collision/prediction) needs further testing\n *       and probably a complete rewrite.\n *     - If falling directly along a wall, can fall into it and become stuck.\n *       This is because falling/gravity detection tests only the 'feet' location\n *       and does not account for the width of the player bounds. Then WASD movement\n *       considers width and is stuck. Either requires more SDF samples for falling\n *       or perhaps use an offset for WASD detection?\n */\n\n#define FarClip      300.0\n//LocPosition must be 0, no clue why its made like this\n#define LocPosition  ivec2(0, 0)\n#define LocVelocity  ivec2(0, 6)\n#define LocSpace     ivec2(0, 7)\n#define Load(x)      texelFetch(iChannel1, x, 0)\n#define Is(x)        (ivec2(U)==x)\n\nconst float Gravity       = -9.86;\nconst float JumpImpulse   = -Gravity * 0.5;\nconst float Friction      = 0.7;\nconst float PI            = 3.14159265;\nconst float PlayerBounds  = 2.0;\nconst float MoveSpeed     = 1.0;\nconst float BoostModifier = 2.0;\n    \nconst vec3  FeetPosition  = vec3(0.0, -PlayerBounds, 0.0);\nconst vec3  HeadPosition  = vec3(0.0, PlayerBounds * 0.5, 0.0);\nconst vec3  StartPos      = vec3(0.0, 4.0, 0.0);\n\n//------------------------------------------------------------------------------------------\n// Keyboard\n//------------------------------------------------------------------------------------------\n\nconst float KEY_W    =87.;\nconst float KEY_A    =65.;\nconst float KEY_S    =83.;\nconst float KEY_D    =68.;\nconst float KEY_LEFT =37.;\nconst float KEY_UP   =38.;\nconst float KEY_RIGHT=39.;\nconst float KEY_DOWN =40.;\nconst float KEY_SHIFT=16.;\nconst float KEY_SPACE=32.;\n\nfloat ikp(float key){return texture(iChannel3, vec2((key+.5)/256.,.0)).r;}\nfloat IsKeyToggled(float key){return texture(iChannel3, vec2((key+.5)/256.,2.)).r;}\n\n// Cam\nvec3 Camera_GetPosition(){return texelFetch(iChannel0, ivec2(0, 0), 0).xyz;}\nvec3 Camera_GetForward(){return texelFetch(iChannel0, ivec2(0, 1), 0).xyz;}\n\n//set\nvec3 RotX(in vec3 p, float a){float s = sin(a);float c = cos(a);    \n    return vec3(p.x\n              ,(c * p.y) - (s * p.z)\n              ,(s * p.y) + (c * p.z));}\n\nvec3 RotY(in vec3 p, float a){\n    float s = sin(a); float c = cos(a);    \n    return vec3((c * p.x) + (s * p.z)\n               ,p.y\n              ,(-s * p.x)+(c * p.z));}\n\nvec3 Repeat(vec3 p, vec3 c){return mod(p,c)-.5*c;}\n\nfloat Box(vec3 p, vec3 b){vec3 d=abs(p)-b;\n return min(max(d.x,max(d.y,d.z)),.0)+length(max(d,.0));}\n\nfloat HexPrism(vec3 p,vec2 h,float s){vec3 q=abs(p);\n return max(q.z - h.y, max((q.x * s+q.y*.5), q.y) - h.x);}\n\nfloat RoundBox( vec3 p, vec3 b, float r ){\n  return length(max(abs(p)-b,0.0))-r;}\n\n//todo use hg_sdt stair union! or just a constrained pmod.\n//wait it uses hex prisms for the stair collision box, thats cheap!\nfloat Steps(vec3 p){\n float s=FarClip,w=14.;\n vec3  o=vec3(0);    \n for(int i = 0;i<10;++i){\n  s=min(s,Box(p+o-vec3(0,0,w),vec3(8.,.25,w)));  \n   o+=vec3(.0,-.35,-1.);\n   w-=1.;}\n float g=HexPrism(RotY(p+vec3(-8.5,.0,-14.),PI*.5),vec2(3.4,.5),.2);\n float b=Box(p-vec3(8.5,.0,-1.5),vec3(.5,1.,1.5));\n return min(s,min(g,b));}\n\n\nfloat Base(vec3 p){\n    float h = mix(0.0, cos(p.x * 0.15), step(20.0, p.y));\n    \n\tfloat lowerBase = Box(p - vec3(10.0, 0.0, 24.0), vec3(33.0, 3.4, 13.0));\n    float upperBase = Box(p - vec3(10.0, 3.4, 41.0), vec3(21.0, 3.4, 13.0));\n    float roof      = Box(p - vec3(10.0, 19.0, 41.0), vec3(21.0, 6.5 + h, 13.0));\n\n    return min(lowerBase, min(upperBase, roof));\n}\n\nfloat Walls(vec3 p){\n float h = cos(clamp((p.z + 40.0) * 0.03, 0.0, PI * 0.5)) * 2.0;\n float wA = Box(p - vec3(24.0, 0.0, 10.0), vec3(3.0, 6.8 + h, 50.0));\n float wB = Box(p - vec3(28.0, 0.0, 10.0), vec3(1.0, 13.5, 50.0));\n float wC = Box(p - vec3(20.0, 0.0, 50.0), vec3(20.0, 13.5, 1.0));\n float wD = Box(p - vec3(21.5, 0.0, -14.0), vec3(0.5, 7.8 + h, 26.0));\n float wE = Box(p - vec3(10.0, 0.0, 28.5), vec3(20.0, 13.5, 0.5));\n float cA = RoundBox(Repeat(p - vec3(0.0, 1.5, 0.0), vec3(0.0, 0.0, 8.0)), vec3(22.0, 1.0, 1.0), 2.0);\n float cC = RoundBox(Repeat(p - vec3(0.0, 8.0, 30.0), vec3(9.6, 0.0, 0.0)), vec3(1.0, 1.5, 4.0), 2.0);\n float rA = Box(p - vec3(21.0, 6.7, -15.0), vec3(0.2, 0.1, 27.0));\n float rB = Box(p - vec3(14.0, 13.4, 28.0), vec3(14.0, 0.1, 0.2));\n wE = max(wE, -cC);\n float w = min(wA, min(wB, min(wC, min(wD, wE))));\n float r = min(rA, rB);\n return min(r, max(w, -cA));}\n\nfloat Hallway(vec3 p){\n float hA=Box(p-vec3(24.,0,-30),vec3(2,5,70));\n float hB=Box(p-vec3(0,0,40),vec3(26,5,2));\n return min(hA, hB);}\n\nfloat Scene(vec3 p){\n vec3 absp = vec3(abs(p.x),p.y,abs(p.z));\n absp -= vec3(0,0,40);\n float result = FarClip;\n float steps   = min(Steps(absp), Steps(RotY(absp + vec3(-12.0, -3.4, -20.0), PI * 1.5)));\n float base    = Base(absp);\n float walls   = Walls(absp);\n float hallway = Hallway(absp);   \n result = min(result, steps);\n result = min(result, base);\n result = min(result, walls);\n result = max(result, -hallway);\n    return min(p.y,result);\n}\n\nvec3 SceneNormal(vec3 p){\n vec2 e=vec2(.001,.0);\n return normalize(vec3(Scene(p+e.xyy)-Scene(p-e.xyy),\n                       Scene(p+e.yxy)-Scene(p-e.yxy),\n                       Scene(p+e.yyx)-Scene(p-e.yyx)));}\n\n// Physics\nvec3 gravity(inout vec3 p, inout vec3 v){//Positio Velocity\n float d=Scene(p+FeetPosition);\n    \n    \n  //v.y=mix(v.y+Gravity*iTimeDelta,0.,(sign(d)*.5+.5));\n    \n  if(d>.0)v.y=v.y+Gravity*iTimeDelta;\n  else v.y =0.;\n    \n\n    //p.y-=d*u5((-sign(d)));\n    \n    p.y-=d*(-sign(d)*.5+.5);\n return v;\n}\n\nvec3 movement(in vec3 p, in vec3 f, vec3 v){\n f=normalize(vec3(f.x,0,f.z));\n float pf=max(ikp(KEY_W),ikp(KEY_UP)) -max(ikp(KEY_S),ikp(KEY_DOWN));\n float pr=max(ikp(KEY_A),ikp(KEY_LEFT))-max(ikp(KEY_D),ikp(KEY_RIGHT));\n vec3  direction=normalize((f*pf) -cross(f,vec3(0,1,0))*pr);\n float d    =MoveSpeed*step(.001,length(direction));\n if(d>.0){\n  d*=max(1.,ikp(KEY_SHIFT)*BoostModifier);\n  vec3 m=v +direction*d;\n  vec3 u = p+m*iTimeDelta;\n  if(Scene(u)<(PlayerBounds*.25)){\n   m.xz *=vec2(1.)-abs(SceneNormal(u).xz);//prevent sticky walls\n   u=p+(m*iTimeDelta);\n   if(Scene(u)<PlayerBounds *.25)m = vec3(0);//prevent slipping into corners\n }v=m;}\nreturn v;}\n\nvec3 jump(vec3 p,vec3 v){\n float lastSpace=texelFetch(iChannel1,LocSpace,0).r;\n float currSpace=ikp(KEY_SPACE);\n if(Scene(p+FeetPosition)>.1||Scene(p+HeadPosition)<.0)return v;\n if(currSpace>lastSpace) return v+vec3(0,JumpImpulse,0);\nreturn v;}\n\nvoid mainImage(out vec4 O, in vec2 U){\n O=vec4(0);\n if(iFrame==0){if(Is(LocPosition))O=vec4(StartPos,0);return;}\n if(Is(LocSpace)){O.r=ikp(KEY_SPACE);return;}\n if(!Is(LocPosition)&&!Is(LocVelocity))return;//if this is later, it does not jump as high\n vec3 p=Load(LocPosition).xyz,v=Load(LocVelocity).xyz;//position//velelocity\n vec3 g=vec3(0,v.y,0),w=v*Friction*vec3(1,0,1);//grVelocity//dirVelocity\n w=movement(p,Camera_GetForward(),w);\n g=gravity(p,g);\n g=jump(p,g);\n v.xyz=vec3(w.x,g.y,w.z);\n if(Is(LocPosition)){O.xyz=p+(v*iTimeDelta);}\n else /*if(Is(LocVelocity))*/ O.xyz=v;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buf B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

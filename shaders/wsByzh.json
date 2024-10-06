@@ -1,0 +1,79 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1586928668",
+            "description": "Comparing effect of different filters, starting from top and clockwise: bilinear, sinc, bicubic (bspline), biquadratic.\nBlog post: https://bartwronski.com/2020/04/14/bilinear-texture-filtering-artifacts-alternatives-and-frequency-domain-analysis/ ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wsByzh",
+            "likes": 10,
+            "name": "Filtering effect comparison",
+            "published": 3,
+            "tags": [
+                "filtering"
+            ],
+            "usePreview": 1,
+            "username": "bartwronski",
+            "viewed": 1369
+        },
+        "renderpass": [
+            {
+                "code": "// Note: this code is unoptimal on purpose, zero optimizations, and demonstration only!\n\nvoid sharedGetUvAndInterp(in vec2 uv, out ivec2 uvi, out vec2 interp) {\n    uv *= iChannelResolution[0].xy;\n    uv -= 0.5;\n    interp = fract(uv);\n    uvi = ivec2(floor(uv));\n}\n\n\n#define PI 3.1415926\n\nfloat sinc(in float x) {\n\tif (x == 0.0)\n        return 1.0;\n    return sin(PI*x) / (PI*x);\n}\n\n\n\nvec3 sampleBilinear(in vec2 uv) {\n    ivec2 uvi; vec2 interp;\n    sharedGetUvAndInterp(uv, uvi, interp);\n    vec4 weights = vec4((1.0-interp.x) * (1.0-interp.y),\n                        interp.x * (1.0-interp.y),\n                        (1.0-interp.x) * interp.y,\n                        interp.x * interp.y);\n    return  texelFetch(iChannel0, uvi + ivec2(0,0),0).xyz * weights.x\n          + texelFetch(iChannel0, uvi + ivec2(1,0),0).xyz * weights.y\n          + texelFetch(iChannel0, uvi + ivec2(0,1),0).xyz * weights.z\n          + texelFetch(iChannel0, uvi + ivec2(1,1),0).xyz * weights.w;\n}\n\nvec3 sampleSinc(in vec2 uv) {\n    ivec2 uvi; vec2 interp;\n    sharedGetUvAndInterp(uv, uvi, interp);\n\n    vec3 col = vec3(0.0);\n    float weights = 0.0;\n    for (int y = -2; y <= 2; ++y) {\n        for (int x = -2; x <= 2; ++x) {\n            float effective_x = interp.x - float(x);\n            float effective_y = interp.y - float(y);\n            float window = 1.0;//sinc(effective_x / 4.0) * sinc(effective_y / 4.0);\n            float w = sinc(effective_x) * sinc(effective_y) * window;\n            col += texelFetch(iChannel0, uvi + ivec2(x,y),0).xyz * w;\n            weights += w;\n        }\n    }\n    return col / weights;\n}\n\nvec4 getBsplineWeights(in float x) {\n  \t// float w0 = 1.0/6.0 * (1.0-x) * (1.0-x) * (1.0-x);\n  \tfloat w1 = 2.0/3.0 - 0.5 * x*x * (2.0-x);\n  \tfloat w2 = 2.0/3.0 - 0.5 * (1.0-x)*(1.0-x) * (2.0-(1.0-x));\n  \tfloat w3 = 1.0/6.0 * x*x*x;\n\treturn vec4(1.0 - w3 - w1 - w2, w1, w2, w3);\n}\n\nvec3 sampleBSpline(in vec2 uv) {\n    ivec2 uvi; vec2 interp;\n    sharedGetUvAndInterp(uv, uvi, interp);\n\n    vec4 bspline_weights_x = getBsplineWeights(interp.x);\n    vec4 bspline_weights_y = getBsplineWeights(interp.y);\n    vec3 col = vec3(0.0);\n    for (int y = -1; y <= 2; ++y) {\n        for (int x = -1; x <= 2; ++x) {\n            col += texelFetch(iChannel0, uvi + ivec2(x,y),0).xyz * bspline_weights_x[x+1] * bspline_weights_y[y+1];\n        }\n    }\n    return col;\n}\n\nvec3 getBiquadraticWeights(in float x) {\n    return vec3(0.5 - x + 0.5 * x * x, x - x * x + 0.5, 0.5 * x * x);\n}\n\nvec3 sampleBiquadratic(in vec2 uv) {\n    ivec2 uvi; vec2 interp;\n    uv *= iChannelResolution[0].xy;\n    uv -= 0.5;\n    interp = uv - round(uv);\n    uvi = ivec2(round(uv));\n    \n    vec3 biquadratic_weights_x = getBiquadraticWeights(interp.x+0.5);\n    vec3 biquadratic_weights_y = getBiquadraticWeights(interp.y+0.5);\n    vec3 col = vec3(0.0);\n    \n    for (int y = -1; y <= 1; ++y) {\n        for (int x = -1; x <= 1; ++x) {\n            col += texelFetch(iChannel0, uvi + ivec2(x,y),0).xyz \n                * biquadratic_weights_x[x+1] * biquadratic_weights_y[y+1];\n        }\n    }\n    return col;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 origUV = fragCoord/iResolution.xy;\n    vec2 uv = origUV / 5.0;\n    uv += vec2(0.5, 0.48);\n    uv *= iChannelResolution[0].xy;\n    if (fract(0.15 * iTime) < 0.8)\n    \tuv = round(uv);\n    uv /= iChannelResolution[0].xy;\n    uv += vec2(sin(iTime),cos(iTime)) / 150.0 * vec2(iResolution.y/iResolution.x, 1.0);\n    vec2 phase = fract(uv * iChannelResolution[0].xy - vec2(0.5));\n\n    vec3 col = vec3(0.0);\n\n    if (origUV.x > origUV.y) {\n        if (origUV.x > 1.0 - origUV.y) {\n        \tcol = sampleSinc(uv);\n        } else {\n            col = sampleBSpline(uv);\n        }\n    } else {\n        if (origUV.x > 1.0 - origUV.y) {\n        \tcol = sampleBilinear(uv);\n        } else {\n            col = sampleBiquadratic(uv);\n        }\n    }\n    if (abs(origUV.x - origUV.y) < 0.005 || abs(origUV.x - (1.0-origUV.y)) < 0.005)\n        col = vec3(1.0);\n    \n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n// Sharpen and increase contrast for better demo\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 col = vec4(0.0);\n    col += texelFetch(iChannel0, ivec2(fragCoord), 0) * 2.0;\n    col += texelFetch(iChannel0, ivec2(fragCoord)+ivec2(-1,0), 0) * -0.25;\n    col += texelFetch(iChannel0, ivec2(fragCoord)+ivec2(1,0), 0) * -0.25;\n    col += texelFetch(iChannel0, ivec2(fragCoord)+ivec2(0,1), 0) * -0.25;\n    col += texelFetch(iChannel0, ivec2(fragCoord)+ivec2(0,-1), 0) * -0.25;\n    col = pow(abs(col), vec4(1.5)) * 1.5;\n    fragColor = col;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,203 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665666383",
+            "description": " Deluge! experiment with erosion and deposition on terrain.\n\nEvery so often, a deity intervenes and drops water on altitude!\nWater and sediments are  then transported along the terrain.\n",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "slKfWc",
+            "likes": 2,
+            "name": "Deluge simulator: make it rain!",
+            "published": 3,
+            "tags": [
+                "terrain",
+                "simulation",
+                "water",
+                "heightmap",
+                "deposition"
+            ],
+            "usePreview": 0,
+            "username": "skal",
+            "viewed": 301
+        },
+        "renderpass": [
+            {
+                "code": "//\n// Deluge simulator! Terrain and erosion\n//\n//  Starting from a 'rough' terrain, we deposit a (huge) amount of\n//  water in altitude and watch the world evolve! We store terrain\n//  and water level, sediment density, water velocity and the in/out\n//  flow on a reduce map (BufferA and BufferB).\n//\n//  There's a rather crude erosion and sediment deposition model.\n//  You're encouraged to tweak the constants, it gives quite some\n//  funny (and diverse) results.\n//\n// Some keys:\n//  'w': add new water\n//  'r': reset the terrain\n//  'u': don't show the water, just the terrain (but it's still simulated!)\n//  'm': use crude rock layer instead of full terrain\n//  's': stop the camera\n//  '1' to '5': show altitude, water, sediment, etc. For debugging.\n//  '6', '7', '8': project in 3D the water velocity, sediment, and water level\n//\n// Use the mouse to change altitude (mouse.x) and pitch (mouse.y)\n//\n//  BufferA: .x = velocity, .y = sediment amount, .w = water, .z = terrain\n//  BufferB: flow to .x:left, .y:right, .z:top, .w:bottom\n//\n//  Inspired by quite some shaders:\n//    https://www.shadertoy.com/view/tt2Szh by TekF\n//    https://www.shadertoy.com/view/wl3czN by nimitz\n//     ... and so on, and so on\n//\n// skal/ (Pascal Massimino)\n// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0\n//////////////////////////////////////////////////////////////////\n\n#define MIN_D 1e-3\n#define MAX_D 30.\n#define MAX_ITER 100\n\nbool showSediments;\nbool hideWater;\n\nconst vec3 planePos = vec3(-.5, -.5, 0.);\nconst vec3 planeScale = vec3(.0825, .08, 2.);\n\nconst float lightDistance = 20.;\nconst vec3 sunColor = vec3(1.7, 1.5, 1.2);  // bright!\nconst vec3 sunHaze = vec3(0.4, 0.5, 0.5);\nconst vec3 shadeColor = vec3(.09, .14, .17);\nconst vec3 diffuseColor = vec3(0.3, 0.6, 0.8) * 1.3;\n\n// snow\n#define lowSnowAltitude 0.5\n#define highSnowAltitude 0.8\nconst vec3 snowColor = .9 * vec3(0.72, 0.85, 0.96);\n\nconst vec3 waterColor = vec3(0.05, 0.12, 0.28) * .3;\nconst vec3 whiteWaterColor = 0.2 * vec3(.70, .72, 0.90);\n\n// cliff color and terrain\nconst vec3 cliffColor1 = vec3(0.08, 0.05, 0.03);\nconst vec3 cliffColor2 = vec3(0.10, 0.09, 0.08);\nconst vec3 rockColor = vec3(0.45, 0.30, 0.15);\nconst vec3 grassColor = vec3(0.25, 0.40, 0.10);\n\n#define ADD_FOG true\nconst vec3 fogColor = vec3(.5, .6, .9) * 0.7;\nconst vec3 fogGradient = vec3(1.2, 1.2, 1.1) * 0.3;\n#define fogAlpha 0.04  // factor controlling decay with view angle\n#define fogBeta 0.02  // decay with zenith angle\n\nconst vec3 cloudColor = 2. * vec3(1.0, 0.95, 1.0);\n\n// camera specs\n#define camDistance 4.\n#define camAltitude 1.5\n#define zoomHalfPeriod 3.\n#define zoomRamp .3\n#define focalMin 1.5\n#define focalMax 1.9\n\n//////////////////////////////////////////////////////////////////\n\nvoid spaceToPlane(inout vec2 p) {\n  p *= planeScale.xy;\n  p -= planePos.xy;\n  // we offset by 1 to avoid seeing the seam because of bilinear filtering\n  p = (fract(p) * WRAP + 1.) / iResolution.xy;\n}\n\nfloat terrain(vec2 p) {\n  float hf_details = 0.02 * (fbml(p.xy * 80., .4) - 0.1);\n  spaceToPlane(p);\n  vec4 terrain = texture(iChannel0, p.xy);\n  if (terrain.w > EPS) hf_details = 0.;\n  if (hideWater) terrain.w = 0.;\n  return hf_details + terrain.z + terrain.w + planePos.z;\n}\n\nvec4 quickTerrain(vec2 p) {\n  spaceToPlane(p);\n  return texelFetch(iChannel0, ivec2(p.xy), 0);\n}\n\nvec4 terrainValues(vec3 O, vec3 D, float d) {\n  vec3 p = O + d * D;\n  spaceToPlane(p.xy);\n  return texture(iChannel0, p.xy);\n}\n\n//////////////////////////////////////////////////////////////////\n// 'scene'\n\nfloat terrainDist(vec3 O, vec3 D) {\n  float d = EPS;\n  vec3 p = O + d * D;\n  float h = p.z - terrain(p.xy);\n  float prev_d = d;\n  for (int i = 0; i < 200; ++i) {\n    if (h <= 0.) break;  // needs refine\n    if (h < 0.001 * d || d > MAX_D) return d;\n    prev_d = d;\n    d += (h > 1e-5) ? h * 0.4 : log(abs(h) + 1.1);\n    p = O + d * D;\n    h = p.z - terrain(p.xy);\n  }\n  // refine\n  float dd = d - prev_d;\n  for (int i = 0; i < 4; ++i) {\n    dd /= 2.;\n    d -= dd;\n    p = O + d * D;\n    h = p.z - terrain(p.xy);\n    if (h > 0.) d += dd;  // step back\n    else if (-h < 0.001 * d) break;\n  }\n  return d;\n}\n\nvec2 trace(vec3 O, vec3 D) {\n  float d = terrainDist(O, D);\n  return vec2(d, (d >= MAX_D) ? 0. /*sky*/ : 1. /*terrain*/);\n}\n\n//////////////////////////////////////////////////////////////////\n// Shading and lighting\n//////////////////////////////////////////////////////////////////\n\nfloat softShadows(vec3 O, vec3 D, float dmin) {\n  float res = 1.0;\n  float d = terrainDist(O, D);\n  if (d < MAX_D) return 0.1;   // hit the terrain\n  d = 5e-2;  // 5e-2 * (1.25 ^ 20) ~= 4.33, good distance range to cover\n  for (int i = 0; i < 20; i++) {\n    vec3 p = O + d * D;\n    float h = p.z - terrain(p.xy);\n    res = min(res, 4. * h / d);\n    d *= 1.25;\n    if (d > MAX_D) break;\n  }\n  return clamp(res, 0.1, 1.0);\n}\n\n//////////////////////////////////////////////////////////////////\n\nconst vec2 EPS_T = vec2(0., 8e-3);\nvec3 terrainNormal(vec3 p) {\n  vec3 N = vec3(terrain(p.xy - EPS_T.yx) - terrain(p.xy + EPS_T.yx),\n                terrain(p.xy - EPS_T.xy) - terrain(p.xy + EPS_T.xy),\n                2. * EPS_T.y);\n  return normalize(N);\n}\n\nconst vec2 EPS_W = vec2(0., 8e-2);\nvec3 waterNormal(vec3 p) {\n  vec3 N = vec3(terrain(p.xy - EPS_W.yx) - terrain(p.xy + EPS_W.yx),\n                terrain(p.xy - EPS_W.xy) - terrain(p.xy + EPS_W.xy),\n                2. * EPS_W.y);\n  return normalize(N);\n}\n\n//////////////////////////////////////////////////////////////////\n// snow\n\nfloat computeSnow(vec3 p, in vec3 n) {  // snow amount\n  p.z += fbm(p.xy * 130., .08);  // modulate\n  // intensity of snow depends on elevation range\n  float I = smoothstep(lowSnowAltitude, highSnowAltitude, p.z);\n  // ... and slope\n  float e = smoothstep(0.75, 0.60, n.z);\n  // ... and direction of the wind\n  float o = mix(0.5, 1.5, smoothstep(0.0, 0.2, n.x));\n  return smoothstep(0.1, 0.9, I * e * o);\n}\n\nvec3 computeRock(in vec3 p, in vec3 n) {\n  float hf = fbm(p.xy * 20., .6);  // high-freq noise as 'details'\n  float hf2 = fbm(p.xy * (142. + 22. * hf), .9);\n\n  // sediment layers\n  const float stretch = 40.;\n  float h = p.z - 2.3 * dot(vec2(-.5, .2), sin(20. * p.xy));\n  float layer_mix = fbm(vec2(p.x, stretch * h), .5) * smoothstep(1., .8, n.z);\n  if (KEY(77)) return vec3(layer_mix);  // 'm' to look like mud\n\n  // exposed sedimental layers for steep cliffs\n  vec3 col = 3. * mix(cliffColor1, cliffColor2, layer_mix) * mix(1.5, 2.0, hf);\n  // rock on intermediate slopes\n  col = mix(col, rockColor * mix(0.25, 0.50, hf), smoothstep(0.70, 0.90, n.z));\n  // grass on flat area\n  col = mix(col, grassColor * mix(0.08, 0.35, hf), hf2 * smoothstep(0.75, 1.00, n.z));\n  return col;\n}\n\nvec3 computeWater(vec3 p, vec3 dir, vec3 n, float water, vec3 col) {\n  vec2 pos = p.xy + 1.0 * vec2(noise(p.xy / 100.), 0.);  // slightly displaced\n  float speed = texture(iChannel0, pos).x;\n  // make the water appear whiter on far-moving area\n  vec3 wCol = mix(waterColor, 10. * whiteWaterColor, smoothstep(0.0, 0.1, speed * n.z));\n  // add some coastal delineation\n  wCol = mix(wCol, vec3(8.0, 9.2, 10.2), smoothstep(0.003, 0.0, water));\n  return mix(col, wCol, smoothstep(.0, .03, water));\n}\n\nvec3 terrainColor(in vec3 p, in vec3 dir, in vec3 n, out bool isWater) {\n  spaceToPlane(p.xy);\n  vec4 values = texture(iChannel0, p.xy);\n  if (showSediments) return vec3(smoothstep(0.0, 0.1, 20. * values.y));\n\n  vec3 col = computeRock(p, n);\n  float water = hideWater ? 0. : values.w;\n  isWater = (water > WATER_THRESH);\n  col = isWater ? computeWater(p, dir, n, water, col)\n                : mix(col, snowColor, computeSnow(p, n));\n  return col;\n}\n\n//////////////////////////////////////////////////////////////////\n// Sky and sun\n// see https://www.shadertoy.com/view/WlSSzK\n\n#define Rayleigh 2.\n#define Mie .8\n#define RayleighAtt .5\n#define MieAtt 1.2\n#define g0 -0.93\n\nconst vec3 betaR = vec3(1.95e-2, 1.1e-1, 2.94e-1); \nconst vec3 betaM = vec3(4.00e-2, 4.0e-2, 4.00e-2);\n\nvec3 calcAtmosphericScattering(float cosine, float g1) {\n  float g2 = g1 * g1;\n  float M = Mie * (1. - g2) / (2. + g2);\n  float fcos2 = cosine * cosine;\n  float miePhase = M * pow(abs(1. + g2 + 2. * g1 * cosine), -1.5);\n  vec3 col = (1. + fcos2) * vec3(Rayleigh + betaM / betaR * miePhase);\n  return col;\n}\n\nfloat IFrac = 0.;  // TODO: bad! Remove!\nvec3 computeSky(vec3 O, vec3 D, vec3 lightDir) {\n  float sundot = max(0., dot(D, lightDir));\n  float zenithAngle = max(0.01, D.z);\n  vec3 phase = (betaR * RayleighAtt + betaM * MieAtt) / zenithAngle;\n  vec3 extinction = exp(-phase) / (1e-5 + IFrac);  // <= divine intervention!\n\n  vec3 inScatter = 0.3 * calcAtmosphericScattering(sundot, g0);\n  vec3 col = inScatter * (1.0 - extinction);\n  \n  // + sun haze\n  col += sunHaze * pow(sundot, 40.0) * extinction;\n\n  // Clouds\n  if (D.z > .0) {\n    vec2 sc = O.xy + D.xy * (100. - O.z) / D.z;\n    col += cloudColor * extinction * smoothstep(0.5, 0.8, fbm(0.002 * sc, 0.5));\n  }\n  return col;\n}\n\n// vertically sampled sky\nvec3 computeSkyVSampled(vec3 O, vec3 D, vec3 lightDir) {\n  vec3 col = vec3(0.);\n  const uint numSamples = 5u;\n  vec3 du = vec3(D.xy * D.y, -D.z * D.x);\n  for (uint i = 0u; i < numSamples; ++i) {\n    vec3 D2 = normalize(D + du * .9 * float(i) / float(numSamples));\n    col += computeSky(O, D2, lightDir);\n  }\n  return col / float(numSamples);\n}\n\n//////////////////////////////////////////////////////////////////\n// fog\n\nvec3 computeFog(float Oz, float Dz, float d) {\n  Oz *= fogAlpha;\n  Dz = -fogAlpha * max(-Dz, 0.01);\n  // This is the amount of attenuation collected by a ray Oz + t.Dz\n  // traversing an exponentially-decaying fog layer: F(z) = Fo.exp(-z/z0)\n  // It's just an integral to compute.\n  float fogAtt = (exp(-Dz * d) - 1.) * exp(-fogBeta * Oz / Dz);\n  return fogAtt * fogGradient - fogColor * .1;\n}\n\n//////////////////////////////////////////////////////////////////\n\nvec3 getLightPos() {\n  float t = iTime * .08;\n  return lightDistance * vec3(cos(t), sin(t), 0.7 - 0.4 * sin(t));\n}\n\nvec3 doLighting(vec3 O, vec3 D, vec2 hit) {\n  // sky & sun\n  vec3 light_pos = getLightPos();\n  if (hit.y <= 0.) return computeSky(O, D, normalize(light_pos - O));\n\n  // terrain\n  vec3 p = O + hit.x * D;\n  vec3 lightDir = normalize(light_pos - p);\n  vec3 n = terrainNormal(p);\n  p += n * 5e-2;\n  bool isWater;\n  vec3 col = terrainColor(p, D, n, isWater);\n  float light = max(0., dot(n, lightDir));\n  if (light > 0.) {\n    light *= softShadows(p, lightDir, .01);\n  }\n  col *= .3 + 1.0 * light;\n\n  if (isWater) {\n    n = waterNormal(p);  // use smoother normal for water reflection\n    vec3 r = reflect(D, n);\n    vec3 amb = diffuseColor * softShadows(p, r, 0.001);\n    vec3 sky = computeSkyVSampled(p, r, lightDir);\n    col += amb * sky;\n  }\n  col *= mix(shadeColor, sunColor, light);\n \n  if (ADD_FOG) col += computeFog(O.z, D.z, hit.x);\n\n  return col;\n}\n\n//////////////////////////////////////////////////////////////////\n// Camera path\n\nvec3 camPath(float t) {\n  return vec3(camDistance * cos(t) * sin(t) + .2,\n              camDistance * sin(t), camAltitude);\n}\n\nmat3 makeCamera(vec3 pos, vec3 target, float pan) {\n  vec3 front = normalize(target - pos);\n  front.xy *= mat2(cos(pan), -sin(pan), sin(pan), cos(pan));\n  vec3 up = BOOL.xxy;\n  vec3 right = normalize(cross(front, up));\n  up = cross(right, front);\n  return mat3(right, up, front);\n}\n\nfloat getFocal(float t) {\n  t = mod(t, 2. * zoomHalfPeriod);\n  t = min(smoothstep(0.0, zoomRamp,                  t),\n          smoothstep(0.0, zoomRamp, zoomHalfPeriod - t));\n  return mix(focalMin, focalMax, t);\n}\n  \n//////////////////////////////////////////////////////////////////\n// Main\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 uv = (2. * fragCoord - iResolution.xy) / iResolution.y;\n  showSediments = KEY(84);  // 't' to show sediments\n  hideWater = KEY(85);      // 'u' to hide water\n  IFrac = float(IFrame(iFrame)) / float(WATER_BUILD_UP);\n\n  float t = KEY(83) ? 0. : iTime;  // 's' = stop camera\n  t = .2 * (length(vec2(max(t - 5., 0.), 5.)) - 5.);\n\n  vec3 pos = camPath(t) * (1. + 1.3 * iMouse.x / iResolution.x);\n  pos.z = max(quickTerrain(pos.xy).z + 0.2, pos.z);\n\n  vec3 target = camPath(t + 0.5);\n  target.z -= 0.8 + 2.0 * iMouse.y / iResolution.y;\n  float pan = .5 * sin(t * 0.3);\n  mat3 cam = makeCamera(pos, target, pan);\n\n  float focal = getFocal(t);\n  vec3 camRay = normalize(vec3(uv, focal));\n  vec3 ray_O = pos;\n  vec3 ray_D = cam * camRay;\n  vec2 hit = trace(ray_O, ray_D);\n  vec3 col = doLighting(ray_O, ray_D, hit);\n\n  col = pow(col, vec3(.4545));\n  vec2 v = fragCoord / iResolution.xy;\n  col *= pow(v.x * (1. - v.x) * v.y * (1. - v.y), .05);\n\n\n  // debug:\n  /*1*/ if (KEY(49)) col = ILOAD0(fragCoord).zzz;                 // terrain height\n  /*2*/ if (KEY(50)) col = ILOAD0(fragCoord).www / WATER_LEVEL0;  // water level\n  /*3*/ if (KEY(51)) col = vec3(length(ILOAD1(fragCoord))) * 3.;  // flow\n  /*4*/ if (KEY(52)) col = vec3(ILOAD0(fragCoord).x) * 30.;       // water velocity\n  /*5*/ if (KEY(53)) col = vec3(ILOAD0(fragCoord).y) * 30.;       // sediment\n  // Perspective views:\n  /*6*/ if (KEY(54) && hit.y > 0.) col = vec3(terrainValues(ray_O, ray_D, hit.x).x) * 50.;  // water velocity\n  /*7*/ if (KEY(55) && hit.y > 0.) col = vec3(terrainValues(ray_O, ray_D, hit.x).y) * 50.;  // sediment\n  /*8*/ if (KEY(56) && hit.y > 0.) col = vec3(terrainValues(ray_O, ray_D, hit.x).w) * 50.;  // water level\n\n  fragColor.rgb = col;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//\n// Deluge simulator!   Terrain and erosion\n//\n// skal/ (Pascal Massimino)\n// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0\n//////////////////////////////////////////////////////////////////\n\n//////////////////////////////////////////////////////////////////\n// initial terrain\n\nfloat fbmTerrain(vec2 p) {\n  p *= 0.008;\n  float h = 150. * noise(p);  // base level, slowly varying\n  h *= pow(fbm(p * 2.0, 0.5), 1.5);  // w/ extra hi-freq modulation\n  return h / 80.;\n}\n\n// blend at the seams\n//   http://paulbourke.net/geometry/tiling/\nfloat mask(vec2 p) {\n  float edge = 50.;\n  vec2 blend;\n  blend  = smoothstep(0., edge,        p);\n  blend *= smoothstep(0., edge, WRAP - p);\n  return blend.x * blend.y;\n}\n\nfloat initialTerrain(vec2 p1, float seed) {\n  vec2 Period = WRAP * 0.5;\n  vec2 p2 = mod(p1 + Period + 310. * seed, WRAP);\n  vec2 ar = iResolution.yx / iResolution.y;\n  return fbmTerrain(p1 * ar) * mask(p1) + fbmTerrain(p2 * ar) * mask(p2);\n}\n\n//////////////////////////////////////////////////////////////////\n\nfloat Height(vec2 P) { return ILOAD0(P).z; }\nfloat Water(vec2 P) { return ILOAD0(P).w; }\nfloat Sediment(vec2 P) { return ILOAD0(P).y; }\nvec4 Flow(vec2 P) { return ILOAD1(P); }\nvec4 SFlow(vec2 P) { return Sediment(P) * ILOAD1(P); }  // sediment flow\n\nvec2 getFlow(vec2 P) {\n  float dF_out = dot(Flow(P), ONE);  // out-flow\n  float dF_in = Flow(P + BOOL.yx).x + Flow(P - BOOL.yx).y\n              + Flow(P + BOOL.xy).z + Flow(P - BOOL.xy).w;\n  return vec2(dF_in, dF_out);\n}\n\nvec2 getSFlow(vec2 P) {\n  float dF_out = dot(SFlow(P), ONE);\n  float dF_in = SFlow(P + BOOL.yx).x + SFlow(P - BOOL.yx).y\n              + SFlow(P + BOOL.xy).z + SFlow(P - BOOL.xy).w;\n  return vec2(dF_in, dF_out);\n}\n\n//////////////////////////////////////////////////////////////////\n// Terrain update\n\nvec3 terrainNormal(vec2 p) {\n  vec3 N = vec3(Height(p - BOOL.yx) - Height(p + BOOL.yx),\n                Height(p - BOOL.xy) - Height(p + BOOL.xy),\n                2. * BOOL.y);\n  return normalize(N);\n}\n\nconst float eStrength = 1.;\nconst float eMax = 0.1;\nfloat erodeTerrain(vec2 P, float z) {\n  vec3 nor = terrainNormal(P);\n  float dz = Height(P + nor.xy) + Height(P - nor.xy) - 2. * z;\n  z += clamp(dz * eStrength, -eMax, eMax);\n  return z;\n}\n\nvoid UpdateTerrain(vec2 P, inout vec4 cur) {\n  float w = cur.w; \n  float z = cur.z;\n  float s = cur.y;\n  float v = cur.x;   // water velocity\n\n  z = erodeTerrain(P, z);\n\n#if defined SEDIMENT_PHYSICS\n  if (cur.w > 0.001) {     // Sediment transport and deposition\n    vec2 dF = getFlow(P);\n    vec2 dSF = getSFlow(P);\n    float ds, ns;\n    // abrasion\n    if (v > .1) {\n      ds = min(min(w * v * abrasionSpeed, maxAbrasion), z);\n      ns = min(s + ds, maxSediment);\n      ds = ns - s;\n      ds = clamp(ds, -maxAbrasion, maxAbrasion);\n      s += ds;\n      z = max(0., z - 2.3 * ds);\n    }\n    // deposition\n    if (abs(dF.x) < .5 && s > 0.) {\n      ds = fractionDeposition * s;\n      ns = max(0., s - ds);\n      ds = min(s - ns, w);\n      s = s - ds;\n      z = z + .1 * ds;\n    }\n  }\n#endif\n\n  cur.z = max(z, 0.);\n  cur.y = s;\n}\n\n//////////////////////////////////////////////////////////////////\n// Water update\n\n#if 0\nvec2 waterSlope(vec2 P) {\n  float dWdx = Water(P + BOOL.yx) - Water(P - BOOL.yx);\n  float dWdy = Water(P + BOOL.xy) - Water(P - BOOL.xy);\n  return 0.5 * vec2(dWdx, dWdy);\n}\n#endif\n\nvoid UpdateWater(vec2 P, inout vec4 cur) {   // update water level according to flow\n  vec2 dF = getFlow(P); // [in, out] flow\n  float w = cur.w + timeStep * (dF.x - dF.y);   // w += (in-out)*dt\n  // make it rain (cyclic)!\n  if (w < .0001) w += RAIN * (0.5 + 0.5 * sin(iTime * .3));\n  // ...and evaporate, proportional to the current depth\n  w -= EVAPORATION * .001* smoothstep(0.5, 0.0, w);\n  w = max(0., w); // no negative water!\n  cur.w = w;\n}\n\nvec2 velocity(vec2 P) {\n  vec4 F = Flow(P);\n  float left   = Flow(P - BOOL.yx).y - F.x;\n  float right  = Flow(P + BOOL.yx).x - F.y;\n  float top    = Flow(P + BOOL.xy).z - F.w;\n  float bottom = Flow(P - BOOL.xy).w - F.z;\n  return 0.5 * vec2(left + right, top + bottom);\n}\n\nfloat waterSpeed(vec2 P) {\n  vec4 F = Flow(P);\n  return .2 * length(vec2(F.x - F.y, F.z - F.w));\n}\n\nfloat initialWater(vec2 P, float z, float fraction) {\n  float w = WATER_LEVEL0 * fraction;\n  w *= smoothstep(0.2, 3., z);  // more rain in altitude\n  return w;\n}\n\n//////////////////////////////////////////////////////////////////\n// sediment transport\n\nvoid UpdateSediments(vec2 P, inout vec4 cur) {\n  vec2 dSF = getSFlow(P);\n  float s = cur.s + timeStep * (dSF.x - dSF.y);\n  cur.y = min(max(s, 0.), maxSediment);\n}\n\nfloat initialSediment(vec2 P) {\n  return SEDIMENT_LEVEL0;\n}\n\n//////////////////////////////////////////////////////////////////\n\nvoid mainImage(out vec4 fragColor, in vec2 P) {\n  int I = IFrame(iFrame);\n  bool init = (I < WATER_BUILD_UP) || KEY(87);\n  bool do_terrain = (iFrame == 0) || KEY(82);  \n  if (any(greaterThanEqual(P, WRAP))) {\n    // replicate 2 samples to avoid seeing the seam\n    if (!init && all(lessThanEqual(P, WRAP + 2.))) {\n      fragColor = ILOAD0(P);\n      return;\n    } else {\n      discard;\n    }\n  }\n  fragColor = ILOAD0(P);\n  if (init || do_terrain) {\n    if (do_terrain) {\n      fragColor.z = initialTerrain(P, iTime * .4);\n      fragColor.y = initialSediment(P);\n    } else {\n      fragColor.w += initialWater(P, fragColor.z, float(I) / float(WATER_BUILD_UP));\n    }\n    fragColor.x = 0.;\n  } else {\n    UpdateWater(P, fragColor);\n    UpdateSediments(P, fragColor);\n    UpdateTerrain(P, fragColor);\n  }\n  fragColor.x = mix(fragColor.x, waterSpeed(P), .05);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//\n// Deluge simulator. Constants and defines.\n//\n// skal/ (Pascal Massimino)\n// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0\n//////////////////////////////////////////////////////////////////\n\n// Compute map size\n// #define WRAP iResolution.xy   // highest res (=slow!)\n//#define WRAP vec2(450.)\n#define WRAP vec2(360.)\n\n#define EPS 1e-3\nconst vec3 BOOL = vec3(0., 1., -1.);\n\nconst vec4 ZERO = vec4(0.);\nconst vec4 ONE = vec4(1.);\n\n// load at int position\n#define ILOAD(CHANNEL, P) texelFetch((CHANNEL), ivec2(mod(P, WRAP)), 0)\n#define ILOAD0(P) ILOAD(iChannel0, (P))\n#define ILOAD1(P) ILOAD(iChannel1, (P))\n\n#define KEY(K) (texelFetch(iChannel3, ivec2((K), 0), 0).x > 0.5)\n\n#define SEDIMENT_LEVEL0 0.02\n#define WATER_LEVEL0 0.002   // initial water amount\n#define RAIN 0.0008\n#define EVAPORATION 0.0009\n\n#define WATER_THRESH .001  // for display only\n\n#define WATER_RESET_PERIOD 2000\n#define WATER_BUILD_UP 100\nint IFrame(int frame) { return min(WATER_BUILD_UP, (frame - 1) % WATER_RESET_PERIOD); }\n\n// Sedimentation model\n#define SEDIMENT_PHYSICS\n#define abrasionSpeed 15.5\n#define depositionSpeed 0.1\n#define maxSediment 0.3\n#define maxAbrasion 0.13\n#define fractionDeposition 0.1\n\n// flow parameters\n#define flowVelocity .15  // <=> speed of sound in water\n// ~how fast water is transported. Slower values = large shockwaves, disasters!\n#define timeStep 0.04\n\n//////////////////////////////////////////////////////////////////\n\nfloat hash(vec2 p) {\n  return fract(sin(dot(p, vec2(1.0, 113.0))) * 43758.5453123);\n}\n\nfloat noise(vec2 p) {\n  vec2 i = floor(p), f = fract(p);\n  vec2 u = f * f * (3.0 - 2.0 * f);\n  float n0 = hash(i + BOOL.xx);\n  float n1 = hash(i + BOOL.yx);\n  float n2 = hash(i + BOOL.xy);\n  float n3 = hash(i + BOOL.yy);\n  // interpolate\n  float ix0 = mix(n0, n1, u.x);\n  float ix1 = mix(n2, n3, u.x);\n  return mix(ix0, ix1, u.y);\n}\n\nfloat fbm(vec2 p, float amp) {\n  float f = 0.0;\n  for (int i = 0; i < 6; ++i, p *= 2., amp *= 0.5) {\n    f += amp * noise(p);\n  }\n  return f;\n}\n\nfloat fbml(vec2 p, float amp) {  // light version\n  float f = 0.0;\n  for (int i = 0; i < 2; ++i, p *= 2., amp *= 0.5) {\n    f += amp * noise(p);\n  }\n  return f;\n}\n\n//////////////////////////////////////////////////////////////////\n// Left-overs\n\n#if 0\nfloat terrainDerivatives(in vec2 p, out vec2 dF, out vec4 d2F) {\n  // 0 1 2\n  // 3[4]5\n  // 6 7 8\n  float h0 = Height(p + BOOL.zy);\n  float h1 = Height(p + BOOL.xy);\n  float h2 = Height(p + BOOL.yy);\n  float h3 = Height(p + BOOL.zx);\n  float h4 = Height(p + BOOL.xx);\n  float h5 = Height(p + BOOL.yx);\n  float h6 = Height(p + BOOL.zz);\n  float h7 = Height(p + BOOL.xz);\n  float h8 = Height(p + BOOL.yz);\n  // Evans-Young\n  dF = (1. / 6.) * vec2(h2 + h5 + h8 - h0 - h3 - h6,\n                        h0 + h1 + h2 - h6 - h7 - h8);\n  d2F.x = (h0 + h2 + h3 + h5 + h6 + h8 - 2. * (h1 + h4 + h7)) / 3.;  // d2F / dxx\n  d2F.y = (h0 + h1 + h2 + h6 + h7 + h8 - 2. * (h3 + h4 + h5)) / 3.;  // d2F / dyy\n  d2F.w = d2F.z = (h2 + h6 - h0 - h8) / 4.;                          // d2F / dxy\n  return h4;\n}\n\nfloat terrainCurvature(vec2 p) {\n  vec2 dF;\n  vec4 d2F;\n  float z = terrainDerivatives(p, dF, d2F);\n  return length(d2F);\n}\n\nvec3 terrainColor(vec2 p, float z, vec3 n) {\n  return terrainCurvature(p) * vec3(.8, .1, .1);\n}\n#endif\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//\n// Flow advection, based on terrain height and water level\n//\n//  BufferB stores the water flow in 4 directions\n//    x = left, y = right, z = top, w = bottom\n//\n// skal/ (Pascal Massimino)\n// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0\n//////////////////////////////////////////////////////////////////\n\nfloat land(vec2 P) { return ILOAD0(P).z; }\nfloat water(vec2 P) { return ILOAD0(P).w; }\nvec4 flow(vec2 P) { return ILOAD1(P); }\n\nfloat totalH(vec2 P) {\n  vec4 v = ILOAD0(P);\n  return v.z + v.w;\n}\n\nvoid mainImage(out vec4 outFlow, in vec2 P) {\n  if (any(greaterThanEqual(P, WRAP))) {\n    if (all(lessThanEqual(P, WRAP + 2.))) {\n      outFlow = ILOAD1(P);\n      return;\n    } else {\n      discard;\n    }\n  }\n  vec4 F = ZERO;\n  if (IFrame(iFrame) >= WATER_BUILD_UP) {\n    float W0 = water(P);\n    float H = W0 + land(P); // <- = totalH(P);\n    float H0 = totalH(P - BOOL.yx);   // left\n    float H1 = totalH(P + BOOL.yx);   // right\n    float H2 = totalH(P - BOOL.xy);   // bottom\n    float H3 = totalH(P + BOOL.xy);   // top\n    vec4 diff = vec4(H) - vec4(H0, H1, H2, H3);\n    F = flow(P) + flowVelocity * diff;\n    F = max(F, ZERO);\n    float sum = timeStep * dot(F, ONE);  // total flow\n    if (sum > 0.00001) {\n      float K = clamp(W0 / sum, 0., 1.);\n      F = K * F;\n    }\n  }\n  outFlow = F;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

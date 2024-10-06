@@ -1,0 +1,41 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1623444739",
+            "description": "First try at computing maxnorm distances.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "ft2GRD",
+            "likes": 9,
+            "name": "Maxnorm Distance to Cubic Curve",
+            "published": 3,
+            "tags": [
+                "2d",
+                "distance",
+                "curve",
+                "cubic",
+                "maxnorm",
+                "exact"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 225
+        },
+        "renderpass": [
+            {
+                "code": "vec3 solveQuadratic(in float a, in float b, in float c) {\n    if (abs(a) < 1e-6) return vec3(-c / b, 0, 1);\n    float h = b * b - 4.0 * a * c;\n    if (h < 0.0) return vec3(0.0);\n    return vec3((vec2(-1.0, 1.0) * sqrt(h) - b) * 0.5 / a, 2.0);\n}\n\nvec4 solveCubic(in float a, in float b, in float c, in float d) {\n    if (abs(a) < 1e-9) return vec4(solveQuadratic(b, c, d), 0.0).xywz;\n    float u = b / (3.0 * a);\n\n    float p = (c - b * u) / a;\n    float q = (d - (c - 2.0 * b * b / (9.0 * a)) * u) / a;\n    if (abs(p) < 1e-3) return vec4(-sign(q) * pow(abs(q), 1.0 / 3.0) - u, 0, 0, 1);\n\n    if (4.0 * p * p * p + 27.0 * q * q > 0.0) {\n        float ip = 3.0 / abs(p), sp = sqrt(ip), k = 0.5 * q * ip * sp, x;\n        if (p > 0.0) x = -2.0 / sp * sinh(asinh(k) / 3.0) - u;\n        else x = -2.0 / sp * cosh(acosh(abs(k)) / 3.0) * sign(q) - u;\n        return vec4(x, 0, 0, 1);\n    }\n\n    float m = sqrt(-p / 3.0);\n    float x1 = -2.0 * m * sin(asin(1.5 * q / (p * m)) / 3.0);\n\n    float h = sqrt(-3.0 * x1 * x1 - 4.0 * p);\n    float x2 = 0.5 * (h - x1), x3 = 0.5 * (-h - x1);\n\n    return vec4(x1 - u, x2 - u, x3 - u, 3);\n}\n\nfloat evalDist(in vec2 p, in float t, in float tmin, in float tmax, in bool limit, in vec2 a, in vec2 b, in vec2 c, in vec2 d) {\n    if (limit) t = clamp(t, tmin, tmax);\n    vec2 toCurve = p - (((a * t + b) * t + c) * t + d);\n    return max(abs(toCurve.x), abs(toCurve.y));\n}\n\nfloat sdCubic(in vec2 p, in vec2 a, in vec2 b, in vec2 c, in vec2 d, in float tmin, in float tmax, in bool limit) {\n    // Solving for the global minimum of max(|a.x*t^3 + b.x*t^2 + c.x*t + d.x - p.x|, |a.y*t^3 + b.y*t^2 + c.y*t + d.y - p.y|)\n    // Minima and maxima are either intersections of the two with different combinations of signs where the derivative jumps from one to the other\n    // or the minima and maxima of one of the cubics (sign flip due to abs() does not change them)\n    vec2 dp = d - p;\n\n    // |a.x*t^3 + b.x*t^2 + c.x*t + d.x - p.x| = |a.y*t^3 + b.y*t^2 + c.y*t + d.y - p.y|\n    // All combinations of signs on both sides degenerate into either +/+ or +/-\n    vec4 minMax1 = solveCubic(a.x - a.y, b.x - b.y, c.x - c.y, dp.x - dp.y);\n    vec4 minMax2 = solveCubic(a.x + a.y, b.x + b.y, c.x + c.y, dp.x + dp.y);\n\n    // Minima and maxima of both cubics\n    // Remember that they CAN have a global minimum because of abs() forcing them\n    // to bounce back up when they go below the x axis\n    vec3 minMax3 = solveQuadratic(3.0 * a.x, 2.0 * b.x, c.x);\n    vec3 minMax4 = solveQuadratic(3.0 * a.y, 2.0 * b.y, c.y);\n\n    // Find minimum\n    float dist = evalDist(p, minMax1[0], tmin, tmax, limit, a, b, c, d);\n    for (int n=1; n < int(minMax1.w); n++) dist = min(dist, evalDist(p, minMax1[n], tmin, tmax, limit, a, b, c, d));\n    for (int n=0; n < int(minMax2.w); n++) dist = min(dist, evalDist(p, minMax2[n], tmin, tmax, limit, a, b, c, d));\n    for (int n=0; n < int(minMax3.z); n++) dist = min(dist, evalDist(p, minMax3[n], tmin, tmax, limit, a, b, c, d));\n    for (int n=0; n < int(minMax4.z); n++) dist = min(dist, evalDist(p, minMax4[n], tmin, tmax, limit, a, b, c, d));\n\n    return dist;\n}\n\nfloat sdLine(in vec2 p, in vec2 a, in vec2 b) {\n    vec2 pa = p - a, ba = b - a;\n    return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n    vec2 uv = (fragCoord - center) / iResolution.y * 4.0;\n    vec2 mouse = (iMouse.xy - center) / iResolution.y * 4.0;\n    float unit = 8.0 / iResolution.y;\n    float time = iTime * 0.5;\n\n    // Default before user interaction\n    if (ivec2(iMouse.xy) == ivec2(0)) mouse = vec2(2.0, 2.0 * sin(time)) * cos(time);\n\n    float t1 = iTime * 0.5, t2 = iTime, t3 = iTime * 1.25;\n\n    float c1 = cos(t1), s1 = sin(t1);\n    float c2 = cos(t2), s2 = sin(t2);\n    float c3 = cos(t3), s3 = sin(t3);\n\n    vec2 v1 = vec2(c2, s3 * 1.5 - 0.25);\n    vec2 v2 = vec2(-2.0, 0.5);\n    vec2 v3 = vec2(2.0, 0.5);\n    vec2 v4 = vec2(s2, c3 * 1.5 - 0.25);\n\n    // To power basis\n    vec2 a = v4 + 3.0 * (v2 - v3) - v1;\n    vec2 b = 3.0 * (v1 - 2.0 * v2 + v3);\n    vec2 c = 3.0 * (v2 - v1);\n    vec2 d = v1;\n\n    float dist = sdCubic(uv, a, b, c, d, 0.0, 1.0, true);\n\n    // Nice colors from iq\n    vec3 color = 1.0 - sign(dist) * vec3(0.1, 0.4, 0.7);\n\tcolor *= 1.0 - exp(-4.0 * abs(dist));\n\tcolor *= 0.8 + 0.2 * cos(140.0 * dist);\n\tcolor = mix(color, vec3(1.0), smoothstep(unit, 0.0, abs(dist)));\n\n    // Control points\n    color = mix(color, vec3(1.0, 1.0, 0.0), smoothstep(unit, 0.0, length(uv - v1) - 0.05));\n    color = mix(color, vec3(1.0, 1.0, 0.0), smoothstep(unit, 0.0, length(uv - v4) - 0.05));\n\n    float mDist = sdCubic(mouse, a, b, c, d, 0.0, 1.0, true);\n    color = mix(color, vec3(0.0, 1.0, 0.0), smoothstep(unit, 0.0, length(uv - mouse) - 0.03));\n    color = mix(color, vec3(0.0, 1.0, 0.0), smoothstep(unit, 0.0, abs(max(abs(uv.x - mouse.x), abs(uv.y - mouse.y)) - mDist) - 0.005));\n\n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

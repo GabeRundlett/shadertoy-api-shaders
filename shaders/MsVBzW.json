@@ -1,0 +1,174 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1528114951",
+            "description": "Buf A generates a glitch texture, then Buf B maps part of that onto the holo screens and samples the average colour to set the colour of a point light source. Buf B also stores a poly mesh, which is ray traced in the final stage.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MsVBzW",
+            "likes": 17,
+            "name": "Abstract Sci-Fi Tunnel",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "lighting",
+                "glitch",
+                "mesh"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 1100
+        },
+        "renderpass": [
+            {
+                "code": "// Abstract Sci-Fi Tunnel\n// by Hazel Quantock 2018\n// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. http://creativecommons.org/licenses/by-nc-sa/4.0/\n\nconst float FLT_MIN = 1e-30;\nconst float FLT_MAX = 1e30;\n\nvoid IntersectTriangle( inout float _t, inout vec3 _n, inout ivec2 _hitidx, vec3 pos, vec3 ray, ivec2 data )\n{\n    vec4 nd = texelFetch(iChannel1,data,0);\n    \n    float rn = dot(ray,nd.xyz);\n    if ( -rn < FLT_MIN ) return; // back face cull\n    \n    // find intersection on plane\n    float t = (nd.w-dot(pos,nd.xyz))/rn;\n    \n    // if it's behind camera, or farther than current intersection, ignore\n    if ( t < 0. || t >= _t ) return;\n    \n    // test if it's within edges\n    pos += t*ray;\n    \n    vec4 e0 = texelFetch(iChannel1,data+ivec2(1,0),0);\n    vec4 e1 = texelFetch(iChannel1,data+ivec2(2,0),0);\n    vec4 e2 = texelFetch(iChannel1,data+ivec2(3,0),0);\n    \n    if ( dot(pos,e0.xyz)-e0.w > 0. ||\n         dot(pos,e1.xyz)-e1.w > 0. ||\n         dot(pos,e2.xyz)-e2.w > 0. )\n        return;\n    \n    _t = t;\n    _n = nd.xyz;\n    _hitidx = data;\n}\n\n\nfloat Trace( out vec3 n, out ivec2 triidx, in int startu, in vec3 pos, in vec3 ray )\n{\n    n = vec3(0);\n    triidx = ivec2(-1);\n    float t = 1e30;\n    \n    // loop in an order that lets us early-out [if near startidx]\n    for ( int uu = 0; uu < dim.x; uu++ )\n    {\n        int u = (uu + startu)%dim.x;\n        for ( int v = 0; v < dim.y; v++ )\n        {\n        \tIntersectTriangle(t,n,triidx,pos,ray,ivec2(u*4,v));\n        }\n        \n        if ( //uu < dims.x/4 && // don't early out if we're far enough away that we may have doubled-back\n            triidx.x >= 0 ) break; // early out - because we have (hopefully) built our data so closer things on the spline occlude further things\n    }\n    \n    return t;\n}\n\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    const float targetT = 1.;\n    float time = iTime/3.;\n    \n    vec3 camPos = CatmullRom( time );\n    \n    vec3 camK = CatmullRom( time+targetT ) - camPos;\n    \n    if ( iMouse.z > 0. )\n    {\n\t    float a = -.5*6.283*(iMouse.x/iResolution.x-.5);\n        camK.xz = camK.xz*cos(a) + sin(a)*vec2(-1,1)*camK.zx;\n        camK.y += 2.*(iMouse.y/iResolution.y-.5);\n\t}\n    camK = normalize(camK);\n    \n    vec3 camI = normalize(cross(vec3(0,1,0),camK));\n    vec3 camJ = cross(camK,camI);\n    \n    vec3 ray = vec3((fragCoord.xy-.5*iResolution.xy)/iResolution.y,1.);\n    float pixelScale = ray.z / iResolution.y;\n    ray = ray.x*camI + ray.y*camJ + ray.z*camK;\n    ray = normalize(ray);\n    \n    vec3 n;\n    ivec2 tri;\n    int startu = int(float(dim.x)*time/float(spline.length()))%dim.x;\n    float t = Trace( n, tri, startu, camPos, ray );\n\n    fragColour.rgb = vec3(.7);\n    if ( t < FLT_MAX )\n    {\n        vec3 pos = camPos + ray*t;\n        \n//\t    vec3 n = GetNormal( pos, .001 );\n\n/*        fragColour.rgba = Shade( pos, ray, n );\n        \n        // reflection\n        vec3 rayr = reflect(ray,n);\n        float tr = Trace( pos, rayr, .01, 128., pixelScale );\n\n        vec3 ref = vec3(.7);\n        if ( tr < 128. )\n        {\n            vec3 posr = pos + rayr*t;\n            ref = Shade( posr, rayr, GetNormal( posr, .001 ) ).rgb;\n        }\n        \n        fragColour.rgb = mix( fragColour.rgb, ref, fragColour.a );*/\n\n        float gloss = texture(iChannel2,pos.xz*1.).g;\n        \n        // apply all lights\n        vec3 holo = vec3(0);\n        vec3 diffuse = vec3(0);\n        vec3 specular = vec3(0);\n        for ( int i=0; i < numLights; i++ )\n        {\n            vec3 lpos = texelFetch(iChannel1,ivec2(i,16),0).xyz;\n            vec3 lcol = texelFetch(iChannel1,ivec2(i,17),0).rgb;\n            vec4 lblit = texelFetch(iChannel1,ivec2(i,18),0);\n            \n            lpos -= pos;\n            float lpos2 = dot(lpos,lpos);\n            vec3 lposn = lpos/sqrt(lpos2);\n            float str = max(0.,dot(n,lposn)/(lpos2 + panelDim));\n            \n            str -= .1; // cut off for culling\n            if ( str > 0. )\n            {\n/*// seems like shadows are rare in my tunnel scene => far cheaper to skip them\n                // trace shadows\n                vec3 sn;\n                ivec2 stri;\n                int lstartu = (i*dim.x)/numLights;\n                //lstartu = (lstartu-1+dim.x)%dim.x;\n                // todo: make Trace work backwards too, so it doesn't get confused by things behind\n                float st = Trace( sn, stri, lstartu, pos, lposn );\n                \n                //l += (st-sqrt(lpos2))*vec3(.1,.0,-.1);\n                if ( st >= sqrt(lpos2) )*/\n                {\n\t                diffuse += str * lcol;\n                    vec3 h = normalize(lposn-ray);\n                    float spec = mix(20.,80.,pow(gloss,2.));\n                    specular += (spec*spec/32.)*pow(max(0.,dot(n,h)),spec) * str * lcol;\n                }\n            }\n            \n            // todo: cull distant lights (on spline distance)\n            \n            \n            // draw the blits\n            vec3 ln = vec3(lblit.x,0,lblit.y);\n            vec3 lr = vec3(lblit.y,0,-lblit.x); // right vector\n            \n            // intersect the plane of the blit\n            float lt = dot(-lpos,ln)/dot(ray,ln);\n            if ( lt > t || lt < 0. ) continue;\n            \n            lpos += lt*ray;\n            \n            vec2 uv = vec2(dot(lr,lpos),-lpos.y);\n            \n            if ( max(abs(uv.x),abs(uv.y)) > panelDim ) continue;\n            \n            holo += textureLod(iChannel0,fract((uv)*panelResByDim*vec2(iResolution.y/iResolution.x,1)+lblit.zw),0.).rgb;\n            //holo += lcol*20.;//*.1/dot(lpos,lpos);\n            \n            // intersect the edge planes\n        }\n        \n        vec3 fresnel = mix( vec3(.01), vec3(1), pow(1.+dot(ray,n),5.) );\n        fragColour.rgb = mix( vec3(.4)*(1.-gloss*.2)*diffuse, specular, fresnel );\n        fragColour.rgb += holo;\n    }\n    \n    \n\t// tweak exposure\n    fragColour.rgb *= 1.5;\n    \n    \n// debug: blend in the glitch texture\n//fragColour.rgb = mix(fragColour.rgb,texelFetch(iChannel0,ivec2(fragCoord),0).rgb,1.);\n        \n    fragColour.rgb = pow(fragColour.rgb,vec3(1./2.2));\n    fragColour.a = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Glitch Texture\n// by Hazel Quantock 2018\n// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. http://creativecommons.org/licenses/by-nc-sa/4.0/\n\n// palette\nconst vec3 bg = vec3(0);\nconst vec3 grin = vec3(0,1,.5);\nconst vec3 hot = vec3(1,0,.1);\nconst vec3 cool = vec3(.01,0,.5);\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.y;\n    \n    fragColour.rgb = bg;\n    \n    // glitch scanline\n    float scanline = fract(iTime/3.);\n    float scany = (uv.y) - 1. + scanline;\n    uv.x += .001/scany;\n    fragCoord.x += iResolution.y*.001/scany;\n    \n    // feedback effect\n    fragColour.rgb = mix(\n        fragColour.rgb,\n        texture( iChannel0, fract(1.618*vec2(1.618,1)*fragCoord/iResolution.xy + vec2(.2,.3)) ).rgb,\n        mix(cool*.9+.1,\n            mix(hot,grin+cool,fract(iTime*.2)),\n            .1+.8*pow(.5+.5*cos(iTime*1.5),20.) ) );\n    \n    // glow\n    vec4 d = vec4(-.75,.75,-.25,.25)*.005;\n    fragColour.rgb = mix(\n        fragColour.rgb,\n        (\n            texture( iChannel0, fragCoord/iResolution.xy + d.xz ).rgb +\n            texture( iChannel0, fragCoord/iResolution.xy + d.zy ).rgb +\n            texture( iChannel0, fragCoord/iResolution.xy + d.yw ).rgb +\n            texture( iChannel0, fragCoord/iResolution.xy + d.wx ).rgb\n        ) / 4.,\n        .5 );\n    \n    // binary couting block\n    ivec2 bin = ((ivec2(uv*256.)-ivec2(30))&127)>>3;// /16; // omg divide rounds upward!?\n    if ( min(bin.x,bin.y) >= 0 && max(bin.x,bin.y) < 4 )\n        //dot(step(vec4(0),vec4(bin,3-bin)),vec4(1)) == 4. ) // hahahaha this is probably not as clever as it looks\n    {\n        int bit = (bin.x&1) + 2*((bin.x&2) + (bin.y&1)) + 4*(bin.y&2);\n        //int bit = (bin.x&1)*8 + 1*((bin.x&2) + (bin.y&1)) + 2*(bin.y&2); // ooh nice\n        //int bit = (bin.y&1)*8 + 1*((bin.y&2) + (bin.x&1)) + 2*(bin.x&2); // flipped\n        //int bit = (bin.y&1)*4 + 1*((bin.x&2) + (bin.x&1)) + 4*(bin.y&2); // sequential from bottom - nice actually\n        \n        //bit = (bit^(iFrame>>4))&0xf;\n        \n        bit += 3; // slow it down\n        \n        if ( ((iFrame)&(1<<bit)) == 0 )\n\t        fragColour.rgb = grin;\n    }\n    \n    \n    vec2 tex = uv*256.-vec2(200,40);\n    if ( min(tex.x,tex.y) >= 0. && max(tex.x,tex.y) < 160. )\n    {\n        vec4 text = texture(iChannel1,(tex+iTime*8.)/200.);\n        fragColour.rgb = mix( fragColour.rgb, cool, text.x );\n    }\n    \n    fragColour.rgb = mix( hot, fragColour.rgb, smoothstep( .0/256., 2./256., abs(scany) ) );\n    \n    fragColour.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const ivec2 dim = ivec2(24,5*2); // resolution of the poly tunnel (in triangles, not vertices)\nconst int numLights = 12;\n\nconst float panelDim = .2;\nconst float panelRes = .1; // what proportion of the glitch image (vertically) is on the panels?\nconst float panelResByDim = panelRes/panelDim;\n\nconst vec3 spline[] = vec3[](\n     vec3(0,-.2,2)\n    ,vec3(1.4,0,1.4)\n    ,vec3(2,0,0)\n    ,vec3(1.1,0,-1.2)\n    ,vec3(0,-.2,-2)\n    ,vec3(-1.4,0,-1.4)\n    ,vec3(-2,.2,0)\n    ,vec3(-2.6,.5,1.4)\n    ,vec3(-4,.8,2)\n    ,vec3(-5.4,.5,2.6)\n    ,vec3(-6,.2,4)\n    ,vec3(-5.4,0,5.4)\n    ,vec3(-4,-.2,6)\n    ,vec3(-2.6,-.5,5.4)\n    ,vec3(-2,-.8,4)\n    ,vec3(-1.4,-.5,2.6)\n    );\n\n\nvec3 CatmullRom( float t )\n{\n    int n = spline.length();\n\n    int i = int(floor(t));\n    t -= float(i);\n    \n    vec3 p0 = spline[(i-1+1000*n)%n]; // % is stupid on negative numbers, so add 1000*n because nothing matters and the world is a dumpster fire. Also I'm lazy.\n    vec3 p1 = spline[(i+0+1000*n)%n];\n    vec3 p2 = spline[(i+1+1000*n)%n];\n    vec3 p3 = spline[(i+2+1000*n)%n];\n    \n    const float t0 = -1.;\n    const float t1 = 0.;\n    const float t2 = 1.;\n    const float t3 = 2.;\n    \n    vec3 A0 = mix( p0, p1, (t-t0)/(t1-t0) ); // todo: simplify this maths\n    vec3 A1 = mix( p1, p2, (t-t1)/(t2-t1) ); // hopefully the compiler's smart enough to do it\n    vec3 A2 = mix( p2, p3, (t-t2)/(t3-t2) );\n    vec3 B0 = mix( A0, A1, (t-t0)/(t2-t0) );\n    vec3 B1 = mix( A1, A2, (t-t1)/(t3-t1) );\n\n    return mix( B0, B1, (t-t1)/(t2-t1) );\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// generate the tunnel geometry\n// this can be done on first frame and then just modified for animation\n\nvec4[4] Triangle( in vec3 p0, in vec3 p1, in vec3 p2 )\n{\n    vec3 n = normalize(cross(p1-p0,p2-p0));\n    vec3 a = normalize(cross(p1-p0,n));\n    vec3 b = normalize(cross(p2-p1,n));\n    vec3 c = normalize(cross(p0-p2,n));\n    return vec4[](\n        vec4(n,dot(n,p0)),\n        vec4(a,dot(a,p0)),\n        vec4(b,dot(b,p1)),\n        vec4(c,dot(c,p2))\n        );\n}\n\nvoid mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    ivec2 icoord = ivec2(fragCoord);\n    fragColour = texelFetch(iChannel1,icoord,0); // preserve buffer\n    // if ( iFrame > 0 ) return;\n    \n    \n    // triangle ray-trace data:\n    if ( icoord.x < dim.x*4 && icoord.y < dim.y )\n    {\n        ivec2 tri = icoord/ivec2(4,1);\n        \n        float splineStep = float(spline.length())/float(dim.x);\n    \tfloat splineIdx = float(tri.x)*splineStep;\n        \n        int flip = (tri.x^tri.y)&1;\n        float idx0 = splineIdx + splineStep*float(flip);\n        float idx1 = splineIdx + splineStep*float(1^flip);\n\n// dammit! I need to flip the vertex order otherwise it backface culls!\n        \n        vec3 p0 = CatmullRom(idx0);\n        vec3 p1 = CatmullRom(idx1);\n        \n        // construct orthonormal basis for each spline point\n        vec3 k0 = normalize( CatmullRom(idx0 + .01) - p0 );\n        vec3 k1 = normalize( CatmullRom(idx1 + .01) - p1 );\n        vec3 i0 = normalize(cross(vec3(0,1,0),k0));\n        vec3 i1 = normalize(cross(vec3(0,1,0),k1));\n        vec3 j0 = cross(k0,i0);\n        vec3 j1 = cross(k1,i1);\n        \n        // make n tris around this point\n        float aStep = 6.28319/float(dim.y);\n        float a = float(tri.y)*aStep;\n            //+ 6.283*float(tri.x)/float(dim.x); <- cracks! need a0,a1\n\n        // todo: double these step offsets\\/ and flip alternate ones between p0/1\n        vec3 v0 = cos(a)*j0-sin(a)*i0;\n        vec3 v1 = cos(a+aStep)*j1-sin(a+aStep)*i1;\n        vec3 v2 = cos(a+aStep*2.)*j0-sin(a+aStep*2.)*i0;\n        \n        vec4[4] planes = Triangle(v0+p0,v1+p1,v2+p0);\n        \n        if ( flip != 0 ) planes[0] = -planes[0]; // cheat - instead of fixing the wind order, flip the normal plane\n        \n        fragColour = planes[icoord.x%4];\n\n        // todo: extra triangle data (e.g. vertex indices)\n\t}\n    \n\n    // store position and colour of light sources\n    // todo: match up to panels and use a uv coord for colour\n    if ( icoord.x < numLights && icoord.y >= 16 && icoord.y < 19 )\n    {\n        ivec2 data = icoord - ivec2(0,16);\n        float splineStep = float(spline.length())/float(numLights);\n    \tfloat splineIdx = float(icoord.x)*splineStep;\n        \n        vec3 pos = CatmullRom(splineIdx);\n        pos += fract(pos.zxy)-.5; // lazy pseudorandom\n        // todo, add something rotated by 6.283*7.*float(data.x)/float(numLights) or something\n        \n        \n        // store panels\n        // will be faster to intersect as squares:\n        // position, normal, [width height orientation - we know which way is up]\n        // this also means we don't need uv mapping - can generate it from the up, right and postion\n        // in fact, store position & right - up is always 0,1,0\n        // in fact, if aligned to y, only need 2 components for normal (zx), and right = normal.zx*<1,-1>\n        // IN FACT, only need a sign*sqrt(1-n.x) [but sign can't be assumed]\n        // So, store: light position.xyz, normal.x [z|z-sign], [uv offset]\n        // ^ data is not at a premium, and performance is => pos.xyz, n.xz,uv\n        // position is light position! SO\n        vec3 dir = normalize( CatmullRom(splineIdx + .01) - CatmullRom(splineIdx - .01) );\n        vec2 margin = panelRes*iResolution.yy/iResolution.xy;\n        vec2 uvOffset = fract(floor((pos.zy + vec2(.01,.006)*iTime)*8.)/8.);//*(1.-margin*2.)+margin; // pseudorandom\n        \n        if ( data.y == 0 ) fragColour = vec4(pos,0);\n        if ( data.y == 1 )\n        {\n    \t    vec3 col = vec3(0);\n            uint numTaps = 256U;\n            for ( uint i=0U; i < numTaps; i++ )\n            {\n                // nice sample distribution pattern\n                vec2 uv = vec2((uvec2(0x73494U,0xAF71FU)*i)&0xfffffU)/float(0xfffffU);\n                uv = uv*2.-1.;\n                col += textureLod(iChannel0,fract(uv*panelRes*vec2(iResolution.y/iResolution.x,1)+uvOffset),0.).rgb;\n            }\n            col /= float(numTaps);\n\n            float falloffDistance = 1.;\n            col *= falloffDistance*falloffDistance;\n\n             fragColour = vec4(col,0);\n        }\n        if ( data.y == 2 ) fragColour = vec4(-dir.xz,uvOffset);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buf B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

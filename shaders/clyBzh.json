@@ -1,0 +1,57 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1701803155",
+            "description": "Experimenting with using multiple importance sampling to improve convergence on a bright sun disk composited on top of an image.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "clyBzh",
+            "likes": 0,
+            "name": "Disk MIS",
+            "published": 3,
+            "tags": [
+                "sampling",
+                "mis",
+                "disk",
+                "fibonacci",
+                "radiance",
+                "multiple",
+                "importance"
+            ],
+            "usePreview": 0,
+            "username": "BeardThings",
+            "viewed": 121
+        },
+        "renderpass": [
+            {
+                "code": "#define ROUGHNESS 0.1\n#define Pi 3.14159265359\n#define DISK_ANGLE 0.1\n#define DISK_DIR normalize(vec3(0.707, -1.0, 0.3))\n\n#define BRDF_N 64u\n#define DISK_N 16u\n\n// #define RANDOM_ROTATION\n// #define FIBONACCI\n\n// https://schuttejoe.github.io/post/arealightsampling/\nvec3 sphere_cap(float angle, float r1, float r2)\n{\n    float t = acos(1.0 - r1 + r1 * cos(angle));\n    float p = r2 * Pi * 2.0;\n    \n    return vec3(cos(p) * sin(t), sin(p) * sin(t), cos(t));\n}\n\nfloat sphere_cap_pdf(float angle, vec3 v, vec3 l)\n{\n    float a = acos(dot(v, l));\n    return a <= angle ? 1.0 / (2.0 * Pi * (1.0 - cos(angle))) : 0.0;\n}\n\nvec3 srgb_to_linear(vec3 srgb)\n{\n    return pow(srgb, vec3(2.2));\n}\n\nfloat rcp(float v)\n{\n    return 1.0 / v;\n}\n\nfloat ggx_d(float roughnessSq, float hdotn)\n{\n\t// https://jcgt.org/published/0003/02/03/paper.pdf\n\tfloat hdotnSq = hdotn * hdotn;\n\tfloat t = (hdotnSq * (roughnessSq - 1.0f) + 1.0f);\n\treturn roughnessSq * rcp(t * t) / Pi;\n}\n\nfloat ggx_lambda(float roughnessSq, float cosTheta)\n{\n\treturn 0.5f * (sqrt(roughnessSq * (rcp(cosTheta * cosTheta) - 1.0f) + 1.0f) - 1.0f);\n}\n\nvec3 spherical_cap_VNDF_sampling(vec3 v, float r1, float r2)\n{\n\t// sample a spherical cap in (-v.z, 1]\n\tfloat phi = 2.0f * Pi * r1;\n\tfloat z = (1.0f - r2) * (1.0f + v.z) - v.z;\n\tfloat sinTheta = sqrt(min(max(1.0f - z * z, 0.0f), 1.0f));\n\tfloat x = sinTheta * cos(phi);\n\tfloat y = sinTheta * sin(phi);\n\tvec3 c = vec3(x, y, z);\n\t// compute halfway direction;\n\tvec3 h = c+v;\n\t// return without normalization (as this is done later)\n\treturn h;\n}\n\nvec3 hemisphere_surface_random_ggx_h(vec3 view, float r1, float r2, float roughness)\n{\n\t// Sampling routine from https://hal.science/hal-01509746/document\n\t// https://jcgt.org/published/0007/04/01/paper.pdf\n\t// Improvement: https://arxiv.org/pdf/2306.05044.pdf\n\n\t// stretch view\n\tvec3 V = normalize(vec3(roughness * view.x, roughness * view.y, view.z));\n\n\tvec3 N = spherical_cap_VNDF_sampling(V, r1, r2);\n\t// unstretch\n\tN = normalize(vec3(roughness*N.x, roughness*N.y, max(0.0f, N.z)));\n\treturn N;\n}\n\nfloat microfacet_g(float lambda)\n{\n\treturn rcp(1.0f + lambda);\n}\n\nfloat ggx_pdf(float roughness, float hdotn, float vdotn)\n{\n\t// https://jcgt.org/published/0007/04/01/paper.pdf\n\tfloat roughnessSq = roughness*roughness;\n\t// Base formulation is:\n\t// VNDF (Visible normal distribution function)\n\t// Dv = D*G1*v.h/v.n\n\t// PDF = Dv/(4*v.h)\n\t// Simplifying:\n\t// PDF = D*G1*v.h/(4*v.n*v.h)\n\t// PDF = D*G1/(4*v.n)\n\treturn ggx_d(roughnessSq, hdotn) * microfacet_g(ggx_lambda(roughnessSq, vdotn)) / (4.0f * vdotn);\n}\n\nvec3 ggx(float roughness, float hdotn, float vdotn, float ldotn, vec3 fresnel)\n{\n\tvec3 F = fresnel;\n\n\t// Generalized form:\n\t/*float roughnessSq = roughness*roughness;\n\tfloat D = ggxD(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\tfloat maskingLambda = ggxLambda(roughnessSq, vdotn);\n\tfloat shadowingLambda = ggxLambda(roughnessSq, ldotn);\n\tfloat G = maskingShadowingCorrelatedG(maskingLambda, shadowingLambda);\n\treturn F * (G * D / (4.0f * vdotn * ldotn));*/\n\n\t// Shadowing Masking Simplified Form:\n\tfloat roughnessSq = roughness*roughness;\n\tfloat D = ggx_d(roughnessSq, hdotn) * (hdotn > 0.0f ? 1.0f : 0.0f);\n\n\t// Algebraically merged shadowingLambda and maskingLambda\n\tfloat t0 = vdotn * sqrt((1.0f - roughnessSq) * ldotn * ldotn + roughnessSq);\n\tfloat t1 = ldotn * sqrt((1.0f - roughnessSq) * vdotn * vdotn + roughnessSq);\n\tfloat simplifiedG = rcp(t0 + t1);\n\treturn F * (simplifiedG * D * 0.5f);\n}\n\n// Orthonormal basis from Naive https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf\nmat3x3 basis_from_normal(vec3 n)\n{\n    vec3 i, j;\n    // If n is near the x - axis , use the y - axis . Otherwise use the x - axis .\n    if (n.x > 0.9 ) i = vec3(0.0, 1.0, 0.0 );\n    else i = vec3(1.0, 0.0, 0.0 );\n    i -= n * dot(i, n); // Make b1 orthogonal to n\n    i *= 1.0/sqrt(dot(i, i)); // Normalize b1\n    j = cross(n, i); // Construct b2 using a cross product\n\treturn mat3x3(i, j, n);\n}\n\n// http://holger.dammertz.org/stuff/notes_HammersleyOnHemisphere.html\nfloat radicalInverse_VdC(uint bits) {\n     bits = (bits << 16u) | (bits >> 16u);\n     bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);\n     bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);\n     bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);\n     bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);\n     return float(bits) * 2.3283064365386963e-10; // / 0x100000000\n }\n\nvec2 hammersley2d(uint i, uint N) {\n    return vec2(float(i)/float(N), radicalInverse_VdC(i));\n}\n\nconst float golden = (1.0 + sqrt(5.0))/2.0;\nvec2 fibonacci_2d(float i, float N)\n{\n    return vec2(fract(i/golden),i/N);\n}\n\nvec2 stratify(uint i, uint N)\n{\n#ifdef FIBONACCI\n    return fibonacci_2d(float(i), float(N));\n#else\n    return hammersley2d(i, N);\n#endif // FIBONACCI\n}\n\nvec3 disk(vec3 d)\n{\n    vec3 v = DISK_DIR;\n    return acos(dot(d, v)) < DISK_ANGLE ? vec3(1.0, 1.0, 1.0) * 10.0 : vec3(0.0, 0.0, 0.0);\n}\n\nvec3 scene(vec3 d)\n{\n    return texture(iChannel0, d).rgb + disk(d);\n}\n\n// https://stackoverflow.com/questions/5149544/can-i-generate-a-random-number-inside-a-pixel-shader\nfloat random( vec2 p )\n{\n    vec2 K1 = vec2(\n        23.14069263277926, // e^pi (Gelfond's constant)\n         2.665144142690225 // 2^sqrt(2) (Gelfondâ€“Schneider constant)\n    );\n    return fract( cos( dot(p,K1) ) * 12345.6789 );\n}\n\nvec3 lighting(vec3 n, vec3 v, vec3 l, float weight)\n{\n    vec3 r = vec3(0.0, 0.0, 0.0);\n\n    vec3 h = normalize(l + v);\n    float NoL = dot(n, l);\n    float HoN = dot(h, n);\n    float VoN = dot(h, v);\n    if(NoL > 0.0)\n    {\n        vec3 brdf = ggx(ROUGHNESS, HoN, VoN, NoL, vec3(1.0, 1.0, 1.0));\n        r = scene(l) * brdf * NoL * weight;\n    }\n    \n    return r;\n}\n\nvec3 radiance(vec3 n, float pr)\n{\n    vec3 v = n;\n    mat3x3 b = basis_from_normal(n);\n    \n    vec3 acc = vec3(0.0, 0.0, 0.0);\n    \n#ifdef RANDOM_ROTATION\n    vec3 t = vec3(cos(pr), -sin(pr), 0.0);\n    vec3 bit = vec3(sin(pr), cos(pr), 0.0);\n    mat3x3 rot = mat3x3(t, bit, vec3(0.0, 0.0, 1.0));\n#else\n    mat3x3 rot = mat3x3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0));\n#endif // RANDOM_ROTATION\n    \n    uint brdfN = BRDF_N;\n    uint diskN = DISK_N;\n    uint totalN = brdfN + diskN;\n    \n    for(uint i = 0u; i < brdfN; i++)\n    {\n        vec2 r = stratify(i, brdfN);\n        \n        vec3 h = b*rot*hemisphere_surface_random_ggx_h(v*b, r.x, r.y, ROUGHNESS);\n        vec3 l = reflect(-v,h);\n        float pdf = ggx_pdf(ROUGHNESS, dot(h, n), dot(v, h));\n        float diskPDF = sphere_cap_pdf(DISK_ANGLE, l, DISK_DIR);\n        \n        float weight = 1.0 / (float(brdfN) * pdf + float(diskN) * diskPDF);\n\n        acc += lighting(n, v, l, weight);\n    }\n    \n    \n    for(uint i = 0u; i < diskN; i++)\n    {\n        vec2 r = stratify(i, diskN);\n    \n        mat3x3 b = basis_from_normal(DISK_DIR);\n        vec3 l = b * sphere_cap(DISK_ANGLE, r.x, r.y);\n        vec3 h = normalize(l + v);\n        \n        float pdf = sphere_cap_pdf(DISK_ANGLE, l, DISK_DIR);\n        float ggxPDF = ggx_pdf(ROUGHNESS, dot(h, n), dot(v, h));\n        \n        float weight = 1.0 / (float(brdfN) * ggxPDF + float(diskN) * pdf);\n\n        acc += lighting(n, v, l, weight);\n    }\n    \n    return acc;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy*2.-1.;\n    float aspect = iResolution.y / iResolution.x;\n    vec3 v=vec3(0.,1.,0.)+vec3(uv.x,0.,0.)+vec3(0.,0.,uv.y*aspect);\n    vec3 o=vec3(0.,-1.5,0.);\n    float r=0.5;\n\n    float a=dot(v,v);\n    float b=2.*dot(v,o);\n    float c=dot(o,o)-r*r;\n    float d=b*b-4.*a*c;\n    \n    fragColor.rgb = disk(normalize(v));\n    if(d>=0.)\n    {\n        float t=(-b-sqrt(d))/(2.*a);\n        vec3 n=normalize(o+v*t);\n        \n#ifdef RANDOM_ROTATION\n        vec2 s = vec2(acos(n.z), atan(n.y, n.x));\n        float rand = random(s) * 2.0 * Pi;\n#else\n        float rand = 0.0;\n#endif // RANDOM_ROTATION\n\n        \n        fragColor.rgb=radiance(n, rand);\n    }  \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

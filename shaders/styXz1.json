@@ -1,0 +1,93 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1640165316",
+            "description": "The number of cubes is the number of adjacent voxels.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "styXz1",
+            "likes": 19,
+            "name": "3D Game of Life",
+            "published": 3,
+            "tags": [
+                "gameoflife"
+            ],
+            "usePreview": 1,
+            "username": "IWBTShyGuy",
+            "viewed": 502
+        },
+        "renderpass": [
+            {
+                "code": "//\n// Interface of 3D Game of Life\n//\n// The MIT License\n// Copyright © 2021 IWBTShyGuy\n//\n\n#if HW_PERFORMANCE!=0\n// If defined, activate anti-aliasing, level: 2 or 3\n#define AA 2\n#endif\n\n// When this macro is enabled, the number of adjacent voxels will be displayed.\n#define DEBUG_MODE\n\n// Size of the game board\nconst ivec3 I = ivec3(24);\n// Period of update\nconst float FREQ = 0.75;\n\nint fetch(ivec3 i) { return int(texelFetch(iChannel0, ivec2(i.x * I.y + i.y, i.z), 0).x);}\n\n#ifdef DEBUG_MODE\nfloat letter(in vec2 uv, in int idx) {\n    uv = clamp(uv, 0.0, 1.0);\n    int i = idx % 16;\n    int j = 15 - idx / 16;\n    vec2 origin = vec2(float(i) / 16.0, float(j) / 16.0);\n    uv = (uv / 16.0 + origin);\n    float r = texture(iChannel1, uv).x;\n    return floor(r + 0.5);\n}\n\nfloat digit(in vec2 uv, in int number) {\n    float size = 0.7;\n    int a = number / 10;\n    int b = number % 10;\n    float irr0 = letter((uv - 0.5 + vec2(0.25, 0)) / size + 0.5, 48 + a);\n    float irr1 = letter((uv - 0.5 - vec2(0.25, 0)) / size + 0.5, 48 + b);\n    return max(irr0, irr1);\n}\n\nint calcNeighborhood(vec3 p) {\n    int c = 0;\n    for (int k = 0; k < 27; k += k == 12 ? 2 : 1) {\n        ivec3 i = (I + ivec3(floor(p)) % I) % I + ivec3(0,0,I.z);\n        c += fetch((i + ivec3(k / 9, (k % 9) / 3, k % 3) - 1 + I) % I + ivec3(0,0,I.z));\n    }\n    return c;\n}\n#endif\n\nconst float PI = 3.141592653;\n\nstruct Camera {\n    vec3 position;\n    vec3 direction;\n    vec3 up_direction; // not require dot(direction, up_direction) == 0\n    float fov;\n    float aspect; // x / y\n};\n\nstruct Ray {\n    vec3 origin;\n    vec3 direction;\n};\n\n// perspective camera ray, uv = fragCoord / iResolution.xy\n// cf: https://qiita.com/aa_debdeb/items/301dfc54788f1219b554\nRay cameraRay(in Camera camera, in vec2 uv) {\n    uv = uv * 2.0 - 1.0;\n    float radian = camera.fov;\n    float h = tan(radian * 0.5);\n    float w = h * camera.aspect;\n    vec3 right = normalize(cross(camera.direction, camera.up_direction));\n    vec3 up = normalize(cross(right, camera.direction));\n    vec3 direction = normalize(right * w * uv.x + up * h * uv.y + camera.direction);\n    Ray ray;\n    ray.origin = camera.position;\n    ray.direction = direction;\n    return ray;\n}\n\n// https://iquilezles.org/articles/distfunctions\nfloat sdBox(vec3 p, vec3 b) {\n  vec3 q = abs(p) - b;\n  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);\n}\n\nfloat appearEffect(float t, bool prevExists, bool nextExists) {\n    float a = 1.0;\n    float k = 5.0;\n    float m = 1.2;\n    float s = fract(t);\n    float tmp = m - m * k * k * (s - 1.0 / k) * (s - 1.0 / k);\n    tmp = prevExists ? a : tmp;\n    a = s < 1.0 / k ? tmp : max(tmp, a);\n    tmp = m - m * k * k * (s - (k - 1.0) / k) * (s - (k - 1.0) / k);\n    tmp = nextExists ? a : tmp;\n    return s > (k - 1.0) / k ? tmp : max(tmp, a); \n}\n\n// cellwise SDF\nfloat cellDist(in vec3 p, in vec3 q, in float t) {\n    bool nextExists = fetch((I + ivec3(floor(q)) % I) % I) == 1;\n    bool currExists = fetch((I + ivec3(floor(q)) % I) % I + ivec3(0,0,I.z)) == 1;\n    bool prevExists = fetch((I + ivec3(floor(q)) % I) % I + ivec3(0,0,I.z*2)) == 1;\n    if (!currExists) return 0.5;\n    p = fract(q) + p - q - 0.5;\n    float a = appearEffect((t - 0.1) / 0.75, prevExists, nextExists);\n    return sdBox(p, vec3(0.15 * a)) - 0.025 * a;\n}\n\n// SDF\nfloat sDist(in vec3 p, in vec3 dir, in float t) {\n    float dist = cellDist(p, p, t);\n    if (floor(p + dist * dir) != floor(p)) {\n        dist = min(dist, cellDist(p, p + dist * dir, t));\n    }\n    return dist;\n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal(in vec3 p, in vec3 dir, in float t) {\n    const float eps = 0.0001;\n    const vec2 h = vec2(eps,0);\n    return normalize(vec3(\n        cellDist(p+h.xyy, p, t) - cellDist(p-h.xyy, p, t),\n        cellDist(p+h.yxy, p, t) - cellDist(p-h.yxy, p, t),\n        cellDist(p+h.yyx, p, t) - cellDist(p-h.yyx, p, t)\n    ));\n}\n\n#ifdef DEBUG_MODE\nvec2 getTexCoord(in vec3 p, in float t) {\n    vec2 res = vec2(0);\n    bool nextExists = fetch((I + ivec3(floor(p)) % I) % I) == 1;\n    bool prevExists = fetch((I + ivec3(floor(p)) % I) % I + ivec3(0,0,I.z*2)) == 1;\n    p = fract(p) - 0.5;\n    float a = appearEffect((t - 0.1) / 0.75, prevExists, nextExists);\n    if (abs(abs(p.x) - 0.175 * a) < 1.0e-2) res = p.zy / (0.3 * a) + 0.5; \n    else if (abs(abs(p.y) - 0.175 * a) < 1.0e-2) res = p.zx / (0.3 * a) + 0.5; \n    else if (abs(abs(p.z) - 0.175 * a) < 1.0e-2) res = p.xy / (0.3 * a) + 0.5;\n    return res;\n}\n#endif\n\nconst float FAR = 13.0;\nvoid mainImage0(out vec4 fragColor, in vec2 fragCoord) {\n    if (iTime < 0.1) { fragColor = vec4(0,0,0,1); return; } \n    float time = iTime - 0.1;\n    vec2 theta = vec2(0.15, 0.25) * time;\n    theta.y = sin(theta.y);\n\n    Camera camera;\n    camera.position = vec3(0, 0, -time * 0.5);\n    camera.direction = vec3(sin(theta.x) * cos(theta.y), sin(theta.y), -cos(theta.x) * cos(theta.y));\n    camera.up_direction = vec3(0, 1, 0);\n    camera.fov = PI / 4.0;\n    camera.aspect = iResolution.x / iResolution.y;\n    Ray ray = cameraRay(camera, fragCoord / iResolution.xy);\n\n    float dist = 0.0;\n    vec3 p;\n    for (int _i = 0; _i < 100; _i++) {\n        p = ray.origin + dist * ray.direction;\n        float dist0 = sDist(p, ray.direction, iTime);\n        if (dist0 < 0.00001 || dist > FAR) break;\n        dist += dist0;\n    }\n\n    vec3 col = vec3(0);\n    if (dist < FAR) {\n        vec3 normal = calcNormal(p, ray.direction, iTime);\n        float c = -dot(ray.direction, normal);\n        c = clamp(c, 0.0, 1.0);\n#ifdef DEBUG_MODE\n        vec2 uv = getTexCoord(p, iTime);\n        int num = calcNeighborhood(p);\n        c = clamp(c, 0.0, 1.0) * (1.0 - digit(uv, num));\n#endif\n        float k = smoothstep(0.0, 1.0, dist / FAR);\n        k *= k;\n        col = (1.0 - k) * c + k * col;\n    }\n\n    fragColor = vec4(pow(col, vec3(0.4545)), 1);\n}\n\nvoid mainImage(out vec4 O, vec2 U) {\n    mainImage0(O,U);\n    \n// smart anti-aliasing\n// reference: https://shadertoyunofficial.wordpress.com/2021/03/09/advanced-tricks/\n\n// If defined, visualize anti-aliased pixels.\n//#define VISUALIZE_AA\n#ifdef AA\n    if (fwidth(length(O.xyz)) > 0.2) {\n        O.xyz = pow(O.xyz, vec3(2.2));\n        vec4 o;\n#if (AA == 2)\n        for (int k = 0; k < 4; k++) {\n              mainImage0(o,U + (vec2(k - (k / 2) * 2, k / 2) - 0.5) / 1.5);\n              O += pow(o, vec4(2.2));\n        }\n        O /= 5.0;\n#elif (AA == 3)\n        for (int k = 0; k < 9; k += k == 3 ? 2 : 1 ) {\n              mainImage0(o, U + vec2(k % 3 - 1, k / 3 - 1) / 3.0);\n              O += pow(o, vec4(2.2));\n        }\n        O /= 9.0;\n#endif\n#ifdef VISUALIZE_AA\n        O = vec4(1);\n    } else {\n        O = vec4(0,0,0,1);\n#endif\n        O.xyz = pow(O.xyz, vec3(0.4545));\n    }\n#endif\n    O.w = 1.0;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//\n// Core of 3D Game of Life\n//\n// The MIT License\n// Copyright © 2021 IWBTShyGuy\n//\n\n// Size of the game board\nconst ivec3 I = ivec3(24);\n// Period of update\nconst float FREQ = 0.75;\n\n// Emin <= c <= Emax: survive\n// Fmin <= c <= Fmax: generate\n// where c is the number of live voxels around.\n// Based on the paper below, I have set up a rule that makes it rare for the game to end.\n// http://wpmedia.wolfram.com/uploads/sites/13/2018/02/01-3-1.pdf\nconst int Emin = 4;\nconst int Emax = 7;\nconst int Fmin = 5;\nconst int Fmax = 6;\n\n// Convert pixel memory coordinates to voxel coordinates.\nivec3 px2idx(ivec2 U) { return ivec3(U.x / I.y, U.x % I.y, U.y); }\n// Get the state of a voxel\nint fetch(ivec3 i) { return int(texelFetch(iChannel0, ivec2(i.x * I.y + i.y, i.z), 0).x);}\n// good old sine hash function\nfloat hash12(vec2 u) { return fract(sin(dot(u, vec2(12.31539, 3.134781))) * 2144132.3); }\n\nvoid mainImage(out vec4 O, in vec2 FC) {\n    ivec2 U = ivec2(FC);\n    // Preserve the previous time in the upper left pixel.\n    if (U == ivec2(0, int(iResolution.y) - 1)) { O.x = iTime; return; }\n    // Randomly fill voxels in the first frame.\n    else if (iFrame == 0) { O.x = hash12(FC) < 0.4 ? 1.0 : 0.0; return; }\n\n    // The status is maintained except for the moment when the time boundary is crossed.\n    float prevTime = texelFetch(iChannel0, ivec2(0, int(iResolution.y) - 1), 0).x;\n    if (mod(iTime, FREQ) < 0.1 || mod(prevTime, FREQ) > 0.1) {\n        O = texture(iChannel0, FC / iResolution.xy); return;\n    }\n\n    ivec3 i = px2idx(U);\n    // Save the previous state in chronological order.\n    if (I.z <= i.z) { i.z -= I.z; O.x = float(fetch(i)); return; }\n\n    // Look at the state of neighboring voxels and sum them to advance the game.\n    int c = 0, n = fetch(i);\n    for (int k = 0; k < 27; k += k == 12 ? 2 : 1) {\n        c += fetch((i + ivec3(k / 9, (k % 9) / 3, k % 3) - 1 + I) % I);\n    }\n    O.x = (Emin <= c && c <= Emax && n == 1) || (Fmin <= c && c <= Fmax) ? 1.0 : 0.0;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

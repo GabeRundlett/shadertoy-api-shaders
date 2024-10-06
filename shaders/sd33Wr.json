@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1629652099",
+            "description": "Calculate spherical harmonics parameters from environment cube map and light based on it. Only 9 vectors are used to encode the environment lighting.\n\nThanks to koulatko & alro for helps.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "sd33Wr",
+            "likes": 5,
+            "name": "sh light from env map",
+            "published": 3,
+            "tags": [
+                "sphericalharmonics",
+                "sh"
+            ],
+            "usePreview": 1,
+            "username": "sunhokim",
+            "viewed": 496
+        },
+        "renderpass": [
+            {
+                "code": "#define M_PI\t(3.14159265359)\n\n// An Efficient Representation for Irradiance Environment Maps (Ravi et al)\n// https://cseweb.ucsd.edu/~ravir/papers/envmap/envmap.pdf\n\n\nvec2 iSphere( in vec3 ro, in vec3 rd, in float rad )\n{\n\tfloat b = dot( ro, rd );\n\tfloat c = dot( ro, ro ) - rad*rad;\n\tfloat h = b*b - c;\n\tif( h<0.0 ) return vec2(-1.0);\n    h = sqrt(h);\n\treturn vec2(-b-h, -b+h );\n}\n\nfloat sdSphere( vec3 p, float s )\n{\n  return length(p)-s;\n}\n\nvec4 opU( vec4 d1, vec4 d2 )\n{\n\treturn (d1.x<d2.x) ? d1 : d2;\n}\n\nvec4 map(vec3 p) {\n    vec4 res = vec4(1e10, 0.0, 0.0, 0.0);\n    {\n    res = opU(res, vec4(sdSphere(p, 1.0),vec3(0.0)));\n    }\n    return res;\n}\n\nvec3 calcNormal( in vec3 p, float h)\n{\n    #define ZERO (min(int(iTime),0)) // non-constant zero\n    vec3 n = vec3(0.0);\n    for( int i=ZERO; i<4; i++ )\n    {\n        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);\n        n += e*map(p+e*h).x;\n    }\n    return normalize(n);\n}\n\nvec4 raycast( in vec3 ro, in vec3 rd )\n{\n    vec4 res = vec4(-1.0, 0.0, 0.0, 0.0);\n    \n    vec2 tminmax = iSphere( ro, rd, 100.0 );\n\tif( tminmax.y>0.0 )\n    {\n        float t = max(tminmax.x,0.001);\n        for( int i=0; i<256 && t<tminmax.y; i++ )\n        {\n            vec4 h = map(ro+t*rd);\n            if( h.x<0.001 ) { res=vec4(t,h.yzw); break; }\n            t += h.x;\n        }\n    }\n    \n    return res;\n}\n\nvec3 skyColor(vec3 rd) {\n    return mix(vec3(0.2), vec3(0.7), rd.y);\n}\n\nvec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(fieldOfView) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\nmat3 viewMatrix( in vec3 eye, in vec3 look )\n{\n    vec3 w = normalize(eye-look);\n    vec3 u = normalize(cross(w, vec3(0,-1,0)));\n    vec3 v = cross(w, u);\n    return mat3( u, v, w );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    const float r = 10.0;\n   \n    vec2 mouse = iMouse.xy /iResolution.xy;\n    if (iMouse.xy == vec2(0)) {\n        mouse = vec2(0.5,0.5);\n    }\n    vec2 spr = vec2(mouse.x * M_PI - M_PI/2.0, mouse.y*M_PI-M_PI)*0.8;\n    vec3 eye = vec3( -r*sin(spr.x)*sin(spr.y), -r*cos(spr.y),-r*sin(spr.y)*cos(spr.x)) + vec3(0.0, -2.0, 0.0);\n    vec3 look = vec3(0.0,0.0,0);\n    mat3 view = viewMatrix(eye, look);\n    vec3 dir = view * rayDirection(45.0, iResolution.xy, fragCoord);\n\n\n    vec4 res = raycast(eye, dir);\n    vec3 pos = eye + res.x*dir;\n    if (res.x < 0.0) {\n        fragColor = vec4(skyColor(dir),1.0);\n        return;\n    }\n    \n    //***********************************\n    //* SH light irradiance calculation *\n    //***********************************\n    vec3 coefs[9];\n    for (int i = 0; i < 9; i ++) {\n        coefs[i] = texelFetch(iChannel0, ivec2(i,0), 0).rgb;\n    }\n\n    float c1 = 0.429043;\n    float c2 = 0.511664;\n    float c3 = 0.743125;\n    float c4 = 0.886227;\n    float c5 = 0.247708;\n    vec3 L00 = coefs[0];\n    vec3 L1_1 = coefs[1];\n    vec3 L10 = coefs[2];\n    vec3 L11 = coefs[3];\n    vec3 L2_2 = coefs[4];\n    vec3 L2_1 = coefs[5];\n    vec3 L20 = coefs[6];\n    vec3 L21 = coefs[7];\n    vec3 L22 = coefs[8];\n    \n    mat4 RM = mat4(vec4(c1*L22.r,c1*L2_2.r,c1*L21.r,c2*L11.r),\n              vec4(c1*L2_2.r,-c1*L22.r,c1*L2_1.r,c2*L1_1.r),\n              vec4(c1*L21.r,c1*L2_1.r,c3*L20.r,c2*L10.r),\n              vec4(c2*L11.r,c2*L1_1.r,c2*L10.r,c4*L00.r-c5*L20.r));\n\n    mat4 GM = mat4(vec4(c1*L22.g,c1*L2_2.g,c1*L21.g,c2*L11.g),\n          vec4(c1*L2_2.g,-c1*L22.g,c1*L2_1.g,c2*L1_1.g),\n          vec4(c1*L21.g,c1*L2_1.g,c3*L20.g,c2*L10.g),\n          vec4(c2*L11.g,c2*L1_1.g,c2*L10.g,c4*L00.g-c5*L20.g));\n\n    mat4 BM = mat4(vec4(c1*L22.b,c1*L2_2.b,c1*L21.b,c2*L11.b),\n          vec4(c1*L2_2.b,-c1*L22.b,c1*L2_1.b,c2*L1_1.b),\n          vec4(c1*L21.b,c1*L2_1.b,c3*L20.b,c2*L10.b),\n          vec4(c2*L11.b,c2*L1_1.b,c2*L10.b,c4*L00.b-c5*L20.b));\n\n    vec4 normal = vec4(calcNormal(pos, 0.001),1.0);\n    vec3 diffuse = vec3(dot(normal, RM*normal), dot(normal, GM*normal), dot(normal, BM*normal));\n\n    fragColor = vec4(pow(diffuse/M_PI, vec3(1.0/2.2)), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define M_PI\t(3.14159265359)\n\nfloat[9] shCoeffs(vec3 w)\n{\n    float[9] result;\n\n    result[0] = 0.282095f;\n \n    result[1] = 0.488603f * w.y;\n    result[2] = 0.488603f * w.z;\n    result[3] = 0.488603f * w.x;\n \n    result[4] = 1.092548f * w.x * w.y;\n    result[5] = 1.092548f * w.y * w.z;\n    result[6] = 0.315392f * (3.0f * w.z * w.z - 1.0f);\n    result[7] = 1.092548f * w.x * w.z;\n    result[8] = 0.546274f * (w.x * w.x - w.y * w.y);\n \n    return result;\n}\n\nvec3 sampleSky(vec3 dir){\n    return pow(texture(iChannel0, dir).xyz, vec3(2.2));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    //**********************************\n    //* SH light parameter calculation *\n    //**********************************\n    const float DEL_PHI = M_PI*0.05; \n    const float DEL_TH = M_PI*0.05;\n\n    vec3 res = vec3(0);\n    if(fragCoord.x < 10.0 && fragCoord.y < 1.0){\n        float sampleCount = 0.0;\n        for (float phi = 0.0; phi < 2.0*M_PI; phi += DEL_PHI) {\n            for (float theta = 0.0; theta < M_PI; theta += DEL_TH) {\n                vec3 w = vec3(cos(phi)*sin(theta),sin(phi)*sin(theta), cos(theta));\n                res += shCoeffs(w)[int(fragCoord.x)]*sampleSky(vec3(w.x,w.y,w.z)).rgb*sin(theta);\n                sampleCount += 1.0;\n            }\n        }\n        res /= sampleCount;\n        res *= 4.0*M_PI;\n        fragColor = vec4(res, 1.0);\n    } else {\n        fragColor = vec4(0.0);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

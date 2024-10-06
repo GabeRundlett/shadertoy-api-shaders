@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1555606426",
+            "description": "Simple implementation of the noise model introduced by Gilet et al. \nLocal Random-Phase Noise for Procedural Texturing (SIGGRAPH ASIA 2014) \nMouse.x : Frequency - Mouse.y : Orientation",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wlf3RH",
+            "likes": 8,
+            "name": "Local Random Phase Noise (2014)",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "noise",
+                "texture",
+                "prng",
+                "lrpn"
+            ],
+            "usePreview": 0,
+            "username": "H4w0",
+            "viewed": 847
+        },
+        "renderpass": [
+            {
+                "code": "//@author : Arthur Cavalier\n\n// Simple implementation of the noise model introduced by Gilet et al. \n// Local Random-Phase Noise for Procedural Texturing (SIGGRAPH ASIA 2014)\n// http://www.unilim.fr/pages_perso/guillaume.gilet/publications/pdf/ProcTextures.pdf\n\n// User Controls\n#define MOUSE_CONTROL\n#define TIMER_OFFSET\n//#define BERNOUILLI\nconst int   NOF_COSINES = 5;\nconst float GRID_RES    = 5.0;\n\n// Constants\nconst float m_pi_2        = 1.57079632;         \nconst float m_pi          = 3.14159265;          \nconst float m_2_pi        = 6.28318530;  \n\n\n// Pseudo Random Number Generation\n// From Texton Noise Source Code provided by Galerne et al. \n// https://www.idpoisson.fr/galerne/texton_noise/index.html\n// Sourced ::\n/* \n * From http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/\n * Same strategy as in Gabor noise by example\n * Apply hashtable to create cellseed\n * Use a linear congruential generator as fast PRNG\n */\n\nuint  wang_hash(uint seed)                                          {seed=(seed^61u)^(seed>>16u);seed*=9u;seed=seed^(seed>>4u);seed*=668265261u;seed=seed^(seed>>15u);return(seed);}\nuint  cell_seed(const in ivec2 c, const in uint offset)             {const uint period=1024u;uint s=((uint(c.y)%period)*period+(uint(c.x)%period))*period+offset; if(s==0u){s = 1u;}return(s);}\nuint  myrand(inout uint p)                                          {p^=(p<<13u);p^=(p>>17u);p^=(p<<5u);return p;}\nfloat myrand_uniform_0_1(inout uint p)                              {return float(myrand(p))/float(4294967295u);}\nfloat myrand_uniform_m_M(inout uint p, in float mi, in float ma)    {return mi + (myrand_uniform_0_1(p) * (ma - mi));}\n\n\n// Kaiser Bessel Function\nfloat bessel_3(float x)\n{\n    float y=0.5*x;\n    float y2=(y*y);\n    return(y2*y*(1.0/6.0+y2*(1.0/24.0+y2*(1.0/240.0+y2*(1.0/4320.0+y2/120960.0)))));\n}\n\nfloat kaiser_bessel_window(float x)\n{\n    float i=clamp(x/1.5,-1.0,1.0);\n    float t=sqrt(1.0-pow(i,2.0));\n    return float(bessel_3(3.0*m_pi*t)/bessel_3(m_pi*3.0));\n}\n\n// Procedural Noise Function\nvec3 local_random_phase_noise(\n        in vec2  texcoords,\n        in float resolution,\n        in int   cosines,\n        in vec2  range_frequency,\n        in vec2  range_orientation\n    )\n{\n    vec2  scaled_coords  = texcoords * resolution;\n    vec2  cell_coords  = fract(scaled_coords);\n    vec2  cell_index   = floor(scaled_coords);\n    \n    vec2  scaled_frequency = range_frequency * resolution;\n\n    ivec2 cell_ID;\n    uint  prng, seed;\n    \n    float lrpn = 0.;\n    for (int m=-1; m<=+1; m++)\n    for (int n=-1; n<=+1; n++)\n    {\n        cell_ID.x = int(cell_index.x) + m;\n        cell_ID.y = int(cell_index.y) + n;\n\n        seed = cell_seed(cell_ID,0u);\n        prng = wang_hash(seed);\n\n        vec2 xy = cell_coords - vec2(m,n) - vec2(0.5);\n        float w = 1. / float(cosines);\n        float d = dot(xy,xy);\n        \n        float sc = 0.; // Sum of cosines\n        for(int k=0; k<cosines; k++)\n        {\n            float fr = myrand_uniform_m_M(prng,scaled_frequency.x,scaled_frequency.y); // pick a frequency \n            float or = myrand_uniform_m_M(prng,range_orientation.x,range_orientation.y); // pick an orientation\n            float ph = m_pi*(myrand_uniform_0_1(prng)*2.-1.); // pick a phase (shift)\n            float Am = myrand_uniform_0_1(prng)*2.-1.; // pick a amplitude between [-1;1]\n\n            #ifdef BERNOUILLI\n                // In Gabor Noise Revisited (JFIG 2018)\n                // Tavernier et al. (https://hal.archives-ouvertes.fr/hal-01926451/document)\n                // Studied Gabor Noise and its follow ups \n                // They compared the uniform weighting scheme for Gabor Kernels with simple Bernouilli distribution\n                // \"Splats with a low weight count for little in the sum, which seems like a waste of computation\"\n\n                // Because the formulation is quite close\n                // Testing with a LRPN seems interesting\n                Am = myrand_uniform_0_1(prng) > 0.5 ? -1.0 : 1.0; // choose between -1 or 1\n            #endif\n\n            vec2 ff = fr * vec2(cos(or),sin(or)); // oriented frequency\n            sc += Am * cos( m_2_pi * dot(xy,ff) + ph);\n        }\n\n        lrpn += kaiser_bessel_window(d) * w * sc;\n    }\n    return vec3(0.5+0.5*lrpn); \n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 texcoords = (2.*fragCoord.xy-iResolution.xy) / iResolution.y;\n    vec2 mouse = clamp(iMouse.xy / iResolution.xy, 0., 1.);\n\n    vec2 F,O; // frequency and orientation range ( vec2(min,max) )\n    float R = GRID_RES;  // grid resolution\n    int   K = NOF_COSINES;   // number of cosines\n\n#ifdef MOUSE_CONTROL\n    F = vec2(0.3, max(0.1,mouse.x) ); \n    O = vec2(0.,mouse.y*m_pi);      \n#else \n    F = vec2(0.4,0.5);\n    O = vec2(0.,m_pi / 6.);\n#endif\n\n#ifdef TIMER_OFFSET\n    texcoords += vec2(0.1*iTime);\n#endif\n\n    vec3 lrpn = local_random_phase_noise(texcoords,R,K,F,O);\n    fragColor = vec4(lrpn,1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

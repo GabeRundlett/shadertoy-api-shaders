@@ -1,0 +1,101 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1682281410",
+            "description": "PBR PT",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mtd3Wr",
+            "likes": 0,
+            "name": "PBR Path tracer attempt 2",
+            "published": 3,
+            "tags": [
+                "pathtracer"
+            ],
+            "usePreview": 0,
+            "username": "pathtracerenthusiast",
+            "viewed": 97
+        },
+        "renderpass": [
+            {
+                "code": "#define exposure .8\n\nvoid mainImage( out vec4 o, vec2 i ) {\n    o = texelFetch(iChannel0,ivec2(i),0);\n    o /= o.w;\n    \n    o.xyz *= exposure;\n    \n    o.xyz = ACESFilm(o.xyz);\n    o.xyz = linearToSRGB(o.xyz);\n    //initR(i,float(iFrame));\n    //for(int i = 0;i<40;i++) rand();\n    //o = vec4(rand());\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define FOV 60.\n#define shutAp .05\n#define blurAmt .001\n#define fcsDist 3.\nconst vec3 rightVec = vec3(1.,0.,0.),\nupVec = vec3(0.,1.,0.),\noutVec = vec3(0.,0.,1.);\n\n#define skyBrightness .75\n\n#define numLvls 8\n#define spp 8.\n\nconst float dv = 1./tan(d2r(FOV)*.5);\n\nHit worldInt(vec3 ro,vec3 rd,World objs) {\n    Hit h;\n    h.len = -1.;\n    h.type = -1;\n    \n    int id;\n    \n    Sphere sphs[c_w_sphs] = objs.sphs;\n    for(int i = 0; i < c_w_sphs; i++){\n        bool ff;\n        float d = sphInt(ro,rd,sphs[i],ff);\n        if(d>=c_Small&&(d<h.len||h.len<0.)) {\n        h.ff=ff;h.len=d;h.mat=sphs[i].m;\n        h.type=0;id=i;}\n    }\n    \n    if(h.type==0) {Sphere obj = sphs[id];h.nor = normalize((ro+rd*h.len)-obj.pos);}\n    \n    //if(!h.ff) h.nor *= -1.;\n    \n    return h;\n}\n\nvec3 getSky(vec3 rd,float t) {\n    return skyBrightness*SRGBToLinear(texture(iChannel1,rd).xyz);\n    //return vec3(.3,.625,.95);\n}\n\nvec3 scatter(out vec3 ro, inout vec3 rd, MatPBR m,vec3 p,in vec3 n){\n    ro = p;\n    float r = m.roughness, met = m.metalness;\n    \n    vec3 N = HSampleGGX(n,r);\n    \n    rd = reflect(rd,N);\n    \n    #if 0\n    vec3 F0 = mix(vec3(.04),m.albedo,met);\n    vec3 F = fresnelSchlick(md(N,-rd),F0);\n    return mix(m.albedo,,F);\n    #else\n    return m.albedo;\n    #endif\n}\n\nSphere new(vec3 p,float rad,vec3 alb,float rog,vec3 ems,float met) {\n    return Sphere(p,rad,MatPBR(alb,ems,rog,met));\n}\n\nvoid mainImage( out vec4 o, in vec2 i ) {\n    o = texelFetch(iChannel0,ivec2(i),0);\n    float framespp = float(iFrame)*spp;\n    \n    vec3 ttcol = vec3(0.);\n    \n    for(float j = 0.; j < spp; j++) {\n        initR(i,framespp + j);\n        \n        vec2 pixT = (-iR+ 2.*(i + rand2())) / iR.y;\n        vec3 er = normalize(vec3(pixT,dv));\n        \n        float ctime = iTime - rand()*shutAp;\n        \n        // Objects\n        \n        Sphere sphs[c_w_sphs] = Sphere[c_w_sphs](\n        new(vec3(0.,0.,3.5),1.,vec3(1.,.8,.5),.8,vec3(0.),1.),\n        new(vec3(0.,-101.,0.),100.,vec3(1.),.3,vec3(0.),0.),\n        new(vec3(0.,2.5,3.),.75,vec3(.5),.75,vec3(1.),0.)\n        );\n        \n        // Automatic code continues\n        World W;\n        W.sphs = sphs;\n        \n        vec3 rd = er.x*rightVec+ er.y*upVec + er.z*outVec;\n        vec3 ro = vec3(0.);\n        \n        vec3 go = blurAmt*vec3(2.*rand2()-1.,0.);\n        vec3 gd = normalize(er*fcsDist - go);\n        rd = normalize(rd + gd.x*rightVec + gd.y*upVec);\n        ro += go.x*rightVec + go.y*upVec;\n        \n        vec3 col = vec3(0.), mask = vec3(1.), oldNor = rd;\n        \n        for(int k = 0; k < numLvls; k++){\n            // Intersection\n            Hit inter = worldInt(ro,rd,W);\n            \n            // Sky\n            if(inter.len == -1.) {col+=getSky(rd,ctime)*mask;break;}\n            \n            // Data Retrieval\n            MatPBR mat = inter.mat;\n            vec3 p = inter.len*rd+ro;\n            \n            // Coloring, masking, and scattering\n            col += mat.ems*mask;\n            mask *= scatter(ro,rd,mat,p,inter.nor);\n        }\n        \n        ttcol += col;\n    }\n    \n    if(ttcol.x!=ttcol.x) ttcol.x = 0.;\n    if(ttcol.y!=ttcol.y) ttcol.y = 0.;\n    if(ttcol.z!=ttcol.z) ttcol.z = 0.;\n    o += vec4(ttcol / spp,1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define c_w_sphs 3\n\n\n#define iR iResolution.xy\n#define c_PI 3.1415926523\n#define c_Inf 3.4028235e38\n#define c_Small .0001\n\n#define md(a,b) max(0.,dot(a,b))\nconst float c_piover180 = c_PI/180.;\n#define d2r(a) a*c_piover180\n\n//Thanks Dave_Hoskins\nfloat _seed = 0.;\n/*\nfloat rand(){\n    float v = fract(_seed*.1031);\n    v *= v + 33.33;\n    v *= v + v*18.23;\n    //v += 34.35;\n    _seed = v;\n    return fract(v);\n}\n\nvec2 rand2(){\n    vec3 p = fract(_seed*vec3(.1031,.103,.0973));\n    p += dot(p,p.yzx+33.33);\n    vec2 a = (p.xx+p.yz)*p.zy;\n    _seed = a.x+a.y-a.x*a.y+a.x*a.x+a.y*a.y;\n    return fract(a);\n}*/\n/*\nfloat rand() {\n    _seed = (_seed * 27.19 + 27.49) * _seed + 93.73;\n    _seed /= abs(_seed-234.56);\n    //_seed *= (1.+fract(_seed))*abs(90.78-_seed);\n    float a = _seed;\n    //_seed -= 45.54;\n    return fract(a);\n}*/\nfloat rand(){\n    float p = fract(_seed * .1031);\n    p *= p + 23.43;\n    p *= p + p;\n    _seed = p;\n    return fract(p);\n}\n\nvec2 rand2(){\n    return vec2(rand(),rand());\n}\n/*\nvoid initR(vec2 p,float t) {\n    vec3 p3 = vec3(p.y,t,p.x);\n    p3 = fract(p3*.1031);\n    p3 += dot(p3*2.*fract(p3),p3.zyx+32.31);\n    _seed = fract((p3.x+p3.y)*p3.z);\n}*/\nvoid initR(vec2 p,float t){\n    vec3 p3 = vec3(p,t);\n\tp3  = fract(p3 * .1214);\n    p3 += dot(p3, p3.zyx + 41.62);\n    _seed = fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 uniformVec(void)\n{\n    float phi = rand()*2.*c_PI;\n    float z = rand()*2.-1.;\n    float r = sqrt(1.-z*z);\n    float x = r*cos(phi), y = r*sin(phi);\n\treturn vec3(x,y,z);\n}\n\nvec3 hemi(vec3 h){\n    vec3 v = uniformVec();\n    return normalize(v-2.*h*md(v,h));\n}\n\n\nstruct MatPBR {\n    vec3 albedo,\n    ems;\n    float roughness,\n    metalness;\n};\n\nstruct Sphere {\n    vec3 pos;\n    float rad;\n    MatPBR m;\n};\n\nstruct Hit {\n    float len;\n    vec3 nor;\n    bool ff;\n    MatPBR mat;\n    int type;\n};\n\nstruct World {\n    Sphere sphs[c_w_sphs];\n};\n\n\n\nvec3 LessThan(vec3 f, float val) {\n    return vec3(\n        (f.x < val) ? 1. : 0.,\n        (f.y < val) ? 1. : 0.,\n        (f.z < val) ? 1. : 0.);\n}\n \nvec3 linearToSRGB(vec3 rgb) {\n    rgb = clamp(rgb, 0., 1.);\n     \n    return mix(\n        pow(rgb, vec3(1. / 2.4)) * 1.055 - .055,\n        rgb * 12.92,\n        LessThan(rgb, .0031308)\n    );\n}\n \nvec3 SRGBToLinear(vec3 rgb) {\n    rgb = clamp(rgb, 0., 1.);\n     \n    return mix(\n        pow(((rgb + .055) / 1.055), vec3(2.4)),\n        rgb / 12.92,\n        LessThan(rgb, 0.04045)\n    );\n}\n\nvec3 ACESFilm(vec3 x) {\n    float a = 2.51;\n    float b = .03;\n    float c = 2.43;\n    float d = .59;\n    float e = .14;\n    return clamp((x*(a*x + b)) / (x*(c*x + d) + e), 0., 1.);\n}\n\nfloat sphInt(in vec3 ro,vec3 rd,Sphere sph,out bool ff){\n    ro -= sph.pos;\n    float b = dot( ro, rd );\n    float c = dot( ro, ro ) - sph.rad*sph.rad;\n    float h = b*b - c;\n    if( h<0. ) return -1.;\n    h = sqrt( h );\n    if(length(ro)<=sph.rad){\n        ff = false;\n        return -b+h;\n    }else{\n        ff = true;\n        return -b-h;\n    }\n}\n\nvec3 orient(vec3 S,vec3 N){\n    vec3 up = abs(N.z) < .999 ? vec3(0.,0.,1.) : vec3(1.,0.,0.);\n    vec3 tangent = normalize(cross(up,N));\n    vec3 bitangent = cross(N,tangent);\n    return tangent*S.x + bitangent*S.y + N*S.z;\n}\n\n// Generated bu ChatGPT\nvec3 HSampleGGX(vec3 n,float r){\n    float a2 = r*r;\n    float phi = 2.*c_PI*rand();\n    float ry = rand();\n    float cosTheta = sqrt((1.-ry)/(1.+(a2*a2-1.)*ry));\n    float sinTheta = sqrt(1.-cosTheta*cosTheta);\n    \n    vec3 h = vec3(sinTheta*cos(phi),sinTheta*sin(phi),cosTheta);\n    return orient(h,n);\n}\n\n\nfloat distributionGGX(vec3 N, vec3 H, float r) {\n    float a2 = r*r*r*r;\n    float NdotH  = md(N,H);\n    float NdotH2 = NdotH*NdotH;\n\t\n    float denom = (NdotH2*(a2-1.) + 1.);\n    denom *= c_PI*denom;\n\t\n    return a2/denom;\n}\n\nfloat geometrySchlickGGX(float NdotV, float r0) {\n    float r1 = r0 + 1.;\n    float k = r1*r1 / 8.;\n\n    float denom = NdotV*(1. - k) + k;\n\t\n    return NdotV / denom;\n}\nfloat geometrySmith(vec3 N, vec3 V, vec3 L, float r){\n    float NdotV = md(N,V);\n    float NdotL = md(N,L);\n    float ggx2  = geometrySchlickGGX(NdotV,r);\n    float ggx1  = geometrySchlickGGX(NdotL,r);\n\t\n    return ggx1*ggx2;\n}\n\nvec3 fresnelSchlick(float cosTheta, vec3 F0) {\n    return F0 + (1. - F0)*pow(clamp(1.- cosTheta,0.,1.),5.);\n}  \n\n\nvec3 cosineWeighted(vec3 N) {\n    float u1 = rand(), u2 = rand();\n    float r = sqrt(u1),\n    theta = 2.*c_PI*u2;\n    \n    float x = r*cos(theta), y = r*sin(theta),\n    z = sqrt(max(0.,1.-x*x-y*y));\n    \n    return orient(vec3(x,y,z),N);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

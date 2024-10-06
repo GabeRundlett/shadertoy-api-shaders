@@ -1,0 +1,87 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1678211718",
+            "description": "My path tracer. HDR.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mst3RB",
+            "likes": 3,
+            "name": "Path tracer p1",
+            "published": 3,
+            "tags": [
+                "pathtracer"
+            ],
+            "usePreview": 0,
+            "username": "pathtracerenthusiast",
+            "viewed": 189
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 o, in vec2 i )\n{\n    o = texelFetch(iChannel0,ivec2(i),0);\n    o /= o.w;\n    #define exposure 1.5\n    o = 1. - exp(-o*exposure);\n    o = pow(o,vec4(1./2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define shutAp .6\n#define fcsDist 1.3\n#define blurAmt .001\n#define numLevels 4\n#define spp 4.\n#define FOV PI/3.\n#define rt true\n\nvoid getScene(float t, out World world, out Viewer cam) {\n    cam = Viewer(vec3(1.,0.,0.),vec3(0.,1.,0.),vec3(0.,0.,1.),vec3(0.));\n    \n    world.spheres[0] = Sphere(vec3(-.05,-1.,3.),1.,Mat(.7,.1,60.,vec3(.2)),0.);\n    world.spheres[1] = Sphere(vec3(2.05,-1.,3.),1.,Mat(.3,.4,15.,.1+.1*normalize(vec3(sin(t),sin(t+1.),sin(t+2.)))),0.);\n    world.spheres[2] = Sphere(vec3(0.,1.,2.),1.,Mat(.5,.25,40.,vec3(.2)),0.);\n}\n\nvec3 getSky(float t,vec3 rd) {\n    return vec3(.3,.6,.9);\n}\n\n\nHit intersect(vec3 ro, vec3 rd, World world) {\n    vec3 r = vec3(999.,-1.,-1.);\n    \n    for(int i = 0; i<3*WorldSize;i++) {\n        float d = sphereInt(ro,rd,world.spheres[i]).x;\n        if(d<0.) continue;\n        if(d<r.x) r = vec3(d,i,0.);\n    }\n    \n    Hit h = Hit(int(r.y),int(r.z),vec3(0.),r.x);\n    \n    if(h.type==0) h.nor = normalize(h.len*rd+ro-world.spheres[h.id].pos);\n    \n    return h;\n}\n\nvec3 processPLight(PLight L,vec3 p,vec3 n,vec3 rd,Mat mat,World world) {\n    vec3 lr = L.pos-p;\n    vec4 ld = vec4(normalize(lr),length(lr));\n    Hit s =  intersect(p+n*.001,ld.xyz,world);\n    if(s.type>=0||s.len<ld.w) return vec3(0.);\n    float i = (L.str*500.)/(ld.w*ld.w);\n    vec3 color = L.col*mat.r*i*mat.col*max(0.,dot(n,ld.xyz));\n    vec3 h = normalize(ld.xyz-rd);\n    color += L.col*mat.r*(1.-mat.r)*i*pow(max(dot(h,n),0.),mat.s);\n    return color;\n}\n\nPLight newPLight(vec3 p,vec3 c,float i, float r){\n    return PLight(p+r*uniformVec(),c,i);\n}\n\nvoid newRay(out vec3 ro,inout vec3 rd,vec3 p,vec3 n,Mat m) {\n    ro = p+n*.001;\n    if(rand()<m.r){\n        rd = cosDir(n);\n    }else{\n        rd = normalize(reflect(rd,n)+m.g*.6*uniformVec());\n    }\n}\n\nvoid mainImage( out vec4 o, in vec2 i ){\n    irand(i,float(iFrame));\n    \n    float ftime;\n    if(!rt) {ftime = 0.; o = texelFetch(iChannel0,ivec2(i),0);}\n    else {o = vec4(0.);ftime = iTime;}\n    \n    float dv = 1./tan(FOV/2.);\n    \n    vec3 ttcol = vec3(0.);\n    for(float _i = 0.; _i<spp;_i++) {\n        vec2 p1 = (-R + 2.*(i + rand2())) / R.y;\n        \n        vec3 er = normalize(vec3(p1,dv));\n        float ctime = ftime - (shutAp/24.);\n        \n        World world;\n        Viewer cam;\n        getScene(ctime,world,cam);\n        \n        vec3 rd = er.x*cam.uu + er.y*cam.vv+er.z*cam.ww;\n        \n        vec3 go = blurAmt*vec3(-1.+2.*rand2(),0.);\n        vec3 gd = normalize( er*fcsDist-go );\n        cam.ro += go.x*cam.uu + go.y*cam.vv;\n        rd += gd.x*cam.uu + gd.y*cam.vv;\n        rd = normalize(rd);\n        \n        vec3 tcol = vec3(0.);\n        vec3 fcol = vec3(1.);\n        for(int _j = 0; _j<numLevels;_j++) {\n            Hit hit = intersect(cam.ro,rd,world);\n            if(hit.type==-1) {tcol+=getSky(ctime,rd)*fcol;break;}\n            \n            vec3 p = hit.len*rd+cam.ro;\n            Mat mat;\n            if(hit.type==0) mat = world.spheres[hit.id].m;\n            vec3 color = vec3(0.);\n            \n            PLight L = newPLight(vec3(-8.,18.,-10.),vec3(1.,.925,.75),1.8,.3);\n            color = processPLight(L,p,hit.nor,rd,mat,world);\n            \n            tcol += color*fcol;\n            fcol *= mat.col;\n            newRay(cam.ro,rd,p,hit.nor,mat);\n        }\n        \n        ttcol += tcol;\n    }\n    o += vec4(ttcol / spp,1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define R iResolution.xy\n#define PI 3.1415926523\n#define sat(a) clamp(a,0.,1.)\n\nfloat _seed;\nfloat rand(void) {\n    _seed += 1.;\n    return fract(81.29*sin(38.23*+_seed-12.13)-12.21);\n}\nvec2 rand2(void) {return vec2(rand(),rand());}\nfloat srand(float s) {\n    return fract(81.29*sin(38.23*s-12.13)-12.21);\n}\nvoid irand(vec2 c,float f){\n    _seed = srand(f)*f+srand(c.x)*c.y+srand(c.y)*c.x;\n}\n\n\nstruct PLight {\n    vec3 pos;\n    vec3 col;\n    float str;\n};\n\nstruct Mat {\n    float r;\n    float g;\n    float s;\n    vec3 col;\n};\n\nstruct Sphere {\n    vec3 pos;\n    float rad;\n    Mat m;\n    float radiance;\n};\n\n#define WorldSize 1\nstruct World {\n    Sphere spheres[3*WorldSize];\n    vec3 SkyCol;\n    float SkyStr;\n    vec3 SunCol;\n    float SunStr;\n};\nstruct Viewer {\n    vec3 uu;\n    vec3 vv;\n    vec3 ww;\n    vec3 ro;\n};\n\nstruct Hit {\n    int id;\n    int type;\n    vec3 nor;\n    float len;\n};\n\n\nvec2 sphereInt( in vec3 ro, vec3 rd, Sphere sphere) {\n    ro -= sphere.pos;\n    float b = dot( ro, rd );\n    float c = dot( ro, ro ) - sphere.rad*sphere.rad;\n    float h = b*b - c;\n    if( h<0. ) return vec2(-1.); // no intersection\n    h = sqrt( h );\n    return vec2( -b-h, -b+h );\n}\n\nvec3 cosDir(vec3 nor)\n{\n    float u = rand();\n    float v = rand();\n    float a = 2.*PI*v; float b = 2.*u-1.;\n    vec3 dir = vec3(sqrt(1.-b*b)*vec2(cos(a),sin(a)),b);\n    return normalize(nor+dir);\n}\nvec3 uniformVec(void)\n{\n    float phi = rand()*2.*PI;\n    float x = rand()*2.-1.;\n    float z = rand();\n\treturn pow(z,1./3.)*vec3(sqrt(1.-x*x)*vec2(sin(phi),cos(phi)),x);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

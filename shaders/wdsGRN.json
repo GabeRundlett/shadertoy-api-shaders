@@ -1,0 +1,93 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1545346711",
+            "description": "glitchy effects synced with audio + lighting + fake ass fresnel i made because i couldn't be bothered to look up equations for actual fresnel",
+            "flags": 64,
+            "hasliked": 0,
+            "id": "wdsGRN",
+            "likes": 0,
+            "name": "Bass Glitch Raymarch",
+            "published": 3,
+            "tags": [
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "Sear_Heat",
+            "viewed": 540
+        },
+        "renderpass": [
+            {
+                "code": "#define RAY_MARCH_TOLERANCE 0.01\n#define RAY_MARCH_NUM_MARCHES 64\n#define CAMERA_FOV_ADJUST 1.0\n#define INVALID_LIGHT worldLight_t(false, vec3(0,0,0), vec3(0,0,0))\n#define PI 3.1415\n//#define CAMERA_VERT_FOV_ADJUST 0.5\n\nstruct worldLight_t {\n\tbool lightEnabled;\n    vec3 lightColor; // magnitude = intensity\n    vec3 lightPosition;\n} worldLights[8];\n\nconst vec3 envLight = vec3(0.2, 0.2, 0.25);\nconst vec3 cameraPos = vec3(0.0, 0.0, -5.0); // this is the starting origin of every ray\n\nvoid setupLights (){\n    worldLights[0] = worldLight_t(true, vec3(1.0, 1.0, 1.0), vec3 (1.0, 0.7, -3.0));\n    worldLights[1] = worldLight_t(true, vec3(0.7, 0.4, 0.3), vec3(-3.0, (3.0 * cos(iTime/1.5)), 0.2 + (2.0 * sin(iTime)) + 0.8));\n    worldLights[2] = INVALID_LIGHT;\n    worldLights[3] = INVALID_LIGHT;\n    worldLights[4] = INVALID_LIGHT;\n    worldLights[5] = INVALID_LIGHT;\n    worldLights[6] = INVALID_LIGHT;\n    worldLights[7] = INVALID_LIGHT;\n}\nfloat bassIntensity (int range){\n    float allf = 0.;\n    for(int i = 0; i < range; i++) allf += texelFetch( iChannel0, ivec2(i,0), 0).x;\n    return allf/float(range);\n\t//return pow(texelFetch( iChannel0, ivec2(32,0), 0).x, 5.0) * 2.0;\n}\nfloat audioVolume (){\n    float allf = 0.;\n    for(int i = 0; i< 256; i++) allf+= texelFetch( iChannel0, ivec2(i,1), 0).x;\n\treturn abs(pow(allf/256., 4.2)); \n}\n\nbool isDropped(){\n\treturn round(bassIntensity(40) -0.1) > 0.;\n}\nfloat sdf_dist_point2sphere( in vec3 point, in vec3 sphereOrig, in float sphereRadius){\n\treturn length(point-sphereOrig) - sphereRadius;\n}\nfloat sdf_compute_scene(in vec3 point){\n    float displacement = sin( cos(iTime*2.) * point.x * 0.5) * tan(round(bassIntensity(40) -0.1) * point.y) * sin(5.0 * sin(iTime+3.2)* point.z);\n    // displacement varies with low frequency bass\n    float sphere_a_x, sphere_a_y, sphere_a_z;\n    if(isDropped()){ // if we are \"in the drop\"\n        sphere_a_z = 0.2 + (2.0 * sin(iTime*1.5));\n        sphere_a_y = (3.0 * cos(iTime));\n        sphere_a_x = cos(iTime) * 6.0;\n    }\n    else{\n        sphere_a_z = 0.2 + (2.0 * sin(iTime/4.));\n        sphere_a_y = (3.0 * cos(iTime/8.));\n        sphere_a_x = (iMouse.x - (iResolution.x/2.0)) / 158.0;\n    }\n\tfloat sphere_a = sdf_dist_point2sphere(point, vec3(sphere_a_x, sphere_a_y, sphere_a_z), 1.0);\n    return sphere_a + displacement; \n}\nvec3 sdf_compute_scene_normal(in vec3 point){\n\tconst vec3 nrmStep = vec3(0.001, 0, 0);\n    float step_x = sdf_compute_scene(point + nrmStep) - sdf_compute_scene(point - nrmStep);\n    float step_y = sdf_compute_scene(point + nrmStep.yxz) - sdf_compute_scene(point - nrmStep.yxz);\n    float step_z = sdf_compute_scene(point + nrmStep.yzx) - sdf_compute_scene(point - nrmStep.yzx);\n    return normalize(vec3(step_x, step_y, step_z));\n}\n\n// Bool whether it hit or not, if it did hitPos returns the point. RayDir is normalized\nbool rayMarchBase( in vec3 rayOrig, in vec3 rayDir, out vec3 hitPos){\n    \n    hitPos = rayOrig;\n    float marchStep = sdf_compute_scene(rayOrig);\n    for(int i = 0; i<RAY_MARCH_NUM_MARCHES; i++){\n    \thitPos += rayDir * (marchStep);\n        marchStep = sdf_compute_scene(hitPos);\n        if(marchStep <= RAY_MARCH_TOLERANCE) return true;\n    }\n    return false; // If we've reached the maximum number of marches just return false\n\n    \n}\n\n\nvec3 drawBg(vec2 uv){\n\tvec3 outCol = vec3(1.0, 1.0, 1.0);\n    // anti falias \n    ivec2 uv_tex = ivec2((uv + 1.0) * 128.0);\n    \n    float volMixer = audioVolume() * 2.;\n    outCol.x = audioVolume() * 2.;;\n    outCol.y = (1. - outCol.x*2.) * (1. - bassIntensity(20)); //1. / outCol.x;\n    outCol.z = outCol.y;\n    vec3 cubeCoords = vec3(uv.x * 256., uv.y * 256., 128.);\n    vec4 cubemap = texture(iChannel3, cubeCoords);\n\t\n    return mix(outCol, isDropped() ? vec3(1.0, 0.0, 0.0) : cubemap.xyz, volMixer);\n}\nvec3 rayMarchShade( in vec3 rayOrig, in vec3 rayDir, vec2 uv ){\n    \n    \n    vec3 hitPos; \n\tbool rtr = rayMarchBase(rayOrig, rayDir, hitPos);\n    if(rtr == true){\n        \n        // it's lighting time\n        \n        // get a base color\n        vec3 norm = sdf_compute_scene_normal(hitPos);\n        vec3 viewDir = normalize(cameraPos - hitPos);\n        const float textureRes = 1024.;\n        ivec2 sphereUV = ivec2(textureRes *(asin(norm.x)/PI + 0.5), textureRes*(asin(norm.y)/PI + 0.5));\n        vec3 clr;\n        vec3 specClr;\n        if(!isDropped()){ // if we are \"in the drop\"\n        \tclr = mix(texelFetch(iChannel1, sphereUV, 0).xyz, vec3(0.5, 0.5, 0.5), 0.8);\n            specClr = vec3(1.0, 1.0, 1.0);\n        }\n        else{\n\t\t\tclr = texelFetch(iChannel1, sphereUV, 0).xyz * 0.3;\n            specClr = vec3(1.0, 0.0, 0.0);\n        }\n        float specMask = texelFetch(iChannel2, sphereUV, 0).x;\n        vec3 lightingAtPoint = vec3(0,0,0);\n        \n        for(int i = 0; i< 8; i++){\n            if(worldLights[i].lightEnabled == false) continue; // skip 0,0,0 lights\n            vec3 lightDir = normalize(worldLights[i].lightPosition - hitPos);\n            \n        \tvec3 diff = worldLights[i].lightColor * clamp(dot(lightDir, norm), 0.0, 1.0);\n        \tvec3 had = (viewDir + lightDir) * 0.5;\n            vec3 spec =  specClr * pow(dot(norm, had), 8.0) * specMask; // 5.0 is phong exponent\n            // i dont know how to do fresnel and im too lazy to google it\n            // add fresnel to spec\n            //spec+= specColor * pow(1.0 - dot(norm, viewDir), 3.) * diff;\n            // beckmann spec \n            lightingAtPoint += diff + spec;\n        }\n        //return lightingAtPoint + envLight;\n        // apply fresnel last because aaaa...\n    \treturn clr.xyz * ((lightingAtPoint + envLight) + ( specClr * pow(1.0 - dot(norm, viewDir), 2.3)));\n    }\n    else{\n        return drawBg(uv);\n    }\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    setupLights();\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = ((fragCoord/iResolution.xy) * 2.0) - 1.0;\n\n    \n    \n    vec3 cameraRayDir = normalize(vec3(uv.x, uv.y * (iResolution.y/iResolution.x), CAMERA_FOV_ADJUST));\n    \n    vec3 col = rayMarchShade(cameraPos, cameraRayDir, uv);\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 8,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/52d2a8f514c4fd2d9866587f4d7b2a5bfa1a11a0e772077d7682deb8b3b517e5.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "musicstream",
+                        "id": 17057,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/ekalimusic/denzel-curry-threatz-ekali-gravez-remix-1"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

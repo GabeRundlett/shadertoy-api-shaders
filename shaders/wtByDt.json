@@ -1,0 +1,122 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1595684300",
+            "description": "left: bicubic reference | right: single sample bicubic approximation",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wtByDt",
+            "likes": 16,
+            "name": "Single Sample Bicubic Sampling",
+            "published": 3,
+            "tags": [
+                "filter",
+                "filtering",
+                "bicubic",
+                "cubic",
+                "interpolation",
+                "kernel",
+                "reconstruction",
+                "c2"
+            ],
+            "usePreview": 0,
+            "username": "TinyTexel",
+            "viewed": 1740
+        },
+        "renderpass": [
+            {
+                "code": "// Lincense: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\nleft: bicubic reference | right: single sample bicubic approximation\n\nThe following derivation builds on the one from \"Cubic Reconstruction\": https://www.shadertoy.com/view/3tfBzX.\n\nInstead of manually reading the data stored at the four vertices of a given 2x2 neighborhood and using them as weights for our bicubic reconstruction kernels \nwe can instead use the dedicated bilinear sampler of the GPU to do an approximate bicubic reconstruction with just single texture read.\n\nThe basic idea is this:\nGiven an RGBA texture where the four channels hold df/dx, df/dy, d^2f/dxdy, and f, respectively\n1. we remap the uvs local to a given neighborhood using a s-curve\n2. and then sample the texture bilinearly using these remapped uvs\n3. we multiply the interpolated derivative samples with a modulating signal to shape them into something resembling the ground truth kernel based reconstruction\n4. we add the four (in 1d just two) resulting partial signals together to get the final result\n\nSteps 1+2 are not at all new ideas. iq has an article describing doing exactly that for the purpose of getting rid of some bilinear artifacts (https://iquilezles.org/articles/texture).\nAnd in fact using smoothstep as s-curve, as iq suggests, is the ground truth choice if we were only concerned with interpolating the function values.\nThat's because the reconstruction kernel, kern_v, we would otherwise use for that purpose is simply an upside down smoothstep mirrored at the y-axis.\n\nkern_v: 1-x²(3-2|x|)\n1\n|▩◣\n|▩▩◣\n|▩▩▩\n|▩▩▩◣\n|▩▩▩▩◣▂\n0---------1\t\n\nHowever, the tricky part is getting the reconstruction of the derivatives based partial signals (approximately) right.\nThe ground truth reconstruction uses kern_d, which is a linear ramp windowed by a shifted parabola that is mirrored at the y-axis:\n\nkern_d: x(|x|-1)²\n1\n|\n|\n|  \n|  ◢◣\n|◢▩▩▩◣▂\n0---------1\n\n(A proper plot of these kernels can be found here: https://www.shadertoy.com/view/wlsfzX)\n\nThe partial signal we reconstruct with kern_d is zero at all vertices/integers while its derivative there matches our discrete derivative samples.\nSo we can't just interpolate the derivative samples with modified uvs and call it a day as is the case for the partial signal reconstructed from the value samples.\nAnd that brings us to step 3.\n\nFor now we will only consider the 1d case. Generalizing the 1d result to multiple dimensions is straightforward.\nLet's also assume that we sampled our texture using smoothstep-remapped texcoords as this already gives us the correct partial signal from the value channel.\nThis way, however, the derivative channel interpolates to a signal d(x) whose value at all vertices corresponds to what is supposed to be its derivative.\nAlso, since we used s-curve remapped texcoords to retrieve d(x) its derivative is zero at all vertices. \nSo what we want is to modify d(x) in way that if x ∈ integers its value gets turned into its derivative while the value itself gets mapped to zero.\nA simple way to do this is by multiplying d(x) with a modulating signal m(x):\n\ndm(x) = d(x) m(x),\n\nwhere if x ∈ integers\n\nd(x)' = 0,\n\nm(x)  = 0,\nm(x)' = 1,\n\nso that\n\ndm(x)  = 0,\ndm(x)' = d(x).\n\n\nUnder these constraints a natural choice for m(x) would be the cubic function \n\ncwave(x) = kern_d(fract(x)) - kern_d(1-fract(x)).\n\nFor the special case where all our derivative samples are of the same value, m(x) = cwave(x) would give us the ground truth result.\nHowever, if we now consider the special case where all our derivative samples are of the same value but with alternating signs we run into a problem.\nThe problem being that in this particular case d(x) has roots in the middle of each integer interval which cwave(x) can not get rid of.\nIn fact no well behaved choice for m(x) is able to clean up undesired mid-interval roots. \nBut it needs to be well behaved otherwise it has no chance to produce useful results in the general case.\n\nFortunately there is a simple solution. We can ensure that there are no mid-interval zero crossings in d(x) when they wouldn't occur in the ground truth signal.\nWe achieve that by alternatingly flipping the signs of our derivative samples before writing them to the texture and adapting m(x) to account for that:\n\n m(x)' =      (-1)^x,\ndm(x)' = d(x) (-1)^x,\n\nif x ∈ integers.\n\nLet's also introduce m0(x) as a convenient template to build modulators from:\n\nm(x) = m0(fract(x)) (-1)^floor(x),\n\ni.e. m(x) is now build by repeating a bump-like function m0(x) that gets flipped upside down on every second interval. \n\nThe natural choice for m0(x) is now \n\nqwave(x) = kern_d(x) + kern_d(1-x) = x - x^2,\n\ni.e. a simple quadratic bump that has its maximum at x=1/2:\n\nqwave(x):\n1\n|\n|\n|\n|▢◢▩▩◣\n|◢▩▩▩▩◣\n0---------1\n\n(ignore the ▢ it's just there for formatting purposes)\n\nIn this case one could see the resulting m(x) as a piecewise quadratic approximation of sin(xπ)/π (sin() itself is a pretty bad choice for m(x), btw).\n\n\nqwave(x) gives us the ground truth result for the special case of derivative samples of constant value with alternating signs.\nBut this doesn't necessarily mean that it performs well in the general case. \nIn particular with the current choice for the s-curve (s(x) = smoothstep) and the (modulator m0(x) = qwave) we are not even able to \nreconstruct linear signals correctly. This is quite disappointing considering that the ground truth reconstruction is exact for polynomial signals up to degree 3.\nIf we want our approximation to be able to handle linear signals correctly then the following must hold true on the interval [0,1]:\n\nx = lerp(0, 1, s(x)) + m0(x) lerp(1, -1, s(x)). // the -1 here resulting from the derivative sign flipping\n\nSolving for s(x) yields:  s(x) = (x - m0(x) / (1 - 2 m0(x)).\nSolving for m(x) yields: m0(x) = (x -  s(x) / (1 - 2  s(x)).\n\nThis means that under this constraint there is a (symmetrical) one-to-one relationship between the s-curve and the modulator, i.e they are dual to one another:\n\ndual(x, s_or_m0) = (x - s_or_m0(x)) / (1 - 2 s_or_m0(x)).\n\n\nHere is the dual modulator for smoothstep: \ndual(x, smoothstep) = (x^2 - x) / ((x^2 - x) 2 - 1)\n1\n|\n|\n|\n|  ▂▂▂\n|◢▩▩▩▩◣\n0---------1\n\nThis one is quite a bit flatter than qwave(x).\n\nAnd the dual s-curve for qwave is: \ndual(x, qwave) = x^2 / ((x^2 - x) 2 + 1).\n\nThis one looks like a slightly rounder version of smootherstep (not smoothstep); they even share the same derivative at x=1/2.\nIt is actually the pair qwave+dual that in comparison produces the overall better reconstruction approximations; not smoothstep+dual.\nWhich might be a bit surprising since using smoothstep, as mentioned before, is the ground truth choice if we only look at the interpolated value samples.\nBut I guess that doesn't count for much since the dual of smoothstep is generally a substantially worse modulator than qwave while \nthe dual of qwave is a pretty decent s-curve.\n\nNow there is obviously an infinite number of possible s(x)/m(x) pairs. So who is to say that there isn't a pair that is superior to qwave+dual?\nI did quite a bit of experimentation and while qwave did indeed turn out to be a pretty solid choice it seems that depending on the sampled signal \na slightly flatter version of qwave sometimes gives better results.\n\nFor experimentation purposes it is handy to have a modulator with a parameterized shape.\nHere is a polynomial one that is parameterized by the height h of its extremum at x=1/2:\n\nqiwave(x, h) = x + (x*x) * (a + x * (b + (c * x))),\n\nwith\n\na = -5.0 + 16.0 * h,\nb =  8.0 - 32.0 * h,\nc = -4.0 + 16.0 * h,\n\nand\n\nqiwave(1/2, h) = h,\n\nand the usual constraints for any m0(x):\n\nqiwave(0, h)  = 0,\nqiwave(1, h)  = 0,\nqiwave(0, h)' = 1,\nqiwave(1, h)' =-1.\n\nI found that in cases where qiwave(x, h) works better than qwave(x) good choices for h lie somewhere around 0.2.\n\nWe can justify h~0.2 formally by showing that this choice optimizes the resulting approximation of kern_d:\n\nerror[h_] := NIntegrate[(kern_d[x] - qiwave[x, h](1-dual[x, qiwave])))^2, {x, 0, 1}]\nFindMinimum[error, {h, 0.2}]\nh -> 0.220852\n\nMinimizing the integrated absolute differences instead of the squared ones gives:\n\nerror[h_] := NIntegrate[Abs[kern_d[x] - qiwave[x, h](1-dual[x, qiwave]))], {x, 0, 1}]\nFindMinimum[error, {h, 0.2}]\nh -> 0.214553\n\nConsidering that both these values produce very similar results I suggest h = 0.21875 as this allows us to optimize away one mad:\n\nqiwave(x, 0.21875) = ((x - x x) (-1/2) + 1) (x - x x) // mad, mad, mul: http://shader-playground.timjones.io/b09dbef230fefe19cc359bae2f408b5f\n                   = ( qwave(x) (-1/2) + 1)  qwave(x)\n\nI wasn't actually able to identify a clear pattern for when qiwave works better than qwave.\nBut since turning qwave into qiwave requires just a single additional line of code there is no real effort to simply trying both on a case by case basis. \n\n\nRelated:\n\n- https://www.shadertoy.com/view/3tfBzX | \"Cubic Reconstruction\"            (derivation of the ground truth bicubic reconstruction scheme)\n- https://www.shadertoy.com/view/WtsBDH | \"Bicubic C2 cont. Interpolation\"  (describes a pre-filtering approach to achieve C2 continuity)\n- https://www.shadertoy.com/view/tdtyzj | \"Single Sample Tricubic Sampling\" (3d generalization of the sampling approach described here)\n\n*/\n\n\nvec2 qiwave(vec2 x, float h)\n{\n    float a = -5.0 + 16.0 * h;\n    float b =  8.0 - 32.0 * h;\n    float c = -4.0 + 16.0 * h;\n    \n    return x + (x*x) * (a + x * (b + c * x));\n}\n\nfloat Sample(sampler2D channel, vec2 uv, vec2 texelCount)\n{\n    vec2 uv0 = uv;\n    \n    uv -= vec2(0.5);\n    \n    vec2 uvi = floor(uv);\n    vec2 uvf = uv - uvi;\n\n    vec2 mo = uvf - uvf*uvf;\n    \n   #if 0\n    mo = (mo * -0.5 + 1.0) * mo;// use this if it improves quality\n   #endif\n    \n    uvf = (uvf - mo) / (1.0 - 2.0 * mo);// map modulator to s-curve\n\n    uv = uvi + uvf + vec2(0.5);\n\n    vec4 v = textureLod(channel, uv / texelCount, 0.0);\n    \n    mo *= fract(uvi * 0.5) * 4.0 - 1.0;// flip modulator bump on every 2nd interval\n    \n    return dot(v, vec4(mo.xy, mo.x*mo.y, 1.0));\n}\n\n\nfloat kern_v(float x) { return 1.0-x*x*(3.0-2.0*abs(x)); }\nfloat kern_d(float x) { float o = abs(x)-1.0; return x*(o*o); }\n\nvec4 kern(vec2 p)\n{\n    return vec4(kern_d(p.x) * kern_v(p.y),\n                kern_v(p.x) * kern_d(p.y),\n                kern_d(p.x) * kern_d(p.y),\n                kern_v(p.x) * kern_v(p.y));\n}\n\nfloat SampleRef(sampler2D channel, vec2 uv)\n{\n    uv -= vec2(0.5);\n    \n    vec2 uvi = floor(uv);\n    vec2 uvf = uv - uvi;\n\n    ivec2 uv0 = ivec2(uvi);\n    \n    vec2 sn = vec2((uv0.x & 1) == 0 ? -1.0 : 1.0,\n                   (uv0.y & 1) == 0 ? -1.0 : 1.0);\n    \n    float r = 0.0;\n    for(int j = 0; j < 2; ++j)\n    for(int i = 0; i < 2; ++i)\n    {\n        vec4 c = texelFetch(channel, uv0 + ivec2(i, j), 0);\n        \n        vec2 l = uvf;\n        \n        vec2 sn0 = sn;\n        \n        if(i != 0) {l.x -= 1.0; sn0.x *= -1.0;}\n        if(j != 0) {l.y -= 1.0; sn0.y *= -1.0;}\n        \n        c.xyz *= vec3(sn0, sn0.x*sn0.y);// un-flip derivative sample signs; we usually don't need this for the ground truth reconstruction\n        \n        r += dot(c, kern(l));\n    }\n    \n\treturn r;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 uv0 )\n{\n    vec3 col = vec3(0.0);\n    \n    float s = 0.125*1.0;\n   \n   #if 1\n    vec4 h;\n    if(uv0.x < iResolution.x*0.5)\n    {\n        // bicubic reference\n    \tcol = SampleRef(iChannel0, uv0 * s) * vec3(1.0);\n    }\n    else\n    {\n        uv0.x -= iResolution.x*0.5;\n        \n        // single-sample approximation\n        col = Sample(iChannel0, uv0 * s, iResolution.xy) * vec3(1.0);\n        \n        //col = texture(iChannel0, uv0 * s / iResolution.xy).www;// bilinear\n    }\n    \n   #else\n    col = abs(SampleRef(iChannel0, uv0 * s) - \n              Sample   (iChannel0, uv0 * s, iResolution.xy)) * vec3(16.0);// abs error\n   #endif\n    \n    fragColor = vec4(GammaEncode(clamp01(col)), 0.0);\n}\n\n\n\n\n\n/*\n\nfloat Sample(sampler2D channel, vec2 uv, vec2 texelCount)\n{\n    vec2 uv0 = uv;\n    \n    uv -= vec2(0.5);\n    \n    vec2 uvi = floor(uv);\n    vec2 uvf = uv - uvi;\n\n    vec2 mo = uvf - uvf*uvf;\n    \n   #if 0\n    mo = (mo * -0.5 + 1.0) * mo;// use this if it improves quality\n   #endif\n    \n    //uvf = (uvf - mo) / (1.0 - 2.0 * mo);// map modulator to s-curve\n\n    uvf.y = cubic(uvf.y);\n    \n    uv = uvi + uvf + vec2(0.5);\n\n    vec4 v = textureLod(channel, uv / texelCount, 0.0);\n\n    if(false)\n    v.x = mix(mix(texelFetch(channel, ivec2(uvi)+ivec2(0,0), 0).x, texelFetch(channel, ivec2(uvi)+ivec2(1,0), 0).x, uvf.x),\n              mix(texelFetch(channel, ivec2(uvi)+ivec2(0,1), 0).x, texelFetch(channel, ivec2(uvi)+ivec2(1,1), 0).x, uvf.x), uvf.y);\n    \n    mo *= fract(uvi * 0.5) * 4.0 - 1.0;// flip modulator bump on every 2nd interval\n    \n    return v.x * mo.x;//exact \n    return dot(v, vec4(mo.xy, mo.x*mo.y, 1.0));\n}\n\n*/",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define rsqrt inversesqrt\n#define clamp01(x) clamp(x, 0.0, 1.0)\n#define If(cond, resT, resF) mix(resF, resT, cond)\n\nconst float Pi = 3.141593;\nconst float Pi05 = Pi * 0.5;\nconst float Pi2  = Pi * 2.0;\n\nfloat Pow2(float x) {return x*x;}\nfloat Pow3(float x) {return x*x*x;}\nfloat Pow4(float x) {return Pow2(Pow2(x));}\n\nvec3 GammaEncode(vec3 x) {return pow(x, vec3(1.0 / 2.2));}\n\nfloat cubic(float x) { return x*x*(3.0-2.0*x); }\nvec2  cubic(vec2  x) { return x*x*(3.0-2.0*x); }\nvec3  cubic(vec3  x) { return x*x*(3.0-2.0*x); }\nvec4  cubic(vec4  x) { return x*x*(3.0-2.0*x); }\n\nfloat quintic(float x){ return ((x * 6.0 - 15.0) * x + 10.0) * x*x*x;}\nvec2  quintic(vec2  x){ return ((x * 6.0 - 15.0) * x + 10.0) * x*x*x;}\nvec3  quintic(vec3  x){ return ((x * 6.0 - 15.0) * x + 10.0) * x*x*x;}\nvec4  quintic(vec4  x){ return ((x * 6.0 - 15.0) * x + 10.0) * x*x*x;}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Lincense: CC0 (https://creativecommons.org/publicdomain/zero/1.0/)\n\n/*\nThis is the pre-filtering routine from \"Bicubic C2 cont. Interpolation\": https://www.shadertoy.com/view/WtsBDH.\n*/\n\n#define FILTERING_MODE 0\n/*\n\t0: interpolating cubic kernel (produces C2 continuous signal without altering the sample values)\n\t1: generalized cubic BSpline (produces C2 continuous signal with smaller kernel but alters the sample values)\n\t2: central difference (reconstructed signal will not be C2 continuous; overall bad quality)\n*/\n\n#define FETCH(uv) pow(texelFetch(iChannel1, uv + ivec2(90, 50), 0).r, 2.2)\n\n\nvoid mainImage( out vec4 fragColor, in vec2 uv0 )\n{    \n    ivec2 uv = ivec2(uv0 - 0.5);\n    \n    vec4 col = vec4(0.0);\n    \n#if FILTERING_MODE == 0\n    // ======================================================= INTERPOLATING CUBIC KERNEL =======================================================\n    \n    // truncated kernel radii for 1st and 2nd derivatives respectively\n    int r1 = 5;\n    int r2 = 2;\n    \n    col.w = FETCH(uv);\n    \n   #if 1\n    // precomputed kernel\n    float kern[12];\n    kern[0] = 0.0         ; kern[1] = -0.803848    ; kern[ 2] = 0.21539       ; kern[ 3] = -0.0577137    ; \n    kern[4] = 0.0154643   ; kern[5] = -0.00414365  ; kern[ 6] = 0.00111029    ; kern[ 7] = -0.000297501  ; \n    kern[8] = 0.0000797152; kern[9] = -0.0000213596; kern[10] = 0.00000572329 ; kern[11] = -0.00000153355;\n   #else\n    // compute kernel at compile time\n    float kern[12];\n    {\n    \tkern[0] = 0.0;\n        \n        float sn = -1.0;\n    \tfor(uint i = 1u; i < 12u; ++i, sn = -sn)\n        \tkern[i] = sn * 3.0 * exp2(-float(i) * log2(2.0 + sqrt(3.0)));\n    }\n   #endif    \n    \n    // d/dx\n    for(int i = -r1; i <= r1; ++i)\n    {\n    \tfloat f = FETCH(uv + ivec2(i, 0));\n        \n        float k = kern[abs(i)] * (i > 0 ? -1.0 : 1.0);\n        \n        col.x += f * k;\n    }\n    \n    // d/dy\n    for(int i = -r1; i <= r1; ++i)\n    {\n    \tfloat f = FETCH(uv + ivec2(0, i));\n        \n        float k = kern[abs(i)] * (i > 0 ? -1.0 : 1.0);\n        \n        col.y += f * k;\n    }\n    \n    \n    // d^2/dxy\n    for(int j = -r2; j <= r2; ++j)\n    for(int i = -r2; i <= r2; ++i)\n    {\n        if(i == 0 || j == 0) continue;\n        \n    \tfloat f = FETCH(uv + ivec2(i, j));\n        \n        float kx = kern[abs(i)] * (i > 0 ? -1.0 : 1.0);\n        float ky = kern[abs(j)] * (j > 0 ? -1.0 : 1.0);\n        \n        col.z += f * (kx * ky);\n    }\n\n#elif FILTERING_MODE == 1\n    // ======================================================= GENERALIZED CUBIC BSPLINE =======================================================\n    \n    float kernD0[3];\n    float kernD1[3];\n    \n    kernD0[0] = 2.0/3.0; kernD0[1] = 1.0/6.0; kernD0[2] = 0.0;\n    kernD1[0] =     0.0; kernD1[1] =    -0.5; kernD1[2] = 0.0;\n    \n    float sw;// side lobes weight\n\n    sw = 0.0;// cubic BSpline\n    \n   #if 1\n   \n    sw = 0.25;// similar to 1/3 but less overshooting\n    \n   #elif 0\n   \n    sw = 1.0/3.0;// kernD0[0] == 1\n    \n   #elif 0\n    \n    sw = 0.186605;// max abs derivative == 1\n    \n   #elif 0\n    \n    sw = 1.0/6.0;// maximaly flat pass band\n    \n   #elif 0\n    \n    sw = -0.25;// spectrum falls off to 0 at Nyquist frequency\n    \n   #endif\n    \n    // add a pair of side lobes:\n    kernD0[0] += 1.0 * sw; kernD0[1] += -1.0/3.0 * sw; kernD0[2] += -1.0/6.0 * sw;\n    \t                   kernD1[1] += -1.0     * sw; kernD1[2] +=  0.5     * sw;\n    \n    int r = sw == 0.0 ? 1 : 2;\n    for(int j = -r; j <= r; ++j)\n    for(int i = -r; i <= r; ++i)\n    {\n    \tfloat f = FETCH(uv + ivec2(i, j));\n        \n        int x = abs(i);\n        int y = abs(j);\n        \n        float kAx = kernD0[x];\n        float kAy = kernD0[y];\n        \n        float kBx = kernD1[x] * (i > 0 ? -1.0 : 1.0);\n        float kBy = kernD1[y] * (j > 0 ? -1.0 : 1.0);\n        \n        col += f * vec4(kBx * kAy, \n                        kAx * kBy, \n                        kBx * kBy,\n                        kAx * kAy);\n    }\n\n#else\n    // ======================================================= CENTRAL DIFFERENCE =======================================================\n    \n    col.w = FETCH(uv);\n    \n    float kern[2];\n    \n    kern[0] =  0.0;\n    kern[1] = -0.5;\n    \n    for(int j = -1; j <= 1; ++j)\n    for(int i = -1; i <= 1; ++i)\n    {\n    \tfloat f = FETCH(uv + ivec2(i, j));\n        \n        float kx = kern[abs(i)] * (i > 0 ? -1.0 : 1.0);\n        float ky = kern[abs(j)] * (j > 0 ? -1.0 : 1.0);\n        \n        col.xyz += f * vec3(kx * (j == 0 ? 1.0 : 0.0), \n                            ky * (i == 0 ? 1.0 : 0.0), \n                            kx * ky);\n    }\n    \n#endif    \n    \n    if((uint(uv.x) & 1u) == 0u) { col.xz *= -1.0; }\n    if((uint(uv.y) & 1u) == 0u) { col.yz *= -1.0; }\n    \n    // col = vec4(df/dx, df/dy, d^2f/dxy, f)\n    fragColor = col;\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,119 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1700330042",
+            "description": "Made to play with rotations and projections. Rotors?",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "Dtyyzy",
+            "likes": 3,
+            "name": "Camera Controller",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "nearest",
+                "far",
+                "furthest",
+                "near"
+            ],
+            "usePreview": 0,
+            "username": "GabeRundlett",
+            "viewed": 210
+        },
+        "renderpass": [
+            {
+                "code": "\nstruct InterInfo {\n    float dist;\n    vec3 nrm;\n};\n\nstruct HitInfo {\n    float material_id;\n    InterInfo i;\n    RigidTransform object_trn;\n};\n\nInterInfo ray_object_intersection(in vec3 ro, in vec3 rd, in vec3 rad) {\n    // ray-box intersection in box space\n    vec3 m = 1.0 / rd;\n    vec3 n = m * ro;\n    vec3 k = abs(m) * rad;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n    float tN = max(max(t1.x, t1.y), t1.z);\n    float tF = min(min(t2.x, t2.y), t2.z);\n\n    // no intersection\n    if (tN > tF || tF < 0.0) {\n        return InterInfo(-1.0, vec3(-1.0));\n    }\n\n    return InterInfo(tN, -sign(rd) * step(tN, t1));\n}\n\nInterInfo ray_object_intersection(vec3 ray_pos, vec3 ray_dir) {\n    return InterInfo(-ray_pos.z / ray_dir.z, vec3(0, 0, 1));\n}\n\nHitInfo trace_scene(vec3 ray_pos, vec3 ray_dir) {\n    HitInfo result;\n    result.material_id = 0.0;\n    result.i.dist = 1.0e9;\n    result.i.nrm = vec3(-1.0);\n\n    {\n        vec3 object_pos = vec3(0.0, 0.0, -0.1);\n        vec3 box_size = vec3(4.0, 4.0, 0.1);\n        RigidTransform object_trn;\n        object_trn.translation = object_pos;\n        object_trn.orientation = from_to_rotor(vec3(1, 0, 0), vec3(1, 0, 0));\n        vec3 object_ray_d = transform(reverse(object_trn.orientation), ray_dir);\n        vec3 object_ray_o = transform(reverse(object_trn.orientation), ray_pos - object_trn.translation);\n        InterInfo object_int = ray_object_intersection(object_ray_o, object_ray_d, box_size);\n        if (object_int.dist > 0.0 && object_int.dist < result.i.dist) {\n            object_int.nrm = transform(object_trn.orientation, object_int.nrm);\n            result.i = object_int;\n            result.material_id = 1.0;\n            result.object_trn = object_trn;\n        }\n    }\n\n    {\n        vec3 object_pos = vec3(0.0, 2, 0.35);\n        vec3 box_size = vec3(0.25);\n        vec3 object_up = vec3(cos(iTime), -sin(iTime), 0.0);\n        RigidTransform object_trn;\n        object_trn.translation = object_pos;\n        object_trn.orientation = from_to_rotor(vec3(1, 0, 0), object_up);\n        vec3 object_ray_d = transform(reverse(object_trn.orientation), ray_dir);\n        vec3 object_ray_o = transform(reverse(object_trn.orientation), ray_pos - object_trn.translation);\n        InterInfo object_int = ray_object_intersection(object_ray_o, object_ray_d, box_size);\n        if (object_int.dist > 0.0 && object_int.dist < result.i.dist) {\n            object_int.nrm = transform(object_trn.orientation, object_int.nrm);\n            result.i = object_int;\n            result.material_id = 2.0;\n            result.object_trn = object_trn;\n        }\n    }\n\n    return result;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec4 image_size = vec4(iResolution.xy, vec2(1.0) / iResolution.xy);\n    // invert Y because OpenGL is silly\n    vec2 pixel_pos = vec2(fragCoord.x, image_size.y - 1.0 - fragCoord.y);\n\n    Player player = load_player(iChannel0);\n    Camera cam = player_get_camera(player, image_size);\n\n    vec2 uv = get_uv(pixel_pos, image_size);\n    ViewRayContext vrc = vrc_from_uv(cam, uv);\n\n    vec3 ray_pos = ray_origin_ws(vrc);\n    vec3 ray_dir = ray_dir_ws(vrc);\n\n    HitInfo scene_hit = trace_scene(ray_pos, ray_dir);\n    vec3 hit_pos = ray_pos + ray_dir * scene_hit.i.dist;\n\n    const vec3 SUN_COL = vec3(1.0, 0.95, 0.60);\n    const vec3 SKY_COL = vec3(0.4, 0.5, 0.9);\n\n    vec3 sun_dir = normalize(vec3(1, -1.5, 3));\n    HitInfo shadow_hit = trace_scene(hit_pos + scene_hit.i.nrm * 0.001, sun_dir);\n\n    vec3 diffuse = vec3(shadow_hit.material_id == 0.0) * max(0.0, dot(sun_dir, scene_hit.i.nrm)) * SUN_COL;\n    diffuse += SKY_COL * (dot(vec3(0, 0, 1), scene_hit.i.nrm) * 0.4 + 0.6);\n\n    fragColor = vec4(1.0);\n    if (scene_hit.material_id == 0.0) {\n        fragColor = vec4(SKY_COL, 1.0);\n    } else if (scene_hit.material_id == 1.0) {\n        vec3 object_hit_pos = transform(reverse(scene_hit.object_trn.orientation), hit_pos - scene_hit.object_trn.translation - scene_hit.i.nrm * 0.001);\n        ivec3 tile = ivec3(floor(object_hit_pos));\n        bool tile_mask = (tile.x & 1) == (tile.y & 1);\n        fragColor = vec4(tile_mask ? vec3(0.3) : vec3(0.4), 1.0);\n        fragColor.rgb *= diffuse;\n    } else if (scene_hit.material_id == 2.0) {\n        vec3 object_hit_pos = transform(reverse(scene_hit.object_trn.orientation), hit_pos - scene_hit.object_trn.translation - scene_hit.i.nrm * 0.001);\n        ivec3 tile = ivec3(floor(object_hit_pos * 8.0));\n        bool tile_mask = ((tile.x + tile.y + tile.z) & 1) == 1;\n        fragColor = vec4(0.8 - 0.8 * fract(object_hit_pos) + float(tile_mask) * 0.1, 1.0);\n        fragColor.rgb *= diffuse;\n    }\n\n    // if (1) {\n    //     // KEYBOARD DEBUG\n    //     int key_id = int(floor(fragCoord.x / 4.0));\n    //     if (fragCoord.y > 10.0 && fragCoord.y < 20.0) {\n    //         fragColor.r = texelFetch(iChannel1, ivec2(key_id, 0), 0).x;\n    //     } else if (fragCoord.y < 10.0) {\n    //         fragColor.g += float((key_id % 8) == 0) * 0.1;\n    //         fragColor.g += float((key_id % 16) == 0) * 0.1;\n    //         fragColor.g += float((key_id % 32) == 0) * 0.5;\n    //     }\n    // }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float MOUSE_SENSITIVITY = 0.01;                  // radians per pixel\nconst float WALK_SPEED = 1.0;                          // units (meters) per second\nconst float SPRINT_SPEED = 4.0;                        // units (meters) per second\nconst float VERTICAL_FOV = 75.0;                       // degrees\nconst float VERTICAL_FOV_ZOOM = 20.0;                  // degrees\nconst float VERTICAL_FOV_ZOOM_ANIMATION_SPEED = 500.0; // degrees per second\n\nconst int KEY_MOVE_FORWARD = 87;  // W\nconst int KEY_MOVE_BACKWARD = 83; // S\nconst int KEY_MOVE_LEFT = 65;     // A\nconst int KEY_MOVE_RIGHT = 68;    // D\nconst int KEY_MOVE_UP = 32;       // SPACE\nconst int KEY_MOVE_DOWN = 17;     // CTRL\nconst int KEY_MOVE_SPRINT = 16;   // SHIFT\nconst int KEY_ZOOM = 70;          // F\n\nconst float PI = 3.14159265;\n\nstruct Rotor3d {\n    float scalar;\n    float xy;\n    float yz;\n    float zx;\n};\nstruct RigidTransform {\n    vec3 translation;\n    Rotor3d orientation;\n};\n\nRotor3d from_to_rotor(vec3 from_dir, vec3 to_dir) {\n    from_dir = normalize(from_dir);\n    to_dir = normalize(to_dir);\n    // Calculations below assume the input directions are normalised\n    vec3 halfway = normalize(from_dir + to_dir);\n    vec3 wedge = vec3(\n        (halfway.x * from_dir.y) - (halfway.y * from_dir.x),\n        (halfway.y * from_dir.z) - (halfway.z * from_dir.y),\n        (halfway.z * from_dir.x) - (halfway.x * from_dir.z));\n    Rotor3d result;\n    result.scalar = dot(from_dir, halfway);\n    result.xy = wedge.x;\n    result.yz = wedge.y;\n    result.zx = wedge.z;\n    return result;\n}\nRotor3d reverse(Rotor3d r) {\n    Rotor3d result;\n    result.scalar = r.scalar,\n    result.xy = -r.xy;\n    result.yz = -r.yz;\n    result.zx = -r.zx;\n    return result;\n}\nvec3 transform(Rotor3d r, vec3 v) {\n    // Assume r is formed by the multiplication of two unit vectors.\n    // Then S = Rv, result = SR^{-1} where R^{-1} is just R with the bivector coefficients negated\n    float S_x = r.scalar * v.x + r.xy * v.y - r.zx * v.z;\n    float S_y = r.scalar * v.y - r.xy * v.x + r.yz * v.z;\n    float S_z = r.scalar * v.z - r.yz * v.y + r.zx * v.x;\n    float S_xyz = r.xy * v.z + r.yz * v.x + r.zx * v.y;\n\n    vec3 result;\n    result.x = S_x * r.scalar + S_y * r.xy + S_xyz * r.yz - S_z * r.zx;\n    result.y = S_y * r.scalar - S_x * r.xy + S_z * r.yz + S_xyz * r.zx;\n    result.z = S_z * r.scalar + S_xyz * r.xy - S_y * r.yz + S_x * r.zx;\n    return result;\n}\n\nstruct Player {\n    vec3 pos;\n    vec4 rot;\n\n    float near;\n    float fov;\n    vec2 mouse_state;\n};\n\nstruct Camera {\n    mat4 view_to_clip;\n    mat4 clip_to_view;\n    mat4 world_to_view;\n    mat4 view_to_world;\n};\n\nstruct ViewRayContext {\n    vec4 ray_dir_cs;\n    vec4 ray_dir_vs_h;\n    vec4 ray_dir_ws_h;\n    vec4 ray_origin_cs;\n    vec4 ray_origin_vs_h;\n    vec4 ray_origin_ws_h;\n};\n\nvoid player_init(inout Player self) {\n    self.pos = vec3(0.0, 0.0, 1.0);\n    self.rot = vec4(0.0, 1.5, 0.0, 0.0);\n    self.near = 0.01;\n    self.fov = VERTICAL_FOV;\n    self.mouse_state = vec2(-1.0);\n}\n\nvoid player_update(inout Player self, float dt, vec4 mouse_pos, sampler2D keyboard_image) {\n    vec2 mouse_delta = vec2(0.0);\n    if (self.mouse_state.x > 0.0) {\n        mouse_delta = mouse_pos.xy - self.mouse_state;\n    }\n    if (mouse_pos.z > 0.0) {\n        self.mouse_state = mouse_pos.xy;\n    } else {\n        self.mouse_state = vec2(-1.0);\n    }\n\n    self.rot.x += mouse_delta.x * MOUSE_SENSITIVITY;\n    self.rot.y += mouse_delta.y * MOUSE_SENSITIVITY;\n\n    self.rot.y = clamp(self.rot.y, 0.0, PI);\n\n    vec3 forward = vec3(sin(self.rot.x), cos(self.rot.x), 0.0);\n    vec3 right = vec3(forward.yx * vec2(1.0, -1.0), 0.0);\n    vec3 up = vec3(0.0, 0.0, 1.0);\n\n#define LOAD_KEY(KEY) texelFetch(keyboard_image, ivec2(KEY, 0), 0).x > 0.0\n\n    float speed = WALK_SPEED;\n    if (LOAD_KEY(KEY_MOVE_SPRINT)) {\n        speed = SPRINT_SPEED;\n    }\n\n    if (LOAD_KEY(KEY_MOVE_FORWARD)) {\n        self.pos += forward * speed * dt;\n    }\n    if (LOAD_KEY(KEY_MOVE_BACKWARD)) {\n        self.pos -= forward * speed * dt;\n    }\n    if (LOAD_KEY(KEY_MOVE_LEFT)) {\n        self.pos -= right * speed * dt;\n    }\n    if (LOAD_KEY(KEY_MOVE_RIGHT)) {\n        self.pos += right * speed * dt;\n    }\n    if (LOAD_KEY(KEY_MOVE_UP)) {\n        self.pos += up * speed * dt;\n    }\n    if (LOAD_KEY(KEY_MOVE_DOWN)) {\n        self.pos -= up * speed * dt;\n    }\n\n    if (LOAD_KEY(KEY_ZOOM)) {\n        self.fov = clamp(self.fov - dt * VERTICAL_FOV_ZOOM_ANIMATION_SPEED, VERTICAL_FOV_ZOOM, VERTICAL_FOV);\n    } else {\n        self.fov = clamp(self.fov + dt * VERTICAL_FOV_ZOOM_ANIMATION_SPEED, VERTICAL_FOV_ZOOM, VERTICAL_FOV);\n    }\n\n#undef LOAD_KEY\n}\n\nmat4 rotation_matrix(float yaw, float pitch, float roll) {\n    float sin_rot_x = sin(pitch), cos_rot_x = cos(pitch);\n    float sin_rot_y = sin(roll), cos_rot_y = cos(roll);\n    float sin_rot_z = sin(yaw), cos_rot_z = cos(yaw);\n    return mat4(\n               cos_rot_z, -sin_rot_z, 0, 0,\n               sin_rot_z, cos_rot_z, 0, 0,\n               0, 0, 1, 0,\n               0, 0, 0, 1) *\n           mat4(\n               1, 0, 0, 0,\n               0, cos_rot_x, sin_rot_x, 0,\n               0, -sin_rot_x, cos_rot_x, 0,\n               0, 0, 0, 1) *\n           mat4(\n               cos_rot_y, -sin_rot_y, 0, 0,\n               sin_rot_y, cos_rot_y, 0, 0,\n               0, 0, 1, 0,\n               0, 0, 0, 1);\n}\nmat4 inv_rotation_matrix(float yaw, float pitch, float roll) {\n    float sin_rot_x = sin(-pitch), cos_rot_x = cos(-pitch);\n    float sin_rot_y = sin(-roll), cos_rot_y = cos(-roll);\n    float sin_rot_z = sin(-yaw), cos_rot_z = cos(-yaw);\n    return mat4(\n               cos_rot_y, -sin_rot_y, 0, 0,\n               sin_rot_y, cos_rot_y, 0, 0,\n               0, 0, 1, 0,\n               0, 0, 0, 1) *\n           mat4(\n               1, 0, 0, 0,\n               0, cos_rot_x, sin_rot_x, 0,\n               0, -sin_rot_x, cos_rot_x, 0,\n               0, 0, 0, 1) *\n           mat4(\n               cos_rot_z, -sin_rot_z, 0, 0,\n               sin_rot_z, cos_rot_z, 0, 0,\n               0, 0, 1, 0,\n               0, 0, 0, 1);\n}\nmat4 translation_matrix(vec3 pos) {\n    return mat4(\n        1, 0, 0, 0,\n        0, 1, 0, 0,\n        0, 0, 1, 0,\n        pos, 1);\n}\n\nCamera player_get_camera(Player self, vec4 tex_size) {\n    Camera result;\n\n    float aspect = tex_size.x * tex_size.w;\n    float tan_half_fov = tan(self.fov * PI / 180.0 * 0.5);\n\n    result.view_to_clip = mat4(0.0);\n    result.view_to_clip[0][0] = +1.0 / tan_half_fov / aspect;\n    result.view_to_clip[1][1] = +1.0 / tan_half_fov;\n    result.view_to_clip[2][2] = +0.0;\n    result.view_to_clip[2][3] = -1.0;\n    result.view_to_clip[3][2] = self.near;\n\n    result.clip_to_view = mat4(0.0);\n    result.clip_to_view[0][0] = tan_half_fov * aspect;\n    result.clip_to_view[1][1] = tan_half_fov;\n    result.clip_to_view[2][2] = +0.0;\n    result.clip_to_view[2][3] = +1.0 / self.near;\n    result.clip_to_view[3][2] = -1.0;\n\n    result.view_to_world = translation_matrix(self.pos) * rotation_matrix(self.rot.x, self.rot.y, self.rot.z);\n    result.world_to_view = inv_rotation_matrix(self.rot.x, self.rot.y, self.rot.z) * translation_matrix(-self.pos);\n\n    return result;\n}\n\nvec2 get_uv(vec2 pix, vec4 tex_size) { return (floor(pix) + 0.5) * tex_size.zw; }\nvec2 cs_to_uv(vec2 cs) { return cs * vec2(0.5, -0.5) + vec2(0.5, 0.5); }\nvec2 uv_to_cs(vec2 uv) { return (uv - 0.5) * vec2(2.0, -2.0); }\n\nViewRayContext vrc_from_uv(Camera cam, vec2 uv) {\n    ViewRayContext res;\n\n    res.ray_dir_cs = vec4(uv_to_cs(uv), 0.0, 1.0);\n    res.ray_dir_vs_h = cam.clip_to_view * res.ray_dir_cs;\n    res.ray_dir_ws_h = cam.view_to_world * res.ray_dir_vs_h;\n    res.ray_origin_cs = vec4(uv_to_cs(uv), 1.0, 1.0);\n    res.ray_origin_vs_h = cam.clip_to_view * res.ray_origin_cs;\n    res.ray_origin_ws_h = cam.view_to_world * res.ray_origin_vs_h;\n\n    return res;\n}\n\nvec3 ray_dir_vs(in ViewRayContext vrc) { return normalize(vrc.ray_dir_vs_h.xyz); }\nvec3 ray_dir_ws(in ViewRayContext vrc) { return normalize(vrc.ray_dir_ws_h.xyz); }\nvec3 ray_origin_vs(in ViewRayContext vrc) { return vrc.ray_origin_vs_h.xyz / vrc.ray_origin_vs_h.w; }\nvec3 ray_origin_ws(in ViewRayContext vrc) { return vrc.ray_origin_ws_h.xyz / vrc.ray_origin_ws_h.w; }\n\n// ShaderToy-specific code\n\nPlayer load_player(sampler2D player_image) {\n    Player result;\n    result.pos = texelFetch(player_image, ivec2(0, 0), 0).xyz;\n    result.rot = texelFetch(player_image, ivec2(1, 0), 0);\n    vec4 nf = texelFetch(player_image, ivec2(2, 0), 0);\n    result.mouse_state = texelFetch(player_image, ivec2(3, 0), 0).xy;\n    result.near = nf.x;\n    result.fov = nf.y;\n    return result;\n}\n\nvoid save_player(Player self, out vec4 fragColor, vec2 fragCoord) {\n    ivec2 pixel_i = ivec2(fragCoord);\n    if (pixel_i.y == 0 && pixel_i.x <= 4) {\n        switch (pixel_i.x) {\n        case 0:\n            fragColor = vec4(self.pos, 0.0);\n            break;\n        case 1:\n            fragColor = self.rot;\n            break;\n        case 2:\n            fragColor = vec4(self.near, self.fov, 0.0, 0.0);\n            break;\n        case 3:\n            fragColor = vec4(self.mouse_state, 0.0, 0.0);\n            break;\n        }\n    }\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    Player player = load_player(iChannel0);\n    \n    if (iFrame == 0) {\n        player_init(player);\n    } else {\n        player_update(player, iTimeDelta, iMouse, iChannel1);\n    }\n    \n    // This buffer isn't wasted for another use, it just stores the player state in a few pixels.\n    // So basically, it's only necessary that you call `save_player` last in this function to ensure\n    // the player state is saved in the necessary pixels.\n    \n    save_player(player, fragColor, fragCoord);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

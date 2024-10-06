@@ -1,0 +1,66 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1588923802",
+            "description": "Another attempt at using bicubic interpolation to straighten, rather than smooth, boundaries between pixels.\n\nBroadly; smooth with bicubic, and then threshold to adjacent pixels.  Bicubic's context allows some limited contour following for the threshold.",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "3sfBDS",
+            "likes": 4,
+            "name": "bicubic-smoothed pixel-art scale",
+            "published": 3,
+            "tags": [
+                "scaling",
+                "pixelartinterpolation"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 584
+        },
+        "renderpass": [
+            {
+                "code": "// Smaller values relax similarity threshold between neighbours.\nconst float score_weight = 4.0;\n\n// Probably needs tweaking to match scale factor.\nconst float sharpen_threshold = 0.8;\n\n// Standard is -0.5, lower is blurrier and gives smoother diagonals.\nconst float cubic_blur = -0.9;\nconst float lancz_cutoff = 0.95;\nconst bool bicubic_mode = true;\n#define WIN 4\n\n// Alternate textures to try (from browser js console):\n// gShaderToy.SetTexture(0, {mSrc:'https://i.postimg.cc/2m6hY0vm/test-original.gif', mType:'texture', mID:1, mSampler:{ filter: 'mipmap', wrap: 'repeat', vflip:'true', srgb:'false', internal:'byte' }});\n// gShaderToy.SetTexture(0, {mSrc:'https://i.postimg.cc/csh04MYG/r-place.png', mType:'texture', mID:1, mSampler:{ filter: 'mipmap', wrap: 'repeat', vflip:'true', srgb:'false', internal:'byte' }});\n// (somebody else's scaling of above: https://i.redd.it/3nsc7940appy.png )\n\nvec2 zoom(vec2 uv, vec2 resolution) {\n    vec2 window = vec2(32.,18.) * (1.0 + sin(iTime * 0.3) * 0.2);\n    vec2 range = max(vec2(1.), resolution - window);\n    vec2 t = vec2(4.0, 4.1) * iTime / resolution;\n\tuv = uv * window;\n    uv += (vec2(sin(t.x), cos(t.y)) + vec2(1.)) * 0.5 * range;\n    return uv;\n}\n\nfloat cubic(float t) {\n    const float a = cubic_blur;\n    t = abs(t);\n    float t3 = t * t * t;\n    float t2 = t * t;\n    if (t <= 1.) return (a + 2.) * t3 - (a + 3.) * t2 + 1.;\n    if (t < 2.) return a * t3 - 5. * a * t2 + 8. * a * t - 4. * a;\n    return 0.;\n}\n\nvoid cubic(out float w[4], float t) {\n    w[0] = cubic(t + 1.);\n    w[1] = cubic(t + 0.);\n    w[2] = cubic(t - 1.);\n    w[3] = cubic(t - 2.);\n}\n\nvec4 interpolate(vec4 p0, vec4 p1, vec4 p2, vec4 p3, float t) {\n    float w[4];\n    cubic(w, t);\n    return p0 * w[0] + p1 * w[1] + p2 * w[2] + p3 * w[3];\n}\n\nfloat lanczos2(vec2 uv) {\n    float t = length(uv);\n    if (t == 0.) return 1.;\n    float w = t * 3.141592653 / float(WIN / 2);\n    float s = t * 3.141592653 * lancz_cutoff;\n    w = max(0.0, sin(w) / (w));\n    return w * sin(s) / (s);\n}\n\nvec4 interpolate(vec4 n[WIN * WIN], vec2 uv) {\n    if (bicubic_mode) {\n        vec4 e[4];\n        const int o = WIN * (WIN - 3) / 2 - 2;\n        for (int j = 0; j < 4; ++j) {\n            e[j] = interpolate(n[o + j], n[o + WIN + j],\n                               n[o + WIN * 2 + j], n[o + WIN * 3 + j],\n                               fract(uv.y));\n        }\n        return interpolate(e[0], e[1], e[2], e[3], fract(uv.x));\n    } else {\n        vec4 r = vec4(0.);\n        for (int i = 0; i < WIN; ++i) {\n            for (int j = 0; j < WIN; ++j) {\n                vec2 ij = float(WIN / 2) - 1. - vec2(float(j), float(i));\n                r += n[i * WIN + j] * lanczos2(uv + ij);\n            }\n        }\n        return r;\n    }\n}\n\nfloat score(vec4 a, vec4 b) {\n    // TODO: be smarter\n    a = (a - b);\n#if 0\n    float Y = dot(a.rgb, vec3(0.299, 0.587, 0.114));\n    vec2 UV = (a.rb - vec2(Y)) * vec2(0.492, 0.877);\n    UV *= vec2(0.3);\n\treturn 1.0 - min(score_weight * length(vec3(Y, UV)), 1.0);\n#else\n\treturn 1.0 - min(score_weight * length(a.rgb), 1.0);\n#endif\n}\n\nvec4 palettise(vec4 c[4], vec4 p) {\n    return vec4(score(c[0], p),\n                score(c[1], p),\n                score(c[2], p),\n                score(c[3], p));\n}\n\nvec4 unpalettise(vec4 c[4], vec4 p) {\n    return c[0] * p.x\n         + c[1] * p.y\n         + c[2] * p.z\n         + c[3] * p.w;\n}\n\nfloat aacmp(float a, float b) {\n    float delta = 0.7 * fwidth(b - a);\n    return smoothstep(-delta, delta, b - a);\n}\n\nvec4 sharpen(vec4 p) {\n    float w;\n    vec4 o;\n    w = aacmp(p.x, p.y);\n    p.x = mix(p.x, p.y, w);\n    o.xy = vec2(1.0 - w, w);\n    w = aacmp(p.z, p.w);\n    p.z = mix(p.z, p.w, w);\n    o.zw = vec2(1.0 - w, w);\n    w = aacmp(p.x, p.z);\n    o *= vec2(1.0 - w, w).xxyy;\n    return o;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = zoom(fragCoord / iResolution.xy, iChannelResolution[0].xy);\n    ivec2 iuv = ivec2(floor(mod(uv, iChannelResolution[0].xy))) - WIN / 2;\n\n    // pick up all the pixels we'll need.\n    vec4 n[WIN * WIN];\n    for (int i = 0; i < WIN; ++i) {\n        for (int j = 0; j < WIN; ++j) {\n            int k = i * WIN + j;\n            n[k] = texelFetch(iChannel0, iuv + ivec2(j, i), 0);\n        }\n    }\n\n    // Save the four corners relevant to the region being interpolated\n    vec4 c[4];\n\n    ivec2 odd = iuv & 1;\n    odd.y *= WIN;\n    // TODO: separate the even and odd rows and columns and put them in\n    // consistent slots, so we don't get those hairline artefacts.\n    c[0] = n[WIN * (WIN + 1) / 2 - WIN + odd.y - 1 + odd.x];\n    c[1] = n[WIN * (WIN + 1) / 2 - WIN + odd.y - odd.x];\n    c[2] = n[WIN * (WIN + 1) / 2 - odd.y - 1 + odd.x];\n    c[3] = n[WIN * (WIN + 1) / 2 - odd.y - odd.x];\n\n    // Convert into a palette of comparisons with the four corners\n    for (int i = 0; i < WIN * WIN; ++i) {\n        n[i] = palettise(c, n[i]);\n    }\n\n    // Interpolate in the paletted space\n    vec4 smoosh = interpolate(n, fract(uv));\n    vec4 sharp = sharpen(smoosh);\n    vec4 result = unpalettise(c, sharp);\n\n    // DEBUG\n#if 1\n    vec4 m = iMouse;\n#if 1\n    // nearest neighbour\n    vec4 peek = fract(uv.y) < 0.5\n                ? fract(uv.x) < 0.5 ? c[0] : c[1]\n                : fract(uv.x) < 0.5 ? c[2] : c[3];\n#else\n    vec4 peek = fragCoord.x * 2.0 < iResolution.x ? smoosh : sharp;\n\n    // Since colours represent proximity to corners, it's clearer if we\n    // flip alternate rows and columns so corners are consistently coloured\n    // in adjacent squares.\n    if (fract(.5 * uv.x) >= 0.5) peek = peek.yxwz;\n    if (fract(.5 * uv.y) >= 0.5) peek = peek.zwxy;\n#endif\n    m.w = abs(m.w);  // discard click event\n    if (m.z > 0. && m.w > 0.) {\n        m = vec4(min(m.xy, m.zw), max(m.xy, m.zw));\n        if (m.x < fragCoord.x && fragCoord.x < m.z\n            && m.y < fragCoord.y && fragCoord.y < m.w) {\n            result = peek;\n            // mark the box selected by mouse\n            vec2 box = smoothstep(0.05, 1.10, abs(fragCoord - m.xy))\n                     * smoothstep(0.05, 1.10, abs(fragCoord - m.zw));\n            result *= box.x * box.y;\n        }\n    }\n    // Draw a grid over everything (lines cross through centres of pixels)\n    if (texelFetch(iChannel3, ivec2(16, 0), 0).x >= 0.5) {\n        vec2 grid = smoothstep(0.05, 0.10, fract(uv));\n        result *= grid.x * grid.y;\n    }\n#endif\n\n    fragColor = result;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cbcbb5a6cfb55c36f8f021fbb0e3f69ac96339a39fa85cd96f2017a2192821b5.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

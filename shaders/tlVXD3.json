@@ -1,0 +1,56 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1583767182",
+            "description": "I was toying around and came up with a simple, fast Reinhard approximation to the combined ACES+sRGB gamma operations.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tlVXD3",
+            "likes": 11,
+            "name": "Filmic Tonemap Fast",
+            "published": 3,
+            "tags": [
+                "gamma",
+                "hdr",
+                "filmic",
+                "tonemap",
+                "srgb",
+                "aces"
+            ],
+            "usePreview": 1,
+            "username": "spalmer",
+            "viewed": 2817
+        },
+        "renderpass": [
+            {
+                "code": "int method; // global variable only for this toy;\n// my actual codebase uses a separate function \n// for each operator and the inverse thereof.\n\n    //c = max(0., c); // pow doesn't appreciate negatives but here we never have any\n\n// my curve can be tuned for various gamma approximations etc.\n// but would need to adjust the inverse operator to match.\n// I figure being close to ACES is probably not a bad thing.\n\n// the ACES filmic tonemap operator explained here:\n//   http://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve\n// main ACES site on github, for further reference:\n//   http://github.com/ampas/aces-dev\n\n// anyway it's not precisely ACES+sRGB, it wiggles around it like 3 times,\n// has in fact a little deeper toe as you can see a slight band between \n// the red and green swatches in this toy.  But that's partially because\n// this one isn't tuned to the precise scale I had in the other toy\n// where I was actually trying to match it as exactly as possible.\n// point is, I'm sure it can be tuned to match ACES a little better \n// if you care enough to run some optimizer on it.\n\n// I mostly tend to care about low-exposure scenes, so I'm probably\n// not the most knowledgeable tone mapping guru around,\n// so if anyone has any suggestions, I'm all ears.\n\n// linear to sRGB\nfloat toneMap(float c)\n{\n    switch (method) {\n  \t  case 0: // to sRGB gamma via filmic-like Reinhard-esque combination approximation\n\t    c = c / (c + .1667); // actually cancelled out the gamma correction!  Probably cheaper than even sRGB approx by itself.\n\t\tbreak; \t// considering I can't tell the difference, using full ACES+sRGB together seems quite wasteful computationally.\n  \t  case 1: // ACES+sRGB, which I approximated above\n\t    c = ((c*(2.51*c+.03))/(c*(2.43*c+.59)+.14));\n\t    c = pow(c, 1./2.2); // to sRGBish gamut\n\t    break;\n  \t  default: // sRGB approx by itself\n\t    c = pow(c, 1./2.2);\n        break;\n    }\n    return c;\n}\n\n// sRGB to linear\nfloat unToneMap(float c)\n{\n    switch (method) {\n  \t  case 0: // via inverse filmic-like Reinhard-esque combination approximation\n        c = c/(6.-6.*c);\n\t\tbreak;\n      case 1: // inverse ACES+sRGB\n        c = pow(c, 2.2); // from sRGBish gamut\n        c = -(sqrt((-10127.*c+13702.)*c+9.)+59.*c-3.) / (486.*c-502.); // inverse ACES according to Maxima\n\t    break;\n      default: // just approx un-sRGB\n        c = pow(c, 2.2);\n        break;\n    }\n    return c;\n}\n\n// combined exposure, tone map, gamma correction\nvec3 toneMap(vec3 crgb, float exposure) // exposure = white point\n{\n    vec4 c = vec4(crgb, exposure);\n    for (int i = 4; i-- > 0; ) c[i] = toneMap(c[i]);\n    // must compute the tonemap operator of the exposure level, although optimizes out at compile time, \n    // do it all in vec4 and then divide by alpha.\n    return c.rgb / c.a;\n}\n\n// for completeness - sRGB gamma tonemapped color back to linear - inverse tone map\nvec3 unToneMap(vec3 crgb, float exposure)\n{\n    vec3 c = crgb * toneMap(exposure);\n    for (int i = 3; i-- > 0; ) c[i] = unToneMap(c[i]);\n    return c;\n}\n\nvec3 dither(vec3 c, vec2 p)\n{\n    float x; // noise\n    x = fract(iTime*0. + 23456.7*sin(dot(p, vec2(12.93,8.57)))); // from ALU hash\n    x = 2. * x - 1.; // signed\n    c += .75 * exp2(-8.) * x; // tuned for 8 bits per channel\n    return c;\n}\n\nvoid mainImage(out vec4 o, vec2 p)\n{\n    if (iChannelResolution[0].x == 0.) { o = vec4(1,0,0,1); return; } // hopefully fix the toy warning by handling texture not yet loaded!?\n    vec2 uv = p / iResolution.xy;\n    vec4 t = texture(iChannel0, uv);\n    t.rgb = pow(t.rgb, vec3(2.2)); //t.rgb*t.rgb; // from sRGB\n    vec3 c = t.rgb;\n    const float vary = 3.; //.1; //1.; //24.; //.5; //\n    const float lowest = .1; //1.; //.25; //.5; //\n    float expo = (sin(iTime*1.2) + 1.) * vary + lowest;\n    // blow out! or try, anyway.  or dim.\n    // tonemap can handle either way ok\n    // but it does affect the color balance\n    c *= expo;\n    method = int((uv.x + iTime * .01) * 6.) % 3; //0; //1; //\n  #if 0\n    // roundtrip debugging\n    if ((iFrame & 16) != 0) { // fast flicker means botched.  no flicker means success!\n    c = toneMap(c, expo);\n    c = unToneMap(c, expo);\n    }\n  #endif\n    c = toneMap(c, expo);\n    // color code method at bottom (red = my approx, green = ACES+sRGB, blue = just sRGB)\n    if (abs(uv.y-.5)>.495) c = pow(max(vec3(0),cos(float(method) * 2. - vec3(0,2,4))), vec3(.45));\n\tc = dither(c, p);\n\to = vec4(c, 1);\n}\n\n\n// or you could try to correct for exposure first\n// but then there's not nearly so much need for tonemap.\n// but sRGB would still be desirable.\n\n\n// I have many other approximations to filmic tonemap curve\n// but at this point am unsure of most of their relationship to sRGB.\n// ACES at least I know is supposed to precede sRGB gamma correction.\n\n\n// by sRGBish gamma I mean using the \n// approximate power of 2.2 way,\n// which is not the high-quality conversion,\n// but close enough for shaders.\n// heck, even x*x and sqrt(x) would be fine, really.\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

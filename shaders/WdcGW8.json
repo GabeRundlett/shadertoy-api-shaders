@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1568279541",
+            "description": "Computing the partial derivatives of the Local Random Phase Noise. [url]https://www.shadertoy.com/view/wlf3RH[/url]\nI also change the Kaiser Bessel Window by a Gaussian one.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "WdcGW8",
+            "likes": 7,
+            "name": "LRPN : Partial Derivatives",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "texture",
+                "normalmapping",
+                "partialderivatives"
+            ],
+            "usePreview": 0,
+            "username": "H4w0",
+            "viewed": 569
+        },
+        "renderpass": [
+            {
+                "code": "//=======================================================\n//= Local Random Phase Noise \n//=======================================================\n//== Partial Derivatives\n//== Author : Arthur Cavalier\n//=======================================================\n\n\n//--------------------------------------------------------------------------------------------------------\n//-- User Parameters -------------------------------------------------------------------------------------  \n#define MOUSE_CONTROL\n#define TIMER_OFFSET\nconst int   LRPN_COSINES     = 3;\nconst float LRPN_RESOLUTION  = 5.0;\nconst float LRPN_SLOPE_SCALE = 0.1;\nconst uint  LRPN_GLOBAL_SEED = 0u;\n\n//--------------------------------------------------------------------------------------------------------\n//-- Constants -------------------------------------------------------------------------------------------  \nconst float m_pi_2 = 1.5707963267;         \nconst float m_pi   = 3.1415926535;          \nconst float m_2_pi = 6.2831853071;  \n\n\n//--------------------------------------------------------------------------------------------------------\n//-- Pseudo Random Number Generation ---------------------------------------------------------------------  \n// From Texton Noise Source Code provided by Arthur Leclaire et al. \n// https://www.idpoisson.fr/galerne/texton_noise/index.html\n// Sourced ::\n/* \n * From http://www.reedbeta.com/blog/2013/01/12/quick-and-easy-gpu-random-numbers-in-d3d11/\n * Same strategy as in Gabor noise by example\n * Apply hashtable to create cellseed\n * Use a linear congruential generator as fast PRNG\n */\n\nuint  wang_hash(uint seed)                                          {seed=(seed^61u)^(seed>>16u);seed*=9u;seed=seed^(seed>>4u);seed*=668265261u;seed=seed^(seed>>15u);return(seed);}\nuint  cell_seed(const in ivec2 c, const in uint offset)             {const uint period=1024u;uint s=((uint(c.y)%period)*period+(uint(c.x)%period))*period+offset; if(s==0u){s = 1u;}return(s);}\nuint  myrand(inout uint p)                                          {p^=(p<<13u);p^=(p>>17u);p^=(p<<5u);return p;}\nfloat myrand_uniform_0_1(inout uint p)                              {return float(myrand(p))/float(4294967295u);}\nfloat myrand_uniform_m_M(inout uint p, in float mi, in float ma)    {return mi + (myrand_uniform_0_1(p) * (ma - mi));}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Normal Mapping Function -----------------------------------------------------------------------------  \nvec3 normal_map_from_slope(float dx, float dy) // using partial derivatives\n{\n    float norm = length(vec3(dx,dy,1.0));\n    float nx = -dx / norm; \n    float ny = -dy / norm; \n    float nz = 1.0 / norm; \n    return 0.5 + 0.5 * vec3(nx,ny,nz);\n}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Gaussian Window Function ----------------------------------------------------------------------------  \nfloat gaussian(in vec2 st, in float c, in vec2 mu, in mat2 sig)\n{\n    vec2 p = st-mu;\n    float body = -0.5*dot(p,inverse(sig)*p);\n    return c*exp(body);\n}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Local Random Phase Noise ----------------------------------------------------------------------------\nvec3 local_random_phase_noise(\n        in vec2  texcoords,\n        in float resolution,\n        in int   cosines,\n        in vec2  range_frequency,\n        in vec2  range_orientation\n    )\n{\n    vec2  scaled_coords = texcoords * resolution;\n    vec2  cell_coords   = fract(scaled_coords);\n    vec2  cell_index    = floor(scaled_coords);\n    \n    ivec2 cell_ID;\n    uint  prng, seed;\n    \n    vec3  lrpn   = vec3(0.);\n    float weight = 1. / float(cosines);\n    mat2  sigma  = mat2( (1.33*1.33)/m_2_pi );\n\n    for (int m=-1; m<=+1; m++)\n    for (int n=-1; n<=+1; n++)\n    {\n        cell_ID.x = int(cell_index.x) + m;\n        cell_ID.y = int(cell_index.y) + n;\n        seed = cell_seed(cell_ID,LRPN_GLOBAL_SEED);\n        prng = wang_hash(seed);\n\n        vec2 xy = cell_coords - vec2(m,n) - vec2(0.5);\n        float d = dot(xy,xy);\n        \n        float sum_of_cosines    = 0.; \n        float sum_of_partial_x  = 0.; \n        float sum_of_partial_y  = 0.; \n        for(int k=0; k<cosines; k++)\n        {\n            float fr = myrand_uniform_m_M(prng,range_frequency.x,range_frequency.y) * resolution;   // Scaled Frequency \n            float or = myrand_uniform_m_M(prng,range_orientation.x,range_orientation.y);            // Orientation\n            float ph = m_pi*(myrand_uniform_0_1(prng)*2.-1.);                                       // Phase\n            float ff = m_2_pi * dot(xy, fr * vec2(cos(or),sin(or)) );                               // Oriented Frequency\n            \n            sum_of_cosines   += cos(ff+ph);\n            sum_of_partial_x += -m_2_pi * fr * cos(or) * sin(ff+ph);\n            sum_of_partial_y += -m_2_pi * fr * sin(or) * sin(ff+ph); \n        }\n\n        lrpn += gaussian(xy, 1., vec2(0.0), sigma) * weight * vec3(sum_of_cosines, sum_of_partial_x, sum_of_partial_y);\n    }\n    return vec3(lrpn); // vec3(Noise, Partial X, Partial Y); \n}\n\n//--------------------------------------------------------------------------------------------------------\n//-- Main ------------------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 pixcoords = fragCoord.xy / iResolution.xy;\n    vec2 texcoords = (2.*fragCoord.xy-iResolution.xy) / iResolution.y;\n    vec2 mouse = clamp(iMouse.xy / iResolution.xy, 0., 1.);\n\n    vec2  F = vec2(0.4,0.5);        //~ Frequecy range [fmin;fmax]\n    vec2  O = vec2(0.,m_pi / 6.);   //~ Orientation range [omin;omax]\n    float R = LRPN_RESOLUTION;      //~ Grid resolution\n    int   K = LRPN_COSINES;         //~ Number of cosines\n\n#ifdef TIMER_OFFSET\n    texcoords += vec2(0.1*iTime);\n#endif\n\n#ifdef MOUSE_CONTROL\n    F = vec2(0.3, max(0.3,mouse.x) ); \n    O = vec2(0.,mouse.y*m_pi);    \n#endif\n\n\n    vec3  lrpn = local_random_phase_noise(texcoords,R,K,F,O);\n    float N  = lrpn.x;\n    float Dx = lrpn.y * LRPN_SLOPE_SCALE;\n    float Dy = lrpn.z * LRPN_SLOPE_SCALE;\n\n\n    if(pixcoords.x < 0.33)\n        fragColor.rgb = vec3(0.5+0.5*N);\n    else if(pixcoords.x < 0.66)\n        fragColor.rgb = vec3(0.5+0.5*vec2(Dx,Dy),0.);\n    else \n        fragColor.rgb = normal_map_from_slope(Dx,Dy);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,200 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1715084559",
+            "description": "Another bluenoise generator port:\n[url]https://alister-chowdhury.github.io/posts/20240507-bluenoise-generator-for-big-textures/[/url]\n\nSettings can be configured in Common (width, height, sigma)\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "XcyXDh",
+            "likes": 5,
+            "name": "Void And Cluster Bluenoise Fast",
+            "published": 3,
+            "tags": [
+                "noise",
+                "bluenoise"
+            ],
+            "usePreview": 0,
+            "username": "krax",
+            "viewed": 222
+        },
+        "renderpass": [
+            {
+                "code": "// Settings can be configured in Common (width, height, sigma)\n// Restart from the beginning to generate a new bluenoise texture.\n//\n// A faster version of this, using WebGPU, along with a description of what's going on\n// can be viewed here:\n// https://alister-chowdhury.github.io/posts/20240507-bluenoise-generator-for-big-textures/\n// Another bluenoise generator, except considerably faster.\n//\n// Based upon the research that went into:\n// https://www.shadertoy.com/view/cdfSD8 : Void And Cluster Bluenoise\n// (https://alister-chowdhury.github.io/posts/20221230-bluenoise-generator)\n//\n// Put simply, we are able to accelerate the generation of bluenoise by evaluating\n// tiles, making the number of iterations required dependant on the tile size, rather\n// than the total number of pixels.\n// This does come with some (barely noticable) patterns, which are really only visible in Fourier space.\n//\n//\n// Here is a little comparison on tile sizes, their gamut and their total energy accuracy.\n// (Please note anything less than 99.99% accuracy will start having visible artefacts).\n//\n//  8 = 64 values\n//\n//  δ   |   accuracy (erf(8/δ))²  |\n// --------------------------------\n// 1.5  |    0.9999999999999      |\n// 1.7  |    0.9999999999434      |\n// 1.9  |    0.9999999947853      |\n// 2.1  |    0.9999998570953      |\n// 2.3  |    0.9999982602842      |\n// 2.5  |    0.999987948514       |\n// 2.7  |    0.9999442743689      |\n// 2.9  |    0.9998086374064      |\n//\n//\n// 16 = 256 values\n//\n// δ [1.5, 2.9] => 0.9999999999999\n//\n\n\n#define TILE_SAMPLE 1\n#define DEBUG_TILE 0\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    const vec4 textureSizeAndInvSize = vec4(float(numTilesX * TILE_SIZE),\n                                            float(numTilesY * TILE_SIZE),\n                                            1.0 / float(numTilesX * TILE_SIZE),\n                                            1.0 / float(numTilesY * TILE_SIZE));\n\n#if TILE_SAMPLE\n    ivec2 coord = ivec2(fract(gl_FragCoord.xy * textureSizeAndInvSize.zw) * textureSizeAndInvSize.xy);\n#else // TILE_SAMPLE\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    ivec2 coord = ivec2(uv * textureSizeAndInvSize.xy);\n#endif // TILE_SAMPLE\n\n    vec3 value = texelFetch(iChannel0, coord, 0).xxx;\n    \n#if DEBUG_TILE\n    ivec2 tileId = coord / TILE_SIZE;\n    int tId = tileId.y * numTilesX + tileId.x;\n    tId = tId * 0x65414266 + 0x23deff11;\n    value += hs1(float(tId & 0xffff) / float(0xffff)) * 0.25;\n#endif // DEBUG_TILE\n    \n    \n    fragColor = vec4(value, 1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\n#define TILE_SIZE       8\n#define sigma           1.9\n\n// Final resolution = [TILE_SIZE * numTilesX, TILE_SIZE * numTilesY]\n// Default is 256x256\n#define numTilesX 16\n#define numTilesY 16\n\n\n#if ((numTilesX < 2) || (numTilesY < 2))\n#error \"Min tile size is 2x2\"\n#endif // ((numTilesX < 2) || (numTilesY < 2))\n\n#if ((numTilesX & 1) || (numTilesY & 1))\n#error \"Tiles must be alignments of 2\"\n#endif\n\n\n#define LOG2E           1.4426950408889634073599246810018\n#define NUM_PASSES      4\n#define MAX_ITERATIONS ((TILE_SIZE * TILE_SIZE) - 1)\n\n\nuint simpleHash32(uvec3 Seed)\n{\n    uint hx = (0xb543c3a6u ^ Seed.x);\n    uint hy = (0x526f94e2u ^ Seed.y);\n    uint hxy = hx * hy;\n    uint hz0 = 0x53c5ca59u ^ (hxy >> 5u);\n    uint hz1 = (0x74743c1bu ^ Seed.z);\n    uint h = hz0 * hz1;\n    return h;\n}\n\n\nbool shouldEvaluateTile(ivec2 tileId, int tilePassId)\n{\n#if NUM_PASSES != 4\n#error \"This won't work\"\n#endif\n\n    int linearTileId = (tileId.x & 1) | ((tileId.y & 1) << 1);\n    switch(tilePassId)\n    {\n        case 0:  return (linearTileId == 0);\n        case 1:  return (linearTileId == 3);\n        case 2:  return (linearTileId == 1);\n        default: return (linearTileId == 2);\n    }\n}\n\n\n// debugging\nvec3 hs1(float H)\n{\n    float R = abs(H * 6. - 3.) - 1.;\n    float G = 2. - abs(H * 6. - 2.);\n    float B = 2. - abs(H * 6. - 4.);\n    return clamp(vec3(R,G,B), vec3(0), vec3(1));\n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Update energy\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Clear first frame\n    if(iFrame == 0)\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    \n    ivec2 coord = ivec2(fragCoord);\n    fragColor = texelFetch(iChannel0, coord, 0);\n    \n    int tilePassId = (iFrame - 1) % NUM_PASSES;\n    int iteration = (iFrame - 1) / NUM_PASSES;\n    \n    if(iteration > MAX_ITERATIONS) { return; }\n    \n    ivec2 tileId = coord / TILE_SIZE;\n    if(any(greaterThanEqual(tileId, ivec2(numTilesX, numTilesY))))\n    {\n        return;\n    }\n    \n    const float expMultiplier = 1.0 / (sigma * sigma) * LOG2E;\n    \n    if(shouldEvaluateTile(tileId, tilePassId))\n    {\n        ivec2 innerCoord = coord % TILE_SIZE;\n    \n        for(int dy=-1; dy<=1; ++dy)\n        for(int dx=-1; dx<=1; ++dx)\n        {\n            ivec2 offset = tileId + ivec2(dx, dy);\n            if(offset.x < 0) { offset.x += numTilesX; }\n            if(offset.y < 0) { offset.y += numTilesY; }\n            if(offset.x >= numTilesX) { offset.x -= numTilesX; }\n            if(offset.y >= numTilesY) { offset.y -= numTilesY; }\n        \n            vec4 tileData = texelFetch(iChannel1, offset, 0);\n            vec2 rel = vec2(dx, dy) * float(TILE_SIZE) + tileData.xy - vec2(innerCoord);\n            float energy = exp2(-dot(rel, rel) * expMultiplier) * tileData.z;\n            fragColor.x += energy;\n        }\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Picking tile coord to fill in\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Clear first frame\n    fragColor = vec4(0.);\n    if(iFrame == 0)\n    {\n        return;\n    }\n    \n    ivec2 tileId = ivec2(fragCoord);\n    if(any(greaterThanEqual(tileId, ivec2(numTilesX, numTilesY))))\n    {\n        return;\n    }\n\n    fragColor = texelFetch(iChannel0, tileId, 0);\n\n    int tilePassId = (iFrame - 1) % NUM_PASSES;\n    int iteration = (iFrame - 1) / NUM_PASSES;\n    \n    if(iteration > MAX_ITERATIONS) { return; }\n    float fillInValue = float(MAX_ITERATIONS - iteration) / float(MAX_ITERATIONS);\n    \n    if(shouldEvaluateTile(tileId, tilePassId))\n    {\n        uvec2 start = uvec2(tileId * TILE_SIZE);\n        uvec2 end = start + uvec2(TILE_SIZE);\n        \n        // Scramble\n        uint seed = simpleHash32(floatBitsToUint(iDate.yzw)) ^ uint(iFrame);\n        uint yh = simpleHash32(uvec3(start + 1u, seed)) >> 3;\n        uint xh = simpleHash32(uvec3(start + uvec2(13u, 11u), yh)) >> 5;\n        \n        uvec2 voidCoord = uvec2(0, 0);\n        float voidValue = 1e+35;\n        const uint mask = uint(TILE_SIZE);\n        \n        for(uint yit=0u; yit < uint(TILE_SIZE); ++yit)\n        {\n            uint y = start.y + ((yh ^ yit) % mask);\n            if(y >= end.y) { continue; }\n\n            for(uint xit=0u; xit < uint(TILE_SIZE); ++xit)\n            {\n                uint x = start.x + ((xh ^ xit) % mask);\n                if(x >= end.x) { continue; }\n\n                uvec2 coord = uvec2(x, y);\n                vec2 noiseEnergy = vec2(\n                    texelFetch(iChannel1, ivec2(coord), 0).x,\n                    texelFetch(iChannel2, ivec2(coord), 0).x\n                );\n                if((noiseEnergy.x == 0.) && (noiseEnergy.y < voidValue))\n                {\n                    voidValue = noiseEnergy.y;\n                    voidCoord = coord;\n                }\n            }\n        }\n        \n        fragColor = vec4(voidCoord - start, fillInValue, 1.);\n    }\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Write value\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Clear first frame\n    if(iFrame == 0)\n    {\n        fragColor = vec4(0.);\n        return;\n    }\n    \n    ivec2 coord = ivec2(fragCoord);\n    fragColor = texelFetch(iChannel0, coord, 0);\n\n    int tilePassId = (iFrame - 1) % NUM_PASSES;\n    int iteration = (iFrame - 1) / NUM_PASSES;\n    \n    if(iteration > MAX_ITERATIONS) { return; }\n \n    ivec2 tileId = coord / TILE_SIZE;\n    if(any(greaterThanEqual(tileId, ivec2(numTilesX, numTilesY))))\n    {\n        return;\n    }\n    \n    if(shouldEvaluateTile(tileId, tilePassId))\n    {\n        ivec2 innerCoord = coord % TILE_SIZE;\n        vec4 tileUpdate = texelFetch(iChannel1, tileId, 0);\n        if(all(equal(ivec2(tileUpdate.xy), innerCoord)))\n        {\n            fragColor.x = tileUpdate.z;\n        }\n    }\n \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

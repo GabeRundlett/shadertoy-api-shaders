@@ -1,0 +1,108 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1554473761",
+            "description": "Trying to understand dracusa's interesting log-spherical shaders eg.  [url]https://www.shadertoy.com/view/wdSXzK[/url] (and see [url]https://www.osar.fr/notes/logspherical/[/url]\n\nVarious keyboard controls, see code.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "WdSXzc",
+            "likes": 13,
+            "name": "Logspherical Contraption",
+            "published": 3,
+            "tags": [
+                "grid",
+                "logspherical"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 586
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Playing around with log-spherical mapping, show a basic cubic grid with\n// spheres (or cubes) at grid vertices.\n//\n// Derived from dracusa's code at https://www.osar.fr/notes/logspherical/\n// also see https://www.shadertoy.com/user/dracusa\n//\n// Controls:\n// mouse: orientation\n// up/down: zoom\n// left/right: density\n// x,y,z,v: show x,y,z axes and vertex\n// i,j,k: do scaling in x,y,z coordinates\n// c: show cube at vertex\n// g: show untransformed grid\n//\n////////////////////////////////////////////////////////////////////////////////\n\n/*\n  // Original introduction by dracusa still applies:\n  Inverse log-spherical map applied to a 3D grid of cylinders.\n\n  Similar to the 2D version, let's first draft out the theoretical steps needed\n  to create this scene in traditional 3D:\n  1. Define the geometry for a cross made of two cylinders\n  2. Apply a regular tiling, resulting in a repeated grid of cylinders\n  3. Apply the inverse log-spherical map\n\n  And reverse all the steps to create a distance function:\n  1. Apply the forward log-spherical map to the current 3D coordinates\n  2. Use fract() to turn tiled coordinates into single-tile coordinates\n  3. Return distance using the equation for a cross of cylinders\n\n  This distance function is then used with raymarching.\n*/\n\n#define PI 3.14159265\n#define AA 1\n\n// Line thickness\nfloat thickness = 0.1; //dspnote param: 0.01 - 0.1\n// Density - can be different in each dimension\nvec3 density = vec3(7); //dspnote param: 6 - 16, 8\n\n// Reduce step slightly to avoid overstepping\nfloat understep = 0.8;\n\nbool drawcube = false;\nbool logspherical = true;\nbool scalex = true;\nbool scaley = true;\nbool scalez = true;\nbool drawx = true;\nbool drawy = true;\nbool drawz = true;\nbool drawvertex = true;\nbool checkde = false;\n\n// assertion checks\nbool alert = false;\nvoid assert(bool t) { if (!t) alert = true; }\n\n// 2-vector rotation\nvec2 rotate(vec2 p, float t) {\n  return p * cos(t) + vec2(p.y, -p.x) * sin(t);\n}\n\n// Draw a vertex, either a cube or a sphere\nfloat vertex(vec3 p) {\n  if (drawcube) {\n    //p.yz = rotate(p.yz,iTime);\n    p = abs(p);\n    return max(p.x,max(p.y,p.z))-0.4;\n  } else {\n    return length(p) - 0.5;\n  }\n}\n\n// Distance estimator\nfloat map(vec3 p, out int type, bool check) {\n  vec3 p0 = p;\n  float r = 1.0;\n  float yscale = 1.0;\n\n  // Apply the forward log-spherical map\n  if (logspherical) {\n    r = length(p);\n    // y uses asin so result is in [-PI/2,+PI/2]\n    p = vec3(log(r), asin(p.z / length(p)), atan(p.y, p.x));\n\n    // Get a scaling factor to compensate for pinching at the poles\n    // We want sometime with a continuous derivative, this seems to work.\n    // This was \"xshrink\", but \"yscale\" seems better as it's based on\n    // the y coordinate and isn't necessarily used for shrinking x.\n    // In fact, we use it to scale the DE for points close to y axis\n    // (which doesn't change the shape, but helps stop overstepping in\n    // ray marching) and (optionally) to scale the point itself (which\n    // does change the shape).\n    float k = 2.0*p.y/PI;\n    yscale = 1.0/(1.0-k*k);\n    //yscale = 1.0/(0.5*PI-p.y) + 1.0/(0.5*PI+p.y) - 1.0/PI;\n    //yscale = 1.0/abs(p.y-PI) + 1.0/abs(p.y) - 1.0/PI; // Original\n  }\n  \n  // Scale to fit in the ]-pi,pi] interval\n\n  vec3 lpscale = floor(density)/PI;\n  p *= lpscale;\n\n  // Apply translation: x is a radial dilation, y is lateral movement, z, is rotation\n  p -= 0.4*iTime;\n  \n  // Turn tiled coordinates into single-tile coordinates\n  //p = fract(p*0.5) * 2.0 - 1.0;\n  //p = mod(p+1.0,2.0) - 1.0;\n  p = mod(p,2.0) - 1.0;\n\n  // Scaling all of x,y,z in this way produces approximate\n  // spheres close to the axis.\n  float k = sqrt(yscale);\n  if (scalex) p.x *= k;\n  if (scaley) p.y *= k;\n  if (scalez) p.z /= k;\n\n  float ret = 1e8;\n  type = -1;\n  float ret0 = ret;\n  // Get distance from axes\n  if (drawx) ret = min(ret,length(p.yz) - thickness);\n  if (ret != ret0) type = 0; ret0 = ret;\n  if (drawy) ret = min(ret,length(p.zx) - thickness);\n  if (ret != ret0) type = 1; ret0 = ret;\n  if (drawz) ret = min(ret,length(p.xy) - thickness);\n  if (ret != ret0) type = 2; ret0 = ret;\n  // And the shape for the vertex itself\n  if (drawvertex) ret = min(ret,vertex(p));\n  if (ret != ret0) type = 3; ret0 = ret;\n\n  // Compensate for all the scaling that's been applied so far\n  float lpmax = max(lpscale.x,max(lpscale.y,lpscale.z));\n  ret *= r/(lpmax*yscale);\n  return ret;\n}\n\n// Version of map for raymarching when we don't want the\n// object type or to check assertions.\nfloat map(in vec3 p) {\n  int t;\n  return map(p, t, false);\n}\n\n// Smooth hue to RGB conversion \n// Function by iq, from https://www.shadertoy.com/view/MsS3Wc\nvec3 h2rgb(float hue) {\n  vec3 rgb = clamp( abs(mod(hue*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n  return rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n}\n\nvec3 color(vec3 pos, int type, vec3 nor)\n{\n  //return vec3(0.5, 0.5, 0.7);\n  return 0.5+0.5*h2rgb(float(type)/4.0);\n}\n\n// Adapted from https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal(in vec3 pos) {\n  vec2 e = vec2(1.0,-1.0);\n  const float eps = 0.001;\n  return normalize(e.xyy*map(pos + e.xyy*eps) + \n                   e.yyx*map(pos + e.yyx*eps) + \n                   e.yxy*map(pos + e.yxy*eps) + \n                   e.xxx*map(pos + e.xxx*eps)\n                   );\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    // Mouse rotation\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  } else {\n    // Or just fixed \n    p.yz = rotate(p.yz,0.125);\n    p.zx = rotate(p.zx,0.2);\n  }\n  return p;\n}\n\nbool keypress(int code) {\n  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;\n}\n\nvec4 store(int i,int j) {\n  return texelFetch(iChannel1, ivec2(i,j),0);\n}\n\nint keycount(int key) {\n  return int(store(0,key).x);\n}\n\nconst int CHAR_0 = 48;\nconst int CHAR_A = 65;\nconst int CHAR_B = 66;\nconst int CHAR_C = 67;\nconst int CHAR_D = 68;\nconst int CHAR_E = 69;\nconst int CHAR_F = 70;\nconst int CHAR_G = 71;\nconst int CHAR_I = 73;\nconst int CHAR_J = 74;\nconst int CHAR_K = 75;\nconst int CHAR_L = 76;\nconst int CHAR_M = 77;\nconst int CHAR_N = 78;\nconst int CHAR_O = 79;\nconst int CHAR_P = 80;\nconst int CHAR_Q = 81;\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\nconst int CHAR_U = 85;\nconst int CHAR_V = 86;\nconst int CHAR_X = 88;\nconst int CHAR_Y = 89;\nconst int CHAR_Z = 90;\n\nconst int KEY_LEFT = 37;\nconst int KEY_UP = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN = 40;\n\n// Based on https://iquilezles.org/articles/raymarchingdf\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ) {\n  // Set parameters\n  drawcube = keypress(CHAR_C);\n  logspherical = !keypress(CHAR_G);\n  scalex = !keypress(CHAR_I);\n  scaley = !keypress(CHAR_J);\n  scalez = !keypress(CHAR_K);\n  drawx = !keypress(CHAR_X);\n  drawy = !keypress(CHAR_Y);\n  drawz = !keypress(CHAR_Z);\n  drawvertex = !keypress(CHAR_V);\n  checkde = keypress(CHAR_D);\n  \n  vec3 bg = vec3(0.1, 0.15, 0.2)*0.3;\n  vec3 tot = bg;\n\n  float dist = 4.0;\n  dist *= 0.1*float(10+keycount(KEY_DOWN)-keycount(KEY_UP));\n  vec3 ro = vec3(0,0,-dist);\n  vec3 light = vec3(0.0,1.0,-1.0);\n  ro = transform(ro);\n  light = transform(light);\n  light = normalize(light);\n  density = vec3(6 + keycount(KEY_RIGHT)-keycount(KEY_LEFT));\n  for(int m=0; m<AA; m++) {\n    for(int n=0; n<AA; n++) {\n      // pixel coordinates\n      vec2 o = vec2(float(m),float(n)) / float(AA);\n      vec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;\n      vec3 rd = vec3(p,2);\n      rd = transform(rd);\n      rd = normalize(rd);\n\n      // raymarch\n      const float tmax = 100.0;\n      float t = 0.0;\n      for( int i=0; i<256; i++ ) {\n        if (checkde) assert(i < 100);\n        vec3 pos = ro + t*rd;\n        float h = understep*map(pos);\n        if( h<0.001 || t>tmax ) break;\n        t += h;\n      }\n        \n      // shading/lighting     \n      vec3 col = vec3(0.0);\n      if( t<tmax ) {\n        vec3 pos = ro + t*rd;\n        int type;\n        map(pos,type,true);\n        vec3 nor = calcNormal(pos);\n        //float dif = clamp( dot(nor,vec3(0.57703)), 0.0, 1.0 );\n        //float amb = 0.5 + 0.5*clamp(dot(nor,light),0,0,1.0);\n        //col = color(pos, nor)*amb + color(pos, nor)*dif;\n        float intensity = 0.4+0.4*clamp(dot(nor,light),-1.0,1.0);\n        vec3 basecolor = color(pos,type,nor);\n        col = intensity*basecolor;\n        float specular = pow(max(0.0,dot(reflect(light,nor),rd)),2.0);\n        col += 0.3*specular*basecolor;\n      }\n\n      // fog\n      col = mix(col, bg, smoothstep(0.0,tmax,t));\n\n      // gamma        \n      tot += col;\n    }\n  }\n  tot /= float(AA*AA);\n  tot = sqrt( tot );\n  \n  if (alert) tot.x = 1.0;\n  fragColor = vec4(tot, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\nvoid mainImage(out vec4 t, vec2 uv) {\n#if __VERSION__ < 300\n    t = vec4(0);\n#else\n    \n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0 ) {\n        t = vec4(0);\n    } else {\n        t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n        \n#endif           \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

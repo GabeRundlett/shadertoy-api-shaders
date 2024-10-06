@@ -1,0 +1,52 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1728045064",
+            "description": "voxels. someone plz contact theaethergen on discord if u know how to implement tracing and traversal of sparse voxel octrees on the GPU or make this one faster. i would use a buffer for denoising and taa but my Chromebook doesn't support buffers.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lXlBR8",
+            "likes": 0,
+            "name": "noisy voxels",
+            "published": 3,
+            "tags": [
+                "voxel",
+                "dda"
+            ],
+            "usePreview": 0,
+            "username": "HoosierTransfer",
+            "viewed": 35
+        },
+        "renderpass": [
+            {
+                "code": "#define M_PI            radians(180.)\n\nstruct Hit {\n    float t;\n    vec3 normal;\n    vec3 color;\n};\n\nuint seed;\n\nmat3 rotationXY( vec2 angle ) {\n\tvec2 c = cos( angle );\n\tvec2 s = sin( angle );\n\t\n\treturn mat3(\n\t\tc.y      ,  0.0, -s.y,\n\t\ts.y * s.x,  c.x,  c.y * s.x,\n\t\ts.y * c.x, -s.x,  c.y * c.x\n\t);\n}\n\nfloat random() {\n    seed = seed * 747796405u + 2891336453u;\n    uint result = ((seed >> ((seed >> 28) + 4u)) ^ seed) * 277803737u;\n    return float(result) / 4294967295.0;\n}\n\nvec3 randomUnitVector() {\n    float theta = 2.0 * 3.14159265 * random();\n    float phi = acos(2.0 * random() - 1.0);\n    return vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));\n}\n\nvec3 random3(vec3 c) {\n\tfloat j = 4096.0*sin(dot(c,vec3(17.0, 59.4, 15.0)));\n\tvec3 r;\n\tr.z = fract(512.0*j);\n\tj *= .125;\n\tr.x = fract(512.0*j);\n\tj *= .125;\n\tr.y = fract(512.0*j);\n\treturn r-0.5;\n}\n\n/* skew constants for 3d simplex functions */\nconst float F3 =  0.3333333;\nconst float G3 =  0.1666667;\n\n/* 3d simplex noise */\nfloat simplex3d(vec3 p) {\n\t /* 1. find current tetrahedron T and it's four vertices */\n\t /* s, s+i1, s+i2, s+1.0 - absolute skewed (integer) coordinates of T vertices */\n\t /* x, x1, x2, x3 - unskewed coordinates of p relative to each of T vertices*/\n\t \n\t /* calculate s and x */\n\t vec3 s = floor(p + dot(p, vec3(F3)));\n\t vec3 x = p - s + dot(s, vec3(G3));\n\t \n\t /* calculate i1 and i2 */\n\t vec3 e = step(vec3(0.0), x - x.yzx);\n\t vec3 i1 = e*(1.0 - e.zxy);\n\t vec3 i2 = 1.0 - e.zxy*(1.0 - e);\n\t \t\n\t /* x1, x2, x3 */\n\t vec3 x1 = x - i1 + G3;\n\t vec3 x2 = x - i2 + 2.0*G3;\n\t vec3 x3 = x - 1.0 + 3.0*G3;\n\t \n\t /* 2. find four surflets and store them in d */\n\t vec4 w, d;\n\t \n\t /* calculate surflet weights */\n\t w.x = dot(x, x);\n\t w.y = dot(x1, x1);\n\t w.z = dot(x2, x2);\n\t w.w = dot(x3, x3);\n\t \n\t /* w fades from 0.6 at the center of the surflet to 0.0 at the margin */\n\t w = max(0.6 - w, 0.0);\n\t \n\t /* calculate surflet components */\n\t d.x = dot(random3(s), x);\n\t d.y = dot(random3(s + i1), x1);\n\t d.z = dot(random3(s + i2), x2);\n\t d.w = dot(random3(s + 1.0), x3);\n\t \n\t /* multiply d by w^4 */\n\t w *= w;\n\t w *= w;\n\t d *= w;\n\t \n\t /* 3. return the sum of the four surflets */\n\t return dot(d, vec4(52.0));\n}\n\nvec3 getHemisphereCosineSample(vec3 n, out float weight) {\n    float cosTheta2 = random();\n    float cosTheta = sqrt(cosTheta2);\n    float sinTheta = sqrt(1. - cosTheta2);\n    \n    float phi = 2. * M_PI * random();\n    \n    // Spherical to cartesian\n    vec3 t = normalize(cross(n.yzx, n));\n    vec3 b = cross(n, t);\n    \n\tvec3 l = (t * cos(phi) + b * sin(phi)) * sinTheta + n * cosTheta;\n    \n    // Sample weight\n    float pdf = (1. / M_PI) * cosTheta;\n    weight = (.5 / M_PI) / (pdf + 1e-6);\n    \n    return l;\n}\n\nvec3 getRayDirection(vec2 uv) {\n    vec4 clipSpace = vec4(uv * 2.0 - 1.0, 1.0, 1.0);\n    return normalize(clipSpace.xyz);\n}\n\nbool isVoxelSolid(vec3 position) {\n    return simplex3d(position / 32.0) > 0.1;\n    // return texture(iChannel0, vec3(position.x, position.y, position.z) / 32.0).x > 0.6;\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n\n}\n\nvec3 getVoxelColor(vec3 position) {\n    return hash33(position);\n}\n\nvec3 skyBox(vec3 rd) {\n    vec3 unitDirection = normalize(rd);\n    float t = 0.5 * (unitDirection.y + 1.0);\n    if (unitDirection.y < 0.0) {\n        return vec3(0.0);\n    }\n    return mix(vec3(1), vec3(0.5, 0.7, 1.0), t);\n}\n\nHit raymarchDDA(vec3 rayOrigin, vec3 rayDirection) {\n    vec3 absoluteDir = abs(rayDirection);\n    vec3 sign = sign(rayDirection);\n    \n    vec3 startCell = floor(rayOrigin);\n    vec3 tMax = (startCell + max(sign, 0.0)) - rayOrigin;\n    tMax /= rayDirection;\n    \n    vec3 tDelta = 1.0 / absoluteDir;\n    \n    float t = 0.0;\n    vec3 cell = startCell;\n    bvec3 mask;\n    \n    for (int i = 0; i < 512; i++) {\n        if (isVoxelSolid(cell)) {\n            vec3 normal = vec3(0.0);\n            if (mask.x) normal.x = -sign.x;\n            else if (mask.y) normal.y = -sign.y;\n            else if (mask.z) normal.z = -sign.z;\n            return Hit(t, normal, getVoxelColor(cell));\n        }\n\n        mask = lessThanEqual(tMax.xyz, min(tMax.yzx, tMax.zxy));\n        \n        t = dot(tMax, vec3(mask));\n        \n        cell += sign * vec3(mask);\n        tMax += tDelta * vec3(mask);\n    }\n    \n    return Hit(-1.0, vec3(0.0), vec3(0.0));\n}\n\nvec3 trace(vec3 rayOrigin, vec3 rayDirection, inout vec3 normal) {\n    vec3 ro = rayOrigin;\n    vec3 rd = rayDirection;\n    \n    vec3 col = vec3(0);\n    vec3 att = vec3(1);\n    \n    for (int i = 0; i < 3; i++) {\n        Hit result = raymarchDDA(ro, rd);\n        float t = result.t;\n\n        if (i == 0) {\n            normal = result.normal;\n        }\n        \n        if (t == -1.0) {\n            col += att * skyBox(rd);\n            break;\n        }\n\n        float luminance = dot(result.color, vec3(0.2126, 0.7152, 0.0722));\n        if (luminance > 0.9) {\n            col += att * result.color * 8.0;\n            break;\n        }\n\n        float cosThetaI = dot(rd, result.normal);\n        \n        vec3 facingNormal = (cosThetaI < 0.) ? normal : -normal;\n\n        float weight;\n        vec3 reflected = getHemisphereCosineSample(facingNormal, weight);\n        \n        att *= weight;\n        att *= result.color * dot(facingNormal, reflected);\n\n        ro += t * rd + result.normal * 0.001;\n        rd = reflected;\n    }\n    \n    return col;\n}\n\nvec3 ACESFilm(vec3 x) {\n    const float a = .0245786;\n    const float b = -.000090537;\n    const float c = .983729;\n    const float d = .4329510;\n    const float e = .238081;\n    return (x * (x + a) + b) / (x * (x * c + d) + e);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 TexCoords = fragCoord / iResolution.xy;\n    seed = uint(floatBitsToInt(fragCoord.x) + floatBitsToInt(fragCoord.y * 5741.0) + floatBitsToInt(iTime * 26717.0));\n    vec3 rayDirection = getRayDirection(TexCoords);\n    vec3 rayOrigin = vec3(10.5, 10.5, iTime * 10.0);\n    vec3 normal;\n    mat3 rot = rotationXY(vec2(sin(iTime), cos(iTime)) * 0.1);\n\trayDirection = rot * rayDirection;\n    vec3 col = trace(rayOrigin, rayDirection, normal);\n    for (int i = 0; i < 10; i++) {\n        col += trace(rayOrigin, rayDirection, normal);\n    }\n    col /= 11.0;\n\n    col = pow(ACESFilm(col), vec3(1.0 / 2.2));\n    \n    fragColor = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1642225167",
+            "description": "tubes",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wsySDV",
+            "likes": 6,
+            "name": "Tubular world",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "voxels",
+                "tubes"
+            ],
+            "usePreview": 0,
+            "username": "ShnitzelKiller",
+            "viewed": 367
+        },
+        "renderpass": [
+            {
+                "code": "#define GRID 0.5\n#define THICKNESS 0.05\n#define FDIST 0.5\n\n#define TOTAL_ITERS 100\n#define RAYMARCH_EPS 0.001\n\n#define OCCUPANCY 0.5\n\n#define FOV 1.55\n\nvec3 rainbow(float t) {\n    return vec3(sin(t), cos(t), -sin(t)) * .5 + .5;\n}\n\nfloat traceCell(in vec3 ro, in vec3 rd) {\n    vec3 dr = 1.0/rd;\n    vec3 n = ro * dr;\n    vec3 k = GRID * abs(dr);\n    \n    vec3 pout =  k - n;\n    return min(pout.x, min(pout.y, pout.z));\n}\n\nfloat noise(in vec3 P)\n{\n    //  https://github.com/BrianSharpe/Wombat/blob/master/Value3D.glsl\n\n    // establish our grid cell and unit position\n    vec3 Pi = floor(P);\n    vec3 Pf = P - Pi;\n    vec3 Pf_min1 = Pf - 1.0;\n\n    // clamp the domain\n    Pi.xyz = Pi.xyz - floor(Pi.xyz * ( 1.0 / 69.0 )) * 69.0;\n    vec3 Pi_inc1 = step( Pi, vec3( 69.0 - 1.5 ) ) * ( Pi + 1.0 );\n\n    // calculate the hash\n    vec4 Pt = vec4( Pi.xy, Pi_inc1.xy ) + vec2( 50.0, 161.0 ).xyxy;\n    Pt *= Pt;\n    Pt = Pt.xzxz * Pt.yyww;\n    vec2 hash_mod = vec2( 1.0 / ( 635.298681 + vec2( Pi.z, Pi_inc1.z ) * 48.500388 ) );\n    vec4 hash_lowz = fract( Pt * hash_mod.xxxx );\n    vec4 hash_highz = fract( Pt * hash_mod.yyyy );\n\n    //\tblend the results and return\n    vec3 blend = Pf * Pf * Pf * (Pf * (Pf * 6.0 - 15.0) + 10.0);\n    vec4 res0 = mix( hash_lowz, hash_highz, blend.z );\n    vec4 blend2 = vec4( blend.xy, vec2( 1.0 - blend.xy ) );\n    return dot( res0, blend2.zxzx * blend2.wwyy );\n}\n\nvec3 cellmod(in vec3 ro) {\n    return mod(ro, GRID) - GRID*0.5;\n}\n\nvec3 cellID(in vec3 ro) {\n    return floor(ro/GRID);\n}\n\nfloat occupancy(in vec3 id) {\n    return noise(id);\n}\n\n// LOD SDF: skip evaluating details if the current distance OR the distance to the exit is \nfloat longpipe(vec3 ro, float mindist, float bound) {\n    float dist = length(ro.yz) - THICKNESS;\n    if (dist < min(mindist, bound)) {\n        // complex stuff\n        dist += 0.005*GRID*(cos(ro.x*20. * 3.14159)+1.);\n    } \n    // bounding volume\n    return dist;\n}\n\nfloat torus(vec3 ro) {\n    float xydist = length(ro.xy) - 0.5 * GRID;\n    return length(vec2(ro.z, xydist))-THICKNESS;\n}\n\nvec2 march(in vec3 ro, in vec3 rd) {\n    vec3 id = cellID(ro);\n    vec3 dr = GRID/rd;\n    vec3 rs = sign(rd);\n    vec3 tr = (0.5 * rs - cellmod(ro)/GRID) * dr; // exiting t\n    vec3 t = vec3(0.); // current t\n    int i;\n    vec2 disp = vec2(1., 0.);\n    for (i=0; i<TOTAL_ITERS; i++) {\n        // DDA traversal\n        if (occupancy(id) > OCCUPANCY) {\n            // check neighbors\n            vec3 n_pos = step(OCCUPANCY, vec3(occupancy(id+disp.xyy),\n                              \t\t\t\t  occupancy(id+disp.yxy),\n                              \t\t\t\t  occupancy(id+disp.yyx)));\n            vec3 n_neg = step(OCCUPANCY, vec3(occupancy(id-disp.xyy),\n                              \t\t\t\t  occupancy(id-disp.yxy),\n                              \t\t\t\t  occupancy(id-disp.yyx)));\n            vec3 n_axes = n_pos + n_neg;\n            vec3 diff_axes = n_pos - n_neg;\n            float total = n_axes.x + n_axes.y + n_axes.z;\n            if (total > 0.5) {\n            \t\n                \n                // raymarching\n                float t0 = min(t.x, min(t.y, t.z));\n                float maxdist = min(tr.x, min(tr.y, tr.z)) - t0;\n                vec3 ro0 = ro + t0 * rd - (id+0.5) * GRID;\n                float tt = 0.;\n                for (; i<TOTAL_ITERS; i++) {\n                    vec3 pos = ro0 + tt * rd;\n                    float dist = 1e6;\n                    float bound = maxdist - tt;\n                    if (n_axes.x > 1.5) {\n                        dist = min(dist, longpipe(pos, dist, bound));\n                    }\n                    if (n_axes.y > 1.5) {\n                        dist = min(dist, longpipe(pos.yzx, dist, bound));\n                    }\n                    if (n_axes.z > 1.5) {\n                        dist = min(dist, longpipe(pos.zxy, dist, bound));\n                    } \n                    for (int j=0; j<2; j++) {\n                        if (abs(n_axes[j]-1.)<0.5) {\n                            for (int k=j+1; k<3; k++) {\n                                if (abs(n_axes[k]-1.)<0.5) {\n                                    vec3 u = vec3(0.);\n                                    u[j] = diff_axes[j];\n                                    vec3 v = vec3(0.);\n                                    v[k] = diff_axes[k];\n                                    vec3 w = cross(u, v);\n                                    mat3 rot = mat3(u, v, w);\n                                    mat3 rotT = transpose(rot);\n                                    vec3 pos_local = rotT * (pos -(v + u) * 0.5*GRID);\n                                    dist = min(dist, torus(pos_local));\n                                }\n                            }\n                        }\n                    }\n                    \n                    tt += dist;\n                    if (abs(dist) < RAYMARCH_EPS) {\n                        return vec2(tt + t0, i);\n                    }\n                    if (tt > maxdist || tt < 0.) {\n                        break;\n                    }\n                }\n            }\n        }\n        t = tr;\n        vec3 n = step(tr.xyz, tr.zxy) * step(tr.xyz, tr.yzx) * rs;\n        tr += dr * n;\n        id += n;\n    }\n    return vec2(min(t.x, min(t.y, t.z)), i);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * 0.5)/iResolution.x * FOV;\n\tvec3 eye = vec3(2.*iTime, 0.1, 0.1);\n    vec3 w = normalize(vec3(1., sin(.5*iTime), cos(iTime*.2)));\n    vec3 u = normalize(cross(w, vec3(0., 0., 1.)));\n    vec3 v = cross(u, w);\n    vec2 c = cos(uv);\n    vec2 s = sin(uv);\n    vec3 rd = normalize(s.x * c.y * u + s.y * v + c.x * c.y * w);\n    \n    vec2 t = march(eye, rd);\n    \n    fragColor = vec4(pow(rainbow(t.x/2.+1.5) * vec3(1.-t.y/100.), vec3(0.75)),1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

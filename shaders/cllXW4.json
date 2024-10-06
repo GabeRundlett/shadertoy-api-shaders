@@ -1,0 +1,208 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1674885984",
+            "description": "Simulation from Shane's Visualizing Curl Noise: https://shadertoy.com/view/mlsSWH\nBRDF from knarkowicz's Cloth Shading: https://shadertoy.com/view/4tfBzn\n\nUsing \"progressive raymarching\" (PRM) as an optimization to allow steep slopes without bad FPS.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "cllXW4",
+            "likes": 22,
+            "name": "Velvet Curl Noise PRM",
+            "published": 3,
+            "tags": [
+                "noise",
+                "raymarch",
+                "swirl",
+                "fluid",
+                "gradient",
+                "curl",
+                "warp",
+                "bump",
+                "brdf",
+                "vortex"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 439
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2023\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  This shader borrows heavily from others. Huge credit is due to Shane for his\n//\n//      Visualizing Curl Noise          https://shadertoy.com/view/mlsSWH\n//\n//  which forms the simulation backbone of this shader and was its inspiration. I have\n//  already shamelessly lifted the velvet BRDF from knarkowicz's\n//  \n//      Cloth Shading                   https://shadertoy.com/view/4tfBzn\n//\n//  You could consider this a mashup between those two shaders. But really, it was Shane's\n//  shader that inspired this one. The resulting texture seemed so rich and sumptuous that\n//  I had to know what it would look like raymarched in 3D with a velvet BRDF, and now I\n//  know. Pretty cool, I think.\n//\n//  I'm a little embarassed to be copy-pasting so much code, but I think I may have something\n//  interesting to contribute to raymarching here. Along the way I invented what might\n//  be a new technique that I'm calling \"progressive raymarching\" (PRM). Please disabuse\n//  me of my pride if it's a well known idea already. More details about that in Buffer C.\n//  In a nutshell it allow me to use very tiny raymarch increments (allowing resolution of\n//  steep slopes) without needing as many steps as you would normally. I think I will do\n//  more experiments with this idea in future shaders.\n//\n// ---------------------------------------------------------------------------------------\n\n// From Cloth Shading by knarkowics: https://www.shadertoy.com/view/4tfBzn\nvec3 FresnelTerm(vec3 specularColor, float vdoth)\n{\n\tvec3 fresnel = specularColor + (1. - specularColor) * pow((1. - vdoth), 5.);\n\treturn fresnel;\n}\n\nfloat saturate(float x)\n{\n    return clamp(x, 0., 1.);\n}\n\nvec3 saturate(vec3 x)\n{\n    return clamp(x, vec3(0.), vec3(1.));\n}\n\nfloat CharlieD(float roughness, float ndoth)\n{\n    float rcpR  = 1. / roughness;\n    float cos2h = ndoth * ndoth;\n    float sin2h = 1. - cos2h;\n    return (2. + rcpR) * pow(sin2h, rcpR * .5) / (2. * PI);\n}\n\nfloat L(float x, float r)\n{\n\tr = saturate(r);\n\tr = 1.0 - (1. - r) * (1. - r);\n\n\tfloat a = mix( 25.3245,  21.5473, r);\n\tfloat b = mix( 3.32435,  3.82987, r);\n\tfloat c = mix( 0.16801,  0.19823, r);\n\tfloat d = mix(-1.27393, -1.97760, r);\n\tfloat e = mix(-4.85967, -4.32054, r);\n\n\treturn a / (1. + b * pow(x, c)) + d * x + e;\n}\n\nfloat CharlieV(float roughness, float ndotv, float ndotl)\n{\n\tfloat visV = ndotv < .5 ? exp(L(ndotv, roughness)) : exp(2. * L(.5, roughness) - L(1. - ndotv, roughness));\n\tfloat visL = ndotl < .5 ? exp(L(ndotl, roughness)) : exp(2. * L(.5, roughness) - L(1. - ndotl, roughness));\n\n\treturn 1. / ((1. + visV + visL) * (4. * ndotv * ndotl));\n}\n\nconst vec3 LIGHT_DIR = normalize(vec3(0, 1, -0));\n\nvec3 velvet(vec3 normal, vec3 rayDir, vec3 baseColor)\n{\n    vec3 viewDir = -rayDir;\n    const vec3 lightDir = LIGHT_DIR;\n\n    vec3 halfVec = normalize(viewDir + lightDir);\n    float vdoth = saturate(dot(viewDir, halfVec));\n    float ndoth\t= saturate(dot(normal.xyz, halfVec));\n    float ndotv = saturate(dot(normal.xyz, viewDir));\n    float ndotl = saturate(dot(normal.xyz, lightDir));\n\n    vec3 diffuseColor  = 0.25 * baseColor;\n    vec3 specularColor = sqrt(baseColor);\n    float roughness    = .2;\n\n    vec3 diffuse = diffuseColor * saturate(abs(dot(normal.xyz, lightDir)));\n\n    vec3 f = FresnelTerm(specularColor, vdoth);\n\n    float d = CharlieD(roughness, ndoth);\n    float v = CharlieV(roughness, ndotv, ndotl);\n\n    vec3 specular = f * (d * v * PI * ndotl);\n\n    vec3 color = diffuse + specular;\n    return color;\n}\n\n// From https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0., 1.);\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{\n    vec4 gb = texture(iChannel0, fragCoord/iResolution.xy);\n    vec3 n = gb.xyz; // unpack normal from G buffer\n    float t = gb.w;  // unpact t from G bufffer\n    \n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    fragColor.rgb = velvet(n, rayDir, vec3(.2,.01,.2));\n    fragColor.rgb = pow(ACESFilm(fragColor.rgb), vec3(1./2.2));\n    fragColor.a = 1.;\n    if (keyDown(KEY_SPACE))\n        fragColor = pow(vec4(.9, .5, .3, 0), 1./texture(iChannel0, fragCoord/iResolution.xy));\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//   This is just a modified version of Buffer A of Shane's\n//   \n//   Visualizing Curl Noise     https://shadertoy.com/view/mlsSWH\n//\n//   First off, I hope Shane doesn't mind my direct copying of his code. I hope (s)he sees\n//   this and signals approval or disapproval. It's hard to know whether (s)he expected\n//   people to copypasta the code or just read and learn from it. If the intent was for me\n//   to develop my own version following the model but not copy the code, I'll go off and\n//   do that before re-posting this. My excuse for posting is that I think I have contributed\n//   something of value on top of the original simulation.\n//\n//   This was super fun to play with, not least because of the very clear code and\n//   comments. I tried to set the options to get lots of surface texture while minimizing\n//   sharp peaks that give the raymarcher fits. @Shane if you're reading this, I wonder if\n//   you have any other ideas to make this even better looking.\n//\n// ---------------------------------------------------------------------------------------\n\n// Integrate more frames and increase the swirl length.\n#define LONGER\n\n// Standard 2D rotation formula.\nmat2 rot2(in float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }\n\n// Cheap vec3 to vec3 hash. I wrote this one. It's much faster than others, but I don't trust\n// it over large values.\nvec3 hash33(vec3 p){ \n    \n    float n = sin(dot(p, vec3(27, 57, 111)));   \n    return fract(vec3(2097152, 262144, 32768)*n)*2. - 1.; \n \n}\n\n// Cheap, streamlined 3D Simplex noise... of sorts. I cut a few corners, so it's not perfect, but it's\n// artifact free and does the job. I gave it a different name, so that it wouldn't be mistaken for\n// the real thing -- I'll rewrite it at some stage. By the way, Stefan Gustavson has an account on\n// Shadertoy, if you feel like tracking that down.\n// \n// Credits: Ken Perlin, the inventor of Simplex noise, of course. Stefan Gustavson's paper - \n// \"Simplex Noise Demystified,\" IQ, other \"ShaderToy.com\" people, etc.\nfloat tetraNoise(in vec3 p){\n\n    // Skewing the cubic grid, then determining the first vertex and fractional position.\n    vec3 i = floor(p + dot(p, vec3(1./3.)) );  p -= i - dot(i, vec3(1./6.));\n    \n    // Breaking the skewed cube into tetrahedra with partitioning planes, then determining which side of the \n    // intersecting planes the skewed point is on. Ie: Determining which tetrahedron the point is in.\n    vec3 i1 = step(p.yzx, p), i2 = max(i1, 1. - i1.zxy); i1 = min(i1, 1. - i1.zxy);    \n    \n    // Using the above to calculate the other three vertices -- Now we have all four tetrahedral vertices.\n    // Technically, these are the vectors from \"p\" to the vertices, but you know what I mean. :)\n    vec3 p1 = p - i1 + 1./6., p2 = p - i2 + 1./3., p3 = p - .5;\n  \n\n    // 3D simplex falloff - based on the squared distance from the fractional position \"p\" within the \n    // tetrahedron to the four vertice points of the tetrahedron. \n    vec4 v = max(.5 - vec4(dot(p, p), dot(p1, p1), dot(p2, p2), dot(p3, p3)), 0.);\n     \n    // Dotting the fractional position with a random vector, generated for each corner, in order to determine \n    // the weighted contribution distribution... Kind of. Just for the record, you can do a non-gradient, value \n    // version that works almost as well.\n    vec4 d = vec4(dot(p, hash33(i)), dot(p1, hash33(i + i1)), \n                  dot(p2, hash33(i + i2)), dot(p3, hash33(i + 1.)));\n    \n     \n    // Simplex noise... Not really, but close enough. :)\n    return clamp(dot(d, v*v*v*8.)*1.732 + .5, 0., 1.); // Not sure if clamping is necessary. Might be overkill.\n \n}\n\n\n// Layered noise function.\nfloat fBm(in vec3 p){\n    \n    return (tetraNoise(p)*4. + tetraNoise(p*2. + .23)*2. + tetraNoise(p*4. + .07))/7.;\n    //return (tetraNoise(p)*2. + tetraNoise(p*2. + .23)*1.)/3.;\n}\n \n \n// Flow function.\nfloat flow(vec3 p){\n\n   // Emulating moving toward the surface of a sphere, or landing on \n   // planet Cartoon Jupiter, if you prefer. :)\n \n   p.z -= dot(p, p)*.5; \n   p.xy *= rot2(iTime/16.);\n   #ifdef LONGER\n   // Longer swirl strands get too tight if you slice through\n   // Z too quickly, so it needs slowing down.\n   p.z += .1*iTime;\n   #else\n   p.z += .15*iTime;\n   #endif\n   \n   // You can put whatever function you want here, but simplex noise has nice\n   // animation qualities, so I've used that. At some stage, I'll try other \n   // things. By the way, if you have any suggestions, feel free to let me know.\n   return fBm(p*1.5)*2. - 1.;\n   \n   \n   /*\n   // Failed angular noise experiment.\n   p += vec3(.0, .0, .2)*iTime/3.;\n   return fBm(p*1.5*2.)*2. - 1.;\n   */\n  \n}\n\n \n \n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n   \n    // Coordinates.\n    vec2 iR = iResolution.xy;\n    vec2 uv = fragCoord/iR;\n    \n      \n    vec2 uva = (fragCoord - iR/2.)/iR.y;\n  \n    // Taking the curl of the flow function. Intuitively, the perpendicular\n    // vector to the tangent vector \"v\" is simply, \"vec2(v.y, -v.x)\", and the\n    // curl is analogous to the gradient equivalent, \"vec2(df/dy, -df/dx)\".\n    vec2 e = vec2(.01, 0);\n    vec3 p = vec3(uva, 0);//vec3(p, length(p)*.5);\n    float dx = (flow(p + e.xyy) - flow(p - e.xyy))/(2.*e.x);\n    float dy = (flow(p + e.yxy) - flow(p - e.yxy))/(2.*e.x);\n    vec2 curl = vec2(dy, -dx);\n     \n    // 3D curl. Not used here.\n    //float dz = (noise(p + e.yyx) - noise(p - e.yyx))/(2.*e.x);\n    //vec3 curl = vec3(dz - dy, dx - dz, dy - dx);\n \n/*\n    // Angular offsetting... Not right for this example.\n    vec2 e = vec2(.001, 0);\n    vec3 pos = vec3(p, 0);/\n    float a = (flow(pos))*6.2831*1.5;\n    vec2 curl = vec2(cos(a), -sin(a))*2.;\n*/\n      \n \n    // Update the field coordinates.\n    uv += curl*.0005*vec2(iR.y/iR.x, 1); // Move to the new position.\n    \n    \n    // Buffer sample from the new position.\n    vec3 val = texture(iChannel0, uv).rgb;\n \n    \n    //col = texture(iChannel2, uv, 3.).xyz; col *= col;\n    //col = smoothstep(.0, .5, col);\n\n    // Create transcental color pattern using the warped coordinates.\n    float snNs = dot(sin(uv*8. - cos(uv.yx*12.)), vec2(.25)) + .5;\n    //vec3 col = .5 + .45*cos(6.2831*snNs/6. + vec3(0, 1.2, 2)*.8);\n    vec3 col = mix(vec3(1, .8, .6).zyx, vec3(.6, .3, .2), snNs);\n   \n    // Color shading.\n    // Just the original function without the curl, which gives the\n    // impression of cast shadows.\n    //col *= flow(p) + .5;\n    // This is more correct, but I like the uncurled shading more.\n    //col *= flow(vec3(uv, 0)) + .5;\n    \n  \n    // Ridges -- Probably a little too much, but it'd be an interesting\n    // addition if you wanted to raymarch the surface.\n    col *= abs(fract(col.x*16.) - .5)*200.*.04 + .96;\n     \n    \n    // Mix the curent warped color texture in with the previous one.\n    // Some people like to inject pixels from the sides and add those, but\n    // for this example, I'm performing a simple blend... However you mix\n    // frames is entirely up to you.\n    //\n    // More frames generally result in longer spirals. However, the speed at \n    // which we cut through the Z-planes (p.z += a*iTime), might need to \n    // be lowered.\n    #ifdef LONGER\n    const float nFrames = 32.;\n    #else\n    const float nFrames = 16.;\n    #endif\n    if(iFrame>0) col = mix(val, col, 1./nFrames);\n    \n  \n    fragColor = vec4(col, 1);\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//   This is just a stripped-down version of the Image tab of Shane's\n//   \n//   Visualizing Curl Noise     https://shadertoy.com/view/mlsSWH\n//\n//   I highly recommend checking out the original with all its options and awesome\n//   comments. But I only needed the height information to raymarch against, so after\n//   stripping it down, it didn't seem to make much sense to leave half the code\n//   commented out.\n//\n// ---------------------------------------------------------------------------------------\n\n// Texture samples.\nvec3 tx2D(vec2 p){ return texture(iChannel0, p).xyz; }\n\n// Texture height.\nfloat getHeight(vec2 p){ return dot(tx2D(p), vec3(.299, .587, .114)); }\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    // Screen coordinates.\n    vec2 iR = iResolution.xy;\n    vec2 uv = fragCoord/iR;\n    \n    // Texture samples.\n    vec3 col = tx2D(uv);\n    \n    // Height value and offset sample for the colored lights.\n    float height = dot(col, vec3(.299, .587, .114));\n    float height2 = getHeight(uv - normalize(vec2(1, 2))*.001*vec2(iR.x/iR.y, 1));\n    \n    vec2 e = vec2(.0045, 0); // Constant sample distance.\n\n    // Taking four nearby offset samples to use for gradient and curvature calculations.\n    vec4 t4 = vec4(getHeight(uv - e.xy),  getHeight(uv + e.xy), \n               getHeight(uv - e.yx), getHeight(uv + e.yx));\n\n    // Using the four samples above to calculate the surface curvature.\n    float amp = .7;\n    float curv = (height*4. - dot(t4, vec4(1)))/e.x/8.*amp + .5;\n            \n    // Rough gamma correction.\n    fragColor = vec4(pow(curv, 1.2));\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//   Progressive raymarch/G buffer\n//\n//   So the story is, I originally thought I was going to use SSOA on this shader, so I\n//   set it up using deferred rendering in the style of a lot of my recent shaders like\n//\n//     Candy Avalance         https://shadertoy.com/view/dlfSz4\n//\n//   I ended up not being able to tune the SSOA to really look good on top of the Charlie\n//   sheen velvet BRDF. It's already darkened in the crevices so it was hard to blend the\n//   two. But, along the way, having a deferred rendering pipeline gave me what might be a\n//   new idea, or at least, it's new to me.\n//\n//   I've been calling it \"progressive raymarching\" during development...please let me \n//   know if it's a known thing and already has a name.\n//\n//   The idea is essentially simple: use the previous frame's t value as a starting point\n//   for the next frame's raymarch. This was super easy to try out since I already was \n//   remembering the t value in the G buffer. By itself this causes a tremendous speed\n//   boost...try turning off PROGRESSIVE to see the difference. It reminds me of the value\n//   of \"warm starting\" a constraint solver, since you essentially continue from where you\n//   left off the previous frame. This allow me to use a very tiny march increment and still\n//   need relatively few steps in the average case.\n//\n//   By itself, though, this can cause artifacts. When an area of lower t begins to occlude\n//   a higher t area, the raymarcher can get stuck in the \"local minima\" of the higher t\n//   surface. To combat this, I take a few extra sample points below and to the sides\n//   of the rendered pixel, and use the minimum t of all those points as a starting point.\n//   This results in a few extra iterations in the usual case, but it's still faster than\n//   starting without a warm-start value for t. To disable this workaround, turn off\n//   MULTI_SAMPLE_LAST_T. \n//\n//   Hold down space to see a visualization of the nubmer of steps the raymarcher needed,\n//   noting that with PROGRESSIVE disabled, it takes a lot more steps. Also try pressing\n//   space while you have MULTI_SAMPLE_LAST_T disabled and observe how almost no raymarch\n//   steps are needed. If local-minima artifacts are acceptable in your scene for whatever\n//   reason (say, t is static or only changes smoothly over time) then the speedup of this\n//   method is huge.\n//\n// ---------------------------------------------------------------------------------------\n\n#define PROGRESSIVE 1 // enable \"progressive raymarching\"\n#define MULTI_SAMPLE_LAST_T 1 // enable this for speed boost + local-minima artifacts\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n#if PROGRESSIVE\n    // look up the results of last frame's raymarching so we can use it as a starting point\n    float lastT = texelFetch(iChannel1, ivec2(fragCoord), 0).w;\n    ivec2 below = ivec2(fragCoord.x, max(fragCoord.y - 5., 0.));\n#if MULTI_SAMPLE_LAST_T\n    // also consider a few other pixels so we don't get stuck in local minima as easily\n    float lastBelowT = texelFetch(iChannel1, below, 0).w;\n    ivec2 right = ivec2(min(fragCoord.x + 5., iResolution.x - 1.), fragCoord.y);\n    float lastRightT = texelFetch(iChannel1, right, 0).w;\n    ivec2 left = ivec2(max(fragCoord.x - 5., 0.), fragCoord.y);\n    float lastLeftT = texelFetch(iChannel1, left, 0).w;\n    \n    float t = min(min(min(lastT, lastBelowT), lastRightT), lastLeftT);\n#else\n    float t = lastT;\n#endif\n\n    if (iFrame < 2) t = -cameraPos.y / rayDir.y; // don't trust buffer values until a couple of frames have gone by\n#else\n    float t = -cameraPos.y / rayDir.y;\n#endif\n    \n    vec3 p = cameraPos + rayDir * t; // start right on the surface from last frame\n    vec3 hitPos = march(iChannel0, p, rayDir, t);\n    \n    vec3 n = norm(iChannel0, hitPos);\n    \n    // record G buffer results\n    fragColor.xyz = n;\n    fragColor.w = t;\n    \n    // support step number debug visualization\n    if (keyDown(KEY_SPACE))\n        fragColor.xyz = vec3(float(ns) / float(MAX_STEPS));\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float PI = 3.141592653589793;\n\nvoid fxCalcCamera(out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraLookAt = vec3(0, -.5, 0);\n    cameraPos\t = vec3(0, 2, -5);\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return mat4(vec4(-0.5 * cameraLeft, 0.0) *.3,\n        vec4(-0.5*cameraUp, 0.0) * .3,\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord.xy - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft * .3 - screenPos.y * cameraUp * .3);\n}\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SHIFT 16\n#define KEY_SPACE 32\n\nfloat map(sampler2D sampler, vec3 p)\n{\n    return texture(sampler, p.xz*.2 + .5).x*.5 + p.y + .2;\n}\n\nconst int MAX_STEPS = 512;\nconst float SDF_EPS = .01;\n\nint ns;\nvec3 march(sampler2D sampler, vec3 p, vec3 rd, inout float t)\n{\n    ns = 0;\n   \n    for (int i = 0; i < MAX_STEPS; ++i)\n    {\n        float d = map(sampler, p);\n        if (abs(d) < SDF_EPS) break;\n        d *= .05;\n        p += d * rd;\n        t += d;\n        ns++;\n    }\n    return p;\n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 norm(sampler2D sampler, vec3 p)\n{\n    const vec2 e = vec2(1.0,-1.0)*0.0001;\n    return normalize( e.xyy*map(sampler, p + e.xyy) + \n\t\t\t\t\t  e.yyx*map(sampler, p + e.yyx) + \n\t\t\t\t\t  e.yxy*map(sampler, p + e.yxy) + \n\t\t\t\t\t  e.xxx*map(sampler, p + e.xxx) );\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,216 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1718660083",
+            "description": "ESDF to move, arrows or mouse to rotate. Yup, cuts a lot of fancy things out. ",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "433Xz4",
+            "likes": 3,
+            "name": "Volumetric Clouds igpu fork test",
+            "published": 3,
+            "tags": [
+                "game",
+                "interactive",
+                "clouds",
+                "flycam"
+            ],
+            "usePreview": 0,
+            "username": "romax9lahin",
+            "viewed": 105
+        },
+        "renderpass": [
+            {
+                "code": "/*\nI had a computer game idea that involved using the sky as terrain. Of course,\nthis involves simulating large cloud-scapes - and I want it to run on my\nlaptop. So....\n\nThis is an attempt to make volumetric clouds run at interactive framerates\non an intel GPU. Of course, this doesn't leave much horse-power\nso a lot of fancy things have to be cut out. Still with some properly\ndesigned textures (to prevent artifacting - the cloud map should be a SDF)\nit should be possible to build a stylized game.\n\nDropping the resolution to half of the framebuffer makes a big difference \nin performance - enough for me to go from a single absorbtion sample to\na set of four along with transmission. And when it's running fullscreen\nI don't notice it.\n\n\n//// Open Questions\n\n - How can I get the most bang-for-buck out of lighting samples? \n   Currently I'm only doing absorption/transmission simulation, \n   and they look a bit, well, meh. Should I be doing some other \n   lighting simulation?\n\n - Is there some method other than volumetrics/raymarching that\n   holds up at close distances? I couldn't find any papers on any\n   alternates, so does anyone here have any ideas or resources?\n\n - This would need to be integrated into a traditional 3D renderer.\n   I've attempted to combine raymarched visuals into a 3D pipeline\n   before and couldn't get the Z-buffer to work. Any resources or advice for this?\n\n - Any other advice for performance? If someone wants to dig through my \n   shader code, I'd love some code review. Any advice for profiling shaders?\n\n\n//// Raymarcher notes\nRaymarcher does big steps through empty space and small steps through clouds.\nWhen it hits a cloud it back-tracks. This means that the smallest cloud \nthickness must be bigger than the big step - which is not the case with the texture\nI'm using. This is why there are some artifacts.\nThe raymarcher early aborts on full opacity and on draw distance.\n\n//// Inspiration:\nHorizon Zero Dawn put out some good presentations on this.\n\n\n\n//// License:\nWTFPL - use as you will.\n\n//// Changelog\n2023-01-04 initial version\n2023-01-05 no longer samples detail texture when opacity exceeds 80%\n\n\n*/\n\n#define BUFFER_HUD iChannel1\n#define BUFFER_CLOUDS iChannel0\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    fragColor = textureLod(BUFFER_CLOUDS, fragCoord / iResolution.xy * 0.5, 1.0);\n\n\n    // HUD\n    vec4 hud = texture(BUFFER_HUD, fragCoord / iResolution.xy);\n    fragColor = mix(fragColor, hud, hud.a);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const ivec2 ADDR_CAMERA_POSITION = ivec2(0,0);\nconst ivec2 ADDR_CAMERA_ORIENTATION = ivec2(0,1);\nconst ivec2 ADDR_CAMERA_ANG_VELOCITY = ivec2(0,2);\nconst ivec2 ADDR_CAMERA_LIN_VELOCITY = ivec2(0,3);\nconst ivec2 ADDR_MOUSE_DELTA_STATE = ivec2(0,4);\n\nconst float LENS = 0.5;\nconst float PHYSICS_RADIUS = 0.05;\n\n//#define PHYSICS\n\n\n\n\nfloat physics_sdf(vec3 position) {\n    // Return zero when colliding\n#ifdef PHYSICS\n    return map(position);\n#else\n    return 10.0;\n#endif\n}\n\nvec3 physics_normal(vec3 position) {\n    // Return direction vector pointing towards free space\n#ifdef PHYSICS\n    return calc_normal(position);\n#else\n    return vec3(1.0, 0.0, 0.0);\n#endif\n}\n\n\n\n// Fetch a single pixe from a buffer\nvec4 read_data(sampler2D buffer, ivec2 address){\n    return texelFetch(buffer, address, 0);\n}\n\n\n// Create a quaternion from axis-angle notation\nvec4 quat_from_axis_angle(vec3 axis, float angle) {\n    float factor = sin(angle) / 2.0;\n    float w = cos(angle) / 2.0;\n    return normalize(vec4(axis*factor, w));\n}\n\n// Convert a quaternion into a transformation matrix\nmat4 quat_to_transform(vec4 quat, vec3 translation) {\n    vec4 q = quat;\n    vec4 q2 = quat * quat;\n    \n \treturn mat4(\n        1.0 - 2.0*(q2.y + q2.z), 2.0*(q.x*q.y - q.z*q.w), 2.0*(q.x*q.z + q.y*q.w), 0.0,\n    \t2.0*(q.x*q.y + q.z*q.w), 1.0 - 2.0*(q2.x + q2.z), 2.0*(q.y*q.z - q.x*q.w), 0.0,\n    \t2.0*(q.x*q.z - q.y*q.w), 2.0*(q.y*q.z + q.x*q.w),1.0 - 2.0*(q2.x + q2.y), 0.0,\n        translation, 0.0\n    );\n}\n\n// Multiply two quaternions\nvec4 quat_mul(vec4 a, vec4 b) {\n \treturn vec4(\n        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,\n        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,\n        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,\n        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z\n    );   \n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// STATE: manages moving the camera\n\n#define BUFFER_STATE iChannel0\n#define BUFFER_KEYBOARD iChannel1\n\nconst vec3 START_POSITION = vec3(12.041,29.324,-0.991);\nconst vec4 START_QUATERNION = vec4(0., 0.707, 0.707, 0);\n\nconst vec2 MOUSE_SENSITIVITY = vec2(-0.2, 0.2);\n\n// Flight dynamics\nconst float LIN_ACCELERATION = 50.0;\nconst float LIN_DRAG = 5.0;\nconst float ANG_ACCELERATION = 10.0;\nconst float ANG_DRAG = 10.0;\n\n\n// What keys to use for controls\nconst int KEY_LEFT = 83;\nconst int KEY_UP   = 84;\nconst int KEY_RIGHT = 70;\nconst int KEY_DOWN = 71;\nconst int KEY_FORWARD = 69;\nconst int KEY_BACKWARD = 68;\n\nconst int KEY_TILT_UP = 38;\nconst int KEY_TILT_DOWN = 40;\nconst int KEY_PAN_LEFT = 37;\nconst int KEY_PAN_RIGHT = 39;\nconst int KEY_ROLL_LEFT = 87;\nconst int KEY_ROLL_RIGHT = 82;\n\n\n// Return the state of a key\nfloat get_key(int key_code) {\n    return texelFetch(BUFFER_KEYBOARD, ivec2(key_code,0), 0).x;\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 address = ivec2(fragCoord);\n    \n    if (address == ADDR_CAMERA_POSITION) {\n        // Move the camera based on keypress\n    \tvec4 camera_position = read_data(BUFFER_STATE, ADDR_CAMERA_POSITION);\n        \n        if (iTime < 0.1) {\n            camera_position = vec4(START_POSITION, 0.0);\n        }\n        \n        float distance_field = physics_sdf(camera_position.xyz);\n        float penetration_distance = -(distance_field - PHYSICS_RADIUS);\n        \n        if (penetration_distance > 0.0) {\n            vec3 normal = physics_normal(camera_position.xyz);\n            camera_position.xyz += normal * penetration_distance;\n        }\n        \n        \n        vec3 translation = read_data(BUFFER_STATE, ADDR_CAMERA_LIN_VELOCITY).xyz;\n        \n        // Convert to local coordinate system\n        mat4 orientation = quat_to_transform(\n            read_data(BUFFER_STATE, ADDR_CAMERA_ORIENTATION),\n            vec3(0.0)\n        );\n        translation = (orientation * vec4(translation, 0.0)).xyz;\n        translation *= iTimeDelta;\n        \n        camera_position.xyz += translation;\n        fragColor = camera_position;\n        return;\n    }\n    \n    \n    if (address == ADDR_CAMERA_ORIENTATION) {\n        // Rotate the camera based on keypress\n        vec4 camera_orientation = read_data(BUFFER_STATE, ADDR_CAMERA_ORIENTATION);\n        \n        if (iTime < 0.1) {\n            camera_orientation = START_QUATERNION;\n        }\n        \n        vec4 velocity = read_data(BUFFER_STATE, ADDR_CAMERA_ANG_VELOCITY);\n        velocity *= iTimeDelta;\n        \n        \n        \n        vec4 pan = quat_from_axis_angle(vec3(0.0, 1.0, 0.0), velocity.x);\n        vec4 tilt = quat_from_axis_angle(vec3(1.0, 0.0, 0.0), velocity.y);\n        vec4 roll = quat_from_axis_angle(vec3(0.0, 0.0, 1.0), velocity.z);\n        \n        \n        camera_orientation = quat_mul(pan, camera_orientation); \n        camera_orientation = quat_mul(tilt, camera_orientation); \n        camera_orientation = quat_mul(roll, camera_orientation); \n        \n        fragColor = camera_orientation;\n        return;\n    }\n    if (address == ADDR_CAMERA_ANG_VELOCITY) {\n        vec4 velocity = read_data(BUFFER_STATE, ADDR_CAMERA_ANG_VELOCITY);\n        vec4 mouse_delta_data = read_data(BUFFER_STATE, ADDR_MOUSE_DELTA_STATE);\n        vec2 mouse_delta = iMouse.xy - mouse_delta_data.xy;\n        \n        vec3 acceleration = vec3(\n            get_key(KEY_PAN_LEFT) - get_key(KEY_PAN_RIGHT),\n            get_key(KEY_TILT_UP) - get_key(KEY_TILT_DOWN),\n            get_key(KEY_ROLL_RIGHT) - get_key(KEY_ROLL_LEFT)\n        );\n        if (mouse_delta_data.z > 0.0) {\n            acceleration.xy += mouse_delta * MOUSE_SENSITIVITY;\n        }\n        acceleration *= ANG_ACCELERATION;\n        velocity.xyz += acceleration * iTimeDelta;\n        \n        vec4 drag = velocity * ANG_DRAG;\n        velocity -= drag * iTimeDelta;\n        \n        fragColor = velocity;\n        return;\n    }\n    if (address == ADDR_CAMERA_LIN_VELOCITY) {\n        vec4 velocity = read_data(BUFFER_STATE, ADDR_CAMERA_LIN_VELOCITY);\n        \n        vec3 acceleration = vec3(\n            get_key(KEY_RIGHT) - get_key(KEY_LEFT),\n            get_key(KEY_UP) - get_key(KEY_DOWN),\n            get_key(KEY_FORWARD) - get_key(KEY_BACKWARD)\n        ) * LIN_ACCELERATION;\n        velocity.xyz += acceleration * iTimeDelta;\n        \n        vec4 drag = velocity * LIN_DRAG;\n        velocity -= drag * iTimeDelta;\n        \n        fragColor = velocity;\n        return;\n    }\n    if (address == ADDR_MOUSE_DELTA_STATE) {\n        fragColor = iMouse;\n    }\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// HUD: Draws the heads up display\n\n#define BUFFER_STATE iChannel0\n#define BUFFER_FONT iChannel1\n\nconst vec3 HUD_COLOR = vec3(1.0, 0.6, 0.0);\nconst float HUD_LINE_SIZE = 0.005;\nconst float HUD_BORDER_OFFSET = 0.08;\n\n\nvec4 hud(vec2 uv) {\n    vec4 cam_ang_velocity = read_data(BUFFER_STATE, ADDR_CAMERA_ANG_VELOCITY);\n\n    float aspect = iResolution.x / iResolution.y;\n    float borders = step(0.0, HUD_LINE_SIZE - abs((aspect - HUD_BORDER_OFFSET) - abs(uv.x)));\n    borders += step(0.0, HUD_LINE_SIZE - abs(1.0 - HUD_BORDER_OFFSET - abs(uv.y)));\n    \n    float reticle = step(abs(0.03 - length(uv + cam_ang_velocity.xy * vec2(0.2, -0.2))), HUD_LINE_SIZE);\n    \n    float hud = borders + reticle;\n    \n    hud = clamp(hud, 0.0, 0.5);\n    \n    return vec4(HUD_COLOR,hud);\n}\n\n\n\nvec4 sampleIntChar(int number, vec2 coords) {\n    return texture(BUFFER_FONT, (coords + vec2(float(number), -4.0)) / 16.0);\n}\n\n\nfloat drawInt(int number, vec2 coords, int digits) {\n    vec2 arr = coords * vec2(digits, 1.0);\n    int digitId = digits - int(ceil(arr.x));\n    float digitBase = (pow(10.0, float(digitId)));\n    number = int(floor(float(number) / digitBase)) % 10;\n    \n    float sdf = sampleIntChar(number, fract(arr)).x;\n    float edge = smoothstep(0.1, 0.9, sdf);\n    \n    return sdf;\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 raw_uv = fragCoord/iResolution.xy;\n    vec2 uv = raw_uv;\n    uv = (uv - 0.5) * 2.0;\n    uv.x *= iResolution.x / iResolution.y;\n    \n    \n    \n    fragColor = hud(uv);\n    \n    if (uv.y < -1.0 + HUD_BORDER_OFFSET) {\n        // There is almost certainly a more effecient way to do this\n        vec2 textuv = raw_uv * vec2(1.0/4.2, 1.0) / HUD_BORDER_OFFSET * 2.0;\n        float texBuff = 0.0;\n        vec4 camera_position = read_data(BUFFER_STATE, ADDR_CAMERA_POSITION);\n        textuv.x -= HUD_BORDER_OFFSET * 3.0;\n        texBuff += drawInt(int(abs(camera_position.x * 10.0)), clamp(textuv, 0.0, 1.0), 7); \n        textuv.x -= HUD_BORDER_OFFSET * 15.0;\n        \n        texBuff += drawInt(int(abs(camera_position.y * 10.0)), clamp(textuv, 0.0, 1.0), 7); \n        textuv.x -= HUD_BORDER_OFFSET * 15.0;\n        \n        texBuff += drawInt(int(abs(camera_position.z * 10.0)), clamp(textuv, 0.0, 1.0), 7); \n        textuv.x -= HUD_BORDER_OFFSET * 15.0;\n        \n        texBuff += drawInt(int(abs(iFrameRate * 1000.0)), clamp(textuv, 0.0, 1.0), 7); \n        textuv.x -= HUD_BORDER_OFFSET * 15.0;\n        \n        fragColor = mix(fragColor, texBuff * vec4(HUD_COLOR, 1.0), texBuff);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Renders clouds at half-resolution\n\n#define BUFFER_STATE iChannel0\n#define BUFFER_HUD iChannel1\n\n#define BUFFER_VOLUME_NOISE iChannel2\n#define BUFFER_CLOUD_COVER iChannel3\n\n\nconst int MAX_STEPS = 256;\nconst float DRAW_DISTANCE = 200.0;\n\n\nconst float INSIDE_STEP_SIZE = 0.3;\nconst int STEP_OUTSIDE_RATIO = 9;\nconst float OUTSIDE_STEP_SIZE = INSIDE_STEP_SIZE * float(STEP_OUTSIDE_RATIO);\n\n\nconst vec3 LIGHT_DIRECTION = normalize(vec3(0,1.0,0.5));\n\n\nvec3 renderSky(vec3 direction) {\n    float elevation = 1.0 - dot(direction, vec3(0,0,1));\n    float centered = 1.0 - abs(1.0 - elevation);\n    float sun_direction = dot(direction, LIGHT_DIRECTION);\n\n    \n    vec3 base = mix(vec3(0.15, 0.15, 0.50), vec3(0.5,0.8,0.92), pow(clamp(elevation, 0.0, 1.0), 0.5));\n    \n    float haze = pow(centered + 0.02, 4.0) * (sun_direction + 1.0) * 0.5;\n    vec3 sky = mix(base, vec3(0.99, 0.98, 0.96), clamp(haze, 0.0, 1.0));\n    \n    float sun = pow(max((sun_direction - 19.0/20.0) * 20.0 - 0.00, 0.0), 4.0);\n    return sky + vec3(1.0, 0.8, 0.5) * sun;\n}\n\n\nfloat hash14(vec4 p4)\n{\n\tp4 = fract(p4  * vec4(.1031, .1030, .0973, .1099));\n    p4 += dot(p4, p4.wzxy+33.33);\n    return fract((p4.x + p4.y) * (p4.z + p4.w));\n}\n\nvec4 alphaOver(vec4 top, vec4 bottom) {\n    float A1 = bottom.a * (1.0 - top.a);\n    \n    float A0 = top.a + A1;\n    return vec4(\n        (top.rgb * top.a + bottom.rgb * A1) / A0,\n        A0\n    );\n}\n\n\nfloat sampleCloudMapDensity(vec3 position) {\n    // Defines where the cloud are. Ideally this function acts a bit\n    // like a distance field - the density should not have any sharp edges in it.\n    //\n    // This function gets called a lot, so try to maximize it's performance.\n    \n    vec4 cloud_map = textureLod(BUFFER_CLOUD_COVER, position.xy * 0.005, 0.0);\n    \n    float density = 0.0;\n    density = (cloud_map.r - 0.4 - abs((0.5 + position.z - cloud_map.r * 2.0) * 0.1));\n    //density += pow(abs(cloud_map.g - position.z * 0.1), 3.);\n    density = max(density, cloud_map.b - 0.1 - abs(1.0 - cloud_map.b * 0.5 + position.z * 0.1));\n    \n    density = max(density, 0.0);\n    density = pow(density * 2.0, 2.0);\n    \n    return density;\n}\n\n\nvec3 lightMarch(vec3 start_position, vec3 view_direction) {\n    // Computes the lighting in the cloud at a given point\n    float lighting = 1.0;\n    float transmission = 1.0 - dot(LIGHT_DIRECTION, view_direction);\n    transmission += 0.15;\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 0.25) * 0.2 * transmission, 0.0, 1.0); // Self\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 0.5) * 0.2 * transmission, 0.0, 1.0); // Self\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 1.0) * 0.2 * transmission, 0.0, 1.0); // Self\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 2.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 4.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 8.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    /*lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 10.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 12.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 14.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 16.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 18.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    lighting *= clamp(1.0 - sampleCloudMapDensity(start_position + LIGHT_DIRECTION * 20.0) * 0.2 * transmission, 0.0, 1.0); // Far\n    */\n    return mix(vec3(0.0, 0.1, 0.2), vec3(1.0, 0.97, 0.94), lighting);\n}\n\n\n//\n// Description : Array and textureless GLSL 2D/3D/4D simplex \n//               noise functions.\n//      Author : Ian McEwan, Ashima Arts.\n//  Maintainer : stegu\n//     Lastmod : 20201014 (stegu)\n//     License : Copyright (C) 2011 Ashima Arts. All rights reserved.\n//               Distributed under the MIT License. See LICENSE file.\n//               https://github.com/ashima/webgl-noise\n//               https://github.com/stegu/webgl-noise\n// \n\nvec3 mod289(vec3 x) {\n  return x - floor(x * (1.0 / 289.0)) * 289.0;\n}\n\nvec4 mod289(vec4 x) {\n  return x - floor(x * (1.0 / 289.0)) * 289.0;\n}\n\nvec4 permute(vec4 x) {\n     return mod289(((x*34.0)+10.0)*x);\n}\n\nvec4 taylorInvSqrt(vec4 r)\n{\n  return 1.79284291400159 - 0.85373472095314 * r;\n}\n\nfloat snoise(vec3 v)\n  { \n  const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;\n  const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);\n\n// First corner\n  vec3 i  = floor(v + dot(v, C.yyy) );\n  vec3 x0 =   v - i + dot(i, C.xxx) ;\n\n// Other corners\n  vec3 g = step(x0.yzx, x0.xyz);\n  vec3 l = 1.0 - g;\n  vec3 i1 = min( g.xyz, l.zxy );\n  vec3 i2 = max( g.xyz, l.zxy );\n\n  //   x0 = x0 - 0.0 + 0.0 * C.xxx;\n  //   x1 = x0 - i1  + 1.0 * C.xxx;\n  //   x2 = x0 - i2  + 2.0 * C.xxx;\n  //   x3 = x0 - 1.0 + 3.0 * C.xxx;\n  vec3 x1 = x0 - i1 + C.xxx;\n  vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y\n  vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y\n\n// Permutations\n  i = mod289(i); \n  vec4 p = permute( permute( permute( \n             i.z + vec4(0.0, i1.z, i2.z, 1.0 ))\n           + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) \n           + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));\n\n// Gradients: 7x7 points over a square, mapped onto an octahedron.\n// The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)\n  float n_ = 0.142857142857; // 1.0/7.0\n  vec3  ns = n_ * D.wyz - D.xzx;\n\n  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)\n\n  vec4 x_ = floor(j * ns.z);\n  vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)\n\n  vec4 x = x_ *ns.x + ns.yyyy;\n  vec4 y = y_ *ns.x + ns.yyyy;\n  vec4 h = 1.0 - abs(x) - abs(y);\n\n  vec4 b0 = vec4( x.xy, y.xy );\n  vec4 b1 = vec4( x.zw, y.zw );\n\n  //vec4 s0 = vec4(lessThan(b0,0.0))*2.0 - 1.0;\n  //vec4 s1 = vec4(lessThan(b1,0.0))*2.0 - 1.0;\n  vec4 s0 = floor(b0)*2.0 + 1.0;\n  vec4 s1 = floor(b1)*2.0 + 1.0;\n  vec4 sh = -step(h, vec4(0.0));\n\n  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;\n  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;\n\n  vec3 p0 = vec3(a0.xy,h.x);\n  vec3 p1 = vec3(a0.zw,h.y);\n  vec3 p2 = vec3(a1.xy,h.z);\n  vec3 p3 = vec3(a1.zw,h.w);\n\n//Normalise gradients\n  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));\n  p0 *= norm.x;\n  p1 *= norm.y;\n  p2 *= norm.z;\n  p3 *= norm.w;\n\n// Mix final noise value\n  vec4 m = max(0.5 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);\n  m = m * m;\n  return 105.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), \n                                dot(p2,x2), dot(p3,x3) ) );\n}\n\n\nvec4 renderScene(vec3 start_point, vec3 direction) {\n    vec4 accumulation = vec4(0.0, 0.0, 0.0, 0.001);\n    \n    float dist_from_camera = 0.0;\n    int steps_outside_cloud = 0;\n    \n    float noise = hash14(vec4(direction * 1000.0, iTime * 10.0));\n    \n    vec3 sky = renderSky(direction);\n        \n    \n    for (int i=0; i<MAX_STEPS; i+=1) {\n        vec3 current_position = start_point + (dist_from_camera + noise * INSIDE_STEP_SIZE) * direction;\n        float cloud_map = sampleCloudMapDensity(current_position);\n        \n        \n        if (cloud_map > 0.0) {\n            if (steps_outside_cloud != 0) {\n                // First step into the cloud;\n                steps_outside_cloud = 0;\n                dist_from_camera = dist_from_camera - OUTSIDE_STEP_SIZE + INSIDE_STEP_SIZE;\n                continue;\n            }\n            steps_outside_cloud = 0;\n            \n        } else {\n            steps_outside_cloud += 1;\n        }\n        \n        float step_size = OUTSIDE_STEP_SIZE;\n        \n        if (steps_outside_cloud <= STEP_OUTSIDE_RATIO && cloud_map > 0.0) {  \n            step_size = INSIDE_STEP_SIZE;\n            \n            float density = cloud_map * 5.0;\n\n            if (accumulation.a < 0.8) {\n                // If we are already mostly opaque, there's no point sampling extra-detail.\n                vec3 small_noise_pos = current_position * 0.05 + vec3(0,iTime * 0.02,0);\n                //float small_noise_tex = textureLod(BUFFER_VOLUME_NOISE, small_noise_pos, 0.0).r;\n                float small_noise_tex = snoise(small_noise_pos * 11.0) * 0.5 + 0.5;\n                small_noise_tex = mix(small_noise_tex, snoise(small_noise_pos * 32.0) * 0.5 + 0.5, 0.3);\n                density -= pow(small_noise_tex, 3.0) * 3.0;\n            } else {\n                density -= 0.5;\n            }\n            \n            density *= step_size;\n            density = clamp(density, 0.0, 1.0);\n            \n            \n            \n            float fog = pow(1.0 - (dist_from_camera / DRAW_DISTANCE), 0.5);\n                        \n            vec3 lighting = lightMarch(current_position, direction);\n            \n            vec3 cloud_color = mix(\n                sky,\n                lighting,\n                clamp(fog, 0.0, 1.0)\n            );\n            \n            accumulation = alphaOver(accumulation, vec4(cloud_color, density));\n            \n        }\n        \n\n        dist_from_camera += step_size;\n        \n        if (accumulation.a > 0.98 || dist_from_camera > DRAW_DISTANCE) {\n            break;\n        }\n    }\n    \n    return vec4(alphaOver(accumulation, vec4(sky, 1.0)).rgb, dist_from_camera);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    \n    // Ignore my coordinate transform mess here\n    vec2 raw_uv = fragCoord/iResolution.xy;\n    vec2 uv = raw_uv;\n    uv = (uv - 0.5) * 2.0;\n    \n    if (uv.x > 0. || uv.y > 0.) {\n        fragColor = vec4(0);\n        return;\n    }\n    uv = (uv + 0.5) * 2.0;\n    \n    uv.x *= iResolution.x / iResolution.y;\n    \n\n\n    // Render our geometry\n    mat4 camera_transform = quat_to_transform(\n        read_data(BUFFER_STATE, ADDR_CAMERA_ORIENTATION),\n        read_data(BUFFER_STATE, ADDR_CAMERA_POSITION).xyz\n    );\n    vec3 start_point = camera_transform[3].xyz;\n    vec3 direction = normalize(vec3(uv * LENS, 1.0));\n    direction = (camera_transform * vec4(direction, 0.0)).xyz;\n    \n\n    fragColor = renderScene(start_point, direction);\n\n    // HUD\n    //vec4 hud = texture(BUFFER_HUD, fragCoord / iResolution.xy);\n    //fragColor = mix(fragColor, hud, hud.a);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

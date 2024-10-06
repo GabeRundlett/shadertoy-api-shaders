@@ -1,0 +1,54 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1489605933",
+            "description": "This is just a test of a terrain rendering using iq's noise derivatives. I also added a cloud layer.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "XdfyWS",
+            "likes": 6,
+            "name": "Terrain march attempt",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "noise",
+                "terrain",
+                "march"
+            ],
+            "usePreview": 0,
+            "username": "piluve",
+            "viewed": 949
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\t--:Terrain march attempt:--\n\t\tnachocpol@gmail.com\n\t\n\tThis is just a test of a terrain rendering using iq's noise derivatives.\n\thttps://iquilezles.org/articles/morenoise (derivatives)\n\thttps://iquilezles.org/articles/warp (warping)\n\thttps://iquilezles.org/articles/rmshadows (shadows)\n\n\tv1.0\n\tInitial release\n \tv1.1\n\tAdded soft shadows\n*/\n\n#define TERRAIN_SCALE 0.0016\n#define TERRAIN_HEIGHT_SCALE 600.0\n\n/*\n\tBase 3d noise function.\n*/\nvec3 noise( in vec2 x )\n{\n    vec2 f = fract(x);\n    vec2 u = f*f*(3.0-2.0*f);\n\n    // texel fetch version\n    ivec2 p = ivec2(floor(x));\n    float a = texelFetch( iChannel0, (p+ivec2(0,0))&255, 0 ).x;\n\tfloat b = texelFetch( iChannel0, (p+ivec2(1,0))&255, 0 ).x;\n\tfloat c = texelFetch( iChannel0, (p+ivec2(0,1))&255, 0 ).x;\n\tfloat d = texelFetch( iChannel0, (p+ivec2(1,1))&255, 0 ).x;\n\n\treturn vec3(a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y,\n\t\t\t\t6.0*f*(1.0-f)*(vec2(b-a,c-a)+(a-b-c+d)*u.yx));\n}\n\n/*\n\tFractional Brownian Noise\n*/\nfloat Fbm(vec2 p,int octaves)\n{\n    float total = 0.0;\n    float freq = 4.5;\n    float amp = 1.0;\n    float pers = 0.43;\n    float lacuna = 2.1;\n    for(int i=0;i<octaves;i++) \n    {\n        float n = noise(p*freq).x * amp;\n        n = 1.0 - abs(n);\n        total += n;\n        \n        amp *= pers;\n        freq *= lacuna;\n    }\n    \n    return pow(total/float(octaves),1.0);\n}\n\n/*\n\tIQ fbm with derivatives\n*/\nconst mat2 m = mat2(0.8,-0.6,0.6,0.8);\nfloat Fbm2( in vec2 p,int octaves )\n{\n    float a = 0.0;\n    float b = 1.0;\n\tvec2  d = vec2(0.0);\n    for( int i=0; i<octaves; i++ )\n    {\n        vec3 n = noise(p);\n        d += n.yz;\n        a += b*n.x/(1.0+dot(d,d));\n\t\tb *= 0.34;\n        p = m*p*2.5;\n    }\n    // Remove noise from low points\n\treturn pow(1.0 - a,4.5);\n}\n\n/*\n\tReturns the ray from the camera\n*/\nvec3 GetRay(vec2 uv)\n{\n    float fov = 1.0;\n    vec3 ray = vec3(uv.x,uv.y,-fov);\n    return normalize(ray);\n}\n\n/*\n\tReturns the height of the terrain at the provided point.\n\tHere, we perform the domain warp.\n*/\nfloat GetHeight(float x,float z,int oct)\n{    \n    vec2 sampleP = vec2(x,z) * TERRAIN_SCALE;\n    vec2 sampleWarp = vec2\n    (\n        Fbm2(sampleP + vec2(0.0,0.0),4),\n        Fbm2(sampleP + vec2(5.3,4.3),4)\n    );\n    \n    return Fbm2(sampleP + 0.5 * sampleWarp,oct) * TERRAIN_HEIGHT_SCALE;\n}\n\n/*\n\tReturns the normal of the surface\n*/\nvec3 GetNormal(vec3 p,float t)\n{    \n    float sDist = 0.002 * t;\n    int norOct = 8;\n    vec3 n = vec3\n    (\n        GetHeight(p.x - sDist,p.z,norOct) - GetHeight(p.x + sDist,p.z,norOct),\n        2.0,\n        GetHeight(p.x, p.z - sDist,norOct) - GetHeight(p.x,p.z + sDist,norOct)\n    );\n    return normalize(n);\n}\n\n/*\n\tMarch function, returns the distance to the terrain or\n\tfar if no hit.\n*/\nfloat CastRayTerrain(vec3 ro,vec3 rd,float near,float far)\n{      \n    float t = near;\n\tfor( int i=0; i<256; i++ )\n\t{\n        vec3 pos = ro + t*rd;\n\t\tfloat h = pos.y - GetHeight( pos.x,pos.z ,5);\n        // @Shane:  test the absolute distance against a threshold - which, \n        // I'm guessing, allows the ray to hone in on the surface from both sides\n\t\tif( abs(h)<(0.001*t) || t>far ) break;\n\t\tt += 0.5*h;\n\t}\n\treturn t;\n}\n\n/*\n\tReturns a smooth shadow factor. We get it sampling the terrain\n\tfunction.\n*/\nfloat TerrainShadow(vec3 ro,vec3 rd,float near,float far)\n{      \n    float res = 1.0;\n    for( float t=near; t < far; )\n    {\n        vec3 pos = ro + t*rd;\n        float h = pos.y - GetHeight( pos.x,pos.z ,5);\n        if( h<0.001 )\n            return 0.0;\n        res = min( res, 8.0*h/t );\n        t += h;\n    }\n    return res;\n}\n\n/*\n\tReturns distance to the clouds, 0 if doesnt hit\n*/\nfloat CastRayClouds( vec3 ro, vec3 rd)\n{\n    const vec3 CNormal = vec3(0.0,-1.0,0.0);\n    const vec3 CPoint  = vec3(0.0,2000.0,0.0);\n    \n    float hit = 0.0;\n    float dotP = dot(rd,CNormal);\n    if(dotP == 0.0)\n    {\n        return hit;\n    }\n    \n    float distToHit = dot(CPoint - ro, CNormal) / dotP;\n    if(distToHit < 0.0)\n    {\n        return hit;\n    }\n    \n    hit = distToHit;\n    return hit;\n}\n\n/*\n\tMain shading function, renders the sky colors and\n\tthe terrain.\n*/\nvec3 Shade(vec3 ro,vec3 rd,vec3 ld)\n{\n    float far = 7000.0;\n    float near = 0.1;\n    float dist = CastRayTerrain(ro,rd,near,far);\n    \n    // Ray does not hit the terrain\n    if(dist > far)\n    {\n        vec3 sky = mix(vec3(1.0),vec3(0.5,0.65,1.0),clamp(pow(rd.y+0.1,0.7),0.0,1.0));\n        float cloudDist = CastRayClouds(ro,rd);\n        if(cloudDist > 0.0)\n        {\n            vec3 cloudPos = ro + rd * cloudDist;\n            float cloudN = 1.0 - Fbm(vec2(cloudPos.xz * 0.0004),8);\n            cloudN = pow(cloudN,0.5);\n            sky = mix(sky,vec3(1.0),cloudN);\n        }\n        return sky;\n    }\n    // Ray on terrain\n    else\n    {\n        // Point on the terrain\n        vec3 p = ro + rd * dist;\n        \n        // Normal of the point\n        vec3 n = GetNormal(p,dist);\n\n        // Texturing\n        float gn = Fbm2(vec2(p.xz*0.01),8);\n        vec3 grass = mix(vec3(0.4,0.62,0.29),vec3(0.22,0.45,0.1),gn);\n        vec3 snow = vec3(1.0);\n        vec3 cliff = vec3(0.1);\n        float gs = clamp(pow(p.y/120.0,5.0),0.0,1.0);\n        vec3 color = mix(grass,snow,vec3(gs));\n        color = mix(cliff,color,pow(n.y,0.9));\n\t\t\n        // Lightning\n        float l = max(dot(n,ld),0.0);\n        vec3 amb = color * 0.43;\n        color = (color * l);\n        \n        // Shadows\n        float shadowNear = 5.0;\n        float shadowFar = 5000.0;\n        float shadowFactor = clamp(TerrainShadow(p,ld,shadowNear,shadowFar),0.0,1.0);\n        \n       \t// Compose color\n        color = (color * shadowFactor ) + amb;\n        \n        //Fog\n        vec3 fogColor = vec3(1.0);\n        float fogMod = clamp(dist/10000.0,0.0,1.0);\n        \n        // Apply linear fog\n        return mix(color,fogColor,fogMod);\n    }\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = (fragCoord.xy / iResolution.xy) * 2.0 - 1.0;\n\t\n    // Camera\n    float camx = sin(iTime * 0.34) * 250.0;\n    float camz = iTime * 100.0;\n    float camy = GetHeight(camx,camz,5);\n    vec3 ro = vec3(camx,camy + 130.0,camz);\n    vec3 rd = GetRay(uv);\n    \n    // Sun\n    vec3 sunDir = vec3(1.0,0.3,-0.1);\n    \n\tvec3 color = Shade(ro,rd,sunDir);\n \tfragColor = vec4(color,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 17,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

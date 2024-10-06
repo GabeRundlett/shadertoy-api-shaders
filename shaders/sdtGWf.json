@@ -1,0 +1,39 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1630794536",
+            "description": "Fitting points with a plane.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "sdtGWf",
+            "likes": 7,
+            "name": "Plane Fitting",
+            "published": 3,
+            "tags": [
+                "plane",
+                "optimization",
+                "points",
+                "fitting"
+            ],
+            "usePreview": 0,
+            "username": "oneshade",
+            "viewed": 264
+        },
+        "renderpass": [
+            {
+                "code": "#define iTime (0.25 * iTime)\n\n#define PI 3.14159265359\n#define AA 2\n\n// Convenience structs\nstruct Ray {\n    vec3 pos;\n    vec3 dir;\n};\n\nstruct TraceInfo {\n    float dist;\n    vec3 pos;\n    vec3 nor;\n    int id;\n};\n\nstruct Plane {\n    vec3 pos;\n    vec3 nor;\n};\n\n#define N 10\nPlane planeFitting(in vec3[N] points) {\n    float Jxx = 0.0, Jyy = 0.0;\n    float Jxy = 0.0, Jxz = 0.0, Jyz = 0.0;\n    float Jx = 0.0, Jy = 0.0, Jz = 0.0;\n    for (int n=0; n < N; n++) {\n        vec3 p = points[n];\n        Jxx += p.x * p.x, Jyy += p.y * p.y;\n        Jxy += p.x * p.y, Jxz += p.x * p.z, Jyz += p.y * p.z;\n        Jx += p.x, Jy += p.y, Jz += p.z;\n    }\n\n    // Precomputation\n    float P = float(N);\n    float c1 = Jx * Jyy - Jy * Jxy;\n    float c2 = Jx * Jy  - P  * Jxy;\n    float c3 = Jx * Jyz - Jy * Jxz;\n    float c4 = Jx * Jxy - Jy * Jxx;\n\n    // Solve for plane coefficients: z = ax + by + c\n    float a = (c1 * (Jx * Jz - P * Jxz) - c2 * c3) / (c1 * (Jx * Jx - P * Jxx) - c2 * c4);\n    float b = (c3 - c4 * a) / c1;\n    float c = (Jxz - Jxx * a - Jxy * b) / Jx;\n\n    // Compute position and normal\n    vec3 n = vec3(a, b, -1.0);\n    float l2 = a * a + b * b + 1.0;\n    return Plane(-n * c / l2, n / sqrt(l2));\n}\n\n// Double integral of mod(floor(x) + floor(y), 2) from a to b\nfloat integrateCheckers(in vec2 a, in vec2 b) {\n    vec2 u = b - a, v = abs(mod(b, 2.0) - 1.0) - abs(mod(a, 2.0) - 1.0);\n    return 0.5 * (u.x * u.y - v.x * v.y);\n}\n\n// 2D rotation matrix\nmat2 Rotate2D(in float theta) {\n    float c = cos(theta), s = sin(theta);\n    return mat2(c, s, -s, c);\n}\n\n// Primitive intersectors\nvoid addPlane(in vec3 pos, in vec3 nor, in int id, in Ray ray, inout TraceInfo scene) {\n    float d = dot(ray.dir, nor);\n    if (d != 0.0) {\n        float t = dot(pos - ray.pos, nor) / d;\n        if (t > 0.0 && (scene.id != 0 ? t < scene.dist : true)) {\n            scene.dist = t;\n            scene.pos = ray.pos + ray.dir * t;\n            scene.nor = nor;\n            scene.id = id;\n        }\n    }\n}\n\nvoid addSphere(in vec3 pos, in float radius, in int id, in Ray ray, inout TraceInfo scene) {\n    ray.pos -= pos;\n\n    float a = dot(ray.dir, ray.dir);\n    float b = dot(ray.pos, ray.dir);\n    float c = dot(ray.pos, ray.pos) - radius * radius;\n\n    float discr = b * b - a * c;\n    if (discr > 0.0) {\n        float t = (-b - sign(c) * sqrt(discr)) / a;\n        if (t > 0.0 && (scene.id != 0 ? t < scene.dist : true)) {\n            scene.dist = t;\n            scene.pos = ray.pos + ray.dir * t;\n            scene.nor = scene.pos / radius;\n            scene.id = id;\n            scene.pos += pos;\n        }\n    }\n}\n\n// Main scene\nTraceInfo traceScene(in Ray ray) {\n    TraceInfo scene = TraceInfo(-1.0, vec3(0.0), vec3(0.0), 0);\n\n    vec3 o = vec3(sin(iTime + 1.0), cos(2.0 * iTime - 1.0), sin(iTime - 1.0));\n    vec3 d = normalize(vec3(sin(2.0 * iTime), cos(iTime), sin(iTime) * cos(3.0 * iTime)));\n\n    vec3[N] points;\n    for (float n=0.0; n < float(N); n++) {\n        float s1 = 0.2 * n, s2 = cos(n), s3 = sin(n);\n        vec3 point = 5.0 * vec3(sin(s1 * iTime) * cos(s1 * iTime), cos(s2 * iTime), sin(s3 * iTime));\n        point -= d * dot(point - o, d);\n        point += d * sin(point.x) * cos(point.y);\n        addSphere(point, 0.2, 1, ray, scene);\n        points[int(n)] = point;\n    }\n\n    Plane fitting = planeFitting(points);\n    addPlane(fitting.pos, fitting.nor, 2, ray, scene);\n\n    return scene;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 center = 0.5 * iResolution.xy;\n    vec2 mouse = ivec2(iMouse.xy) == ivec2(0) ? vec2(0.0) : (iMouse.xy - center) / iResolution.y * PI;\n    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\n\n    // Mouse rotation\n    mat2 yaw = Rotate2D(-mouse.x);\n    mat2 pitch = Rotate2D(-mouse.y);\n\n    // Take multiple subsamples for antialiasing\n    float aaStep = 1.0 / float(AA);\n    for (float xOffs=0.0; xOffs < 1.0; xOffs += aaStep) {\n        for (float yOffs=0.0; yOffs < 1.0; yOffs += aaStep) {\n            vec2 uv = (fragCoord + vec2(xOffs, yOffs) - center) / iResolution.y;\n            vec3 color;\n\n            Ray camRay = Ray(vec3(0.0, 0.0, 8.0), normalize(vec3(uv, -1.0)));\n\n            // Rotate with mouse\n            camRay.pos.yz *= pitch;\n            camRay.pos.xz *= yaw;\n            camRay.dir.yz *= pitch;\n            camRay.dir.xz *= yaw;\n\n            // Render\n            TraceInfo scene = traceScene(camRay);\n            if (scene.id != 0) {\n                vec3 mat = vec3(1.0, 0.0, 0.0);\n                if (scene.id == 2) {\n                    vec3 u = normalize(vec3(-scene.nor.z, 0.0, scene.nor.x));\n                    vec3 v = cross(u, scene.nor);\n                    vec2 texCoords = scene.pos * mat2x3(u, v);\n                    float filt = scene.dist * scene.dist / 2500.0; // Hack filter\n                    mat = vec3(integrateCheckers(texCoords - filt, texCoords + filt) / (4.0 * filt * filt));\n                }\n\n                float shade = max(0.1, dot(scene.nor, -camRay.dir));\n                if (scene.id == 2) shade = 1.0;\n                color = mat * shade;\n            }\n\n            else color = mix(vec3(0.25, 0.25, 1.0), vec3(1.0), 0.5 + 0.5 * camRay.dir.y);\n            fragColor.rgb += pow(color, vec3(0.75));\n        }\n    }\n\n    // Average\n    fragColor.rgb /= float(AA * AA);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

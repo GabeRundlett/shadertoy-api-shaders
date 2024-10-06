@@ -1,0 +1,129 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1612235402",
+            "description": "Trying to cram as much useful data into a buffer as possible.\nUniform quantization, Log quantization(emulates floats) and Fibonacci vector quantization. \nP.S. 8 bit log numbers are... uhh at best",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "tt3BRH",
+            "likes": 12,
+            "name": "Advanced data packing",
+            "published": 3,
+            "tags": [
+                "datapacking"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 580
+        },
+        "renderpass": [
+            {
+                "code": "//MIT License\n//Copyright 2020 Mykhailo Moroz\n\n//Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n//The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n//THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n//PACKING FUNCTIONS ARE IN COMMON\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n\n    vec4 tp  = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    \n    //log2 range\n    vec2 r = vec2(-5.0, 5.0); //from 2^-5 to 2^5\n    vec3 t0 = UNPACK4LOG(tp.x, r).xyz; //4 8 bit unsigned logarithmic numbers in 1 float32\n    vec3 t1 = UNPACKVEC3(tp.y, r); //fibonacci encoded direction + log length in 1 float32\n    vec3 t2 = vec3(UNPACK2SLOG(tp.z, r).xy, .0); //signed log numbers\n    vec3 t3 = UNPACK4LOG(tp.w, r).xyz;\n    \n    vec2 c = 0.5 + 0.25 * vec2(cos(iTime), sin(iTime));\n    \n    vec3 tx = t1;\n    vec3 ty = mix(t2, t3, bvec3(uv.x > c.x));\n    // Output to screen\n    fragColor.xyz = mix(tx, ty, bvec3(uv.y > c.y));;\n    fragColor.w = 1.0;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//from https://www.shadertoy.com/view/wtKyR1\n\nvec4 b127_ieee754_encode (uvec4 v) {\n  v.w&=0x7FFFFFFFu;\n  uvec4 l = uvec4( v.xyz&0xFFFFFFu , v.x>>24 | v.y>>24<<8 | v.z>>24<<16 );\n  return uintBitsToFloat( (l&0x800000u)<<8 | l&0x7FFFFFu\n   | 1u+uvec4(v.w/uvec4(1,254,254*254,254*254*254))%254u <<23 );\n}\n\nuvec4 b127_ieee754_decode (vec4 f) {\n  uvec4 e = floatBitsToUint(f);\n  uvec4 l = (e&0x80000000u)>>8 | e&0x7FFFFFu;\n  uvec4 h = (e>>23&0xFFu)-1u;\n  return uvec4(\n    l.xyz | uvec3(l.w)>>uvec3(0,8,16)<<24,\n    h.x+254u*h.y+(254u*254u)*h.z+(254u*254u*254u)*h.w );\n}\n\n\n// UINT PACKING \n//8bit number packing \nuint encode4to1(uvec4 x)\n{\n    x = min(x, uvec4(1<<8) - 1u);\n    return x.w << 24 | x.z << 16 | x.y << 8 | x.x;\n}\n\nuvec4 decode1to4(uint x)\n{\n    return (uvec4(x) >> uvec4(0, 8, 16, 24)) & (uvec4(1<<8) - 1u);\n}\n\n//11 11 10 bit number packing\nuint encode3to1(uvec3 x)\n{\n    x = min(x, uvec3(1)<<uvec3(11,11,10) - 1u);\n    return x.z << 22 | x.y << 11 | x.x;\n}\n\nuvec3 decode1to3(uint x)\n{\n    return (uvec3(x) >> uvec3(0, 11, 22)) & ((uvec3(1) << uvec3(11,11,10)) - 1u);\n}\n\n//16bit number packing \nuint encode2to1(uvec2 x)\n{\n    x = min(x, uvec2(1<<16) - 1u);\n    return x.y << 16 | x.x;\n}\n\nuvec2 decode1to2(uint x)\n{\n    return (uvec2(x) >> uvec2(0, 16)) & (uvec2(1<<16) - 1u);\n}\n\n\n//UINT TO FLOAT CONVERSION \n\n//uniform quantization\nuint uquant(float x, vec2 range, int bits) \n{\n    return uint( exp2(float(bits)) *((x) - range.x)/(range.y - range.x) );\n}\n\n//decode\nfloat ufloat(uint x, vec2 range, int bits) \n{\n    return float(x)*(range.y - range.x)/exp2(float(bits)) + range.x;\n}\n\n\n//signed logarithmic quantization\n//to emulate floating point numbers\nuint slogquant(float x, vec2 range, int bits) \n{\n    uint value = uint(exp2(float(bits - 1)) *(log2(abs(x)) - range.x)/(range.y - range.x));\n    uint sig = uint(exp2(float(bits - 1))*sign(x));  \n    return value + sig;\n}\n\n//decode\nfloat slogfloat(uint x, vec2 range, int bits) \n{\n    uint value = x&((1u<<(bits - 1)) - 1u);\n    uint sig = x>>(bits - 1);\n    return (float(sig)*2.0 - 1.0)*exp2(float(value)*(range.y - range.x)/exp2(float(bits - 1)) + range.x);\n}\n\n//unsigned logarithmic quantization\nuint logquant(float x, vec2 range, int bits) \n{\n    return uint( exp2(float(bits)) *(log2(abs(x)) - range.x)/(range.y - range.x) );\n}\n\n//decode\nfloat logfloat(uint x, vec2 range, int bits) \n{\n    return exp2(float(x)*(range.y - range.x)/exp2(float(bits)) + range.x);\n}\n\n//fibonacci uniform sphere quantization\n//to store normals and other vector stuff  \n\n\n//from https://www.shadertoy.com/view/lllXz4\nconst float PI  = 3.14159265359;\nconst float PHI = 1.61803398875;\n\n#define M_PI 3.141592653\n\nvec2 fibonacci_lattice(int i, float N)\n{\n    return vec2((float(i)+0.5)/N, mod(float(i)/PHI, 1.)); \n}\n\nvec3 fibonacciDecode(int i, float N)\n{\n    vec2 xy = fibonacci_lattice(i, N);\n    vec2 pt = vec2(2.*M_PI*xy.y, acos(2.*xy.x - 1.) - M_PI*0.5);\n    return vec3(cos(pt.x)*cos(pt.y), sin(pt.x)*cos(pt.y), sin(pt.y)); \n}\n\nvec2 fibonacciEncode( vec3 p, float n) \n{\n    float m = 1.0 - 1.0/n;\n    \n    float phi = min(atan(p.y, p.x), PI), cosTheta = p.z;\n    \n    float k  = max(2.0, floor( log(n * PI * sqrt(5.0) * (1.0 - cosTheta*cosTheta))/ log(PHI+1.0)));\n    float Fk = pow(PHI, k)/sqrt(5.0);\n    vec2  F  = vec2( round(Fk), round(Fk * PHI) ); // k, k+1\n\n    vec2 ka = 2.0*F/n;\n    vec2 kb = 2.0*PI*( fract((F+1.0)*PHI) - (PHI-1.0) );    \n    \n    mat2 iB = mat2( ka.y, -ka.x, \n                    kb.y, -kb.x ) / (ka.y*kb.x - ka.x*kb.y);\n    \n    vec2 c = floor( iB * vec2(phi, cosTheta - m));\n    float d = 8.0;\n    float j = 0.0;\n    for( int s=0; s<4; s++ ) \n    {\n        vec2 uv = vec2( float(s-2*(s/2)), float(s/2) );\n        \n        float i = dot(F, uv + c); // all quantities are ingeters (can take a round() for extra safety)\n        \n        float phi = 2.0*PI*fract(i*PHI);\n        float cosTheta = m - 2.0*i/n;\n        float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n        \n        vec3 q = vec3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta );\n        float squaredDistance = dot(q-p, q-p);\n        if (squaredDistance < d) \n        {\n            d = squaredDistance;\n            j = i;\n        }\n    }\n    return vec2( j, sqrt(d) );\n}\n\n\n//final packing functions\n\nfloat PACK4U(vec4 x, vec2 range)\n{\n    //quantize\n    uvec4 quant = uvec4(uquant(x.x, range, 8),\n                        uquant(x.y, range, 8),\n                        uquant(x.z, range, 8),\n                        uquant(x.w, range, 8));\n    //pack\n    return uintBitsToFloat(encode4to1(quant));\n}\n\nvec4 UNPACK4U(float x, vec2 range)\n{\n    uvec4 unpack = decode1to4(floatBitsToUint(x));\n\n    //unquantize\n    return vec4(ufloat(unpack.x, range, 8),\n                ufloat(unpack.y, range, 8),\n                ufloat(unpack.z, range, 8),\n                ufloat(unpack.w, range, 8));\n}\n\nfloat PACK3U(vec3 x, vec2 range)\n{\n    //quantize\n    uvec3 quant = uvec3(uquant(x.x, range, 11),\n                        uquant(x.y, range, 11),\n                        uquant(x.z, range, 10));\n    //pack\n    return uintBitsToFloat(encode3to1(quant));\n}\n\nvec3 UNPACK3U(float x, vec2 range)\n{\n    uvec3 unpack = decode1to3(floatBitsToUint(x));\n\n    //unquantize\n    return vec3(ufloat(unpack.x, range, 11),\n                ufloat(unpack.y, range, 11),\n                ufloat(unpack.z, range, 10));\n}\n\nfloat PACK2U(vec2 x, vec2 range)\n{\n    //quantize\n    uvec2 quant = uvec2(uquant(x.x, range, 16),\n                        uquant(x.y, range, 16));\n    //pack\n    return uintBitsToFloat(encode2to1(quant));\n}\n\nvec2 UNPACK2U(float x, vec2 range)\n{\n    uvec2 unpack = decode1to2(floatBitsToUint(x));\n\n    //unquantize\n    return vec2(ufloat(unpack.x, range, 16),\n                ufloat(unpack.y, range, 16));\n}\n\n\nfloat PACK4LOG(vec4 x, vec2 range)\n{\n    //quantize\n    uvec4 quant = uvec4(logquant(x.x, range, 8),\n                        logquant(x.y, range, 8),\n                        logquant(x.z, range, 8),\n                        logquant(x.w, range, 8));\n    //pack\n    return uintBitsToFloat(encode4to1(quant));\n}\n\nvec4 UNPACK4LOG(float x, vec2 range)\n{\n    uvec4 unpack = decode1to4(floatBitsToUint(x));\n\n    //unquantize\n    return vec4(logfloat(unpack.x, range, 8),\n                logfloat(unpack.y, range, 8),\n                logfloat(unpack.z, range, 8),\n                logfloat(unpack.w, range, 8));\n}\n\nfloat PACK2LOG(vec2 x, vec2 range)\n{\n    //quantize\n    uvec2 quant = uvec2(logquant(x.x, range, 16),\n                        logquant(x.y, range, 16));\n    //pack\n    return uintBitsToFloat(encode2to1(quant));\n}\n\nvec2 UNPACK2LOG(float x, vec2 range)\n{\n    uvec2 unpack = decode1to2(floatBitsToUint(x));\n\n    //unquantize\n    return vec2(logfloat(unpack.x, range, 16),\n                logfloat(unpack.y, range, 16));\n}\n\n//signed log packing\nfloat PACK2SLOG(vec2 x, vec2 range)\n{\n    //quantize\n    uvec2 quant = uvec2(slogquant(x.x, range, 16),\n                        slogquant(x.y, range, 16));\n    //pack\n    return uintBitsToFloat(encode2to1(quant));\n}\n\nvec2 UNPACK2SLOG(float x, vec2 range)\n{\n    uvec2 unpack = decode1to2(floatBitsToUint(x));\n\n    //unquantize\n    return vec2(slogfloat(unpack.x, range, 16),\n                slogfloat(unpack.y, range, 16));\n}\n\n\n//FIBONACCI VECTOR PACKING \n//range here is length range\nfloat PACKVEC3(vec3 x, vec2 range)\n{\n    float L = length(x);\n    vec3 N = normalize(x);\n    \n    vec2 fe = fibonacciEncode(N, exp2(16.0));\n    //quantize\n    uvec2 quant = uvec2(fe.x, logquant(L, range, 16));\n    //pack\n    return uintBitsToFloat(encode2to1(quant));\n}\n\nvec3 UNPACKVEC3(float x, vec2 range)\n{\n    uvec2 unpack = decode1to2(floatBitsToUint(x));\n\n    //unquantize\n    vec3 N = fibonacciDecode(int(unpack.x), exp2(16.0));\n   \n    return N*logfloat(unpack.y, range, 16);\n}\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    vec4 d0 = texture(iChannel0, uv);\n    vec3 d1 = texture(iChannel1, uv).xyz;\n    vec2 d2 = texture(iChannel2, uv).xy;\n    vec4 d3 = texture(iChannel3, uv);\n    \n    vec4 tp = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec2 r = vec2(-5.0, 5.0);//from 2^-5 to 2^5\n    \n    if(iFrame%200> 10) //test reencoding stability\n    {\n        d0 = UNPACK4LOG(tp.x, r);\n        d1 = UNPACKVEC3(tp.y, r);\n        d2 = UNPACK2SLOG(tp.z, r);\n        d3 = UNPACK4LOG(tp.w, r);\n        d1 += 0.01; //test change\n    }\n   \n    fragColor = vec4(PACK4LOG(d0,r),PACKVEC3(d1,r),PACK2SLOG(d2,r),PACK4LOG(d3,r));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 7,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 48,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8979352a182bde7c3c651ba2b2f4e0615de819585cc37b7175bcefbca15a6683.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

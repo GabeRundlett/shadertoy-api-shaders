@@ -1,0 +1,63 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1644387552",
+            "description": "A simple model of a modern glass table. This was mostly an attempt to correctly shade realtime glass without resorting to pathtracing or using lots of samples. Instead it uses two passes (refraction and reflection) and a trick for transparent shadows.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "fsXBzr",
+            "likes": 6,
+            "name": "Glass Table",
+            "published": 3,
+            "tags": [
+                "shadow",
+                "glass",
+                "table",
+                "reflect",
+                "refract"
+            ],
+            "usePreview": 0,
+            "username": "jackdavenport",
+            "viewed": 312
+        },
+        "renderpass": [
+            {
+                "code": "precision highp float;\n\n#define MAX_ITER 80\n#define MAX_DIST 15.\n#define MIN_DIST .001\n\n#define SAMPLES 2\n#define BOUNCES 3\n\nconst vec3 SUN_DIR = normalize(vec3(45.,30.,-45.));\nconst vec3 SUN_AMB = vec3(.15);\n\nvec2 dstMin(vec2 a, float bt, float bm) {\n    return a.x < bt ? a : vec2(bt,bm);\n}\n\nvec2 dstScene(vec3 p, bool noGlass) {\n    vec2 d = vec2(p.y,0.);\n    \n    d = dstMin(d, sdBoxFrame(p-vec3(0.,.4,0.), vec3(1.,.4,.8), .05), 1.);\n    d = dstMin(d, length(p-vec3(.4,1.06,0.))-.2, 3.);\n    \n    if(!noGlass) {\n        d = dstMin(d, sdCappedCylinder(p-vec3(0.,.85,0.), 1.3, .02), 2.);\n    }\n    return d;\n}\n\nvec2 raymarch(vec3 ro, vec3 rd, float mint, bool noGlass) {\n    float t = mint;\n    float m = -1.;\n    for(int i = 0; i < MAX_ITER; i++) {\n        vec2 d = dstScene(ro+rd*t, noGlass);\n        if(abs(d.x) < MIN_DIST || t > MAX_DIST) break;\n        t += d.x;\n        m  = d.y;\n    }\n    return vec2(t,m);\n}\n\nvec3 normal(vec3 p, float t) {\n    vec2 e = vec2(.001*t,0.);\n    vec3 n = vec3(\n        dstScene(p+e.xyy,false).x-dstScene(p-e.xyy,false).x,\n        dstScene(p+e.yxy,false).x-dstScene(p-e.yxy,false).x,\n        dstScene(p+e.yyx,false).x-dstScene(p-e.yyx,false).x\n    );\n    return normalize(n);\n}\n\nvoid material(inout Material mat, in float id, in vec3 p) {\n    if(id == 0.) { // ground\n        mat.diffuse  = texture(iChannel0, p.xz / 2.).rgb;\n        mat.specular = vec3(.1);\n        mat.shine    = 4.;\n        mat.reflective = 0.;\n    } else if(id == 1.) { // metal frame\n        mat.diffuse  = vec3(.5);\n        mat.specular = vec3(1.);\n        mat.shine    = 50.;\n        mat.reflective = .9;\n    } else if(id == 2.) { // glass top\n        mat.diffuse  = vec3(.4,.4,.6);\n        mat.specular = vec3(1.);\n        mat.shine    = 80.;\n        mat.reflective = 1.;\n    } else if(id == 3.) { // ball\n        mat.diffuse  = vec3(1., .2, .2);\n        mat.specular = vec3(.4);\n        mat.shine    = 30.;\n        mat.reflective = .1;\n    }\n}\n\n// source: https://iquilezles.org/articles/rmshadows\nfloat softshadow( in vec3 ro, in vec3 rd, float mint, float maxt, float k, bool noGlass )\n{\n    float res = 1.0;\n    float ph = 1e20;\n    for( float t=mint; t<maxt; )\n    {\n        float h = dstScene(ro + rd*t, noGlass).x;\n        if( h<0.001 )\n            return 0.0;\n        float y = h*h/(2.0*ph);\n        float d = sqrt(h*h-y*y);\n        res = min( res, k*d/max(0.0,t-y) );\n        ph = h;\n        t += h;\n    }\n    return res;\n}\n\nvec3 lighting(vec3 p, vec3 n, vec3 r, Material mat, bool noGlass) {\n    float ndotl = max(dot(n,SUN_DIR),0.);\n    float rdotl = max(dot(r,SUN_DIR),0.);\n    float shd   = softshadow(p, SUN_DIR, .01, MAX_DIST, 40., noGlass);\n    return mat.diffuse * (ndotl * shd + SUN_AMB) + mat.specular * pow(rdotl,mat.shine) * shd;\n}\n\nvec3 shade(vec3 oro, vec3 ord) {\n    vec3 fin = vec3(0.);\n    \n    for(int s = 0; s < SAMPLES; s++) {\n        vec3 col   = vec3(0.);\n        vec3 mask  = vec3(1.);\n        float mint = 0.;\n        float last = -1.;\n        float dist = 0.;\n        \n        vec3 ro = oro;\n        vec3 rd = ord;\n        \n        for(int b = 0; b < BOUNCES; b++) {\n            vec2 hit = raymarch(ro, rd, mint, last == 2.);\n            if(hit.x > 0. && hit.x < MAX_DIST) {\n                vec3 p = ro + rd * hit.x;\n                vec3 n = normal(p, hit.x);\n                vec3 r = normalize(reflect(rd, n));\n\n                Material mat;\n                material(mat, hit.y, p);\n                \n                col += mask * lighting(p, n, r, mat, s > 0);\n                \n                float fres = pow(max(-dot(rd,n),0.),.4);\n                \n                // on first pass, glass uses refraction instead\n                if(hit.y == 2. && s == 0) {\n                    r = normalize(refract(rd, n, 1./1.52));\n                    mask *= fres;\n                } else {\n                    mask *= mat.diffuse * mat.reflective * (1.-fres);\n                }\n                 \n                ro = p;\n                rd = r;\n                mint = .1;\n                last = hit.y;                   // set last material id\n                \n                if(b == 0) dist = hit.x;        // set distance for fog\n                if(mat.reflective < .01) break; // if material isn't reflective, dont bounce\n            } else {\n                col += mask * vec3(.8);\n                break;\n            }\n        }\n        \n        float fog = min(exp(dist-MAX_DIST),1.);\n        col = mix(col, vec3(.8), fog);\n        \n        fin += col / float(SAMPLES);\n    }\n    \n    return fin;\n}\n\nvec3 cameraPath() {\n    float a = iTime * .5;\n    float d = 3.;\n    return vec3(cos(a),1.5/d,sin(a))*d+vec3(0.,.4,0.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5) / iResolution.y;\n    vec3 ro = cameraPath();\n    vec3 rd = vec3(uv, 1.);\n    \n    vec3  f = normalize(-ro);\n    vec3  u = normalize(cross(f, vec3(0.,1.,0.)));\n    vec3  v = normalize(cross(u,f));\n    \n    rd = mat3(u,v,f) * rd;\n    fragColor.rgb = shade(ro, normalize(rd));\n    fragColor.a = 1.;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 1,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/10eb4fe0ac8a7dc348a2cc282ca5df1759ab8bf680117e4047728100969e7b43.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "struct Material {\n    vec3 diffuse;\n    vec3 specular;\n    float shine;\n    float reflective;\n};\n\n// distance functions\n// source: https://iquilezles.org/articles/distfunctions\nfloat sdBoxFrame( vec3 p, vec3 b, float e )\n{\n       p = abs(p  )-b;\n  vec3 q = abs(p+e)-e;\n  return min(min(\n      length(max(vec3(p.x,q.y,q.z),0.0))+min(max(p.x,max(q.y,q.z)),0.0),\n      length(max(vec3(q.x,p.y,q.z),0.0))+min(max(q.x,max(p.y,q.z)),0.0)),\n      length(max(vec3(q.x,q.y,p.z),0.0))+min(max(q.x,max(q.y,p.z)),0.0));\n}\nfloat sdCappedCylinder( vec3 p, float h, float r )\n{\n  vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(h,r);\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,320 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1669622570",
+            "description": "Beneath a soft blanket of mist, by the light a full moon, arctic fireflies make highways of the valleys between the glaciers.\nTerrain: jarble's Glacial Valleys: https://www.shadertoy.com/view/NscGWl\n\n*mouse: cam\n*shift: no MSAA\n*ctrl: no FXAA\n*alt: no fog",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "cssSRs",
+            "likes": 41,
+            "name": "Arctic Fireflies",
+            "published": 3,
+            "tags": [
+                "3d",
+                "collision",
+                "simulation",
+                "fbm",
+                "particles",
+                "volumetric",
+                "lights",
+                "fxaa",
+                "physics",
+                "deferred"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 595
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  Beneath a soft blanket of mist, arctic fireflies make highways of the valleys\n//  between the glaciers.\n//\n//  The techniques here are an evolution of those in Spark on Swiss Cheese Mountain:\n//\n//      https://www.shadertoy.com/view/7tyyW1\n//\n//  Although the terrain FBM is now based on jarble's Glacial valleys:\n//\n//      https://www.shadertoy.com/view/NscGWl\n//\n//  The main idea is to use deferred rendering to allow each particle to be a local\n//  light source. Potentially thousands of light sources are possible, but only four\n//  can affect each pixel so they need to be spaced out to avoid artifacts.\n//\n//  I also attempted to create a volumetric fog near the ground, which I think mostly\n//  worked as intended. The effect is a combination of gaussian blur and height-based\n//  lightening. It does obscure the light effect somewhat, though, so to see the\n//  particles and lighting more clearly, hold down the ALT key. It also hides some\n//  artifacts so it seemed like a net win for the shader.\n//\n//  I struggled with anti-aliasing as usual, but I eliminated a lot of the artifacts\n//  while keeping most of the speed, so I'm mostly happy with the result. You can disable\n//  MSAA with SHIFT and FXAA with CTRL. There are a few ideas that might be interesting:\n//\n//  * When doing multisample raymarches, don't start from the camera position for each\n//    sample. The t value of the first sample provides a good starting place for the\n//    other samples.\n//\n//  * Multisampling is done during the G buffer pass, so per-sample calculations are\n//    the absolute minimum. Combined with the warm start march, I was able to leave MSAA\n//    set to 9x. 16x, 25x are probably worth trying with a faster GPU.\n//\n//  * FXAA is applied during the final render to areas not being blurred. It's not\n//    as significant a difference as the MSAA but it does help with some high frequency\n//    shadow areas.\n//\n//  * A slight temporal blur is applied at low resolutions only, beacuse at low frame\n//    rates it looks bad. I tuned this based on my graphics card, so fingers crossed\n//    the settings work well enough for everyone. I tried basing it on iFrameRate and\n//    iTimeDelta but having it switch back and forth looks terrible. I don't like it\n//    but it is the only way I could find to tame some aliasing vibrations along\n//    thin shadow boundaries.\n//\n//  This is my first attempt at stars or a moon, so I have no idea if there are better\n//  ways. Of course I am happy to discuss ideas about any part of this (or any other)\n//  shader!\n//\n//  Buffer A computes the particle positions\n//  Buffer B computes nearest particles to each screen pixel\n//  Buffer C renders the background with depth in the w component\n//  Buffer D combines scene\n//  Image applies fog and distance blur (and re-renders for adaptive AA)\n//\n// ---------------------------------------------------------------------------------------\n\n#if FXAA\n// From reinder's  Post process - FXAA\n//    https://www.shadertoy.com/view/ls3GWS\n// he got it from:\n//    http://www.geeks3d.com/20110405/fxaa-fast-approximate-anti-aliasing-demo-glsl-opengl-test-radeon-geforce/3/\n#define FXAA_SPAN_MAX 8.0\n#define FXAA_REDUCE_MUL   (1.0/FXAA_SPAN_MAX)\n#define FXAA_REDUCE_MIN   (1.0/128.0)\n#define FXAA_SUBPIX_SHIFT (1.0/4.0)\n\nvec3 AArender( vec2 uv2 )\n{    \n    uv2 /= iResolution.xy;\n    vec2 rcpFrame = 1. / iResolution.xy;\n    vec4 uv = vec4( uv2, uv2 - (rcpFrame * (0.5 + FXAA_SUBPIX_SHIFT)));\n\n    vec3 rgbNW = textureLod(iChannel2, uv.zw, 0.0).xyz;\n    vec3 rgbNE = textureLod(iChannel2, uv.zw + vec2(1,0)*rcpFrame.xy, 0.0).xyz;\n    vec3 rgbSW = textureLod(iChannel2, uv.zw + vec2(0,1)*rcpFrame.xy, 0.0).xyz;\n    vec3 rgbSE = textureLod(iChannel2, uv.zw + vec2(1,1)*rcpFrame.xy, 0.0).xyz;\n    vec3 rgbM  = textureLod(iChannel2, uv.xy, 0.0).xyz;\n\n    vec3 luma = vec3(0.299, 0.587, 0.114);\n    float lumaNW = dot(rgbNW, luma);\n    float lumaNE = dot(rgbNE, luma);\n    float lumaSW = dot(rgbSW, luma);\n    float lumaSE = dot(rgbSE, luma);\n    float lumaM  = dot(rgbM,  luma);\n\n    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));\n    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));\n\n    vec2 dir;\n    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));\n    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));\n\n    float dirReduce = max(\n        (lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL),\n        FXAA_REDUCE_MIN);\n    float rcpDirMin = 1.0/(min(abs(dir.x), abs(dir.y)) + dirReduce);\n    \n    dir = min(vec2( FXAA_SPAN_MAX,  FXAA_SPAN_MAX),\n          max(vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),\n          dir * rcpDirMin)) * rcpFrame.xy;\n\n    vec3 rgbA = (1.0/2.0) * (\n        textureLod(iChannel2, uv.xy + dir * (1.0/3.0 - 0.5), 0.0).xyz +\n        textureLod(iChannel2, uv.xy + dir * (2.0/3.0 - 0.5), 0.0).xyz);\n    vec3 rgbB = rgbA * (1.0/2.0) + (1.0/4.0) * (\n        textureLod(iChannel2, uv.xy + dir * (0.0/3.0 - 0.5), 0.0).xyz +\n        textureLod(iChannel2, uv.xy + dir * (3.0/3.0 - 0.5), 0.0).xyz);\n    \n    float lumaB = dot(rgbB, luma);\n\n    if((lumaB < lumaMin) || (lumaB > lumaMax)) return rgbA;\n    \n    return rgbB; \n}\n#endif // FXAA\n\n// based on gaussian blur from FabriceNeyret2's smart gaussian blur: https://www.shadertoy.com/view/WtKfD3\n// this is used for fog and distance blurring\n\nint           N =  11;                              // target sampling rate\nfloat         w,                                   // filter width\n              z;                                        // LOD MIPmap level to use for integration \n#define init  z = ceil(max(0.,log2(w*iResolution.y/float(N))));   // N/w = res/2^z\n\nvec4 convol2D(vec2 U) {                                                     \n    vec4  O = vec4(0.0);  \n    float r = float(N-1)/2., g, t=0.;                                       \n    for( int k=0; k<N*N; k++ ) {                                            \n        vec2 P = vec2(k%N,k/N) / r - 1.;                                    \n        t += g = exp(-2.*dot(P,P) );                                        \n        O += g * textureLod(iChannel2, (U+w*P) *iResolution.y/iResolution.xy, z );  \n    }                                                                       \n    return O/t;                                                             \n}      \n\nvoid mainImage( out vec4 O, vec2 u )\n{\n    float depth = texelFetch(iChannel2, ivec2(u), 0).w;\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    g_GroundFog = state.z == 0.;\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(state, iTime, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n      \n\tvec3 rayDir = fxCalcRay(u, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    vec3 groundPos = cameraPos + rayDir * depth;\n\n    // Blur based on depth and height from ground\n    w = max(0., max((depth-15.)*.0, g_GroundFog ? .5-groundPos.y : 0.)) * 0.03;\n    if (depth > FAR_CLIP) w = 0.; // except don't blur sky\n    \n    if (w > 0.002)\n    {\n        init\n        vec2 p = (u - iResolution.xy * 0.5) / iResolution.y;\n        {\n            vec2 U = u / iResolution.y;  \n            O = convol2D(U);\n        }\n    }\n    else\n    {\n#if FXAA\n        if (!keyDown(KEY_CTRL) && depth < FAR_CLIP)\n        {\n            O.xyz = AArender(u);\n        }\n        else\n#endif\n        O = texture(iChannel2, u/iResolution.xy);\n    }\n    \n    O.xyz = ACESFilm(sqrt(O.xyz));\n\n    O.w = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float MAX_AGE = 30.0;\nconst int MAX_PARTICLES = 10000;\nconst float PARTICLE_SPEED = 0.01;\n#define PER_PARTICLE_LIGHTING 1\n#define SHADOWS 1 // Disable for faster speed\n#define FXAA 1\n#define TEMPORAL_BLUR 1\n#define FOG_BLUR 1\nconst vec3 GROUND_FOG_COLOR = vec3(.03, .03, .05);\nconst int TERRAIN_ITERS = 7;\nconst int SHADOW_ITERS = 5;\nconst float FAR_CLIP = 20.;\nconst vec3 MOON_DIR = normalize(vec3(0, .2, 1));\nconst vec3 MOON_COLOR = vec3(.1, .15, .3);\n\nbool g_GroundFog = true;\n\nuvec4 hash(uvec4 x){\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nuvec4 hash(uvec3 x0){\n    uvec4 x = x0.xyzz;\n    x = ((x >> 16u) ^ x.yzxy) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxz) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nvec4 noise(ivec4 p){\n    const float scale = pow(2., -32.);\n    uvec4 h = hash(uvec4(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec3 p){\n    const float scale = 1.0/float(0xffffffffU);\n    uvec4 h = hash(uvec3(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec2 p){\n    return noise(ivec3(p, 0));\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\n// From jarble's Glacial valleys: https://www.shadertoy.com/view/NscGWl\nfloat fbm(in vec2 uv,int octaves)\n{\n    //this function generates the terrain height\n    uv *= 1.25;\n    float value = 0.;\n    float amplitude = 1.2;\n    float freq = 0.5,n2=0.;\n    vec2 n1 = vec2(0.);\n    for (int i = 0; i < octaves; i++)\n    {\n        n2 = sin(uv.x*freq)+cos(uv.y*freq);\n\n        // From Dave_Hoskins https://www.shadertoy.com/user/Dave_Hoskins\n        value = abs(value-abs(n2-value) * amplitude);\n        amplitude *= .37;\n        freq *= 2.05;\n        uv = vec2(uv.y,uv.x+n2/(freq));\n    }\n    \n    return value;\n}\n\nfloat f(in vec3 p,int iters)\n{   \n    float h = fbm(p.xz,iters);\n    return h;\n}\n\nvec3 getNormal(vec3 p, float t, int iters)\n{\n    vec3 eps=vec3(.001 * t, .0, .0);\n    vec3 n=vec3(f(p - eps.xyy, iters) - f(p + eps.xyy, iters),\n                1. * eps.x,\n                f(p - eps.yyx, iters) - f(p + eps.yyx, iters));\n  \n    return normalize(n);\n}\n\nfloat rayMarching(in vec3 ro, in vec3 rd, float tMin, float tMax, int octaves)\n{\n    float t = tMin;\n\tfor( int i = 0; i < 200; i++ )\n\t{\n        vec3 pos = ro + t * rd;\n\t\tfloat h = pos.y - f(pos,octaves);\n\t\tif( abs(h) < (0.001 * t) || t > tMax)\n            break;\n\t\tt += 0.5 * h;\n\t}\n\n\treturn t;\n}\n\nvec3 camPath(float time)\n{\n    vec3 camPos = vec3(cos(time*.2)*.4 + time*.2, cos(time*.2)*.5 + 1.5, 2.0 + (time*.2));\n    camPos.y = max(camPos.y, f(camPos, 3) + .1);\n    return camPos;\n}\n\nfloat cross2(vec2 a, vec2 b)\n{\n    return a.x * b.y - a.y * b.x;\n}\n\nmat2 rotMat(float a)\n{\n    vec2 sc = vec2(cos(a), sin(a));\n    return mat2(sc.x, sc.y, -sc.y, sc.x);\n}\n\nvoid fxCalcCamera(in vec4 state, in float iTime, out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraLookAt = camPath(iTime);\n    cameraPos\t= camPath(iTime - 2.);\n    cameraLookAt.y = max(cameraLookAt.y, cameraPos.y - .1 - state.y);\n    cameraPos.y = cameraLookAt.y + .1 + state.y;\n    vec3 cameraNextPos\t= camPath(iTime + 2.);\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraFwd.xz *= rotMat(state.x*4.);\n    float tilt = -.5 * cross2(cameraNextPos.xz - cameraPos.xz, cameraPos.xz - cameraLookAt.xz);\n    cameraLeft = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)) + vec3(0, tilt, 0));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return mat4(vec4(-0.5 * cameraLeft, 0.0),\n        vec4(-0.5*cameraUp, 0.0),\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nfloat length2(vec2 v)\n{\n    return dot(v, v);\n}\n\nfloat fxLinePointDist2(vec2 a, vec2 b, vec2 p, float ar)\n{\n    p -= a, b -= a;\n    float h = clamp(dot(p, b) / dot(b, b), 0., 1.);// proj coord on line\n    return length2((p - b * h) * vec2(ar, 1)); // squared dist to segment\n}\n\nconst float PI = 3.141592653589793;\n\n//returns the ids of the four closest particles from the input\nivec4 fxGetClosestInternal(sampler2D sampler, ivec2 xy)\n{\n    return ivec4(texelFetch(sampler, xy, 0));\n}\n\n#define fxGetClosest(X) fxGetClosestInternal(iChannel1, X)\n\n#define POS 0\n#define VEL 1\n#define NUM_PARTICLE_DATA_TYPES 2\n\n//returns the location of the particle within the particle buffer corresponding with the input id \nivec2 fxLocFromIDInternal(int width, int id, int dataType)\n{\n    int index = id * NUM_PARTICLE_DATA_TYPES + dataType;\n    return ivec2( index % width, index / width);\n}\n\n#define fxLocFromID(X, Y) fxLocFromIDInternal(int(iResolution.x), X, Y)\n\nstruct fxParticle\n{\n    vec3 pos;\n    vec3 vel;\n    float age;\n};\n\n//get the particle corresponding to the input id\nfxParticle fxGetParticleInternal(sampler2D sampler, int resolutionWidth, int id)\n{\n    vec4 particleData0 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, POS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, VEL), 0);\n\n    fxParticle particle;\n    particle.pos = particleData0.xyz;\n    particle.vel = particleData1.xyz;\n    particle.age = particleData0.w;\n    \n    return particle;\n}\n\nvec4 fxSaveParticle(fxParticle p, int dataType)\n{    \n    switch(dataType)\n    {\n    case POS:  \n        return vec4(p.pos, p.age);\n    case VEL:  \n        return vec4(p.vel, 0);\n    }\n}\n\n#define fxGetParticle(X) fxGetParticleInternal(iChannel0, int(iResolution.x), X)\n\nvec4 fxGetParticleDataInternal(sampler2D sampler, int resolutionWidth, int id, int dataType)\n{\n    return texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, dataType), 0);\n}\n\n#define fxGetParticleData(X, Y) fxGetParticleDataInternal(iChannel0, int(iResolution.x), X, Y)\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SHIFT 16\n#define KEY_CTRL 17\n#define KEY_ALT 18\n#define KEY_SPACE 32\n\nvec3 sky(vec3 rayDir, vec3 res)\n{\n    vec3 stars = vec3(smoothstep(.5, .8, pow(float(hash(uvec4(rayDir * res.y + 4000., 1)).r) / 4.35e9, 50.))) * 4.;\n    vec3 moon = MOON_COLOR * (1. + f(rayDir.xxy * 100., 3));\n    return mix(moon, stars, smoothstep(.03, .03 + 2./res.y, distance(rayDir, MOON_DIR)));\n}\n\nvec3 lighting(vec3 normal, vec3 L, vec3 V, bool shadow)\n{\n    vec3 albedo = vec3(1.);\n   \tvec3 diff = max(dot(normal, L) * albedo, 0.) * float(!shadow);\n    \n    vec3 refl = normalize(reflect(L, normal));\n    float spec = max(dot(refl, -normalize(V)), 0.) * float(!shadow);\n    spec = pow(spec, 18.);\n    spec = clamp(spec, 0., 1.)*.7;\n    float sky = max(0.0, dot(vec3(0.,1.,0.), normal));\n    \n    vec3 col = diff * MOON_COLOR;\n    col += spec * MOON_COLOR;\n    col += sky * vec3(0., .3, 0.5) * .05;\n    \n   \treturn col;\n}\n\n// From https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51f;\n    float b = 0.03f;\n    float c = 2.43f;\n    float d = 0.59f;\n    float e = 0.14f;\n    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0., 1.);\n}\n\nvec4 render( vec2 fragCoord, vec3 iResolution, float iTime, vec4 iMouse, sampler2D gbuffer, sampler2D voronoi, sampler2D particles)\n{\n    // pixel\n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n    \n    // fetch precomputed background geometry\n    vec4 normalAndZ = texelFetch(gbuffer, ivec2(fragCoord), 0);\n    //normalAndZ = vec4(0,0,0,tMax); // disable terrain render\n    vec4 state = texelFetch(voronoi, ivec2(0), 0);\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(state, iTime, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n      \n\tvec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n    float zDist = normalAndZ.w;\n    vec3 groundPos = cameraPos + rayDir * zDist;\n\n    float shadowHit = 1e6;\n    float tMin = .010;\n#if SHADOWS\n    shadowHit = rayMarching(groundPos + normalAndZ.xyz * 0.03, MOON_DIR, tMin, FAR_CLIP, SHADOW_ITERS);\n#endif\n\n    vec4 fragColor;\n    fragColor.xyz = lighting(normalAndZ.xyz, MOON_DIR, -cameraFwd, shadowHit < FAR_CLIP); //vec4(groundColor, 0.0) * smoothstep(-50.0, -17.0, -zDist);\n    fragColor.a = 1.;\n\n    ivec4 old = fxGetClosestInternal( voronoi, ivec2(fragCoord) );      \n\n    for(int j=0; j<4; j++)\n    {\n        int particle = old[j];\n        if (particle < 0 || particle >= MAX_PARTICLES) continue;\n        fxParticle data = fxGetParticleInternal(particles, int(iResolution.x), particle);\n        \n        float dim = (1. - smoothstep(.9, 1., data.age)) * smoothstep(0., .1, data.age);\n        vec3 oldPos = data.pos;\n        vec3 newPos = data.pos + data.vel;\n        const vec3 PARTICLE_COLOR = vec3(.7,1,.2);\n#if PER_PARTICLE_LIGHTING\n        const float GLOW_INTENSITY = 0.03;\n        vec3 groundDelta = oldPos - groundPos.xyz;\n        float groundDotParticle = dot(groundDelta, normalAndZ.xyz);\n        \n        if (groundDotParticle > 0.001)\n        {\n            float distToGround = length(groundDelta);\n            float glow = GLOW_INTENSITY * normalize(groundDotParticle) / (distToGround);\n            vec3 glowTemp  = PARTICLE_COLOR * glow * dim;\n            fragColor = min(vec4(1), fragColor + vec4(glow * glowTemp, 0.0));\n        }\n#endif // PER_PARTICLE_LIGHTING\n \n        // convert to camera space\n        vec3 oldPosCamera = (w2c * vec4(oldPos,1.0)).xyz;\n        oldPosCamera.xy = oldPosCamera.xy / oldPosCamera.z;\n        vec3 newPosCamera = (w2c * vec4(newPos,1.0)).xyz;\n        newPosCamera.xy = newPosCamera.xy / newPosCamera.z;\n        \n        // if in front of clipping plane, not occluded by scene\n        if(oldPosCamera.z > 0.01 && newPosCamera.z > 0.01 && zDist > oldPosCamera.z && zDist > newPosCamera.z)\n        {\n            float dist2 = fxLinePointDist2(oldPosCamera.xy, newPosCamera.xy, p, 1.);\n            float dist = sqrt(dist2);\n            \n            float PARTICLE_SIZE = 0.02 / oldPosCamera.z;\n            float particleTemp = max(0.0, PARTICLE_SIZE*PARTICLE_SIZE - dist2)  / (PARTICLE_SIZE* PARTICLE_SIZE);\n        \n            if (dist < PARTICLE_SIZE)\n            {\n                vec4 pColor = vec4(PARTICLE_COLOR * particleTemp, 1) * dim;\n                fragColor = min(vec4(1), fragColor + pColor);\n            }\n        }\n    }\n    \n    const float FOG_START = .7;\n    if (zDist > FAR_CLIP * FOG_START)\n    {\n        if (zDist >= FAR_CLIP )\n            fragColor.xyz = sky(rayDir, iResolution);\n        else\n            fragColor.xyz = mix(fragColor.xyz, vec3(0), smoothstep(FAR_CLIP*FOG_START, FAR_CLIP, zDist));\n    }\n    else if (g_GroundFog)\n        fragColor.xyz += GROUND_FOG_COLOR*max(0., .5 - groundPos.y);\n\n    //fragColor.xyz = ACESFilm(sqrt(fragColor.xyz));\n    fragColor.w = zDist;\n    return fragColor;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position and velocity of each particle, one per texture fragment.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(-0.0005,-0.0001,-0.0005);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n    if(id>=MAX_PARTICLES) return;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n\n    fxParticle p = fxGetParticle(id);\n    \n    // Integrate velocities\n    vec3 newVel = p.vel + GRAVITY;\n    ivec3 newMapPos = ivec3(floor(p.pos + newVel));\n\n    // Limit vertical movement\n    if (p.pos.y > 0.4)\n    {\n        p.pos.y = mix(p.pos.y, 0.4, .6);\n    }\n    \n    // Detect if we're about to pass through the boundary and bounce off\n    float rc = f(p.pos + p.vel, 8);\n    if (rc > p.pos.y - .1)// && rc < length(p.vel))\n    {\n        vec3 g = getNormal(p.pos, 10., 8);\n        p.pos.y = mix(p.pos.y, rc + .1, .2);\n\n        newVel.y = abs(newVel.y);\n        newVel.xz -= 1.0 * min(0.0, dot(g, newVel)) * g.xz;\n    }\n    \n    // Ensure constant speed\n    float len = length(newVel);\n    if (len > 1e-6)\n    {\n        newVel = PARTICLE_SPEED * normalize(newVel);\n    }\n    else\n    {\n        newVel = PARTICLE_SPEED * normalize(vec3(-1, 0, -1));\n    }\n    \n    p.vel = newVel;\n\n    vec3 newPos = p.pos + newVel;\n    float newAge = p.age + min(iTimeDelta, 0.033) / MAX_AGE;\n    \n    p.pos = newPos;\n        \n    // Reset particles that have gotten too old\n    if (iFrame == 0 || newAge > 1.0 || state.w < 0.)\n    {\n        p.vel = normalize(vec3(-.2, 0, -.2)) * PARTICLE_SPEED;\n\n        vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n        fxCalcCamera(state, iTime, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n        cameraFwd.y = 0.0;\n\n        p.pos.y = 1e6;\n        const float XZ_SPREAD = 0.001;\n        const float Y_SPREAD = 0.0003;\n        const float Y_SPRAY = 0.0;\n\n        for (int i = 0; i < 10; ++i)\n        {\n            vec4 nse = noise(ivec2(id, id + i)) - .5;\n            vec3 pos = cameraPos + nse.xyz * vec3(100, 1, 100);//vec3(0.0, 1.5, 0.0) + p.vel;\n            pos.y = 0.;\n            \n            if (f(pos, 8) < .1)\n            {\n                p.pos = pos;\n                newAge = nse.w + 0.5;\n                break;\n            }\n        }\n        \n    }\n    \n    p.age = newAge;\n    \n    fragColor = fxSaveParticle(p, dataType);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes closest 4 particles to each screen pixel, to accelate rendering.\n// ---------------------------------------------------------------------------------------\n\n// Gijs's Basic : Voronoi Tracking: https://www.shadertoy.com/view/WltSz7\n\n// Voronoi Buffer\n// every pixel stores the 4 closest particles to it\n// every frame this data is shared between neighbours\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_){\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nfloat distance2Particle(int id, vec2 fragCoord, mat4 w2cNew){\n    if(id==-1) return 1e20;\n    vec3 worldPos = fxGetParticleData(id, POS).xyz + fxGetParticleData(id, VEL).xyz;\n    vec3 screenPos = (w2cNew * vec4(worldPos,1.0)).xyz;\n    screenPos.xy = screenPos.xy / screenPos.z;\n    vec2 delta = (screenPos.xy)-fragCoord;\n    return dot(delta, delta);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n   \tivec2 iFragCoord = ivec2(fragCoord);\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    if(iFragCoord == ivec2(0))\n    {\n        // Reset if resolution changes\n        if (iFrame == 0 || iResolution.x * iResolution.y != abs(state.w))\n        {\n            state = vec4(0, 0, 0, -iResolution.x * iResolution.y);\n        }\n        else\n        {\n            state.w = abs(state.w);\n        }\n        if (iMouse.z > 0.)\n        {\n            state.xy = (iMouse.xy - .5*iResolution.xy) / iResolution.y;\n        }\n        state.z = keyDown(KEY_ALT) ? 1. : 0.;\n        \n        fragColor = state;\n        return;\n    }\n    if (state.w < 0.) { fragColor = vec4(0); return; }\n    \n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(state, iTime, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n\n    //in this vector the four new closest particles' ids will be stored\n    ivec4 new = ivec4(-1);\n    //in this vector the distance to these particles will be stored \n    vec4 dis = vec4(1e6);\n\n    ivec4 old   = fxGetClosest( iFragCoord );      \n    for(int j=0; j<4; j++){\n        int id = old[j];\n        float dis2 = distance2Particle(id, p, w2c);\n        insertion_sort( new, dis, id, dis2 );\n    }\n\n    uint searchRange = 15u;\n    uint searchCount = 8u;\n    \n    for(uint i=0u; i<searchCount; ++i)\n    {\n        uvec4 h0 = hash(uvec4(fragCoord, iFrame, iResolution.x) * i);\n\n        ivec4 old   = fxGetClosest( iFragCoord + ivec2( h0.xy % searchRange - searchRange / 2u) );      \n        for(int j=0; j<2; j++){\n            int id = old[j];\n            float dis2 = distance2Particle(id, p, w2c);\n            insertion_sort( new, dis, id, dis2 );\n        }        \n    }\n\n    int searchIterations = 10;\n\n    for(int k = 0; k < searchIterations; k++){\n        //random hash. We should make sure that two pixels in the same frame never make the same hash!\n        float h = hash(\n            iFragCoord.x + \n            iFragCoord.y*int(iResolution.x) + \n            iFrame*int(iResolution.x*iResolution.y) +\n            k\n        );\n\n        //pick random id of particle\n        int id = int(h*float(MAX_PARTICLES));\n        insertion_sort(new, dis, id, distance2Particle(id, p, w2c));\n    }\n    \n    fragColor = vec4(new);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Background rendering based on \"Glacial Valleys\" by jarble\n//    https://www.shadertoy.com/view/NscGWl\n//\n// All of jarble's code is in common, since it's used both here and for the particle\n// boundary, and again for the final render if adaptive AA is enabled. This buffer just\n// calls raycast to generate a texture full of normals and z distances (the G-buffer).\n// ---------------------------------------------------------------------------------------\n\n#define MSAA_N 3 // 2 for 4xMSAA, 3 for 9xMSAA, etc.\n\nvec4 renderGBuffer(vec2 fragCoord, vec3 cameraPos, vec3 cameraFwd, vec3 cameraUp, vec3 cameraLeft, inout float tMin)\n{\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    float t = rayMarching(cameraPos, rayDir, tMin, FAR_CLIP, TERRAIN_ITERS);\n    \n    vec3 normal = vec3(0.);\n    \n    if (t < FAR_CLIP)\n    {\n        vec3 p = cameraPos + rayDir * t;\n        normal = getNormal(p, t, 12);\n    }\n    \n    tMin = t; // start next raymarch at the previous t value\n\n    return vec4(normal, t);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord - iResolution.xy * .5) / iResolution.y;\n    vec4 state = texelFetch(iChannel0, ivec2(0), 0);\n    g_GroundFog = state.z == 0.;\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(state, iTime, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n    \n    float tMin = .1;\n    float tMax = 0.;\n\n#if MSAA_N > 1\n    if (!keyDown(KEY_SHIFT))\n    {\n        fragColor = vec4(0.);\n        for (int x = 0; x < MSAA_N; ++x)\n        for (int y = 0; y < MSAA_N; ++y)\n        {\n            vec2 offset = (vec2(x, y) - .5 * float(MSAA_N - 1)) * 2. / float(MSAA_N);\n            vec4 pass = renderGBuffer(fragCoord + offset, cameraPos, cameraFwd, cameraUp, cameraLeft, tMin);\n            \n            fragColor += pass;\n        }\n        fragColor.xyz = normalize(fragColor.xyz);\n        fragColor.w = fragColor.w / float(MSAA_N * MSAA_N);\n        return;\n    }\n#endif\n\n    fragColor = renderGBuffer(fragCoord, cameraPos, cameraFwd, cameraUp, cameraLeft, tMin);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Main render, temporal blur\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n    if (state.w < 0.) { fragColor = vec4(0); return; }\n    g_GroundFog = state.z == 0.;\n    \n    vec4 new = render(fragCoord, iResolution, iTime, iMouse, iChannel2, iChannel1, iChannel0);\n    \n#if TEMPORAL_BLUR\n    // Don't apply temporal blur at very high resolutions, assuming frame rate will be crap\n    if (iResolution.x * iResolution.y < 1e6 && new.w < FAR_CLIP)\n    {\n        vec4 old = texelFetch(iChannel3, ivec2(fragCoord), 0);\n        float temporalBlur = 1. - .5*smoothstep(3., 8., old.w);\n        fragColor = mix(old, new, temporalBlur);\n        fragColor.w = new.a;\n        return;\n    }\n#endif\n\n    fragColor = new;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

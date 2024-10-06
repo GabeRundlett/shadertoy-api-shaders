@@ -1,0 +1,262 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1695075606",
+            "description": "Simulate an oil projector with constant-volume blobs of liquid being stirred around.\n\nYet another do-over of:\nhttps://www.shadertoy.com/view/3dsBWN\nhttps://www.shadertoy.com/view/clBcDt\nhttps://www.shadertoy.com/view/Dl2fWz",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "mdcyR7",
+            "likes": 5,
+            "name": "Oil projector",
+            "published": 3,
+            "tags": [
+                "blur",
+                "threshold",
+                "palette",
+                "antialias",
+                "blob",
+                "bicubic",
+                "lava",
+                "gpmipmap"
+            ],
+            "usePreview": 0,
+            "username": "sh1boot",
+            "viewed": 252
+        },
+        "renderpass": [
+            {
+                "code": "bool keydown(int key) {\n    return (texelFetch(iChannel3, ivec2(key,0), 0).x >= 0.5);\n}\n\n\n// a smooth maximum of all the channels down to a scalar\n// which we need to form a smooth intersection of two\n// channels so we don't get dFdx() artefacts.\nfloat foldheight(vec4 x) {\n    const float k = 8.0;\n    return log2(dot(exp2(x*k), vec4(1))) / k;\n}\n// an attempt at blending two different alpha equations\nfloat smoothmin(float x, float y) {\n    const float k = -8.0;\n    return log2(exp2(x*k) + exp2(y*k)) / k;\n}\nvec4 meniscus(vec4 x, vec2 uv) {\n    float height = foldheight(x) * 3.0;\n    height = smoothclamp(height, -1.0, 1.0);\n    // Shade the edge according to the direction it's facing.\n    float shade = cos(atan(dFdy(height), dFdx(height)) + 1.1) * 0.5 + 0.5;\n    // Alpha should be derived from slope, but that's quarter resolution,\n    // so height looks a bit smoother.\n    float alpha = min(1.0 - height, 1.0);\n\n    // Except when a peninsula isn't high enough to zero alpha, in which case\n    // we need to tamp it down some more based on slope rather than absolute\n    // height.\n    float squish = length(vec2(dFdx(height), dFdy(height)) / fwidth(uv));\n    squish = clamp(squish * 0.05, 0.0, 1.0);\n    alpha = smoothmin(alpha, squish);\n    // ... but it doesn't really work.\n    \n    return clamp(vec4(vec3(shade), alpha), 0.0, 1.0);\n}\n\n\nvec4 pal16(vec4 x) {\n    // Convert saturated (ie., approximately binary) xyzw values\n    // into a 16-colour palette.  In this case, an approximation\n    // of the C64 colour palette.  Why the C64?  I do not know.\n    // I just wanted to do away with that RGB-filter look that\n    // comes out otherwise.\n    vec3 lut[16] = vec3[16](\n        vec3(0., 0., 0.), vec3(1., 1., 1.), vec3(0., 1., 0.), vec3(.5, 0., 0.),\n        vec3(.6, 1., .9), vec3(.7, .3, .7), vec3(0., .7, .4), vec3(0., 0., .6),\n        vec3(.9, .9, .5), vec3(.8, .5, .3), vec3(1., .5, .5), vec3(.2, .2, .2),\n        vec3(.5, .5, .5), vec3(.6, 1., .7), vec3(0., .5, 1.), vec3(.8, .8, .8));\n     vec3 colour = vec3(0);\n     for (int i = 1; i < 16; ++i) {\n         float w = 1.0;\n         for (int j = 0; j < 4; ++j) {\n             w *= (i >> j & 1) != 0 ? x[j] : 1.0 - x[j];\n         }\n         colour += lut[i] * w;\n     }\n     return vec4(colour, 1.0);\n}\n\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    vec2 uv = (fragCoord - iResolution.xy * 0.5) / iResolution.x + 0.5;\n\n    // Read the blurred feedback buffer, using bicubic interpolation\n    // to avoid scaling artefacts, and threshold it into a flat puddle\n    // of colour.\n    vec4 threshold = texture(iChannel1, 1.0 - 0.5 / iChannelResolution[1].xy);\n    vec4 colour = bicubictex(iChannel0, uv * dimension / iChannelResolution[0].xy,\n                             iChannelResolution[0].xy);\n    // Calculate a shading for the edge for a little bit of depth.\n    vec4 meniscus = meniscus(colour - threshold, uv);\n    // threshold, with anti-aliasing\n    colour = aastep(threshold, colour);\n\n    // debug stuff\n    if (keydown(49)) colour = texture(iChannel1, uv * dimension / iChannelResolution[1].xy);\n    if (keydown(50)) colour = texture(iChannel0, uv * dimension / iChannelResolution[0].xy);\n    if (keydown(51)) colour = cubetex(iChannel2, uv * dimension / iChannelResolution[2].xy, 0);\n    if (keydown(52)) colour = cubetex(iChannel2, uv * dimension / 16.0 / iChannelResolution[2].xy, 1);\n    if (keydown(53)) colour = cubetex(iChannel2, uv * dimension / 256.0 / iChannelResolution[2].xy, 2);\n    if (keydown(54)) colour = cubetex(iChannel2, uv * dimension / iChannelResolution[2].xy, 3);\n    if (keydown(55)) colour = cubetex(iChannel2, uv * dimension / iChannelResolution[2].xy, 4);\n    if (keydown(56)) colour = cubetex(iChannel2, uv * dimension / iChannelResolution[2].xy, 4);\n    if (keydown(57)) colour = cubetex(iChannel2, uv * dimension / iChannelResolution[2].xy, 4);\n    if (keydown(48) && uv.x > 0.90) {\n        vec4 mask = 1.0 - smoothstep(0.40, 0.42, abs((uv.x - 0.9) * 40.0 - vec4(0.5,1.5,2.5,3.5)));\n        colour = mask * smoothstep(-0.01, 0.01, threshold * iResolution.y - fragCoord.y);\n        meniscus = vec4(0);\n    }\n    // zero out the meniscus shading if there's nothing to shade\n    meniscus *= max(max(colour.x, colour.y), max(colour.z, colour.w));\n\n    colour = pal16(colour);\n    if (!keydown(16)) colour = mix(colour, meniscus, meniscus.a);\n    fragColour = colour;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// size of one edge of the feedback buffer\nconst float dimension = 128.0;\n\n// target ratio of full versus empty pixels\nconst float setpoint = 0.12;\n\n// how blurry to make things\nconst float blur_radius = (0.25 * dimension);\n\n// filter size for blurring\nconst int blur_taps = 11;\n\n// everybody's favourite constant\nconst float tau = 6.28318530718;\n\n// anti-alias a threshold operation based on the local gradient\nfloat aastep(float threshold, float value) {\n    float delta = 0.7 * fwidth(value);\n    return smoothstep(-delta, delta, value - threshold);\n}\nvec4 aastep(vec4 threshold, vec4 value) {\n    vec4 delta = 0.7 * fwidth(value);\n    return smoothstep(-delta, delta, value - threshold);\n}\n\n// clamp coordinate to centre of edge pixel rather than edge of texture,\n// to avoid interpolating into unused data\nvec2 pixelclamp(vec2 uv) {\n    const float halfpix = 0.5 / dimension;\n    return clamp(uv, halfpix, 1.0 - halfpix);\n}\n\n// smoothstep, but with result between lo and hi rather than 0 and 1\nfloat smoothclamp(float x, float lo, float hi) {\n    return lo + smoothstep(lo, hi, x) * (hi - lo);\n}\nvec4 smoothclamp(vec4 x, float lo, float hi) {\n    return lo + smoothstep(lo, hi, x) * (hi - lo);\n}\n\n// convert texture coordinate and face into cubemap direction\nvec3 cubedir(vec2 uv, int face) {\n    vec3 dir = vec3(uv * 2.0 - 1.0, 1.0);\n    dir.y = -dir.y;\n    switch (face) {\n    case 1: dir = vec3(-dir.x, dir.y,-dir.z); break;\n    case 2: dir = vec3( dir.x, dir.z,-dir.y); break;\n    case 3: dir = vec3( dir.x,-dir.z, dir.y); break;\n    case 4: dir = vec3( dir.z, dir.y,-dir.x); break;\n    case 5: dir = vec3(-dir.z, dir.y, dir.x); break;\n    }\n    return dir;\n}\n// texture from cubemap\nvec4 cubetex(samplerCube tex, vec2 uv, int face) {\n    return texture(tex, cubedir(uv, face));\n}\nvec4 cubetexLod(samplerCube tex, vec2 uv, int face, float lod) {\n    return textureLod(tex, cubedir(uv, face), lod);\n}\n\n// the four weight coefficients for cubic interpolation\nvec2 w0(vec2 a) { return a * (a * (-a + 3.0) - 3.0) + 1.0; }\nvec2 w1(vec2 a) { return a * a * (3.0 * a - 6.0) + 4.0; }\nvec2 w2(vec2 a) { return a * (a * (-3.0 * a + 3.0) + 3.0) + 1.0; }\nvec2 w3(vec2 a) { return a * a * a; }\n// and a bicubic sampler using four linear interpolated samples\n// and the above weights\nvec4 bicubictex(sampler2D tex, vec2 uv, vec2 dims) {\n\tuv = uv * dims + 0.5;\n\tvec2 fuv = fract(uv);\n    uv = floor(uv) - 0.5;\n\n    vec2 g0 = w0(fuv) + w1(fuv);\n    vec2 g1 = w2(fuv) + w3(fuv);\n    vec2 h00 = w1(fuv) / g0 - 1.0;\n    vec2 h11 = w3(fuv) / g1 + 1.0;\n    vec2 h10 = vec2(h11.x, h00.y);\n    vec2 h01 = vec2(h00.x, h11.y);\n\n    vec2 s = 1.0 / dims;\n    return ((texture(tex, (uv + h00) * s) * g0.x\n           + texture(tex, (uv + h10) * s) * g1.x) * g0.y\n          + (texture(tex, (uv + h01) * s) * g0.x\n           + texture(tex, (uv + h11) * s) * g1.x) * g1.y) / 36.0;\n}\nvec4 bicubiccubetex(samplerCube tex, vec2 uv, int face) {\n\tuv = uv * 1024.0 + 0.5;\n\tvec2 fuv = fract(uv);\n    uv = floor(uv) - 0.5;\n\n    vec2 g0 = w0(fuv) + w1(fuv);\n    vec2 g1 = w2(fuv) + w3(fuv);\n    vec2 h00 = w1(fuv) / g0 - 1.0;\n    vec2 h11 = w3(fuv) / g1 + 1.0;\n    vec2 h10 = vec2(h11.x, h00.y);\n    vec2 h01 = vec2(h00.x, h11.y);\n\n    const vec2 s = 1.0 / vec2(1024.0);\n    return ((cubetex(tex, (uv + h00) * s, face) * g0.x\n           + cubetex(tex, (uv + h10) * s, face) * g1.x) * g0.y\n          + (cubetex(tex, (uv + h01) * s, face) * g0.x\n           + cubetex(tex, (uv + h11) * s, face) * g1.x) * g1.y) / 36.0;\n}\n\n// gaussian blur function\nfloat pdf(float x) {\n#if 0\n    // pdf for s=0.1667: `sum(uniform(-.5,.5, 3)/3)`\n    return 2.39365*exp(-18. * x * x);\n#else\n    // pdf for s=0.144: `sum(uniform(-.5,.5, 4)/4)`\n    return 2.77043 * exp(-24.1126 * x * x);\n#endif\n}\nvec4 gausstex(sampler2D tex, vec2 uv, vec2 dir) {\n    vec2 lo = 0.5 * abs(dir);\n    vec2 hi = dimension * abs(dir) - lo;\n    hi = mix(hi, vec2(1), equal(dir, vec2(0)));\n    vec4 sum = vec4(0);\n    float den = 0.0;\n    for (int i = -blur_taps; i <= blur_taps; i++) {\n        float f = float(i);\n        float w = pdf(f / blur_radius);\n        vec2 p = clamp(uv + dir * f, lo, hi);\n        sum += texture(tex, p) * w;\n        den += w;\n    }\n    return sum / den;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// something interesting to get when the texture coordinate goes\n// out of range (this keeps the buffer seeded even when it might\n// become empty.\nvec4 outfill(vec2 uv, float t) {\n    uv -= 0.5;\n    vec4 c = cos(atan(uv.y, uv.x) + t * vec4(-0.3,0.4,-0.5,0.6)) * 0.3;\n    return clamp(c, 0.0, 1.0);\n}\n\n// sample from a buffer or the outfill value if out of bounds\nvec4 edgefill(sampler2D tex, vec2 uv, vec4 outfill) {\n    if (pixelclamp(uv) != uv) return outfill;\n    return texture(tex, uv* dimension / iChannelResolution[0].xy);\n}\nvec4 edgefill(samplerCube tex, vec2 uv, int face, vec4 outer) {\n    if (pixelclamp(uv) != uv) return outer;\n    return cubetex(tex, uv * dimension / 1024.0, face);\n}\n\n#define cs(a) vec2(cos(a), sin(a))\n#define csmat(a) mat2x2(cos(a), -sin(a), sin(a), cos(a))\n\n// swish coordinates around a bit for feedback\nvec2 warp0(vec2 uv, float t) {\n    const mat2x2 turn = csmat(0.001) * 1.001;\n    vec2 wobble = cos(uv.yx * vec2(16,15) + t) * 0.0018;\n    vec2 o = 0.5 + cs(t * 1.3) * .25;\n    uv = (uv - o) * turn + o; \n    return uv + wobble;\n}\n\n// swish, but differently\nvec2 warp1(vec2 uv, float t) {\n    const mat2x2 turn = csmat(0.001) * 0.999;\n    vec2 wobble = cos(uv.yx * vec2(17,16) + t) * 0.0018;\n    vec2 o = 0.5 - cs(t * 0.76) * .25;\n    uv = (uv - o) * turn + o; \n    return uv + wobble;\n}\n\n// decide which swish function to use (or blend them together)\nvec4 churn(vec2 uv, float t) {\n    uv -= 0.5;\n    vec4 ox = uv.x + cos(t * .4*vec4(0.5,-0.5, 0.4,0.3)) * 0.25;\n    vec4 oy = uv.y + sin(t * .4*vec4(0.4, 0.4,-0.3,0.4)) * 0.25;\n\n    vec4 t4 = t * vec4(-0.15,0.24,0.23,-0.32);\n    ox = ox * cos(t4) - oy * sin(t4);\n\n    return smoothstep(-0.15, 0.15, ox);\n}\n\nvec4 updatethreshold(vec4 threshold) {\n    // we keep a threshold value in one corner of buffer A,\n    // and depending on the number of set pixels we get in\n    // the cubemap we increment or decrement it to try to\n    // get to the setpoint.\n#if 0 // need to set mipmaps on ichannel1 for this version.\n    const float mmfix = (1024.0 * 1024.0) / (dimension * dimension);\n    vec4 median = cubetexLod(iChannel1, vec2(0.5), 0, 99.9) * mmfix;\n#else\n    vec4 median = vec4(0);\n    float divisor = 0.0;\n    for (int i = 0; i < int(dimension) / 16; ++i) {\n        for (int j = 0; j < int(dimension) / 16; ++j) {\n            vec2 o = vec2(i, j);\n            median += cubetex(iChannel1, o / 1024.0, 1);\n            divisor += 1.0;\n        }\n    }\n    median /= divisor;\n#endif\n    vec4 adj = smoothclamp(median - setpoint, -0.15, 0.15);\n    return threshold + adj * 0.125;\n}\n\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    if (all(greaterThan(fragCoord, iResolution.xy - 1.0))) {\n        vec2 tc = 1.0 - 0.5 / iResolution.xy;\n        vec4 threshold = texture(iChannel0, tc);\n        threshold = updatethreshold(threshold);\n        if (iFrame == 0) threshold = vec4(0.5);\n        fragColour = clamp(threshold, 0.01, 0.99);\n        return;\n    }\n    if (max(fragCoord.x, fragCoord.y) > dimension) discard;\n    vec2 uv = fragCoord / dimension;\n\n    vec4 outer = outfill(uv, iTime);\n    vec4 churn = churn(uv, iTime);\n    vec2 uv0 = warp0(uv, iTime);\n    vec2 uv1 = warp1(uv, iTime);\n    vec4 colour = mix(edgefill(iChannel0, uv0, outer),\n                      edgefill(iChannel0, uv1, outer),\n                      churn);\n    vec4 quant = mix(edgefill(iChannel1, uv0, 0, outer),\n                     edgefill(iChannel1, uv1, 0, outer),\n                     churn);\n    // blend a little of the quantised buffer into the feedback\n    // buffer to gently encourage it towards wider dynamic range.\n    colour = mix(colour, quant, 0.01);\n\n    // where colours overlap, encourage them to separate a bit.\n    vec4 repel = colour.yzwx + colour.zwxy + colour.wxyz * 1.5;\n    colour -= repel * 0.0003;\n\n    fragColour = clamp(colour, 0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// blur horizontally\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    if (max(fragCoord.x, fragCoord.y) > dimension) discard;\n    vec2 uv = fragCoord;\n    vec2 s = 1.0 / iChannelResolution[0].xy;\n    fragColour = gausstex(iChannel0, uv * s, vec2(s.x, 0.0));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// blur verically\nvoid mainImage(out vec4 fragColour, in vec2 fragCoord) {\n    if (max(fragCoord.x, fragCoord.y) > dimension) discard;\n    vec2 uv = fragCoord;\n    vec2 s = 1.0 / iChannelResolution[0].xy;\n    fragColour = gausstex(iChannel0, uv * s, vec2(0.0, s.y));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// figure out which cube face we're rendering\nint cubeface(vec3 dir) {\n    vec3 adir = abs(dir);\n    vec3 m = vec3(greaterThan(adir, max(adir.yzx, adir.zxy)));\n    return int(dot(m, vec3(4, 2, 0)))\n        +  int(dot(m, dir) < 0.0);\n}\n\n// Read blurred version of feedback buffer, and threshold\n// it to give a count of 'set' pixels which can be read\n// from the mipmap.\nvoid mainCubemap(out vec4 fragColour, in vec2 fragCoord, in vec3 rayOri, in vec3 rayDir) {\n    int f = cubeface(rayDir);\n    fragColour = vec4(0);\n    if (f == 0) {\n        if (max(fragCoord.x, fragCoord.y) > dimension) discard;\n        vec2 s0 = 1.0 / iChannelResolution[0].xy;\n        vec2 s1 = 1.0 / iChannelResolution[1].xy;\n\n        vec4 threshold = texture(iChannel1, 1.0 - 0.5 * s1);\n        vec4 colour = texture(iChannel0, fragCoord * s0);\n\n        fragColour = smoothstep(-0.125, 0.125, colour - threshold);\n    } else {\n        float scale = float(1 << (f * 4));\n        fragCoord = (fragCoord - 0.5) * scale + 0.5;\n        if (max(fragCoord.x, fragCoord.y) > dimension) discard;\n        vec4 sum = vec4(0);\n        for (int i = 0; i < 16; ++i) {\n            for (int j = 0; j < 16; ++j) {\n                vec2 uv = (fragCoord + vec2(i,j)) / iChannelResolution[2].xy;\n                sum += cubetex(iChannel2, uv, f - 1);\n            }\n        }\n        fragColour = sum / 256.0;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 41,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a//media/previz/cubemap00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Cube A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 41
+                    }
+                ],
+                "type": "cubemap"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

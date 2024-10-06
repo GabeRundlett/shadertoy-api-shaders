@@ -1,0 +1,225 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1570906394",
+            "description": "Filterered Screen Space Ambient Obscurance exercise based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\nMove mouse horizontally to rotate and vertically to animate filter depth weight",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "3dK3zR",
+            "likes": 24,
+            "name": "Joined Bilateral Filtered SSAO",
+            "published": 3,
+            "tags": [
+                "3d",
+                "raymarching",
+                "distancefields",
+                "filter",
+                "ao",
+                "depth",
+                "gaussian",
+                "ssao",
+                "bilateral",
+                "aware",
+                "upsample",
+                "sponza",
+                "joined",
+                "klos"
+            ],
+            "usePreview": 0,
+            "username": "spolsh",
+            "viewed": 3781
+        },
+        "renderpass": [
+            {
+                "code": "// Copyright © 2019 Michal 'spolsh' Klos\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//   Filterered Screen Space Ambient Obscurance exercise\n// based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//\n//   Move mouse horizontally to rotate and vertically to animate filter depth weight\n//\n//\t Uncomment line 32 to enable comparison Depth Aware Upsampled vs Joined Biliniar Upsampled\n//\n//\n//   From left to right:\n// 1. Raw half resoultion SSAO\n// 2. Filtered half resolution SSAO\n// 3. Depth Aware Upsampled SSAO\n// 4. Joined Biliniar Upsampled SSAO\n//\n//   Animated weight for depth term in SSAO filter:\n// specifially sigma for gaussian weight selecting range of depth values picked by kernel\n//\n//   Stages of rendering:\n// 1. Render scene pass outputing Normal+Z in ViewSpace to BufferA\n// 2. Downsampling Normal+Z to half resolution to BufferB\n// 3. Calculate SSAO, hemisphere approach based on Alchemy AO [McGuire et al. 2011] to BufferC \n// 4. Joined Bilateral Gaussian blur. Raw SSAO samples from BufferC blurred based on depth values\n// 5. Joined Bilateral Upsampling (JBU) and Depth Aware Upsampling (DAU) comparison\n//\t\tBJU based on: https://johanneskopf.de/publications/jbu/paper/FinalPaper_0185.pdf\n//\t\t\t\t\t  https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//      DAU based on: http://developer.download.nvidia.com/assets/gamedev/files/sdk/11/OpacityMappingSDKWhitePaper.pdf\n\n\n// #define COMPARE_JBU_VS_DAU\n\n\nconst vec2 c_offset[4] = vec2[](\n    vec2(0., 0.),\n    vec2(0., 1.),\n    vec2(1., 0.),\n    vec2(1., 1.)\n);\n\nvec4 DepthAwareUpsample(vec2 P)\n{ // based on Nearest-Depth-Filter: http://developer.download.nvidia.com/assets/gamedev/files/sdk/11/OpacityMappingSDKWhitePaper.pdf\n  //\t\t                        https://www.shadertoy.com/view/MllSzX\n\n    vec2 halfP = 0.5 * P;\n    vec2 c_textureSize = iChannelResolution[2].xy;\n\tvec2 c_texelSize = 1.0 / c_textureSize;\n    vec2 pixel = halfP * c_textureSize + 0.5;\n    vec2 f = fract(pixel);\n    pixel = (floor(pixel) / c_textureSize) - vec2(c_texelSize/2.0);\n\n    vec4 I = textureLod(iChannel1, P, 0.0);\n    \n    vec4 Z00 = textureLod(iChannel2, pixel + c_texelSize * c_offset[0], 0.0);\n    vec4 Z01 = textureLod(iChannel2, pixel + c_texelSize * c_offset[1], 0.0);\n    vec4 Z10 = textureLod(iChannel2, pixel + c_texelSize * c_offset[2], 0.0);\n    vec4 Z11 = textureLod(iChannel2, pixel + c_texelSize * c_offset[3], 0.0);\n    \n    float tex00 = textureLod(iChannel0, pixel + c_texelSize * c_offset[0], 0.0).r;\n    float tex01 = textureLod(iChannel0, pixel + c_texelSize * c_offset[1], 0.0).r;\n    float tex10 = textureLod(iChannel0, pixel + c_texelSize * c_offset[2], 0.0).r;\n    float tex11 = textureLod(iChannel0, pixel + c_texelSize * c_offset[3], 0.0).r;\n    \n    float diffZ00 = abs(I.w - Z00.w);\n    float diffZ01 = abs(I.w - Z01.w);\n\tfloat diffZ10 = abs(I.w - Z10.w);\n    float diffZ11 = abs(I.w - Z11.w);\n           \n    // depth discontinuity (edge) detections\n    float depthThreshold = 0.001;\n    if (diffZ00 < depthThreshold && \n        diffZ01 < depthThreshold && \n        diffZ10 < depthThreshold && \n        diffZ11 < depthThreshold) {\n                \n        // biliner interpolation\n        return vec4( mix( mix( tex00, tex10, f.x ),\n                          mix( tex01, tex11, f.x ), f.y ));\n\n    } else {\n        \n        // pick sampler based on closest depth\n        float tex = tex00;\n        float depthMinDiff = diffZ00;\n\n        if (diffZ01 < depthMinDiff) {\n            tex = tex01;\n            depthMinDiff = diffZ01;\n        }\n\n        if (diffZ10 < depthMinDiff) {\n            tex = tex10;\n            depthMinDiff = diffZ10;\n        }\n\n        if (diffZ11 < depthMinDiff) {\n            tex = tex11;\n            depthMinDiff = diffZ11;\n        }\n        \n        return vec4(tex);\n    }\n}\n\nvec4 JoinedBilateralUpsample(vec2 P)\n{ // based on: https://johanneskopf.de/publications/jbu/paper/FinalPaper_0185.pdf\n  //           https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n  //\t\t   https://www.shadertoy.com/view/MllSzX\n    \n    vec2 halfP = 0.5 * P;\n    vec2 c_textureSize = iChannelResolution[2].xy;\n\tvec2 c_texelSize = 1.0 / c_textureSize;\n    vec2 pixel = halfP * c_textureSize + 0.5;\n    vec2 f = fract(pixel);\n    pixel = (floor(pixel) / c_textureSize) - vec2(c_texelSize/2.0);\n    \n    vec4 I = textureLod(iChannel1, P, 0.0);\n        \n    vec4 Z00 = textureLod(iChannel2, pixel + c_texelSize * c_offset[0], 0.0);\n    vec4 Z01 = textureLod(iChannel2, pixel + c_texelSize * c_offset[1], 0.0);\n    vec4 Z10 = textureLod(iChannel2, pixel + c_texelSize * c_offset[2], 0.0);\n    vec4 Z11 = textureLod(iChannel2, pixel + c_texelSize * c_offset[3], 0.0);\n    \n    float tex00 = textureLod(iChannel0, pixel + c_texelSize * c_offset[0], 0.0).r;\n    float tex01 = textureLod(iChannel0, pixel + c_texelSize * c_offset[1], 0.0).r;\n    float tex10 = textureLod(iChannel0, pixel + c_texelSize * c_offset[2], 0.0).r;\n    float tex11 = textureLod(iChannel0, pixel + c_texelSize * c_offset[3], 0.0).r;\n       \n    float sigmaV = 0.002;\n    //    wXX = bilateral gaussian weight from depth * bilinear weight\n    float w00 = Gaussian( sigmaV, abs(I.w - Z00.w) ) * (1.-f.x) * (1.-f.y);\n    float w01 = Gaussian( sigmaV, abs(I.w - Z01.w) ) * (1.-f.x) *     f.y;\n    float w10 = Gaussian( sigmaV, abs(I.w - Z10.w) ) *     f.x  * (1.-f.y);\n    float w11 = Gaussian( sigmaV, abs(I.w - Z11.w) ) *     f.x  *     f.y;\n        \n\treturn vec4( (w00*tex00 + w01*tex01 + w10*tex10 + w11*tex11) / (w00+w01+w10+w11) );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = F.xy/R.xy;\n    float gamma = 0.4545;\n\n#ifdef COMPARE_JBU_VS_DAU\n    \n    // compare difference between Depth Aware Upsample and Joined Bilateral Upsample\n    float diff = DepthAwareUpsample(uv).x - JoinedBilateralUpsample(uv).x;\n    fragColor = 100.0 * vec4(diff, -diff, 0, 1);\n    \n#else\n    \n    if (F.x < R.x/4.) {\n    \tfragColor = texture(iChannel3, 0.5*uv).xxxx;\n        \n    } else if (F.x < 2.*R.x/4.) {\n        fragColor = texture(iChannel0, 0.5*uv);\n        \n    } else if (F.x < 3.*R.x/4.) {\n    \tfragColor = DepthAwareUpsample(uv);\n        \n    } else {\n        fragColor = JoinedBilateralUpsample(uv);\n    }\n    \n    fragColor *= smoothstep(0.0, 0.001, abs(uv.x -0.25));\n    fragColor *= smoothstep(0.0, 0.001, abs(uv.x -0.50));\n    fragColor *= smoothstep(0.0, 0.001, abs(uv.x -0.75));\n    \n    gamma = 4.0; // exaggerate AO results   \n    \n#endif\n   \n    fragColor = vec4( pow( fragColor.rgb, vec3(gamma) ), 1.0 );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define R iResolution\n#define F gl_FragCoord\n#define M iMouse\n\n#define CLIP_FAR 100.\n#define CLIP_NEAR 1.\n\n#define COUNT 8\n#define BIAS 0.01\n\n#define PI 3.1415\n#define ZERO (min(iFrame,0))\n\nmat2 rot(float a) { float s = sin(a); float c = cos(a); return mat2(c, -s, s, c); }\n\nmat3 SetCamera( in vec3 ro, in vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\nmat3 GetCameraToWorld(float iTime, vec4 iMouse, vec2 iResolution, out vec3 ro)\n{\n    ro = vec3(\n        5.0 * cos(5.0 * iMouse.x/iResolution.x),\n      \t1.5,\n        5.0 * sin(5.0 * iMouse.x/iResolution.x)),\n\n    ro = iMouse.z > 0.0 ? ro : vec3(1.5,1.5,-10);\n\n    vec3 ta = vec3(0.0, 2.0, 0.0);\n    return SetCamera( ro, ta, 0. );\n}\n\nvec2 hash( vec2 p ) {\n\tp = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));\n\treturn -1.0 + 2.0*fract(sin(p)*43758.5453123);\n}\n\nfloat Gaussian(float sigma, float x)\n{\n    return exp(-(x*x) / (2.0 * sigma*sigma));\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Copyright © 2019 Michal 'spolsh' Klos\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n//   Filterered Screen Space Ambient Obscurance exercise\n// based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//\n// Render Normals+Z to fullscreen render target.\n// Simple raymarching\n\n// hg\nvoid pR(inout vec2 p, float a) {\n\tp = cos(a)*p + sin(a)*vec2(p.y, -p.x);\n}\n\nvec3 rdX(vec3 p)\n{\n    return vec3(p.x, p.z, -p.y);\n}\n\nvec3 rdY(vec3 p)\n{\n    return vec3(-p.z, p.y, p.x);\n}\n\nvec3 rdZ(vec3 p)\n{\n    return vec3(-p.y, p.x, p.z);\n}\n\n// hg\nfloat vmax(vec3 v) {\n\treturn max(max(v.x, v.y), v.z);\n}\n\n// hg\nfloat fBox(vec3 p, vec3 b) {\n\tvec3 d = abs(p) - b;\n\treturn length(max(d, vec3(0))) + vmax(min(d, vec3(0)));\n} \n\nfloat domainRepeat1D(float p, float size)\n{\n    return mod(abs(p) + size * .5, size) - size * .5;\n}\n\n// hg\nvec2 pModPolar(vec2 p, float repetitions) {\n\tfloat angle = 2.0 * 3.1415 / repetitions;\n\tfloat a = atan(p.y, p.x) + angle/2.;\n\tfloat r = length(p);\n\tfloat c = floor(a/angle);\n\ta = mod(a,angle) - angle/2.;\n\treturn vec2(cos(a), sin(a))*r;\n}\n\n// hg\nfloat fCylinder(vec3 p, float r, float height) {\n\tfloat d = length(p.xz) - r;\n\td = max(d, abs(p.y) - height);\n\treturn d;\n}\nconst mat4 tr[3] = mat4[3](\n\tmat4(1.0, .0, .0, .0, .0, .0, -1.0, .0, .0, 1.0, .0, .0, .0, .0, .0, 1.0),\n\tmat4(.0, -1.0, .0, .0, 1.0, .0, .0, .0, .0, .0, 1.0, .0, .21, .13, 1.08, 1.0),\n\tmat4(-.493, -.87, .0, .0, .87, -.493, .0, .0, .0, .0, 1.0, .0, .257, .539, 1.08, 1.0)\n);\n\n// by mmerchnte https://www.shadertoy.com/view/XddBD2\n// Built with https://github.com/mmerchante/sdf-gen-unity\nfloat sdSponza(vec3 p)\n{\n\tvec3 wsPos = vec3(.0,.0,.0);\n\tvec4 a0 = vec4(p, 1.0);\n\ta0.xz = abs(a0.xz) * vec2(-1.0,1.0);\n\tvec4 a1 = a0 - vec4(6.24,.0,2.5,.0);\n\ta1.xz = pModPolar(a1.xz , 4.0);\n\tfloat d1 = dot(a1.xyz - vec3(11.49,.0,.0), vec3(-1.0,.0,.0));\n\tvec4 a2 = a1 - vec4(11.02,2.15,7.28,.0);\n\ta2.z = domainRepeat1D(a2.z , 2.0);\n\tvec4 a3 = a2;\n\twsPos = a3.xyz - vec3(-2.64,5.05,.0);\n\tfloat d3 = fBox(wsPos,vec3(.5,.5,.228));\n\twsPos = a3.xyz - vec3(-2.275,5.05,.0);\n\td3 = min(d3,fBox(wsPos,vec3(.383,.383,.175)));\n\twsPos = a3.xyz - vec3(-2.64,6.97,.0);\n\td3 = min(d3,fBox(wsPos,vec3(.5,.283,.111)));\n\twsPos = a2.xyz - vec3(-1.28,6.38,.287);\n\tfloat d2 = max(-d3,fBox(wsPos,vec3(1.5,1.893,6.673)));\n\td1 = min(d1,d2);\n\tvec4 a4 = a1 - vec4(9.18,-4.5,-.032,.0);\n\ta4.y = domainRepeat1D(a4.y , 4.5);\n\tvec4 a5 = a4;\n\ta5.z = domainRepeat1D(a5.z , 2.5);\n\tvec4 a6 = a5;\n\ta6.x = -a6.x;\n\tvec4 a7 = a6;\n\tvec4 a8 = a7 - vec4(.05,-.62,.0,.0);\n\ta8.xyz = rdZ(a8.xyz);\n\twsPos = a8.xyz;\n\tfloat d8 = (fCylinder(wsPos, 1.398,1.361)*.75);\n\twsPos = a8.xyz - vec3(.0,.152,.0);\n\td8 = max(-d8,(fCylinder(wsPos, 1.434,.531)*.75));\n\twsPos = a7.xyz - vec3(.786,.46,.0);\n\tfloat d7 = max(d8,fBox(wsPos,vec3(.523,.747,1.415)));\n\tvec4 a9 = a6;\n\twsPos = a9.xyz - vec3(.47,1.953,.0);\n\tfloat d9 = fBox(wsPos,vec3(.5,.075,1.5));\n\twsPos = a9.xyz - vec3(.58,2.03,.0);\n\td9 = min(d9,fBox(wsPos,vec3(.5,.075,1.5)));\n\tvec4 a10 = a9 - vec4(.463,-.51,1.179,.0);\n\ta10.z = domainRepeat1D(a10.z , 2.35);\n\twsPos = a10.xyz;\n\tfloat d10 = fBox(wsPos,vec3(.24,.033,.24));\n\twsPos = a10.xyz - vec3(.0,-.093,.0);\n\td10 = min(d10,fBox(wsPos,vec3(.24,.033,.24)));\n\twsPos = a10.xyz - vec3(-2.8,-.03,.0);\n\td10 = min(d10,fBox(wsPos,vec3(.25,.075,.25)));\n\tvec4 a11 = a10;\n\ta11.xz = pModPolar(a11.xz , 8.0);\n\twsPos = a11.xyz - vec3(.002,-1.07,.0);\n\tfloat d11 = fBox(wsPos,vec3(.17,1.053,.424));\n\td10 = min(d10,d11);\n\td9 = min(d9,d10);\n\tvec4 a12 = a9 - vec4(-1.03,-.518,.0,.0);\n\tvec4 a13 = a12;\n\ta13.xyz = rdZ(a13.xyz);\n\twsPos = (tr[0] * a13).xyz;\n\tfloat d13 = fCylinder(wsPos, 1.225,3.0);\n\twsPos = a13.xyz;\n\td13 = min(d13,fCylinder(wsPos, 1.094,2.061));\n\twsPos = a12.xyz - vec3(.12,1.27,.0);\n\tfloat d12 = max(-d13,fBox(wsPos,vec3(1.5,1.355,1.551)));\n\td9 = min(d9,d12);\n\tfloat d6 = min(d7,d9);\n\tvec4 a14 = a6 - vec4(.463,1.57,1.61,.0);\n\twsPos = (tr[1] * a14).xyz;\n\tfloat d14 = fCylinder(wsPos, .105,.046);\n\twsPos = (tr[2] * a14).xyz;\n\td14 = min(d14,fCylinder(wsPos, .025,.582));\n\td6 = min(d6,d14);\n\tfloat d5 = d6;\n\tfloat d4 = d5;\n\td1 = min(d1,d4);\n\tfloat d0 = min(d1,dot(a0.xyz - vec3(.0,-2.0,.0), vec3(.0,1.0,.0)));\n    d0 = min(d0, -(p.y - 11.15));\n    vec3 p1 = p - vec3(0, 2.26, 0);    \n    p1.x -= 0.25*sign(sin(p.z/0.75*PI));\n    p1.xz = mod(p1.xz +0.5, 1.0) - 0.5;\n    d0 = min(d0, fBox(p1, vec3(0.44, 0.02, 0.44)) - 0.05);\n    return d0;\n}\n\nfloat map(vec3 p) {    \n\treturn min( p.y, sdSponza(p-vec3(0.0, -2.3, 0.0)) );\n}\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal( in vec3 pos )\n{\n    vec2 e = vec2(1.0,-1.0)*0.5773*0.0005;\n    return normalize( e.xyy*map( pos + e.xyy ) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx ) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy ) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx ) );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = vec4(0,0,0, CLIP_FAR);\n    \n    vec2 q = F.xy / R.xy * 2.0 - 1.0;\n    q.x *= R.x / R.y;    \n    \n\tvec3 rd = normalize( vec3(q.xy, 3.) );\n    vec3 ro;\n    mat3 ca = GetCameraToWorld(iTime, M, R.xy, ro);\n    vec3 cd = ca * rd;\n    \n    float t = CLIP_NEAR;\n    for( int i=ZERO; i<128; i++ )\n    {\n\t    float res = map( ro+cd*t );\n        if ( res<0.0004*t || t>CLIP_FAR ) break;\n        t += res;\n    }\n    \n    if (t < CLIP_FAR)\n    {\n        vec3 pos = ro + t*cd;\n        fragColor.rgb = inverse(ca) * calcNormal( pos ) * vec3(1,1,-1);\n        fragColor.a = rd.z * t / CLIP_FAR;\n    }\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Copyright © 2019 Michal 'spolsh' Klos\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n//   Filterered Screen Space Ambient Obscurance exercise\n// based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//\n// Downsample Normals+Z to half resolution\n\nconst vec2 c_offset[4] = vec2[](\n    vec2(0., 0.),\n    vec2(0., 1.),\n    vec2(1., 0.),\n    vec2(1., 1.)\n);\n\nvec4 MaxDepthDownsample(vec2 P)\n{\n    vec2 scaledP = 2.0*P;\n    vec2 c_textureSize = iChannelResolution[0].xy;\n\tvec2 c_texelSize = 1.0 / c_textureSize;\n    vec2 pixel = (floor( scaledP * c_textureSize + 0.5 ) / c_textureSize) - vec2(0.5*c_texelSize);\n    \n    float depthMax = 0.0;\n    vec3 normal = vec3(0.0);\n    \n    for (int i = ZERO; i < 4; i++) {\n        vec4 texSample = textureLod(iChannel0, pixel + c_texelSize * c_offset[i], 0.0);\n        \n        if (texSample.w > depthMax) {\n            normal = texSample.rgb;\n            depthMax = texSample.w;\n        }\n    }\n    \n    return vec4(normal, depthMax);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    fragColor = vec4(0.0);\n    vec2 uv = F.xy/R.xy;\n    if (uv.x > 0.5 || uv.y > 0.5) return;\n    \n    fragColor = MaxDepthDownsample(uv);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Copyright © 2019 Michal 'spolsh' Klos\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n//   Filterered Screen Space Ambient Obscurance exercise\n// based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//\n// Calculate SSAO from Normals+Z in half resolutin\n\nfloat SSAO(vec2 uv)\n{ // based on SSAO Test by Crow https://www.shadertoy.com/view/4ltSz2\n  // and Alchemy AO [McGuire et al. 2011]\n    vec4 norz = texture(iChannel0, uv);\n    float depth = norz.w * CLIP_FAR;\n    float radius = 0.05;\n    float scale = radius / depth;\n    \n    float ao = 0.0;\n    for(int i = ZERO; i < COUNT; i++)\n    {\n        vec2 randUv = (F.xy + 23.71 * float(i)) / iChannelResolution[1].xy;\n        vec3 randNor = textureLod(iChannel1, randUv, 0.0).xyz * 2.0 - 1.0;\n        if(dot(norz.xyz, randNor) < 0.0)\n            randNor *= -1.0;\n        \n        vec2 off = randNor.xy * scale;\n        vec4 sampleNorz = textureLod(iChannel0, uv + off, 0.0);\n        float depthDelta = depth - ( sampleNorz.w * CLIP_FAR );\n        \n        vec3 sampleDir = vec3(randNor.xy * radius, depthDelta);\n        float occ = max(0.0, dot(normalize(norz.xyz), normalize(sampleDir)) - BIAS) / (length(sampleDir) + 1.0);\n        ao += 1.0 - occ;\n    }\n    ao /= float(COUNT);\n   \n    return ao;\n}\n    \nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{   \n    fragColor = vec4(vec3(0),1);    \n    vec2 uv = F.xy / R.xy;\n    if (uv.x > 0.5 || uv.y > 0.5) return;\n    \n    fragColor = vec4(SSAO(uv), texture(iChannel0, uv).w, 0.0, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Copyright © 2019 Michal 'spolsh' Klos\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n//   Filterered Screen Space Ambient Obscurance exercise\n// based on first part of article: https://bartwronski.com/2019/09/22/local-linear-models-guided-filter/\n//\n//   Bilateral Joined Gaussian Blur in half resolution.\n//\n//   This should be done in two passes (horizontal and vertical) \n// to do less texture samples but I already used all passes.\n//\n//   Gaussian filter is separable so filtering horizontally and then vertically \n// is equivalent of sampling in both directions like below.\n//   Bilateral filter is not separable but separable approximation\n// is often used in practice despite some minor artifacts.\n\nfloat g_sigmaX = 3.;\nfloat g_sigmaY = 3.;\nfloat g_sigmaV = 1.;\n\nvec2 g_pixelSize = vec2(0.001);\nvec2 g_pixelSizeGuide = vec2(0.001);\n\nfloat JoinedBilateralGaussianBlur(vec2 uv)\n{   \n    const float c_halfSamplesX = 4.;\n\tconst float c_halfSamplesY = 4.;\n\n    float total = 0.0;\n    float ret = 0.0;\n\n    vec2 pivot = texture(iChannel0, uv).rg;\n    \n    for (float iy = -c_halfSamplesY; iy <= c_halfSamplesY; iy++)\n    {\n        float fy = Gaussian( g_sigmaY, iy );\n        float offsety = iy * g_pixelSize.y;\n\n        for (float ix = -c_halfSamplesX; ix <= c_halfSamplesX; ix++)\n        {\n            float fx = Gaussian( g_sigmaX, ix );\n            float offsetx = ix * g_pixelSize.x;\n            \n            vec2 value = texture(iChannel0, uv + vec2(offsetx, offsety)).rg;\n                        \n            float fv = Gaussian( g_sigmaV, abs(value.y - pivot.y) );\n            \n            total += fx*fy*fv;\n            ret += fx*fy*fv * value.r;\n        }\n    }\n        \n    return ret / total;\n}\n  \nvoid mainImage(out vec4 fragColor, vec2 fragCoord)\n{  \n    vec2 uv = F.xy / R.xy;\n    if (uv.x > 0.5 || uv.y > 0.5) return;\n    \n    g_pixelSize      = 1.0 / iChannelResolution[0].xy;\n    g_pixelSizeGuide = 1.0 / iChannelResolution[0].xy;\n    \n    g_sigmaV      = M.z > 0.0\n        ? 0.03 * pow(clamp(M.y / R.y, 0., 1.), 2.0)\n        : 0.03 * smoothstep(0.3, -0.3, cos(iTime));\n    g_sigmaV += 0.001;\n    float sigmaT  = 2.0;\n    \n    float filtered = JoinedBilateralGaussianBlur(uv);    \n    fragColor = vec4(vec3( filtered ), 1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

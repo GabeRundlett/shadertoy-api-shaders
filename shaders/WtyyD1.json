@@ -1,0 +1,156 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1610906449",
+            "description": "ray buffer optim.\nPhase function of various shapes. Fix (mouse.x = angle) or random angle. Params in Common (IOR, #bounce)\nSpace: shape = sphere-cyl  / triangle-prism / hexa-prism\n- R: reflection on shape\n- B: refraction inside\n- G: + internal reflections",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "WtyyD1",
+            "likes": 8,
+            "name": "phase function through shape 2",
+            "published": 3,
+            "tags": [
+                "refraction",
+                "phenomena",
+                "caustics",
+                "rainbow",
+                "pathtracing",
+                "ice",
+                "fresnel",
+                "arcs",
+                "pillars",
+                "glory",
+                "sundogs",
+                "parhelia",
+                "halo120",
+                "halo22"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 483
+        },
+        "renderpass": [
+            {
+                "code": "// refactoring https://www.shadertoy.com/view/WtGyW1 by storing rays\n// + new features ( triangle-prism )\n\nvoid mainImage(out vec4 O, vec2 U) {   \n    O = .5 * T(U) / T(0).a;\n    O = pow( O, vec4(1./2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// === compute rays propagation.  U.y = ray id, U.x = ray steps. out = ( coord.xy, I, 0 ) \n\n#define PI              3.1415927\n#define SQR(x)         (x)*(x)\n#define Fresnel(D,N,e)( e<1. ? fresnel(D,N,e) : fresnel(refract(D,N,e),N,e) )\n#define fresnel(D,N,e)  mix( pow( max(0.,1.-abs(dot(-D,N))), 5.), 1. , SQR((1.-e)/(1.+e)) )  // Schlick's approximation https://en.wikipedia.org/wiki/Schlick%27s_approximation\n\n#if 0\n\n    #define hash(p)         fract(sin(dot(p,vec2(127.1,311.7))) *43758.5453123)   // https://www.shadertoy.com/view/llySRh\n\n#else                                                                  // higher precision random\n\nvec3 ihash3( vec3 v ) {                                                // integer hash from https://www.shadertoy.com/view/XlXcW4\n    uvec3 x = uvec3(v * float(0xffffffffU) );\n    const uint k = 1103515245U;  // GLIB C\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;\n    x = ((x>>8U)^x.yzx)*k;   \n    return vec3(x)/float(0xffffffffU);\n}\n    #define hash(p) ihash3(vec3(fract((p)/100.),.5)).x\n\n#endif\n\n\nvoid mainImage(out vec4 O, vec2 U) {   \n    O-=O;\n    int CASE = int(T(0).x);                                            // 0: sphere/cylinder 1,2: triangle-prism 3,4: hexa-prism\n    \n    vec2 D = vec2(1,0), _P,P,N, r,t,                                   // ray direction\n         M = iMouse.xy / R;\n    U -= .5;\n    if ( U.x > 4.+2.*BOUNCE || U.y >= RAYS ) return;                   // just \n    float i = U.y;                                                     // samples per frame, then cumulates\n    vec2 d =  vec2( 2.*hash(vec2(i,iTime))-1.), n;                     // random sample on disk\n    float l, s = 1.*(i-1.11*iTime)/RAYS, _s,                           // for polygonal prism: current side\n          f, I = 4.;                                                   // I: energy\n    if ( CASE==1 || CASE==3 ) s = M.x;                                 // manual tuning of hexa rotation\n              \n#define intersect(P,r) /* out: new P,N                                    internal intersection in shape */ \\\n    switch(CASE) {                                                                                          \\\n      case 0:                                                          /* sphere / cylinder              */ \\\n          N = P -= 2.*dot(P,r) * r; break;              /*  |P + kr| = 1 → k² +2k(P.r) = 0 → k = -2(P.r) */ \\\n      case 1:                                                                                               \\\n      case 2: intersectPol(P,r,3.); break;                             /* triangle-prism                 */ \\\n      case 3:                                                                                               \\\n      case 4: intersectPol(P,r,6.); break;                             /* hexa-prism                     */ \\\n     }\n     \n#define intersectPol(P,r,p)                                         /* intersection with p-sides polygon */ \\\n        l=99.;                                                                                              \\\n        for(float t,k=0.; k<p; k++) {                                  /* case 0 for outside intersect   */ \\\n            n = cos( (s+k)*2.*PI/p + vec2(0,PI/2.) );                                                       \\\n            t = ( cos(PI/p) - dot(P,n) ) / dot(r,n);                   /* solve (OP+kr).n = cos(pi/p)    */ \\\n            if (t>0. && t<l  ) l=t, N = n;                             /* closest intersection > 0       */ \\\n          }                                       /* start in convex hull so good even for 1st intersect */ \\\n        P += l*r;                                                                                           \\\n        if (length(P) > 1.) return;\n\n#define C2S(c) sqrt(max(0., 1. - dot(c,c) ))\n\n     _P = P = vec2(-3,d.x);\n     N = P = vec2(0,d.x) - C2S(d.x)*D;                                 // 1st intersection on shape → N,P\n     if (CASE > 0 ) intersect(P,D);                                    // bounding circle,+ precise intersection for polygons\n\n    if (U.x==0.) { O = vec4(_P,I,0); return; }                         // ray start\n    if (U.x==1.) { O = vec4( P,1,0); return; }                         // incoming ray (grey)\n    \n    _P = P;\n    t = reflect(D,N);                                                  // reflect on shape\n    f = Fresnel(D,N,1./IOR);\n    if (U.x==2.) { O = vec4(_P+10.*t, I*f, 0); return; }               // reflected ray (red)\n    I *= 1.-f;\n    r = refract(D,N,1./IOR);                                           // refraction in shape\n    intersect(P,r);                                                    // next intersection\n    if (U.x==3.) { O = vec4(P,I,0); return; }                          // 1st internal ray (blue)\n    _P = P;  \n    t = refract(r,-N,IOR);                                             // refraction out of shape\n    f = Fresnel(r,-N,IOR); \n    if (U.x==4.) { if(t!=vec2(0)) O = vec4(_P+60.*t, I * (1.-f),0); return; }  // main exit \"lense ray\" (blue) ... but if total reflection\n\n    for (float j=0.; j<BOUNCE; j++) {                                  // loop on internal bounces\n      I *= f;\n      r = reflect(r,-N);                                               // internal reflection\n      intersect(P,r);                                                  // next intersection\n      if (U.x==5.+2.*j) { O = vec4(P,I,0); return; }                   // internal reflected ray (white)\n      _P = P;   \n      t = refract(r,-N,IOR);                                           // refraction out of sphere\n      f = Fresnel(r,-N,IOR); \n      if (U.x==6.+2.*j) { if(t!=vec2(0)) O = vec4(_P+60.*t,  I * (1.-f),0); return; }  // (green) ... but if total reflection\n    }    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define IOR     1.3         // ice: 1.31   water: 1.33   glass: 1.5   diamond: 2.42\n#define zoom    3.\n#define RAYS  100.          // number of additionnal rays per frame\n#define BOUNCE  2.          // number of extra internal bounces\n\n#define R     iResolution.xy\n#define T(U)  texelFetch( iChannel0, ivec2(U), 0 )\n#define T1(U) texelFetch( iChannel1, ivec2(U), 0 )",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "#define keyDown(a)    ( texelFetch(iChannel3,ivec2(a,1),0).x > 0.)\n#define keyToggle(a)  ( texelFetch(iChannel3,ivec2(a,2),0).x > 0.)\n\nfloat line(vec2 p, vec2 a,vec2 b) { \n    p -= a, b -= a;\n    float h = clamp(dot(p, b) / dot(b, b), 0., 1.);      // proj coord on line\n // return smoothstep(zoom*3./R.y,0.,length(p - b * h)); // dist to segment\n // return max(0., 1. -  length(p - b * h) / (zoom*3./R.y) );\n    p -= b*h; h = zoom*3./R.y; return max(0., 1. -  dot(p,p)/(h*h) );  // optim\n}\n\nvoid mainImage( out vec4 O,  vec2 U )\n{\n    O = T1(U);                                           // previous state\n    bool k = keyDown(32), b = keyDown(9);\n    if (U==vec2(.5)) {  iMouse.z>0. || k || b ? O.a=1. : \n                       O.a++;                            // cumulates - reset on mouse move\n                       if (k) O.x = mod(O.x+1.,5.);      // SPACE: change crystal shape\n                       return; } \n     if  (iMouse.z>0.|| k || b )  O-=O; if(k) return;\n\n    U = zoom*( 2.* U - R ) / R.y;   \n    bool inside = length(U) <= zoom;                     // bounding shape (for optim )\n\n    for( float s=0.; s < RAYS; s++ ) {\n        vec4 T; int i=0;\n        vec2 P =  T(vec2(0,s)).xy, _P,P0; \n\n        // fetch and trace segment.  optim: param in=1 if ray bounded to shape\n#define doLine(in) ( _P = P, T = T(vec2(++i,s)), P = T.xy, int(in)<1||inside ? line(U,_P, P) : 0. )\n\n        O   +=      doLine(U) * .5 ;                     // incoming ray\n        O.r += 2. * doLine(0) * T.z;                     // reflected ray\n        P = _P;\n        O.b +=      doLine(1) * T.z;                     // 1st internal ray\n        O.b +=      doLine(0) * T.z;                     //  main exit \"lense ray\"\n      for (float j=0.; j<BOUNCE; j++) {                  // loop on internal bounces\n        P = _P;\n        O   +=      doLine(1) * T.z;                     // internal reflected ray\n        O.g += 2. * doLine(0) * T.z;                     // refraction out of sphere\n      }\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

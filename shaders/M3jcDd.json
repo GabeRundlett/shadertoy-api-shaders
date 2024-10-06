@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1727900846",
+            "description": "This performs ray marching on a 3-sphere embedded in four dimensional Euclidean space. The camera and the three target spheres are embedded in the hypersphere. The camera is moving with a constant velocity.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "M3jcDd",
+            "likes": 0,
+            "name": "S3_Raymarching_3",
+            "published": 3,
+            "tags": [
+                "noneuclidean"
+            ],
+            "usePreview": 0,
+            "username": "DiophantineHydrogen",
+            "viewed": 32
+        },
+        "renderpass": [
+            {
+                "code": "//This performs ray marching on a 3-sphere embedded in four dimensional Euclidean space. The camera is moving with a constant velocity.\n//This is based on the introduction to manifolds in Professor Nicolas Boumal's \"Introduction to Optimization on Smooth Manifolds\" and in the associated edX class (https://www.nicolasboumal.net/book/).\n\n//Thanks to FabriceNeyret2 for many helpful refinements to S3_Raymarching_2, which I've tried to implement and carry forward here.\n\n\n//There are now 3 spheres in the scene. \n//Two of the images you see are from rays going the long way around and hitting the other side of the corresponding sphere.\nvec4 retract(vec4 x, vec4 v)\n{\n    float normV = length(v);\n    \n    vec4 newX;\n    \n    if(normV > 0.0) {\n        newX = cos(normV)*x + (sin(normV)/normV)*v;\n    } else {\n        newX = x;\n    }\n    \n    return newX;\n}\n\nvec4 parallelTransport(vec4 x, vec4 v, vec4 u, float t)\n{\n    //(I + (cos(t||v||) - 1)v*v.T/(||v||^2) - sin(||v||)x*v.T/||v||)*u\n    return u + v*(dot(v, u)/dot(v,v))*(cos(t*length(v)) - 1.0) - x*(sin(t*length(v))*dot(v, u)/length(v));\n}\n\n/*//This is a metric retraction, just for experimentation\nvec4 metricRetract(vec4 x, vec4 v)\n{\n    vec4 newX = x + v;\n    \n    float newXNorm = length(newX);\n    \n    newX = newX/newXNorm;\n    \n    return newX;\n}*/\n\nfloat getDist(vec4 x, vec4 y)\n{\n    float cosTheta = dot(x,y);\n    \n    return acos(cosTheta);\n}\n\nconst int NUM_SPHERES = 3;\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    bool OCTANT_COLORING = false; //Color the target sphere by octant?\n    bool CONTOUR_COLORING = true; //Color the target sphere with contours?\n    bool WIDE_ANGLE = true; //Use a wide angle view?\n    \n    //Move the camera with some velocity\n    //The former leaves the target at the \"pole\" and orbits an \"equator\"\n    //vec4 cameraVelocity = vec4(0.0, 0.0, 0.0, 1.0);\n    vec4 cameraVelocity = vec4(0.0, 0.33, -0.33, 0.0);\n    \n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.x;\n    \n    uv.x = uv.x - 0.5;\n    uv.y = uv.y - 0.5*(iResolution.y/iResolution.x);\n    \n    if(WIDE_ANGLE) {\n        uv.x = 16.0*uv.x;\n        uv.y = 16.0*uv.y;\n    }\n    \n    vec4 cameraPos = vec4(1.0, 0.0, 0.0, 0.0); //Place the camera at (1, 0, 0, 0)\n    \n    vec4 initialCameraPos = cameraPos;\n    \n    float cameraTime = iTime;\n    \n    cameraPos = retract(cameraPos, cameraTime*cameraVelocity);\n    \n    vec4[NUM_SPHERES] targetPos;\n    targetPos[0] = vec4(0.0, 1.0, 0.0, 0.0); //Our target is at (0, 1, 0, 0)\n    targetPos[1] = vec4(0.0, 0.0, 1.0, 0.0);\n    targetPos[2] = vec4(0.0, 0.0, 0.0, 1.0);\n    \n    float[NUM_SPHERES] R;\n    R[0] = 0.75; //What is the radius of the target?\n    R[1] = 0.75;\n    R[2] = 0.75;\n    \n    \n    float MAX_DISTANCE = 6.4; //iTime; //Stop iterating once t grows past this\n    \n    vec4 v = vec4(0.0, 1.0, uv); //This is in T_x(M) (the tangent space to the manifold at the camera position) at t = 0\n    \n    /*//Rotate this around the x axis...\n    float theta = 0.2*iTime;\n    \n    mat2 rotation = mat2(cos(theta), -sin(theta),\n                         sin(theta), cos(theta));\n    \n    v.yz = rotation*v.yz;*/\n    \n    //Apply a parallel transport to v, as we are not necessarily at t = 0\n    v = parallelTransport(initialCameraPos, cameraVelocity, v, cameraTime);\n    \n    //Divide this by the norm...\n    float normV = sqrt(dot(v, v));\n    \n    v = v/normV;\n    \n    vec4 x = cameraPos;\n    \n    //Get the distance...\n    float dist = getDist(cameraPos, targetPos[0]) - R[0];\n    \n    for(int i = 1; i < NUM_SPHERES; i++) {\n        dist = min(dist, getDist(cameraPos, targetPos[i]) - R[i]);\n    }\n    \n    float t = 0.0; //Our distance parameter\n    \n    while(dist > 0.001 && t < MAX_DISTANCE) {\n        t += dist; //> 0, as dist > R\n        \n        t = min(t, MAX_DISTANCE);\n        \n        x = retract(cameraPos, t*v);\n        \n        dist = getDist(x, targetPos[0]) - R[0];\n        for(int i = 1; i < NUM_SPHERES; i++) {\n            dist = min(dist, getDist(x, targetPos[i]) - R[i]);\n        }\n    }\n    \n    // Pixel color\n    vec3 col = vec3(0.0, 0.0, 0.0);\n    \n    if(dist <= 0.001) {        \n        col = vec3(0.5, 0.5, 0.5);\n        \n        if(CONTOUR_COLORING) {            \n            col.x  = 1.0 - 0.75*smoothstep( 0.0,1.0, (fract(abs(2.0*x.x))-0.01)/fwidth(x.x) );\n            col.y  = 1.0 - 0.75*smoothstep( 0.0,1.0, (fract(abs(2.0*x.z))-0.01)/fwidth(x.z) );\n            col.z  = 1.0 - 0.75*smoothstep( 0.0,1.0, (fract(abs(2.0*x.w))-0.01)/fwidth(x.w) );\n        }\n        \n        if(OCTANT_COLORING) {\n            if(x.x > 0.0) {\n                col.x = 1.0;\n            } else {\n                col.x = 0.25;\n            }\n\n            if(x.z > 0.0) {\n                col.y = 1.0;\n            } else {\n                col.y = 0.25;\n            }\n\n            if(x.w > 0.0) {\n                col.z = 1.0;\n            } else {\n                col.z = 0.25;\n            }\n        }\n    }\n\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

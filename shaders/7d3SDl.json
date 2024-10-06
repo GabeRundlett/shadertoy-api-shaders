@@ -1,0 +1,176 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1634147739",
+            "description": "Click and drag to draw clouds which will move around in a fluid like motion.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "7d3SDl",
+            "likes": 0,
+            "name": "Interactive Fluid Clouds",
+            "published": 3,
+            "tags": [
+                "interactive",
+                "clouds",
+                "fluid",
+                "density",
+                "navier",
+                "stokes"
+            ],
+            "usePreview": 0,
+            "username": "intrakits",
+            "viewed": 376
+        },
+        "renderpass": [
+            {
+                "code": "//Navier-Stokes reference:      https://www.shadertoy.com/view/tt3yzn\n//3d cellular tiling reference: https://www.shadertoy.com/view/ld3Szs\n//cloud reference:              https://www.shadertoy.com/view/4sXGRM\n\n#define _StepSize 5.\n#define _VolDepth 1000.0\n#define _CloudScale 7.\n#define _CloudOffset 0.\n#define _DensityThreshold .1\n#define _DensityMultiplier .05\n\n\n#define _DarknessThreshold .3\n#define _LightAbsorbtion 100.\n#define _LightAbsorbtionTowardsSun 200.\n#define  _NumStepsLight 9\n#define _PhaseVal 100.\n\nmat3 m = mat3(0.00, 1.60, 1.20, -1.60, 0.72, -0.96, -1.20, -0.96, 1.28);\n\nvec2 cloudHeight = vec2(400,900);\n\nvec3 lightDir = normalize(vec3(0.1,.1,.5));\n\n\nfloat drawSphere(in vec3 p){\n    \n    p = fract(p)-.5;    \n    return dot(p, p);\n    \n    p = abs(fract(p)-.5);\n    return dot(p, vec3(.166));\n    \n}\n\nfloat cellTile(in vec3 p){\n    \n    float c = .25; // Set the maximum.\n    \n    c = min(c, drawSphere(p - vec3(.81, .62, .53)));\n    c = min(c, drawSphere(p - vec3(.39, .2, .11)));\n    \n    c = min(c, drawSphere(p - vec3(.62, .24, .06)));\n    c = min(c, drawSphere(p - vec3(.2, .82, .64)));\n    \n    p *= 1.4142;\n    \n    c = min(c, drawSphere(p - vec3(.48, .29, .2)));\n    c = min(c, drawSphere(p - vec3(.06, .87, .78)));\n\n    c = min(c, drawSphere(p - vec3(.6, .86, .0)));\n    c = min(c, drawSphere(p - vec3(.18, .44, .58)));\n        \n    return (c*4.);\n    \n}\n\n\nvec3 camera(float time)\n{\n    return vec3(sin(time*.5),0, time);\n}\nfloat getDensity(vec3 pos){\n    float n1 = smoothstep(.7,.1,cellTile(pos*.005));\n    float n2 = smoothstep(0.,.5,cellTile(pos*.001));\n   // float n3 = smoothstep(0.,.4,cellTile(pos*.00001));\n   // float n4 = smoothstep(0.,.4,cellTile(pos*.0002));\n    float alpha = smoothstep(0.5, 1.0,n1*n2);\n    alpha = max(0.,alpha-_DensityThreshold)*_DensityMultiplier;\n    return alpha;\n}\n// Fractional Brownian motion\nfloat fbm(vec3 p)\n{\n   // p*=.00025;\n    float f = 0.5000 * getDensity(p);\n    p = m * p;\n    f += 0.2500 * getDensity(p);\n    p = m * p;\n    f += 0.1666 * getDensity(p);\n    p = m * p;\n    f += 0.0834 * getDensity(p);\n    \n    return f;\n}\n// Fractional Brownian motion\nfloat getFlow(vec3 p){\n    p*=.0005;\n    float alpha =  texture(iChannel0, p.xy+vec2(.5,.5)).w;\n    alpha = max(0.,alpha-_DensityThreshold)*_DensityMultiplier;\n    alpha *= fbm(p/.0005+iTime*20.);\n    return alpha;\n}\n\nfloat lightmarch(vec3 pos){\n    vec3 dirToLight = lightDir;\n    float totalDensity = 0.;\n    for(float i = 0.; i < _VolDepth; i += _StepSize*200.){\n\n        pos += dirToLight *_StepSize;\n       \n        float alpha = getFlow(pos);//getDensity(pos);\n        \n        totalDensity += max(0.,alpha*_StepSize);\n    }\n    float transmittance = exp(-totalDensity * _LightAbsorbtionTowardsSun);\n    return _DarknessThreshold + transmittance * (1.-_DarknessThreshold);\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.0;\n    uv.x *= iResolution.x / iResolution.y;\n\n    \n    float time = (iTime + 13.5 + 44.) * 1.0;\n    vec3 campos = camera(time);\n    vec3 camtar = camera(time + .1);\n\n    vec3 front = normalize(camtar - campos);\n    vec3 right = normalize(cross(front, vec3(0.0, 1.0, 0.0)));\n    vec3 up = normalize(cross(right, front));\n    vec3 fragAt = normalize(uv.x * right + uv.y * up + front);\n    \n    // clouds\n    vec4 sum = vec4(0, 0, 0, 0);\n    vec3 lightE = vec3(0.);\n    float transmittance = 1.;\n    for (float depth = 0.0; depth < _VolDepth; depth += _StepSize)\n    {\n        vec3 ray = campos + fragAt * depth;\n        if (cloudHeight.x < ray.z && ray.z < cloudHeight.y)\n        {\n            \n            float alpha =getFlow(ray);//getDensity(pos);\n            \n            alpha = (1.0 - sum.a) * alpha;\n            if(alpha >0.){\n                float lightTransmittance = lightmarch(ray);\n                lightE+=alpha*_StepSize*transmittance*lightTransmittance*_PhaseVal;\n                transmittance*= exp(-alpha*_StepSize*_LightAbsorbtion);\n                if(transmittance < 0.01){\n                  break;\n                }\n            }\n            sum += vec4(vec3(1) * alpha, alpha);\n        }\n    }\n    float alpha = smoothstep(0.7, 1.0, sum.a);\n    sum.rgb= lightE;\n    float sundot = clamp(dot(fragAt, lightDir), 0.0, 1.0);\n    vec3 col = 0.8 * (vec3(0,0,1));\n    col += 0.47 * vec3(1.6, 1.4, 1.0) * pow(sundot, 350.0);\n    col += 0.4 * vec3(0.8, 0.9, 1.0) * pow(sundot, 2.0);\n    col = mix(col, sum.rgb, 1.-transmittance);\n\n    //col=vec3(smoothstep(.0,.7,cellTile(vec3(uv.x,uv.y,0.)))*smoothstep(1.,.5,cellTile(vec3(uv.x,uv.y,0.)))*smoothstep(1.,.4,cellTile(vec3(uv.x*2.,uv.y*2.,0.))));\n    // Output to screen\n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// advection & boundary & control\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 o = texelFetch(iChannel0, ivec2(fragCoord), 0);  \n    vec4 n = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0, 1), 0);\n    vec4 e = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 1, 0), 0);\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0,-1), 0);\n    vec4 w = texelFetch(iChannel0, ivec2(fragCoord) + ivec2(-1, 0), 0);\n    \n    // advection\n    vec4 a = texture(iChannel0, (fragCoord-o.xy*dt)/iResolution.xy);\n    fragColor = a;\n    float coord = iResolution.x ;\n    \n    // interaction\n    if(sign(iMouse.z)==1.0f)\n    {\n        vec2 d = fragCoord-vec2(coord-iMouse.x,iMouse.y);\n        float r = length(d);\n        vec2 d2 = vec2(coord-iMouse.x,iMouse.y)-abs(iMouse.zw);\n        float r2 = length(d2);\n        if(r2>0.0f)\n        {\n            fragColor.xy += d2/r2*exp(-r*r*0.01f);\n            fragColor.w += 0.5f*exp(-r*r*0.01f);\n            fragColor.w = min(fragColor.w, .8f);\n        }\n    }\n    \n    // boundary condition\n    if(fragCoord.x == 0.5f)\n    {\n        fragColor.xy = -e.xy;\n        fragColor.z = e.z;\n        fragColor.w = 0.0f;\n    }\n    \n    if(fragCoord.y == 0.5f)\n    {\n        fragColor.xy = -n.xy;\n        fragColor.z = n.z;\n        fragColor.w = 0.0f;\n    }\n    \n    if(fragCoord.x == iResolution.x-0.5f)\n    {\n        fragColor.xy = -w.xy;\n        fragColor.z = w.z;\n        fragColor.w = 0.0f;\n    }\n    \n    if(fragCoord.y == iResolution.y-0.5f)\n    {\n        fragColor.xy = -s.xy;\n        fragColor.z = s.z;\n        fragColor.w = 0.0f;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// pressure poisson\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 o = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec4 n = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0, 1), 0);\n    vec4 e = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 1, 0), 0);\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0,-1), 0);\n    vec4 w = texelFetch(iChannel0, ivec2(fragCoord) + ivec2(-1, 0), 0);\n    \n    // float divergence of the velocity\n    float div = (e.x - w.x + n.y - s.y) / (2.0f * dx * dx);\n    \n    // one jacobi iteration\n    float a = 1.0f / ( dx * dx);\n    float p = 1.0f / ( -4.0f * a ) * ( div - a * (n.z + e.z + s.z + w.z));\n\n    fragColor = vec4(o.xy, p, o.w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// pressure poisson\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 o = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec4 n = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0, 1), 0);\n    vec4 e = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 1, 0), 0);\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0,-1), 0);\n    vec4 w = texelFetch(iChannel0, ivec2(fragCoord) + ivec2(-1, 0), 0);\n    \n    // float divergence of the velocity\n    float div = (e.x - w.x + n.y - s.y) / (2.0f * dx * dx);\n    \n    // one jacobi iteration\n    float a = 1.0f / ( dx * dx);\n    float p = 1.0f / ( -4.0f * a ) * ( div - a * (n.z + e.z + s.z + w.z));\n\n    fragColor = vec4(o.xy, p, o.w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// projection\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 o = texelFetch(iChannel0, ivec2(fragCoord), 0);\n    vec4 n = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0, 1), 0);\n    vec4 e = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 1, 0), 0);\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord) + ivec2( 0,-1), 0);\n    vec4 w = texelFetch(iChannel0, ivec2(fragCoord) + ivec2(-1, 0), 0);\n    \n    // gradient of the pressure\n    vec2 grad = vec2( e.z - w.z, n.z - s.z ) / (2.0f * dx * dx);\n\n    // project\n    fragColor = vec4(o.xy - grad, o.zw);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const float dt = 5.0f;\nconst float dx = 1.00f;\nconst float nu = 0.00001f;\n\n// The velocity field should be divergence free\n// Buffer B & C & D do their best to make sure it is\n// However, currently, they are only allowed 2 jacobi iterations to solve pressure poisson equation\n// This means the velocity field is not perfectly divergence free\n// This, in turn, means that the advection of the dye is poor: dye is lost :(.\n// This problem could be solved by taking smaller time steps, but that is boring of course.",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

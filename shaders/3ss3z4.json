@@ -1,0 +1,124 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1545332150",
+            "description": "3D projection of a Clifford Torus: https://en.wikipedia.org/wiki/Clifford_torus\n\nUses simple root finder to trace surface.\n\nMouse + UP/DOWN change viewpoint. 's' fixes on stereographic projection. 'f' is framework view.",
+            "flags": 112,
+            "hasliked": 0,
+            "id": "3ss3z4",
+            "likes": 11,
+            "name": "Clifford Torus",
+            "published": 3,
+            "tags": [
+                "torus",
+                "quartic",
+                "rootfinder",
+                "clifford"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 935
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n// Created by Matthew Arcus, 2018\n// A Clifford Torus, projected into R3\n// <mouse>: change viewpoint\n// <up/down arrow>: zoom in and out\n// 's': use stereographic projection only\n// 'f': framework view (default)\n// '1': show branch 1 only of K > 1 transform\n////////////////////////////////////////////////////////////////////////////////\n\nconst float PI =  3.141592654;\nconst float TWOPI =  2.0*PI;\n\n// Geometric parameters\nfloat R2 = 0.5;  // radius squared of torus\nfloat K,K2;      // w coord of 4D camera, K2 = K*K\nmat4 M;          // R4 transformation matrix\n\n// Display parameters\nconst float scale = 1.0;\nconst float camera = 4.0;\nconst float ambient = 0.5;\nconst float diffuse = 0.5;\n\n// Parameters for root findera\nconst int iterations = 100;    // Maximum number of iterations\nconst float maxincrease = 1.1; // Largest allowed step increase.\nconst float maxstep = 1.0;     // The largest step that can be taken.\nconst float minstep = 0.001;   // The smallest step\nconst float initstep = 0.01;\n\n // Debugging aids\nbool alert = false;\nvoid assert(bool test) {\n  if (!test) alert = true;\n}\n#define assert(x)\n\n// Clifford torus is x^2 + y^2 = 0.5\nfloat torus(vec4 p) {\n  return dot(p.xw,p.xw) - R2;\n}\n\nvoid swap(inout float x, inout float y) {\n  float t = x; x = y; y = t;\n}\n\nvoid iswap(inout int i, inout int j) {\n  int t = i; i = j; j = t;\n}\n\n// Ax^2 + 2Bx + C = 0\nbool quadratic(float A, float B, float C, out vec2 res) {\n   float D = B*B - A*C;\n   if (D < 0.0) return false;\n   D = sqrt(D);\n   if (B < 0.0) D = -D;\n   float x0 = (-B-D)/A;\n   float x1 = C/(A*x0);\n   res = x0 < x1? vec2(x0,x1): vec2(x1,x0);\n   return true;\n}\n\n// Quadratic but clamp discriminant to non-negative.\n// Return max or min solution, depending on parity\nfloat cquadratic(float A, float B, float C, int parity) {\n  vec2 res;\n  if (quadratic(A,B,C,res)) return parity == 0? res.y: res.x;\n  return -B/A;\n}\n\n// Quaternion multiplication as a matrix.\n// w coordinate is scalar element of quaternion\nmat4 qmat(vec4 q) {\n  float x = q.x, y = q.y, z = q.z, t = q.w;\n  return mat4( t,-z, y, x, \n               z, t,-x, y,\n              -y, x, t, z,\n              -x,-y,-z, t );\n}\n\nvec2 rotate(vec2 p, float t) {\n  return p * cos(-t) + vec2(p.y, -p.x) * sin(-t);\n}\n\n// Turn uv coords into \"diagonal\" coords.\nvec2 getuv(vec2 uv) {\n  uv = uv-floor(uv);\n  float u = uv[0];\n  float v = uv[1];\n\n  // 0 <= u,v < 1\n  float u0 = v+u-1.0, v0 = v-u;\n  u = u0; v = v0;\n  // -1 < u,v < 1\n  if (u < 0.0) { u = -u; v = -v; }\n  if (v > 0.5) { v = 1.0-v; u = 1.0-u; }\n  if (v < -0.5) { v = -1.0-v; u = 1.0-u; }\n  v += 0.5;\n  return vec2(u,v);\n}\n\n// We are projecting from w = K to w = 0\n// Assume the point is on the hypersphere\n// so |unproject(p,n)| = 1\n\n// K = K2 = 1 for stereographic, and  x = 0 is\n// solution for projection point and\n// (p.p+1)x -1 = 0 => t = 1/(p.p+1) is solution\nvec4 unproject(vec3 p, int parity) {\n  float A = dot(p,p)+K2;\n  float B = -K2;\n  float C = K2 - 1.0;\n  float t = cquadratic(A,B,C,parity);\n  return M*vec4(t*p,K*(1.0-t));\n}\n\nfloat eval(vec3 q, int parity) {\n  return torus(unproject(q,parity));\n}\n\n// Root finder. Advance carefully until a change\n// of sign, then bisect. Accumulate up to 4 roots.\nint solve(vec3 p0, vec3 r, int parity, out vec4 res) {\n  float k0 = 0.0, limit = 20.0;\n  if (K > 1.01) {\n    float a2 = K2/(K2-1.0); // Sphere diameter\n    float A = 1.0;\n    float B = dot(p0,r);\n    float C = dot(p0,p0) - a2;\n    vec2 res;\n    if (!quadratic(A,B,C,res)) return 0;\n    k0 = max(k0,res.x); limit = res.y;\n    if (k0 >= limit) return 0;\n  }\n  float a0 = eval(p0+k0*r,parity);\n  float k1, a1;\n  float step = initstep;\n  int maxroot = 4;\n  for (int root = 0; root < maxroot; root++) {\n    bool found = false;\n    for (int i = 0; i < iterations; i++) {\n      k1 = k0 + step;\n      k1 = min(k1,limit);\n      a1 = eval(p0+k1*r,parity);\n      if (a0*a1 <= 0.0) {\n        // We can hit exactly 0 - this counts as bracketed.\n        found = true;\n        break;\n      }\n      if (k1 >= limit) break;\n      float step0 = step;\n      step = a1*step/(a0-a1);\n      step = abs(step); // ???\n      step = min(step,maxstep);\n      // Don't grow step by more than a certain amount\n      // A better strategy should be possible\n      // Detect overstepping & retreat maybe.\n      step = max(step,minstep);\n      step = min(step,maxincrease*step0);\n      k0 = k1; a0 = a1;\n    }\n\n    if (!found) return root;\n\n    for (int i = 0; i < iterations; i++) {\n      // Now we are bracketed, just use bisection\n      if (k1-k0 < 1e-6) break;\n      float k2 = 0.5*(k0+k1);\n      vec3 p2 = p0+k2*r;\n      float a2 = eval(p2,parity);\n      if (a0*a2 <= 0.0) {\n        k1 = k2; a1 = a2;\n      } else {\n        k0 = k2; a0 = a2;\n      }\n    }\n    res[root] = 0.5*(k0+k1);\n    float eps = 5e-4;\n    k1 += eps;\n    a1 = eval(p0+k1*r,parity);\n    k0 = k1; a0 = a1;\n  }\n  return maxroot;\n}\n\nvec3 getcolor(int i) {\n  if (i == 0) return vec3(1,1,0);\n  if (i == 1) return vec3(0,1,0);\n  if (i == 2) return 0.5*vec3(1);\n  return vec3(1,0,0);\n}\n\nint mapcolor(vec3 p, int parity) {\n  vec4 p4 = unproject(p,parity);\n  vec2 uv = vec2(atan(p4.w,p4.x)/TWOPI,\n                 atan(p4.z,p4.y)/TWOPI);\n  uv += 0.1*iTime;\n  uv = getuv(uv);\n  uv *= 10.0;\n  int i = int(uv.x)+int(uv.y);\n  uv = fract(uv);\n  vec2 border = min(uv-0.2,0.8-uv);\n  if (min(border.x,border.y) > 0.0) return 2;\n  else return i%2;\n}\n\nbool keypress(int code) {\n  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;\n}\n\nvec4 store(int i,int j) {\n  return texelFetch(iChannel1, ivec2(i,j),0);\n}\nint keycount(int key) {\n  return int(store(0,key).x);\n}\n\nconst int CHAR_0 = 48;\nconst int CHAR_F = 70;\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\nconst int CHAR_X = 88;\nconst int KEY_UP = 38;\nconst int KEY_DOWN = 40;\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  if (!keypress(CHAR_R)) {\n    p.yz = rotate(p.yz,0.123*iTime);\n    //p.xy = rotate(p.xy,0.5*PI);\n  }\n  return p;\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord ) {\n  if (keypress(CHAR_S)) K = 1.0;\n  else K = 1.0-0.8*sin(0.2*iTime);\n  K2 = K*K;\n  vec3 light = normalize(vec3(0.0,1.0,1.0));\n  vec2 uv = (2.0*fragCoord.xy - iResolution.xy)/iResolution.y;\n  vec3 p0 = vec3(0,0,camera);     // point of projection\n  p0 *= 0.1*float(10+keycount(KEY_DOWN)-keycount(KEY_UP));\n  vec3 r = vec3(scale*uv,-2);      // ray\n\n  float theta = 0.231*iTime;\n  vec3 dir = normalize(vec3(1,1,1));\n  // Quaternion rotation about dir\n  M = qmat(normalize(vec4(sin(theta)*dir,cos(theta))));\n\n  p0 = transform(p0);\n  r = transform(r);\n  light = transform(light);\n  r = normalize(r);\n\n  float t = 1e8;\n  vec4 res,res1;\n  ivec4 paritys = ivec4(0);\n  int nroots = solve(p0,r,0,res);\n  if (K > 1.0 && !keypress(CHAR_0+1)) {\n    int nroots1 = solve(p0,r,1,res1);\n    assert(nroots+nroots1 <= 4);\n    for (int i = 0; i < min(nroots1,4-nroots); i++) {\n      res[nroots] = res1[i];\n      paritys[nroots] = 1;\n      for (int j = nroots; j > 0; j--) {\n        if (res[j-1] < res[j]) break;\n        swap(res[j-1],res[j]);;\n        iswap(paritys[j-1],paritys[j]);\n      }\n      nroots++;\n    }\n  }\n  for (int i = 1; i < nroots; i++) {\n    assert(res[i-1] <= res[i]);\n  }\n  vec3 color = vec3(0);\n  for (int i = 0; i < nroots; i++) {\n    float t = res[i];\n    int parity = paritys[i];\n    vec3 p = p0+t*r;\n    int cindex = mapcolor(p,parity);\n    if (!keypress(CHAR_F) && cindex == 2) continue;\n    vec3 basecolor = getcolor(cindex);\n    vec2 eps = vec2(0,1e-4);\n    vec3 normal = vec3(eval(p+eps.yxx,parity)-eval(p-eps.yxx,parity),\n                       eval(p+eps.xyx,parity)-eval(p-eps.xyx,parity),\n                       eval(p+eps.xxy,parity)-eval(p-eps.xxy,parity));\n    normal = normalize(normal);\n    if (dot(r,normal) > 0.0) normal = -normal;\n    color = basecolor*ambient;\n    color += basecolor*diffuse*(max(0.0,dot(light,normal)));\n    float specular = pow(max(0.0,dot(reflect(light,normal),vec3(r))),4.0);\n    color += 0.7*specular*vec3(1,1,1);\n    break;\n  }\n  color = sqrt(color);\n  if (alert) color= vec3(1,0,0);\n  fragColor = vec4(color,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "musicstream",
+                        "id": 28134,
+                        "published": 0,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "https://soundcloud.com/supersonic-festival/phase-too-clifford-torus"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\nvoid mainImage(out vec4 t, vec2 uv) {\n#if __VERSION__ < 300\n    t = vec4(0);\n#else\n    \n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0 ) {\n        t = vec4(0);\n    } else {\n        t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n        \n#endif           \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

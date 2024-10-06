@@ -1,0 +1,95 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1530251865",
+            "description": "having fun with path tracing. arrow keys + shift and ctrl to move. space to clear buffer.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "4dKfRd",
+            "likes": 21,
+            "name": "random octree pathtracing",
+            "published": 3,
+            "tags": [
+                "voxels",
+                "pathtracing",
+                "octree"
+            ],
+            "usePreview": 0,
+            "username": "abje",
+            "viewed": 1913
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    fragColor = texelFetch(iChannel0, ivec2(fragCoord),0);\n    fragColor /= abs(fragColor.a)+0.001;\n    fragColor = sqrt(fragColor*5.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//path tracing\n#define samples 1\n#define bounces 4\n//#define fog\n#define fogdistance 2.0\n#define reflections\n#define reflectionblur 0.03\n\n//ray casting\n#define detail 5\n#define steps 100\n#define maxdistance 20.0\n\n//camera\n#define movespeed 1.0\n\n//keyboard keys\n#define KEY_UP    38\n#define KEY_DOWN  40\n#define KEY_RIGHT 39\n#define KEY_LEFT  37\n#define KEY_SHIFT 16\n#define KEY_CTRL  17\n\n//movement keys\n#define MOVE_FORW  KEY_UP\n#define MOVE_LEFT  KEY_LEFT\n#define MOVE_RIGHT KEY_RIGHT\n#define MOVE_BACK  KEY_DOWN\n#define MOVE_UP    KEY_SHIFT\n#define MOVE_DOWN  KEY_CTRL\n\n//functions\n#define rot(spin) mat2(cos(spin),sin(spin),-sin(spin),cos(spin))\n\n//random function by romasm\n//https://www.shadertoy.com/view/4scfz4\nfloat seed = 0.0;\nvec2 fragUV = vec2(0.0);\nfloat rand() \n{\n\tfloat r = fract(sin(dot(fragUV, vec2(12.9898, 78.233)) + seed) * 43758.5453);\n\tseed++;\n    return r;    \n}\n\n//random function from https://www.shadertoy.com/view/MlsXDf\nfloat rnd(vec4 v) { return fract(4e4*sin(dot(v,vec4(13.46,41.74,-73.36,14.24))+17.34)); }\n\n//0 is empty, 1 is subdivide and 2 is full\nint getvoxel(vec3 p, float size) {\n    float val = rnd(vec4(p,size));\n    \n    /*if (val < 0.6) {\n        return 0;\n    } else if (val < 0.9) {\n        return 1;\n    } else {\n        return 2;\n    }*/\n    \n    return int(val*val*3.0);\n}\n\nfloat getmaterial(vec3 p, float size) {\n    float val = rnd(vec4(p,size));\n    return clamp((val-0.812)/(1.0-0.812),0.0,1.0);\n}\n\n//ray-cube intersection, on the inside of the cube\nvec3 voxel(vec3 ro, vec3 rd, float size)\n{\n    size *= 0.5;\n    \n    vec3 hit = -(sign(rd)*(ro-size)-size)/max(abs(rd),0.001);\n    \n    return hit;\n}\n\nfloat sphDensity( vec3  ro, vec3  rd,   // ray origin, ray direction\n                  vec3  sc, float sr,   // sphere center, sphere radius\n                  float dbuffer )       // depth buffer\n{\n    // normalize the problem to the canonical sphere\n    float ndbuffer = dbuffer / sr;\n    vec3  rc = (ro - sc)/sr;\n\t\n    // find intersection with sphere\n    float b = dot(rd,rc);\n    float c = dot(rc,rc) - 1.0;\n    float h = b*b - c;\n\n    // not intersecting\n    if( h<0.0 ) return 0.0;\n\t\n    h = sqrt( h );\n    \n    //return h*h*h;\n\n    float t1 = -b - h;\n    float t2 = -b + h;\n\n    // not visible (behind camera or behind ndbuffer)\n    if( t2<0.0 || t1>ndbuffer ) return 0.0;\n\n    // clip integration segment from camera to ndbuffer\n    t1 = max( t1, 0.0 );\n    t2 = min( t2, ndbuffer );\n\n    // analytical integration of an inverse squared density\n    float i1 = -(c*t1 + b*t1*t1 + t1*t1*t1/3.0);\n    float i2 = -(c*t2 + b*t2*t2 + t2*t2*t2/3.0);\n    return (i2-i1)*(3.0/4.0);\n}\n\nvec4 octreeray(in vec3 ro,\n               in vec3 rd,\n               in float maxdist,\n               out vec3 lro, out vec3 fro,\n               out float size,\n               in int reflects,\n               inout float fogl) {\n    size = 1.0;\n    lro = mod(ro,size);\n    fro = ro-lro;\n    vec3 mask;\n    bool exitoct = false;\n    int recursions = 0;\n    float dist = 0.0;\n    int i;\n    float edge = 1.0;\n    float lastsize = size;\n    \n    //the octree traverser loop\n    //each iteration i either:\n    // - check if i need to go up a level\n    // - check if i need to go down a level\n    // - check if i hit a cube\n    // - go one step forward if cube is empty\n    for (i = 0; i < steps; i++)\n    {\n        if (dist > maxdist) break;\n        int voxelstate = getvoxel(fro,size);\n        \n        //i go up a level\n        if (exitoct)\n        {\n            \n            vec3 newfro = floor(fro/size*0.5+0.25)*size*2.0;\n            \n            lro += fro-newfro;\n            fro = newfro;\n            \n            recursions--;\n            size *= 2.0;\n            \n            exitoct = (recursions > 0) && (abs(dot(mod(fro/size+0.5,2.0)-1.0+mask*sign(rd)*0.5,mask))<0.1);\n        }\n        //subdivide\n        else if(voxelstate == 1&&recursions<=detail)\n        {\n            \n            recursions++;\n            size *= 0.5;\n            \n            //find which of the 8 voxels i will enter\n            vec3 mask2 = step(vec3(size),lro);\n            fro += mask2*size;\n            lro -= mask2*size;\n        }\n        else if (voxelstate == 2)\n        {\n            break;\n        }\n        //move forward\n        else\n        {\n            //raycast and find distance to nearest voxel surface in ray direction\n            vec3 hit = voxel(lro, rd, size);\n            if (hit.x < min(hit.y,hit.z)) {\n                mask = vec3(1,0,0);\n            } else if (hit.y < hit.z) {\n                mask = vec3(0,1,0);\n            } else {\n                mask = vec3(0,0,1);\n            }\n            \n            float len = dot(hit,mask);\n            \n            //moving forward in ray direction, and checking if i need to go up a level\n            lro += rd*len-mask*sign(rd)*size;\n            vec3 newfro = fro+mask*sign(rd)*size;\n            dist += len;\n            fogl -= len;\n            if (fogl <= 0.0) {\n                dist -= fogl;\n                fogl = 0.0;\n            }\n            exitoct = (floor(newfro/size*0.5+0.25)!=floor(fro/size*0.5+0.25))&&(recursions>0);\n            fro = newfro;\n        }\n    }\n    return vec4(dist, mask);\n}\n\nfloat getkey(int x, int y)\n{\n    return texelFetch(iChannel1,ivec2(x,y),0).x;\n}\n\nvoid mainImage( out vec4 fragColor,  vec2 fragCoord )\n{\n    fragUV = fragCoord / iResolution.xy;\n    seed = iTime;\n    fragColor = vec4(0);\n    if (iFrame == 0) {\n        fragColor = vec4(0);\n        return;\n    }\n    \n    ivec2 coord = ivec2(fragCoord);\n    vec3 ro = texelFetch(iChannel0,ivec2(0),0).xyz;\n    \n    mat2 rotx = mat2(1,0,0,1);\n    mat2 roty = mat2(1,0,0,1);\n    \n    if (length(iMouse.xy) > 40.0) {\n        rotx = rot(iMouse.y/iResolution.y*3.14-3.14*0.5);\n        roty = rot(iMouse.x/iResolution.x*3.14*2.0-3.14);\n    }\n    \n    vec3 move = vec3(getkey(MOVE_RIGHT,0)-getkey(MOVE_LEFT,0),\n                     getkey(MOVE_UP   ,0)-getkey(MOVE_DOWN,0),\n                     getkey(MOVE_FORW ,0)-getkey(MOVE_BACK,0));\n    \n    // i hope nobody notices one dead pixel :)\n    if (coord == ivec2(0)) {\n    \tvec3 forward = vec3(0,0,1);\n        if (length(iMouse.xy) > 40.0) {\n            forward.yz *= rot(iMouse.y/iResolution.y*3.14-3.14*0.5);\n            forward.xz *= rot(iMouse.x/iResolution.x*3.14*2.0-3.14);\n        }\n        \n        mat3 look = mat3(normalize(cross(vec3(0,1,0),forward)),\n                           vec3(0),\n                           forward);\n        look[1] = cross(look[2],look[0]);\n        \n        fragColor.xyz = ro+move*movespeed*iTimeDelta*transpose(look);\n\t\treturn;\n    }\n    \n    for (int i = 0; i < samples; i++) {\n        vec2 uv = ((fragCoord.xy+vec2(rand(),rand())) * 2.0 - iResolution.xy) /iResolution.y;\n        vec3 rd = normalize(vec3(uv,1.0));\n        rd.yz *= rotx;\n        rd.xz *= roty;\n        \n        vec3 ro = ro;\n    \tvec3 light = vec3(-1.0);\n        for (int reflects = 0; reflects < bounces; reflects++) {\n            vec3 lro;\n            vec3 fro;\n            float size;\n            float fogl = -log2(rand())*fogdistance;\n#ifndef fog\n            fogl = 10000.0;\n#endif\n            vec4 len = octreeray(ro, rd, maxdistance, lro, fro, size,reflects,fogl);\n            \n            vec3 hit = ro+rd*len.x;\n\n#ifdef fog \n            if (fogl == 0.0) {\n                rd = normalize(vec3(rand(),rand(),rand()));\n                ro = hit;\n                //light *= 0.7;\n                continue;\n            }\n#endif\n\n            float val = fract(dot(fro+0.453,vec3(15.23,754.345,3.454))*100.0);\n            vec3 normal = -len.yzw*sign(rd);\n            hit += normal*0.001;\n            vec3 color = sqrt(fract(100.0*sin(val*vec3(39.896,57.3225,48.25))+0.53));\n            \n            float material = getmaterial(fro,size);\n            \n            ro = hit;\n\t\t\t\n#ifdef reflections\n            bool diffus = 0.5 < material||rand()<material*2.0;\n#else\n            bool diffus = true;\n#endif\n            \n            if (material > 0.04) {\n                if (diffus) {\n                \tlight *= color;\n                }\n            } else {\n                light = -light;//*color;\n                break;\n            }\n            \n            vec3 rd2;\n            float spread;\n            mat3 mat;\n            if (diffus) {\n                rd2 = normal;\n                spread = 0.98;\n\n                mat = mat3(rd2,\n                           rd2.yzx,\n                           rd2.zxy);\n            } else {\n                spread = reflectionblur;\n                rd2 = reflect(rd,normal);\n\n                mat[0] = rd2;\n                mat[1] = cross(mat[0],vec3(0,1,0));\n                mat[2] = cross(mat[0],mat[1]);\n            }\n            vec2 rando = vec2(rand(),rand());\n\t\t\trando *= vec2(1,spread);\n            vec2 direction = vec2(sin(rando.x*6.28),cos(rando.x*6.28))*rando.y;\n            rd = mat[0]*sqrt(1.0-rando.y*rando.y)+mat[1]*direction.x+mat[2]*direction.y;\n        }\n    \tfragColor.rgb += clamp(light,0.0,1.0);\n        fragColor.a++;\n    }\n    \n    if (texelFetch(iChannel1, ivec2(32,0),0).r == 1.0) {\n        fragColor.a *= -1.0;\n        return;\n    }\n    \n    if (abs(dot(move,vec3(1,3,5)))<0.1&&iMouse.z < 0.01) {\n        vec4 col = texelFetch(iChannel0,ivec2(fragCoord),0);\n        if (col.a > 0.0) {\n        \tfragColor += texelFetch(iChannel0,ivec2(fragCoord),0);\n        }\n    } else {\n        vec4 col = texelFetch(iChannel0,ivec2(fragCoord),0);\n        col.a = -abs(col.a);\n        fragColor.a *= -1.0;\n        fragColor += col*0.5;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

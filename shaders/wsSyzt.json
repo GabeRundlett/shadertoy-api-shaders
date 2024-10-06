@@ -1,0 +1,73 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587207337",
+            "description": "I think all the formulas are incorrect, but the result looks okayish =]\nThe IBL is based on Epic Games' Siggraph 2013 paper https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wsSyzt",
+            "likes": 1,
+            "name": "Scuffed Copper cube",
+            "published": 3,
+            "tags": [
+                "metal"
+            ],
+            "usePreview": 0,
+            "username": "manon_graphics_witch",
+            "viewed": 351
+        },
+        "renderpass": [
+            {
+                "code": "#define VERY_SMOL 0.001\n#define PI 3.14159264\n#define TAU (PI*2.)\n#define MAX_DIST 8.0\n#define IBL 64\n#define MOUSE_CONTROLS 0\nfloat roughness = 1.;\nfloat sdf(vec3 p)\n{\n  vec3 q = abs(p) - vec3(2.);\n  return length(max(q,0.)) + min(max(q.x,max(q.y,q.z)),0.);\n}\nfloat rayMarch(vec3 ro, vec3 rd, float start)\n{\n    float t = start;\n    for (int i = 0; i < 256; ++i)\n    {\n        float d = sdf(ro + rd * t);\n        if (d < VERY_SMOL)\n            return t;\n        t += d;\n        if (t >= MAX_DIST) return MAX_DIST;\n    }\n    return -t;\n}\nvec3 getNorm(vec3 p) {\n    return normalize(vec3(\n    \tsdf(vec3(p.x + VERY_SMOL, p.y, p.z)) - sdf(vec3(p.x - VERY_SMOL, p.y, p.z)),\n    \tsdf(vec3(p.x, p.y + VERY_SMOL, p.z)) - sdf(vec3(p.x, p.y - VERY_SMOL, p.z)),\n    \tsdf(vec3(p.x, p.y, p.z + VERY_SMOL)) - sdf(vec3(p.x, p.y, p.z - VERY_SMOL))\n    ));\n}\n\nvec2 hammersley(uint i, uint n) {\n\treturn vec2(\n        float(i) / float(n),\n    \tfloat(reverseuint(i)) * (1./4294967296.0)\n    );\n}\nvec3 importanceSampleGGX(vec2 xi, vec3 n)\n{\n    float a = roughness * roughness;\n    float phi = 2. * PI * xi.x;\n    float cos_theta = sqrt((1.-xi.y) / (1. + (a*a - 1.) * xi.y));\n    float sin_theta = sqrt(1. - cos_theta * cos_theta);\n    \n    vec3 h;\n    h.x = sin_theta * cos(phi);\n    h.y = sin_theta * sin(phi);\n    h.z = cos_theta;\n    \n    return h;\n}\n\nfloat gSmith(float NoV, float NoL)\n{\n    float a2 = roughness * roughness;\n    float lambda_v = (-1. + sqrt(a2 * (1. - NoL*NoL) / (NoL*NoL) + 1.)) * .5;\n    float lambda_l = (-1. + sqrt(a2 * (1. - NoV*NoV) / (NoV*NoV) + 1.)) * .5;\n    float g_smith = 1. / (1. + lambda_v + lambda_l);\n    return g_smith;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 scrpos = uv * 2. - 1.;\n    float aspect_ratio = iResolution.x / iResolution.y;\n\n    roughness = iMouse.x / iResolution.x;\n    \n  #if MOUSE_CONTROLS\n    mat4 view_mat =  rotY(-iMouse.x / iResolution.x * 2. * TAU) * rotX((iMouse.y / iResolution.y - PI) * 2. * TAU);\n  #else\n    mat4 view_mat =  rotY(iTime*.1 * TAU) * rotX(-.1 * TAU);  \n  #endif\n    \n    int seed = genSeed(int(fragCoord.x + fragCoord.y * iResolution.x) + genSeed(int(iTime * 1000.0)));\n    vec3 cam_pos = (view_mat * vec4(0.0, 0.0, -5.0, 1.0)).xyz;\n    vec3 color = vec3(0.0);\n    \n    vec3 ro = cam_pos;        \n    vec3 rd = (view_mat * vec4(normalize(vec3(\n        scrpos.x * aspect_ratio,\n        scrpos.y ,\n        1.0)), 0.0)).xyz;\n    float t = rayMarch(ro, rd, 0.01);\n    if (t >= MAX_DIST) //miss\n    {\n        color += texture(iChannel0, rd).xyz;\n    }\n    else //hit\n    {\n    \tvec3 ip = ro + rd * t;\n    \tvec3 n = getNorm(ip);\n        \n        //calculage tangents\n        vec3 up = abs(n.z) < 0.999 ? vec3(0,0,1) : vec3(1,0,0);\n        vec3 tangent = normalize(cross(up, n));\n        vec3 bitangent = cross(n, tangent);\n        \n        //sample roughness from a texture\n        vec2 texcoord = vec2(\n            dot(ip/4., tangent),\n            dot(ip/4., bitangent)) + vec2(0.5);\n        roughness = 1.-texture(iChannel1, texcoord).x;\n        //roughness = iMouse.x / iResolution.x;//\n        \n        //calculate specular\n        vec3 spec_color = vec3(.95, .64, .54);\n        vec3 spec = vec3(0);\n        vec3 diff = vec3(0);\n        for(int i = 0; i < IBL; ++i)\n        {\n            vec2 xi = hammersley(uint(i), uint(IBL));\n            vec3 h = importanceSampleGGX(xi, n);\n            h = tangent * h.x + bitangent * h.y + n * h.z;\n            \n            vec3 v = -rd;\n            vec3 l = 2. * dot(v, h) * h - v;\n            \n            float NoV = clamp(dot(n, v), 0., 1.);\n            float NoL = clamp(dot(n, l), 0., 1.);\n            float NoH = clamp(dot(n, h), 0., 1.);\n            float VoH = clamp(dot(v, h), 0., 1.);\n            \n            if(NoL > 0.)\n            {\n                vec3 sample_ = textureLod(iChannel0, l, 0.).xyz;\n                float g = gSmith(NoV, NoL);\n                float fc = pow(1.-VoH, 5.);\n                vec3 f = (1.-fc) * spec_color + vec3(fc);\n                spec += sample_ * f * g * VoH / (NoH * NoV);\n                diff += sample_ * NoL*spec_color;\n            }\n            \n        }\n        spec /= float(IBL);\n        diff /= float(IBL);\n        color += spec + diff;\n    }\n    \n    \n    \n    // Output to screen\n    fragColor = vec4(pow(color,vec3(1./2.2)),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 9,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/bd6464771e47eed832c5eb2cd85cdc0bfc697786b903bfd30f890f9d4fc36657.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//http://www.reedbeta.com/blog/quick-and-easy-gpu-random-numbers-in-d3d11/\nint genSeed(int seed) {\n\tseed = (seed ^ 61) ^ (seed >> 16);\n    seed *= 9;\n    seed = seed ^ (seed >> 4);\n    seed *= 0x27d4eb2d;\n    seed = seed ^ (seed >> 15);\n    return seed;\n}\nfloat rand(inout int seed) {\n\tseed ^= (seed << 13);\n\tseed ^= (seed >> 17);\n\tseed ^= (seed << 5);\n    return float(uint(seed)) * 2.3283064370807974e-10;\n}\nmat4 rotY(float r)\n{\n    float c = cos(r);\n    float s = sin(r);\n    return mat4(\n        vec4(c,0,s,1),\n        vec4(0,1,0,1),\n        vec4(-s,0,c,1),\n        vec4(0,0,0,1)\n    );\n}\nmat4 rotX(float r)\n{\n    float c = cos(r);\n    float s = sin(r);\n    return mat4(\n        vec4(1,0,0,0),\n        vec4(0,c,-s,0),\n        vec4(0,s,c,0),\n        vec4(0,0,0,1)\n    );\n}\nuint reverseuint(uint bits) {\n    bits = (bits << 16) | (bits >> 16);\n    bits = ((bits & 0x00ff00ffu) << 8) | ((bits & 0xff00ff00u) >> 8);\n    bits = ((bits & 0x0f0f0f0fu) << 4) | ((bits & 0xf0f0f0f0u) >> 4);\n    bits = ((bits & 0x33333333u) << 2) | ((bits & 0xccccccccu) >> 2);\n    bits = ((bits & 0x55555555u) << 1) | ((bits & 0xaaaaaaaau) >> 1);\n    return bits;   \n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

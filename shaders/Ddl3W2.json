@@ -1,0 +1,55 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1666816591",
+            "description": "The planet is rendered using classical raymarching, and the atmosphere is a scattered volume rendered on top\nInspired by Sebastian Lague's Video: https://www.youtube.com/watch?v=DxfEbulyFcY\nBased on GPU Gems 2 Chapter 16: \"Accurate Atmospheric Scattering\"",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Ddl3W2",
+            "likes": 39,
+            "name": "Volumetric Atmosphere Scattering",
+            "published": 3,
+            "tags": [
+                "volume",
+                "cycle",
+                "planet",
+                "animation",
+                "atmospheric"
+            ],
+            "usePreview": 1,
+            "username": "kishimisu",
+            "viewed": 1116
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_DIST 5.\n#define MAX_ITER 200.\n#define EPSILON .001\n\n// Atmosphere colors\n#define scatteringCoefficients vec3(700., 530., 440.)\n\n// Atmosphere thickness\n#define scatteringIntensity   1.0\n\n// Atmosphere height\n#define atmosphereRadius      1.4\n\n#define numInScatteringPoints 8.\n#define numOpticalDepthPoints 8.\n#define planetRadius          1.15\n#define iTime (iTime - 2.)\n\n// I made these functions in a naive way to have more control over the\n// camera and planet animations. Could they be more optimized ? \nfloat progress(float t, float easeInStart, float easeInStop, float easeOutStart, float easeOutStop, float idleTime) {\n    t = mod(t, easeOutStop + idleTime);\n    t = t < easeInStart || t >= easeOutStop ? 0. :\n        t < easeInStop   ? (t - easeInStart) / (easeInStop - easeInStart) :\n        t < easeOutStart ? 1. : 1. - (t - easeOutStart) / (easeOutStop - easeOutStart);\n    return smoothstep(0., 1., t);\n}\n\nfloat progress(float t, float easeInStart, float easeInStop, float idleTime) {\n    t = mod(t, easeInStop + idleTime);\n    t = t < easeInStart || t >= easeInStop  ? 0. : (t - easeInStart) / (easeInStop - easeInStart);\n    return smoothstep(0., 1., t);\n}\n\n// noise and fbm are from https://www.shadertoy.com/view/XtS3DD\nfloat noise(in vec3 p) {\n    vec3 ip = floor(p);\n    vec3 fp = fract(p);\n\tfp = fp*fp*(3.0-2.0*fp);\n\tvec2 tap = (ip.xy+vec2(37.0,17.0)*ip.z) + fp.xy;\n\tvec2 rz = textureLod(iChannel0, (tap+0.5)/256.0, 0.0).yx;\n\treturn mix(rz.x, rz.y, fp.z);\n}\n\nfloat fbm(in vec3 x) {\n    float rz = 0.;\n    float a = .35;\n    for (int i = 0; i<4; i++) {\n        rz += noise(x)*a;\n        a*=.35;\n        x*= 4.;\n    }\n    return rz;\n}\n\n// ray-sphere intersection\n// returns the near and far intersection points, or a high value if no hit\nvec2 raySphereIntersect(vec3 ro, vec3 rd, float radius) {\n    vec3 offset = ro;\n    float a = 1.;\n    float b = 2. * dot(offset, rd);\n    float c = dot(offset, offset) - radius * radius;\n    float d = b*b - 4.*a*c;\n\n    if (d > 0.) {\n        float s = sqrt(d);\n        float dstNear = max(0., (-b-s)/(2.*a));\n        float dstFar = (-b+s)/(2.*a);\n\n        if (dstFar >= 0.) {\n            return vec2(dstNear, dstFar - dstNear);\n        }\n    }\n    return vec2(1e9);\n}\n\n// Atmoshperic scattering functions\n\nfloat densityAtPoint(vec3 p) {\n    float height = (length(p) - planetRadius) / (atmosphereRadius - planetRadius);\n    return exp(-height * 2.0) * (1. - height);\n}\n\nfloat opticalDepth(vec3 ro, vec3 rd, float rayLength) {\n    float stepSize = rayLength / (numOpticalDepthPoints - 1.);\n    float depth = 0.;\n\n    for (float i = 0.; i < numInScatteringPoints; i++) {\n        float density = densityAtPoint(ro);\n\n        depth += density * stepSize;\n        ro += rd * stepSize;\n    }\n\n    return depth;\n}\n\nvec3 scatteringCoeffs = pow(400./scatteringCoefficients, vec3(4.)) * scatteringIntensity;\n\nvec3 calculateLight(vec3 ro, vec3 rd, float far, vec3 sunDir, vec3 color) {\n    float stepSize = far / (numInScatteringPoints - 1.);\n    vec3 scatterLight = vec3(0.);\n    float viewRayDepth = 0.;\n\n    for (float i = 0.; i < numInScatteringPoints; i++) {\n        viewRayDepth = opticalDepth(ro, -rd, stepSize * float(i));\n        float sunRayLength = raySphereIntersect(ro, sunDir, atmosphereRadius).y;\n        float sunRayDepth = opticalDepth(ro, sunDir, sunRayLength);\n        float density = densityAtPoint(ro);\n        vec3 transmittance = exp(-(sunRayDepth + viewRayDepth) * scatteringCoeffs);\n\n        scatterLight += density * transmittance * scatteringCoeffs * stepSize;\n        ro += rd * stepSize;\n    }\n\n    return color * exp(-viewRayDepth) + scatterLight;\n}  \n\n// Raymarching functions\n\nvec3 rotateX(vec3 p, float t) { return mat3(1, 0, 0, 0, cos(t), -sin(t), 0, sin(t), cos(t)) * p; }\n\nfloat map(vec3 p) {\n    float timer = progress(iTime, 6., 22., 8.);\n    p = rotateX(p, 6.283185*timer);\n\n    float r = fbm(normalize(p)*4.) * 0.8;\n    float terrain = ( length(p) - 0.8 - r ) * .4;\n    \n    return terrain;\n}\n\nvec3 calcNormal(vec3 pos) {\n    vec2 e = vec2(-1.0,1.0)*0.5773*0.01;\n    return normalize( e.xyy*map( pos + e.xyy) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx) );\n}\n\nvoid mainImage0( out vec4 fragColor, in vec2 fragCoord ) {\n    vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n    \n    vec3 rd = normalize(vec3(uv, -1.));\n    vec3 sunDir = normalize(vec3(sin(iTime), cos(iTime/2.), cos(iTime)));\n    vec3 p, color;\n    \n    // Camera Origin\n    float timer = progress(iTime, 1., 8., 20., 27., 3.);\n    vec3 ro = mix(vec3(0., 0., 3.), vec3(0., 1.1, .5), timer);\n    ro.y += sin(iTime*2.)*.02*timer;\n    \n    // Raymarch the planet surface\n    float i, dist = 0.;\n    for (i = 0.; i < MAX_ITER; i++) {\n        p = ro + dist*rd;\n\n        float sceneDist = map(p);\n        dist += sceneDist;\n\n        if (sceneDist < EPSILON || dist > MAX_DIST) break;\n    }\n    \n    if (i == MAX_ITER || dist > MAX_DIST) { \n        // Didn't hit anything\n        color = vec3(1., .5, .6) * 10000.*pow(smoothstep(.995, 1., clamp(dot(rd, sunDir), 0., 1.)), 4.); // Sun\n    } else {\n        // Colorize surface\n        vec3 normal = calcNormal(p);\n        float light = clamp(dot(normal, sunDir), 0., 1.);\n        \n        color = mix(vec3(0.,.8,0.), vec3(.15,.11,.12)*.5, smoothstep(0.8, 1., length(p))); // Grass\n        color = mix(color, vec3(1.), smoothstep(1.05, 1.15, length(p))); // Snow\n        color *= light;\n    }\n    \n    // Atmosphere intersection\n    vec2 hit = raySphereIntersect(ro, rd, atmosphereRadius);\n    float near = hit.x;\n    float far = min(hit.y, dist - near);\n    \n    if (far > 0.) { \n        // Ray hit atmosphere\n        vec3 nearPoint = ro + rd * (near + EPSILON);\n        color = calculateLight(nearPoint, rd, far - EPSILON * 2., sunDir, color);\n    } \n    \n    fragColor = vec4(color, 1.);\n}\n\n// === easy adaptive sampling. === https://shadertoyunofficial.wordpress.com/2021/03/09/advanced-tricks/\nvoid mainImage(out vec4 O, vec2 U) {\n    mainImage0(O,U);\n    if ( fwidth(length(O)) > .01 ) {\n        vec4 o;\n        for (int k=0; k < 9; k+= k==3?2:1 )\n          { mainImage0(o,U+vec2(k%3-1,k/3-1)/3.); O += o; }\n        O /= 9.;\n    }\n    O.rgb = pow(O.rgb, vec3(0.4545));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,68 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1522690606",
+            "description": "Applying bilateral filter to local linear approximations of distance field. Also dropped native GPU resampling, only using texelFetch. Press space to see character map; use mouse to navigate it. Mouse to lower-left to reset.",
+            "flags": 16,
+            "hasliked": 0,
+            "id": "ldVyRK",
+            "likes": 17,
+            "name": "SDF texture filtering 3",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "texture",
+                "font",
+                "smoothing"
+            ],
+            "usePreview": 1,
+            "username": "mattz",
+            "viewed": 1360
+        },
+        "renderpass": [
+            {
+                "code": "/* \"SDF texture filtering 3\" by mattz\n   License Creative Commons Attribution 3.0 (CC BY 3.0) Unported License.\n\n   Still playing with filtering SDF textures, this time with\n   bilateral filtering. Also not using any native GPU texture \n   resampling, everything is done with texelFetch in this edition.\n\n   See https://www.shadertoy.com/view/4sVyWh for more details.\n \n*/\n\n// texture is 1024x1024\nconst float TEX_RES = 1024.;\n\n// texture is 16x16 glyphs\nconst float GLYPHS_PER_UV = 16.;\n\n// since the texture is uint8 it has a bias to represent 0\nconst float TEX_BIAS = 127./255.;\n\n// get font UV coords from screen coords\nvec2 font_from_screen(vec2 tpos, float font_size, vec2 char_pos) {    \n    return (tpos/font_size + char_pos + 0.5)/GLYPHS_PER_UV;\n}\n\n//////////////////////////////////////////////////////////////////////\n// sample font texture \n\nvec3 sample_grad_dist(vec2 uv, float font_size) {\n    \n    vec3 grad_dist = (textureLod(iChannel0, uv, 0.).yzw - TEX_BIAS) * font_size;\n\n    grad_dist.y = -grad_dist.y;\n    grad_dist.xy = normalize(grad_dist.xy + 1e-5);\n    \n    return grad_dist;\n    \n}\n\nvec3 fetch_grad_dist(ivec2 uv) {\n    \n    vec3 grad_dist = (texelFetch(iChannel0, uv, 0).yzw - TEX_BIAS);\n\n    grad_dist.y = -grad_dist.y;\n    grad_dist.xy = normalize(grad_dist.xy + 1e-5);\n    \n    return grad_dist;\n    \n}\n\n\n//////////////////////////////////////////////////////////////////////\n// Nonlinear filtering of SDF texture using gradient info.\n\nfloat sample_dist_local_bilateral(vec2 uv, float font_size) {\n    \n    const int nstep = 4;  \n    const float spos  = 0.95;\n    const float sdist = 5e-3;\n    const float k_ctr = 0.25;\n    \n    float bump = float((nstep + 1) % 2)*0.5;\n    const int ngrid = nstep*nstep;\n        \n    ivec2 st = ivec2(floor(uv*TEX_RES + bump));\n    vec2 uv0 = (vec2(st) + 0.5)/TEX_RES;\n    vec2 duv0 = uv - uv0;\n    \n    float dists[ngrid];\n    float wpos[ngrid];\n    \n    float dctr = 0.0;\n    \n    for (int i=0; i<nstep; ++i) {\n        int di = i - nstep/2;\n        for (int j=0; j<nstep; ++j) {            \n            int dj = j - nstep/2;\n            \n            vec3 grad_dist = fetch_grad_dist(st + ivec2(di, dj));\n            \n            vec2 uvdelta = duv0 - vec2(di, dj) / TEX_RES;                        \n            \n            vec2 tdelta = uvdelta * TEX_RES;           \n            \n            vec2 pdelta = uvdelta * GLYPHS_PER_UV;            \n            \n            float dline = grad_dist.z + dot(grad_dist.xy, pdelta);\n            \n            vec2 w = max(vec2(0.0), 1.0 - abs(tdelta));\n\n            dctr += w.x*w.y*mix(grad_dist.z, dline, k_ctr);\n                        \n            int idx = nstep*i + j;\n            dists[idx] = dline;\n            wpos[idx] = dot(tdelta, tdelta);\n            \n        }\n    }                \n    \n    float dsum = 0.0;\n    float wsum = 0.0;\n    \n    for (int i=0; i<nstep; ++i) {\n        for (int j=0; j<nstep; ++j) {\n            int idx = nstep*i + j;\n            float ddist = dists[idx] - dctr;\n            float wij = exp(-wpos[idx]/(2.0*spos*spos) + \n                            -ddist*ddist/(2.0*sdist*sdist));\n            dsum += wij * dists[idx];\n            wsum += wij;\n        }\n    }\n        \n    return font_size*dsum/wsum;\n    \n}\n\n//////////////////////////////////////////////////////////////////////\n// main function\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n\n    // which character to render now\n    int cidx = int(mod(iTime + 64., 256.));\n    if (cidx == 64) { cidx = 29; } else if (cidx == 29) { cidx = 64; }\n       \n    vec2 p, m;\n    float font_size = 1.2*iResolution.y;\n        \n    p = (fragCoord - iResolution.xy * vec2(0.25, 0.5));\n    m = fragCoord - iResolution.xy * 0.5;\n    \n    vec2 repeat = iResolution.xy * vec2(0.5, 1.0);\n    p -= floor(p/repeat + 0.5) * repeat;\n    \n   \n    // character offset  within font texture\n    vec2 char_pos = vec2(ivec2(cidx%16, 15-cidx/16));\n    \n    if (min(iMouse.x, iMouse.y) > 10.) {\n        char_pos = clamp(floor(16.*iMouse.xy / iResolution.xy), 0.0, 15.0);\n    }\n        \n    // get uv in font texture\n    vec2 uv = font_from_screen(p, font_size, char_pos);\n \n    vec3 bgcolor;\n    float dfont;\n    \n    if (m.x < 0.) {\n        bgcolor = vec3(1, 0.8, 0.8);\n        dfont = sample_grad_dist(uv, font_size).z;        \n    } else {\n        bgcolor = vec3(0.8, 0.9, 1);\n        dfont = sample_dist_local_bilateral(uv, font_size);\n    }\n    \n    vec2 box = abs(p) - 0.5*font_size;\n    dfont = max(dfont, max(box.x, box.y));\n    \n    float dborder = abs(m.x);\n\n    vec3 color = bgcolor*smoothstep(-0.5, 0.5, dfont);\n    color = mix(color, vec3(0.45), smoothstep(1., 0., dborder-.5));\n    \n    if (texelFetch(iChannel1, ivec2(32, 0), 0).x > 0.0) {\n        color = texture(iChannel0, fragCoord.xy/iResolution.xy, 0.).xxx;\n    }\n\n    color = pow(color, vec3(1.0/2.2));\n    \n\n    fragColor = vec4(color, 1);\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

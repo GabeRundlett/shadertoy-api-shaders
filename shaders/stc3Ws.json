@@ -1,0 +1,136 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1636925887",
+            "description": "Rotate camera with mouse.\nLight gets updated on the first 64 frames so it might be a little slow at first.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "stc3Ws",
+            "likes": 84,
+            "name": "Bulb detail",
+            "published": 3,
+            "tags": [
+                "fractal",
+                "volume",
+                "gi",
+                "mandelbulb",
+                "voxel",
+                "volumetric",
+                "pathtracing",
+                "pathtraced"
+            ],
+            "usePreview": 0,
+            "username": "loicvdb",
+            "viewed": 2403
+        },
+        "renderpass": [
+            {
+                "code": "/**\n * Volume rendering with path traced GI.\n * \n * High quality version in Common.\n * \n * Buffer A accumulates the GI in a voxel grid\n * Buffer B raymarches the ray and gets illumination data from the voxel grid\n * Image buffer does the postprocessing\n * \n */\n\nvoid mainImage(out vec4 o, vec2 u)\n{\n\n    #if 0\n    \n    // no dof\n    vec3 x = texelFetch(iChannel0, ivec2(u), 0).rgb;\n    \n    #else\n    \n    // max blur radius\n    float clip = 0.005 * iResolution.y;\n    \n    #ifdef HIGH_QUALITY\n    const int res = 1;\n    #else\n    // half resolution sampling\n    const int res = 2;\n    #endif\n    \n    vec3 x = vec3(0);\n    float sum = 0.0;\n    \n    int yR = int(ceil(clip / float(res)));\n    \n    for (int j = -yR; j <= yR; j++)\n    {\n        int xR = int(ceil(sqrt(clip * clip - float(j * res * j * res) / float(res))));\n        \n        for (int i = -xR; i <= xR; i++)\n        {\n            ivec2 d = ivec2(i, j) * res;\n            \n            ivec2 p = clamp(ivec2(u) + d, ivec2(0), ivec2(iResolution.xy) - 1);\n            vec4 tex = texelFetch(iChannel0, p, 0);\n            \n            float a = min(0.03 * iResolution.y * abs(tex.a - 1.47) / tex.a, clip);\n            float weight = smoothstep(-a - 1.0, -a, -length(vec2(d))) / (a * a + 0.001);\n            \n            x += tex.rgb * weight;\n            sum += weight;\n        }\n    }\n    \n    x /= sum;\n    \n    #endif\n    \n    // lod bloom\n    float r = floor(log2(iResolution.y) - 4.5) + 0.5;\n    for (int i = 0; i < 3; i++)\n    {\n        x += texture(iChannel0, u / iResolution.xy, r + float(i * 2)).rgb * 0.1;\n    }\n    \n    // vignette\n    vec2 cuv = u / iResolution.xy - 0.5;\n    x *= 1.0 - dot(cuv*cuv, cuv*cuv) * 4.0;\n    \n    // tonemapping\n    x = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);\n    \n    o = vec4(x, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// uncomment for high quality version (about 4x slower)\n//#define HIGH_QUALITY\n\n\n#ifdef HIGH_QUALITY\nconst float stepFactor = 0.2;\n#else\nconst float stepFactor = 0.6;\n#endif\n\n\n// show voxel GI\n#define GI_DEBUG_MODE 0\n\n#define getVoxelResolution() ivec3(pow(iResolution.x * iResolution.y + 1.0, 0.333333))\n\nconst float density = 128.0;\n\nstruct volume\n{\n    vec3 col;\n    vec3 emission;\n    float density;\n    float dist;\n};\n\n\nvolume getVolume(vec3 p)\n{\n    const float scale = 0.8;\n    \n    p = p / scale + vec3(-0.65, -1.0, -0.15);\n\tvec3 w = p, ot = vec3(1.0);\n    float dr = 1.0, r = length(w);\n    \n    #ifdef HIGH_QUALITY\n    const int iterations = 7;\n    #else\n    const int iterations = 5;\n    #endif\n    \n\tfor (int i = 0; i < iterations && r < 1.2; i++)\n    {\n\t\tdr = dr * r*r*r*r*r*r*r * 8.0 + 1.0;\n        \n        float x2 = w.x * w.x;\n\t\tfloat y2 = w.y * w.y;\n\t\tfloat z2 = w.z * w.z;\n        float x4 = x2 * x2;\n        float z4 = z2 * z2;\n        float k1 = x2 * z2;\n\t\tfloat k2 = x2 + z2 + 0.00001;\n\t\tfloat k3 = x4 + z4 + y2 * (y2 - 6.0 * k2) + 2.0 * k1;\n        float k4 = k2 * k2 * k2;\n\t\tfloat k5 = k3 * inversesqrt(k4 * k4 * k2);\n\t\tfloat k6 = w.y * (k2 - y2);\n\t\tw.x = p.x + 64.0 * k6 * k5 * w.x * w.z * (x2 - z2) * (x4 - 6.0 * k1 + z4);\n\t\tw.y = p.y - 16.0 * k6 * k6 * k2 + k3 * k3;\n\t\tw.z = p.z - 8.0 * k6 * k5 * (x4 * (x4 - 28.0 * k1 + 70.0 * z4) + z4 * (z4 - 28.0 * k1));\n        \n        r = length(w);\n\t\tot = min(abs(w * 1.2), ot);\n\t}\n    \n    volume v;\n    v.dist = scale * 0.5 * log(r) * r / dr;\n\tv.col = mix(vec3(0.6, 1.0, 0.9), vec3(1.0, 0.0, 0.0), ot);\n\tv.emission = mix(vec3(0.4, 0.6, 0.0), vec3(0.0, 0.2, 1.0), ot.z) * step(ot.y * ot.x, 0.001);\n    v.density = step(r, 1.2);\n    \n    return v;\n}\n\nvec2 clippingPlanes(vec3 ro, vec3 rd)\n{\n    vec3 cv = (0.5 - ro - sign(rd) * 0.5) / rd;\n    vec3 fv = (0.5 - ro + sign(rd) * 0.5) / rd;\n    \n    float cp = max(max(max(cv.x, cv.y), cv.z), 0.0);\n    float fp = min(min(fv.x, fv.y), fv.z);\n    \n    return vec2(cp, fp);\n}\n\n\nvec3 background(vec3 rd)\n{\n    return mix(vec3(1.1, 0.6, 0.6), vec3(0.2, 0.2, 0.3), rd.y * 0.5 + 0.5);\n}\n\n\nuint hash(uint i)\n{\n\ti *= 0xB5297A4Du;\n\ti ^= i >> 8;\n\ti += 0x68E31DA4u;\n\ti ^= i << 8;\n\ti *= 0x1B56C4E9u;\n\ti ^= i >> 8;\n\treturn i;\n}\n\n\nfloat fhash(uint i)\n{\n    return float(hash(i))/4294967295.;\n}\n\n\nuint seed;\n\n\nfloat random()\n{\n    return fhash(seed++);\n}\n\n\nvec3 randomNormal()\n{\n    vec2 r = vec2(6.28318530718 * random(), acos(2.0 * random() - 1.0));\n    vec2 c = cos(r), s = sin(r);\n    return vec3(s.y * s.x, s.y * c.x, c.y);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "ivec3 vResolution;\n\n\nvec4 voxelFetch(ivec3 v)\n{\n    int id = 1 + (v.x + (v.y + (v.z) * vResolution.y) * vResolution.x);\n    return texelFetch(iChannel0, ivec2(id % int(iResolution.x), id / int(iResolution.x)), 0);\n}\n\n\nvec4 voxelLinear(vec3 p)\n{\n    p = p * vec3(vResolution) - 0.5;\n    \n    ivec3 v = clamp(ivec3(p), ivec3(0), vResolution - 2);\n    \n    vec4 xmymzm = voxelFetch(v + ivec3(0, 0, 0));\n    vec4 xpymzm = voxelFetch(v + ivec3(1, 0, 0));\n    vec4 xmypzm = voxelFetch(v + ivec3(0, 1, 0));\n    vec4 xpypzm = voxelFetch(v + ivec3(1, 1, 0));\n    vec4 xmymzp = voxelFetch(v + ivec3(0, 0, 1));\n    vec4 xpymzp = voxelFetch(v + ivec3(1, 0, 1));\n    vec4 xmypzp = voxelFetch(v + ivec3(0, 1, 1));\n    vec4 xpypzp = voxelFetch(v + ivec3(1, 1, 1));\n    \n    vec4 ymzm = mix(xmymzm, xpymzm, fract(p.x));\n    vec4 ypzm = mix(xmypzm, xpypzm, fract(p.x));\n    vec4 ymzp = mix(xmymzp, xpymzp, fract(p.x));\n    vec4 ypzp = mix(xmypzp, xpypzp, fract(p.x));\n    \n    vec4 zm = mix(ymzm, ypzm, fract(p.y));\n    vec4 zp = mix(ymzp, ypzp, fract(p.y));\n    \n    return mix(zm, zp, fract(p.z));\n}\n\n\nfloat trace(vec3 ro, vec3 rd)\n{\n    const float stepSize = 2.0 / density;\n    float t = random() * stepSize;\n    float tMax = clippingPlanes(ro, rd).y;\n    float oDepth = -log(random()) / density;\n    \n    for (int i = 0; i < 512 && oDepth > 0.0 && t < tMax; i++)\n    {\n        volume v = getVolume(ro + rd * t);\n        oDepth -= stepSize * v.density;\n        t += max(stepSize, v.dist);\n    }\n    \n    return mix(-1.0, t, step(oDepth, 0.0));\n}\n\n\nvoid mainImage(out vec4 o, vec2 u)\n{\n    seed = hash(uint(iFrame));\n    \n    vResolution = getVoxelResolution();\n    \n    vec4 prevResSamples = texelFetch(iChannel0, ivec2(0, 0), 0);\n    int samples = int(prevResSamples.a);\n    \n    vec4 pVol = texelFetch(iChannel0, ivec2(u), 0);\n    \n    int id = int(u.x) + int(u.y) * int(iResolution.x) - 1;\n    \n    if (vResolution != ivec3(prevResSamples.xyz))\n    {\n        samples = 0;\n    }\n    \n    int frameSamples = int(step(float(samples), 64.0));\n    \n    if (id == -1)\n    {\n        o = vec4(vResolution, samples + frameSamples);\n        return;\n    }\n    \n    if (id >= vResolution.x * vResolution.y * vResolution.z)\n    {\n        return;\n    }\n    \n    float x = float((id) % vResolution.x);\n    float y = float((id / vResolution.x) % vResolution.y);\n    float z = float((id / vResolution.x / vResolution.y) % vResolution.z);\n    \n    vec4 nVol = vec4(0.0);\n    \n    for (int i = 0; i < frameSamples; i++)\n    {\n        const vec3 lDir = normalize(vec3(1.0, 0.4, -0.3));\n        \n        vec3 p = vec3(x + random(), y + random(), z + random()) / vec3(vResolution);\n        vec3 li = 0.25 * step(trace(p, lDir), 0.0) * vec3(8.0);\n        \n        if (samples > 0)\n        {\n            // reusing the volumetric data for \"infinite\" bounce GI\n            vec3 rd = randomNormal();\n            float t = trace(p, rd);\n            volume v = getVolume(p + t * rd);\n            li += mix(background(rd), voxelLinear(p + t * rd).rgb * v.col + v.emission, step(0.0, t));\n        }\n        \n        nVol += vec4(li, getVolume(p).density) / float(frameSamples);\n    }\n    \n    o = mix(pVol, nVol, float(frameSamples) / float(samples + frameSamples));\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "ivec3 vResolution;\n\n\nvec4 voxelFetch(ivec3 v)\n{\n    int id = 1 + (v.x + (v.y + (v.z) * vResolution.y) * vResolution.x);\n    return texelFetch(iChannel0, ivec2(id % int(iResolution.x), id / int(iResolution.x)), 0);\n}\n\n\nvec4 voxelLinear(vec3 p)\n{\n    p = p * vec3(vResolution) - 0.5;\n    \n    ivec3 v = clamp(ivec3(p), ivec3(0), vResolution - 2);\n    \n    vec4 xmymzm = voxelFetch(v + ivec3(0, 0, 0));\n    vec4 xpymzm = voxelFetch(v + ivec3(1, 0, 0));\n    vec4 xmypzm = voxelFetch(v + ivec3(0, 1, 0));\n    vec4 xpypzm = voxelFetch(v + ivec3(1, 1, 0));\n    vec4 xmymzp = voxelFetch(v + ivec3(0, 0, 1));\n    vec4 xpymzp = voxelFetch(v + ivec3(1, 0, 1));\n    vec4 xmypzp = voxelFetch(v + ivec3(0, 1, 1));\n    vec4 xpypzp = voxelFetch(v + ivec3(1, 1, 1));\n    \n    vec4 ymzm = mix(xmymzm, xpymzm, fract(p.x));\n    vec4 ypzm = mix(xmypzm, xpypzm, fract(p.x));\n    vec4 ymzp = mix(xmymzp, xpymzp, fract(p.x));\n    vec4 ypzp = mix(xmypzp, xpypzp, fract(p.x));\n    \n    vec4 zm = mix(ymzm, ypzm, fract(p.y));\n    vec4 zp = mix(ymzp, ypzp, fract(p.y));\n    \n    return mix(zm, zp, fract(p.z));\n}\n\n\nvec4 voxelClosest(vec3 p)\n{\n    return voxelFetch(clamp(ivec3(p * vec3(vResolution)), ivec3(0), vResolution - 1));\n}\n\n\nvec4 colDepth(vec3 ro, vec3 rd)\n{\n    rd += (1.0 - abs(sign(rd))) * 0.00001;   // avoids div/0 for clipping planes & voxel marching\n    \n    vec2 cp = clippingPlanes(ro, rd);\n    \n    float depth = 3.0;\n    \n    if (cp.y <= cp.x)\n    {\n        return vec4(background(rd), depth);\n    }\n    \n    vec3 cubeSize = 1.0 / vec3(vResolution);\n    vec3 col = vec3(0.0);\n    float att = 1.0;\n    float t = cp.x;\n    \n    #if GI_DEBUG_MODE\n    \n    // voxel marching w/ analytical volume integration\n    \n    int maxSteps = vResolution.x + vResolution.y + vResolution.z;\n    \n    for (int i = 0; i < maxSteps && att > .03 && t < cp.y; i++)\n    {\n        vec3 p = ro + t * rd;\n        vec3 l = (cubeSize * floor(p / cubeSize + sign(rd) * 0.50001 + 0.5) - p) / rd;\n        float stepSize = min(min(l.x, l.y), l.z) + 0.00001;\n        \n        vec4 v = voxelClosest(p);\n        \n        if(v.a > 0.0)\n        {\n            depth = min(depth, t);\n            float a = exp(-stepSize * v.a * density);\n            col += att * (1.0 - a) * v.rgb;\n            att *= a;\n        }\n        \n        t += stepSize;\n    }\n    \n    #else\n    \n    // volume raymarching + SDF raymarching\n    float phase = random();\n    \n    for (int i = 0; i < 1024 && att > .03 && t < cp.y; i++)\n    {\n        const float stepSize = stepFactor / density;\n    \n        vec3 p = ro + rd * t;\n        \n        volume v = getVolume(p);\n        \n        if (v.density > 0.0)\n        {\n            float a = exp(-stepSize * v.density * density);\n            col += att * (1.0 - a) * (v.col * voxelLinear(p).rgb + v.emission);\n            att *= a;\n        }\n        \n        if(v.dist < 0.0 && t < depth)\n        {\n            depth = t;\n        }\n        \n        // SDF raymarching\n        t += max(v.dist, 0.0);\n        \n        // rounding t to the next point\n        t += (1.0 - fract(t / stepSize + phase) - 0.000001) * stepSize;\n    }\n    \n    #endif\n    \n    return vec4(att * background(rd) + col, depth);\n}\n\n\nvoid mainImage(out vec4 o, vec2 u)\n{\n    float samples = texelFetch(iChannel0, ivec2(0, 0), 0).a;\n    \n    if (samples < 16.0)\n    {\n        // not enough samples, don't render to sample faster\n        o = vec4(0);\n        return;\n    }\n    \n    seed = hash(uint(floor(u.x) + floor(u.y) * 12345.0)) ^ hash(uint(iFrame));\n    \n    vResolution = getVoxelResolution();\n    \n    vec2 rot = vec2(0.3, 0.7);\n    if(iMouse != vec4(0.0))\n    {\n        rot += (iMouse.xy - iResolution.xy * 0.5) / iResolution.y * 3.0;\n    }\n    \n    vec2 c = cos(rot);\n    vec2 s = sin(rot);\n    \n    mat3 rx = mat3(1, 0, 0, 0, c.y, s.y, 0, -s.y, c.y);\n    mat3 ry = mat3(c.x, 0, s.x, 0, 1, 0, -s.x, 0, c.x);\n    mat3 cam = ry * rx;\n    \n    vec3 rd = cam * normalize(vec3((u - iResolution.xy * 0.5) / iResolution.y, -3.5));\n    vec3 ro = cam * vec3(0.0, 0.0, 1.5);\n    \n    ro += vec3(0.5, 0.3, 0.77);\n    \n    o = colDepth(ro, rd);\n    \n    // fading animation\n    o.rgb *= smoothstep(16.0, 64.0, samples);\n    \n    \n    #if !GI_DEBUG_MODE\n    \n    // quick accumulation to remove a little bit of noise\n    \n    #ifdef HIGH_QUALITY\n    const float saticAcc = 0.9;\n    const float dynamicAcc = 0.2;\n    #else\n    const float saticAcc = 0.9;\n    const float dynamicAcc = 0.6;\n    #endif\n    \n    vec4 prev = texelFetch(iChannel1, ivec2(u), 0);\n    if (iMouse.z <= 0.0 && samples > 16.0)\n    {\n        o.rgb = mix(o.rgb, prev.rgb, saticAcc);\n        o.a = min(o.a, prev.a);\n    }\n    else\n    {\n        o.rgb = mix(o.rgb, prev.rgb, dynamicAcc);\n    }\n    \n    #endif\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

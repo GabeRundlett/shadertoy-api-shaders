@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1587132549",
+            "description": "water",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Ws2cRc",
+            "likes": 1,
+            "name": "refraction fun",
+            "published": 3,
+            "tags": [
+                "glass"
+            ],
+            "usePreview": 0,
+            "username": "manon_graphics_witch",
+            "viewed": 366
+        },
+        "renderpass": [
+            {
+                "code": "#define VERY_SMOL 0.001\n#define SMOL 0.001\n#define MAX_DIST  50.0\n#define SPP 8\n#define MAX_RAY_DEPTH 5\n#define PI 3.14159265358\n#define TAU (2.*PI)\nbool inside;\n//http://www.reedbeta.com/blog/quick-and-easy-gpu-random-numbers-in-d3d11/\nint genSeed(int seed) {\n\tseed = (seed ^ 61) ^ (seed >> 16);\n    seed *= 9;\n    seed = seed ^ (seed >> 4);\n    seed *= 0x27d4eb2d;\n    seed = seed ^ (seed >> 15);\n    return seed;\n}\nfloat rand(inout int seed) {\n\tseed ^= (seed << 13);\n\tseed ^= (seed >> 17);\n\tseed ^= (seed << 5);\n    return float(uint(seed)) * 2.3283064370807974e-10;\n}\nfloat sdf(vec3 p)\n{\n  //float result = length(p) - 1.0;\n  //vec2 t = vec2(1.0, 0.3);\n  //vec2 q = vec2(length(p.xz)-t.x,p.y);\n  //float result = length(q)-t.y;\n    \n    vec3 c = vec3(10.0);\n    vec3 q = p - c * round(p / c);\n    \n    \n  float d= 4.;\n  return length(q) - 1.0 + (sin(d*q.x+iTime)*sin(d*q.y+iTime)*sin(d*q.z+iTime)) * 0.1;\n  \n}\nfloat sdf2(vec3 p)\n{\n    float s = sdf(p);\n \treturn inside ? -s : s;   \n}\n\nfloat rayMarch(vec3 ro, vec3 rd, float start, float end)\n{\n    float depth = start;\n    for (int i = 0; i < 256; ++i)\n    {\n        float distance = sdf2(ro + rd * depth);\n        if (distance < VERY_SMOL)\n            return depth;\n        depth += distance;\n        if (depth >= end) return end;\n    }\n    return -depth;\n}\nvec3 getNorm(vec3 p) {\n    return normalize(vec3(\n    \tsdf2(vec3(p.x + SMOL, p.y, p.z)) - sdf2(vec3(p.x - SMOL, p.y, p.z)),\n    \tsdf2(vec3(p.x, p.y + SMOL, p.z)) - sdf2(vec3(p.x, p.y - SMOL, p.z)),\n    \tsdf2(vec3(p.x, p.y, p.z + SMOL)) - sdf2(vec3(p.x, p.y, p.z - SMOL))\n    ));\n}\nfloat fresnel(float n1, float n2, vec3 normal, vec3 view)\n{\n  float r0 = (n1 - n2) / (n1 + n2);\n  r0 = r0 * r0;\n\n  float fresnel = r0 + (1.0 - r0) * pow(1.0 - dot(normal, view), 5.0);\n  return clamp(fresnel, 0.0, 1.0);\n}\nmat4 rotY(float r)\n{\n    float c = cos(r);\n    float s = sin(r);\n    return mat4(\n        vec4(c,0,s,1),\n        vec4(0,1,0,1),\n        vec4(-s,0,c,1),\n        vec4(0,0,0,1)\n    );\n}\nmat4 rotX(float r)\n{\n    float c = cos(r);\n    float s = sin(r);\n    return mat4(\n        vec4(1,0,0,0),\n        vec4(0,c,-s,0),\n        vec4(0,s,c,0),\n        vec4(0,0,0,1)\n    );\n}\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 scrpos = uv * 2. - 1.;\n    float aspect_ratio = iResolution.x / iResolution.y;\n\n    mat4 view_mat =  rotY(-iMouse.x / iResolution.x * 2. * TAU) * rotX((iMouse.y / iResolution.y - PI) * 2. * TAU);\n    \n    int seed = genSeed(int(fragCoord.x + fragCoord.y * iResolution.x) + genSeed(int(iTime * 1000.0)));\n    vec3 cam_pos = (view_mat * vec4(0.0, 0.0, -2.0, 1.0)).xyz;\n    vec3 color = vec3(0.0);\n    \n    for (int samp = 0; samp < SPP; ++samp)\n    {\n        vec3 ro = cam_pos;\n        \n        vec3 rd = (view_mat * vec4(normalize(vec3(\n                (scrpos.x + (2. * rand(seed) / iResolution.x)) * aspect_ratio,\n                (scrpos.y + (2. * rand(seed) / iResolution.y)),\n                1.0)), 0.0)).xyz;\n\n        vec3 throughput = vec3(1.0);\n        int depth;\n        for (depth = 0; depth < MAX_RAY_DEPTH; ++depth)\n        {\n        \tinside = sdf(ro) < 0.0;\n            \n            float t = rayMarch(ro, rd, 0.01, MAX_DIST);\n            if (t < 0.)\n            {\n                fragColor = vec4(vec3(-t / MAX_DIST),0);\n                return;\n            }\n            \n            if (t >= MAX_DIST) {\n                throughput *= texture(iChannel0, rd).xyz;\n                color += throughput;\n                break;\n            }\n\n            vec3 ip = ro + rd * t; //intersection point\n            vec3 norm = getNorm(ip);\n            \n            \n            float kRefract = 1.3333;\n            float n1 = 1.0;\n            float n2 = kRefract;\n            if(inside) {n2 = 1.0; n1 = kRefract;}\n            \n            \n            float f = fresnel(n1, n2, norm, -rd);\n            float r0 = rand(seed);\n            if (f > r0)\n            {\n            \tro = ip + norm * 0.01;\n                rd = normalize(reflect(rd, norm));\n            }\n            else\n            {\n                vec3 refr = (refract(rd, norm, n1 / n2));\n                if(abs(dot(refr, refr)) < VERY_SMOL)\n                {\n                    //handle total inner reflection\n                \tro = ip + norm * 0.01;\n                \trefr = reflect(rd, norm);\n                }\n                else\n                {\n                \tro = ip - norm * 0.01;\n                }\n                \n                rd = refr;   \n            }\n        }\n        \n        \n        //reached max depth, cheat by saying we hit the skybox =]\n        if(depth == MAX_RAY_DEPTH) color += texture(iChannel0, rd).xyz;\n    }\n    color *= (1.0 / float(SPP));\n    \n    \n    // Output to screen\n    fragColor = vec4(pow(color,vec3(1./2.2)),1.0);\n    //fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 24,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/488bd40303a2e2b9a71987e48c66ef41f5e937174bf316d3ed0e86410784b919.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

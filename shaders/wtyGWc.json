@@ -1,0 +1,278 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1580052843",
+            "description": "red/blue = vortices +/-, intensity = strength    white = passive markers\nfullscreen !\n\nBoosting rendering of vortex simulation  [url]https://shadertoy.com/view/lsy3zR[/url]\nusing  Voronoï particle tracking [url]https://www.shadertoy.com/view/3ty3Dy[/url]",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "wtyGWc",
+            "likes": 54,
+            "name": "vortex simulation+Voronoi track",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "particles",
+                "dynamics",
+                "vortex",
+                "seminewton",
+                "lagrangian",
+                "vorticity",
+                "biotsavart",
+                "voronoiparticletracking",
+                "voronoitracking"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 2051
+        },
+        "renderpass": [
+            {
+                "code": "// optimized version of transitional https://shadertoy.com/view/wtGGWc\n//    Fork of vortex simulation  https://shadertoy.com/view/lsy3zR\n//             inspired from http://evasion.imag.fr/~Fabrice.Neyret/demos/JS/Vort.html\n//    + Voronoï particle tracking https://www.shadertoy.com/view/3ty3Dy\n\n\nvoid mainImage( out vec4 O,  vec2 U )\n{\n    O = keyFlip(32)\n     // ? T1(U).rrrr/(Nf*Nf)   // space key: draw Id/Voronoi ( closest )\n        ? T1(U)/(Nf*Nf)        // space key: draw Id/Voronoi ( RGBA = 1st-4th closest )\n        : T0(U);               // draw trace\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// === semi-Newton (aka Verlet) integration of Biot-Savart velocity field induced by vortex particles\n// inspired from http://evasion.imag.fr/~Fabrice.Neyret/demos/JS/Vort.html\n \nvoid mainImage( out vec4 O, vec2 U )\n{\n    O-=O;\n    vec2 T = floor(U/Nf); // several grids are mapped in the buffer\n    // tile (0,0).xy , zw : pos, velocity of pass 1  (init from pass 2 output)\n    // tile (0,1).z         vorticity\n    // tile (0,2).xy , zw : backup of ref pos, velocity  ( UNUSED )\n\n    /*\n    if (iFrame < 1) {   // ----- initialization\n        O = vec4( R * rand2(U),         // P0\n                  2.*rand2(U+7.13)-1.); // V0 (for gravity) or W (if tile(0,1) )\n\n        if (T==vec2(0,1)) \n            if (int(U.x)+N*(int(U.y)%N) > Nvort)  O.z = 0.;  // W = 0 : passive markers\n        \telse if (BINARY==1) O.z = sign(O.z); // binary mode: all active |W|=1\n        return; \n    }*/\n    \n    if (T==vec2(0,1))\n        O = T1(U);          // for buffer persistency \n    \n    U = mod(U,Nf);          // U = particle id ( N*N particles )\n    \n  //if ( T == vec2(0,2) )   // backup ref positions ( UNUSED )\n  //    { O = refState(U); return; }\n    \n    int pass = 0;\n    float dt = iFrame < 10 ? 1./60. : iTimeDelta; \n    \n    if ( T == vec2(0,0) ) { // pass 1 : 1/2 time step from ref position (to get V)\n        pass = 1; \n        dt *= .5; \n        O = T1(U);\n    }\n    else if (pass==0) return;\n    \n    // if pass 1: compute tmp pos(v) at half time-step\n    // if pass 2: compute new pos using velocities(tmppos) and ref pos\n\n    // ----- evaluate forces (Newton, for gravity) \n    //         or directly velocity (Biot-Savart, for vorticity)\n    vec2 F = vec2(0);\n \n#if CYCLE == 1         // forces through cycling world\n    for (int cx=-1; cx<2; cx++)\n      for (int cy=-1; cy<2; cy++)\n#endif\n    for (int k=0; k < Nvort; k++) {\n            vec2 P = vec2(k%N,k/N), d = T1(P).xy - O.xy;\n            float w = W(P); \n            BINARY == 2 ? w = .5*sign(w) : w;\n#if CYCLE == 1\n            d += iResolution.xy*vec2(cx,cy);\n#elif CYCLE == 2     // cycling world : clipped to most contributive window\n            d = ( fract(.5+d/iResolution.xy) -.5)*iResolution.xy;\n#endif\n            float l = dot(d,d);\n         // if (l>1e-5) F += d /l;                   // Newton, for gravity \n            if (l>1e-5) F += vec2(-d.y,d.x) * w /l;  // Biot-Savart, for vorticity\n            }\n    \n // O.zw += 1e-1*F*dt;    // v += sum(F).dt   for Newton\n    O.zw = STRENGTH*F;    // direct eval of V (stored as F) for Biot-Savart\n    if (pass==2)   // increment from ref pos, not pass 1 pos\n        O.xy = T0(U).xy;\n    O.xy += O.zw*dt;      // x += v.dt\n    O.xy = mod(O.xy, iResolution.xy);\n  \n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// === semi-Newton (aka Verlet)  integration of Biot-Savart velocity field induced by vortex particles\n// inspired from http://evasion.imag.fr/~Fabrice.Neyret/demos/JS/Vort.html\n    \nvoid mainImage( out vec4 O, vec2 U )\n{\n    O-=O;\n    vec2 T = floor(U/Nf); // several grids are mapped in the buffer\n    // tile (0,0).xy , zw : pos, velocity of pass 1  (init from pass 2 output)\n    // tile (0,1).z         vorticity\n    // tile (0,2).xy , zw : backup of ref pos, velocity  ( UNUSED )\n    \n    if (iFrame < 1) {   // ----- initialization\n        O = vec4( R * rand2(U),         // P0\n                  2.*rand2(U+7.13)-1.); // V0 (for gravity) or W (if tile(0,1) )\n\n        if (T==vec2(0,1)) \n            if (int(U.x)+N*(int(U.y)%N) > Nvort)  O.z = 0.;  // W = 0 : passive markers\n        \telse if (BINARY==1) O.z = sign(O.z); // binary mode: all active |W|=1\n        return; \n    }\n    \n    if (T==vec2(0,1))\n        O = T1(U);          // for buffer persistency \n    \n    U = mod(U,Nf);          // U = particle id ( N*N particles )\n    \n  //if ( T == vec2(0,2) )   // backup ref positions ( UNUSED )\n  //    { O = refState(U); return; }\n    \n    int pass = 0;\n    float dt = iFrame < 10 ? 1./60. : iTimeDelta; \n    \n    if ( T == vec2(0,0) ) { // pass 1 : 1/2 time step from ref position (to get V)\n        pass = 2; \n        O = T1(U);\n    }\n    else if (pass==0) return;\n    \n    // if pass 1: compute tmp pos(v) at half time-step\n    // if pass 2: compute new pos using velocities(tmppos) and ref pos\n\n    // ----- evaluate forces (Newton, for gravity) \n    //         or directly velocity (Biot-Savart, for vorticity)\n    vec2 F = vec2(0);\n \n#if CYCLE == 1         // forces through cycling world\n    for (int cx=-1; cx<2; cx++)\n      for (int cy=-1; cy<2; cy++)\n#endif\n    for (int k=0; k<Nvort; k++) {\n            vec2 P = vec2(k%N,k/N), d = T1(P).xy - O.xy;\n            float w = W(P);\n            BINARY == 2 ? w = .5*sign(w) : w;\n#if CYCLE == 1\n            d += iResolution.xy*vec2(cx,cy);\n#elif CYCLE == 2     // cycling world : clipped to most contributive window\n            d = ( fract(.5+d/iResolution.xy) -.5)*iResolution.xy;\n#endif\n            float l = dot(d,d);\n         // if (l>1e-5) F += d /l;                   // Newton, for gravity \n            if (l>1e-5) F += vec2(-d.y,d.x) * w /l;  // Biot-Savart, for vorticity\n            }\n    \n // O.zw += 1e-1*F*dt;    // v += sum(F).dt   for Newton\n    O.zw = STRENGTH*F;    // direct eval of V (stored as F) for Biot-Savart\n    if (pass==2)   // increment from ref pos, not pass 1 pos\n        O.xy = T0(U).xy;\n    O.xy += O.zw*dt;      // x += v.dt\n    O.xy = mod(O.xy, iResolution.xy);\n  \n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// === Voronoï buffer: manage tracking of particles Ids\n\n// --- insert (i,d) and maintain the 4 closest (i_,d_) \nvoid list_insert(inout vec4 i, inout vec4 d, float i_, float d_){\t\n    if(i_ == 0.) return;           // not a particle : exit\n    if(any(equal(vec4(i_),i))) return; // already in top4 : exit\n    if     (d_ < d[0])             // closer to closest: insert here\n        i = vec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             // closer to 2nd closest: insert here\n        i = vec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])             // closer to 3rd closest: insert here\n        i = vec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])             // closer to 4th closest: insert here\n        i = vec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nvoid mainImage( out vec4 O, vec2 I )\n{\n    vec4  i = vec4(0),\n         i0 = T1( I ),             // 4 closests particles here and around\n         ia = T1( I + vec2( 1, 0) ),  // NB: could use an array.\n         ib = T1( I + vec2( 0, 1) ),\n         ic = T1( I + vec2(-1, 0) ),\n         id = T1( I + vec2( 0,-1) );\n\n//#define dist(i) length( A(i).xy - I )\n//#define dist(i) length( mod( A(i).xy-I + R/2., R) - R/2. )  \nvec2 D;\n#define dist(i) ( D = mod( A(i,0).xy-I + R/2., R) - R/2., dot(D,D) )\n\n    vec4  d = vec4(1e9); \n    for(int k = 0; k < 4; k++){    // sorts all these\n        list_insert( i, d, i0[k], dist(i0[k]) );\n        list_insert( i, d, ia[k], dist(ia[k]) );\n        list_insert( i, d, ib[k], dist(ib[k]) );\n        list_insert( i, d, ic[k], dist(ic[k]) );\n        list_insert( i, d, id[k], dist(id[k]) );\n    }\n#if 0 // also checking diagonal (to test possibly axis bias)\n    ia = T1( I + vec2( 1, 1) ),\n    ib = T1( I + vec2(-1, 1) ),\n    ic = T1( I + vec2( 1,-1) ),\n    id = T1( I + vec2(-1,-1) );\n    for(int k = 0; k < 4; k++){    // sorts all these\n        list_insert( i, d, ia[k], dist(ia[k]) );\n        list_insert( i, d, ib[k], dist(ib[k]) );\n        list_insert( i, d, ic[k], dist(ic[k]) );\n        list_insert( i, d, id[k], dist(id[k]) );\n    }\n#endif\n    \n    for(int k = 0; k < 8; k++){    // try to re-insert some random particle (possibly escaped from tracking)\n      //int r = IHash( int(I.x) + int(I.y)*2048 + iFrame*2048*2048 +k*11131); //deterministic\n        int r = IHash( int(I.x) + int(I.y)*2141 + iFrame*2141*2141 +k*11131); //without 2048 bias\n      //int r = IHash( int(I.x) + int(I.y)*2048 + (int(iTime*2048.)+iFrame)*2048 +k*11131);\n        int i_ =  1 + r % ( N*N ); \n        list_insert(i, d, float(i_), dist(i_) );\n    }\n    O = vec4(i);                   // stores 4 closest\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// === display with motion blur\n\nvoid mainImage( out vec4 O,  vec2 U )\n{\n/* // --- test: display data tiles\n    float n = 3.*Nf/iResolution.y,\n        r = iResolution.x/iResolution.y;\n    U /= iResolution.xy;\n\tO.xy =  U.x < .5 ? texture(iChannel0,U*n).xy\n                     : texture(iChannel0,(U-vec2(2.*n,0))*n).zw;\n    if (U.y < 1./3.) O /= iResolution.y;\n    else if (U.x>.5 && max((U.x-.5)*r,U.y-1./3.)<1./3.) O = O.x==0. ? vec4(1) : O.x>0. ? vec4(O.x,0,0,1) : vec4(0,0,-O.x,1);\n // O = fract(O);\n    return;\n/**/    \n\n // --- Display partics using Voronoï tracking \n\n#if BLEND != 1    \n  #define blend(d,s,w) d += (s)*(w)\n#else\n  #define blend(d,s,w) d = max(d,(s))\n#endif\n    \n    O = vec4(0);\n    vec4 a = T2(U), P;         // 4 particule id (supposed to be particles closest to I)\n    float w,l;\n    for(int i = 0; i < 4; i++){// draw blobs\n        P = A(a[i],0); if (a[i]==0.) break;\n        l = l2( U - P.xy );   \n        w = A(a[i],ivec2(0,N)).z;            // particle vorticity             \n        if   (w==0.) blend(O, smoothstep(Rm,Rm/4.,l)*.6,.3); // passiwe marker : white\n        else { l = smoothstep(Rv,Rv/4.,l);                   // active vortices : red/blue\n              if (w>0.) blend(O.r, w*l, Wv); \n              else      blend(O.b,-w*l, Wv);\n             }\n    }\n    \n#if BLEND != 2    \n    blend( O, .95*T1(U),1.);     // blend with fading past\n#else\n    O = max(O/.5,.95*T1(U));     // blend with fading past\n#endif\n    \n/* // --- old way: Display partics using usual NxN browsing & blending\n    \n    O = (1.-.05)*texture(iChannel1,U/iResolution.xy); // blur relaxation of past    \n    for (int j=0; j<N; j++)\n        for (int i=0; i<N; i++) \n        {\n            vec2 d = tex(i,j).xy - U.xy;\n            float l = dot(d,d),\n                  w = W(i,j);    // particle vorticity\n         // O += 2.*abs(w)/l;\n            if (l<Rp)              \n              if   (w==0.) O += smoothstep(Rm,Rm/2.,l) * .2; // passiwe marker : white\n              else { l = smoothstep(Rp,Rp/2.,l) * .3;        // active vortices : red/blue\n                     if (w>0.) O.r += w*l; else O.b += -w*l;\n                   }\n     }\n/**/    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define R     iResolution.xy\n\n// --- simu params\n\n#define N 100         // N*N partics\n#define Nf float(N)\n#define MARKERS .97   // % of passive markers\n#define BINARY 0      // are vorticities distributed or binaries ( -1 or 1 )\n                      //   2: on the fly\n#define CYCLE 2       // evaluate forces through cycling world 0:no 1:full 2:cheap\n#define STRENGTH ( (R.y>300. ? 2e2 : 1e2 ) / (1.-MARKERS) * (15./Nf) )\n#define Nmark     int( float(N*N) * MARKERS )\n#define Nvort    ( N*N - Nmark )\n\n\n// --- display params\n\n#define BLEND 2 // Blending mode: 0: add   1: max   2: add partics & blend past\n\nfloat Rv = 16., // vortice thickness^2 (pixels)\n      Rm = 2.,  // markers thickness^2 (pixels)\n      Wv = BLEND != 2 ? .3 : .5; // vortice weight\n\n\n\n// ----------------------------------------------\n\n// Buff B (1) store Voronoï tracking acceleration structure;\n//            xyzw: ids of 4 closest partics to buffer location\n// Buff A (0) stores particles: \n//            xy: position zw: velocity\n\n// --- translate particle id to buffer pixel \n#define A(n,T) T0( T+ ivec2( (int(n)-1) % N,     \\\n                             (int(n)-1) / N ) ) // + tile offset\n\n#define W(P)      T1( P + vec2(0,N) ).z\n                                 \n// --- utils\n                           \n#define iR    ivec2(iResolution)\n#define T0(U) texelFetch( iChannel0, ivec2(U)   , 0 )\n#define T1(U) texelFetch( iChannel1, ivec2(U)%iR, 0 )\n#define T2(U) texelFetch( iChannel2, ivec2(U)   , 0 )\n\n#define l2(x) dot(x,x)\n\n#define TAU 6.2831853\n\n#define keyFlip(k) ( texelFetch( iChannel3, ivec2(k,2), 0 ).x > .5 )\n                           \n// --- random numbers\n\n #define rand2(U)   fract( 1e5* sin( mat2(17.1,191.7,-31.1,241.7) * U ))\n\nint IHash(int a){\n\ta = (a ^ 61) ^ (a >> 16);\n\ta = a + (a << 3);\n\ta = a ^ (a >> 4);\n\ta = a * 0x27d4eb2d;\n\ta = a ^ (a >> 15);\n\treturn a;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

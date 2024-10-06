@@ -1,0 +1,119 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1563334098",
+            "description": "Sampling a 1-bit volume and integrating 8x4 values into a density value with resolution 1/32, then using biquadratic interpolation to compute the isosurface and surface gradient.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "tlXXRS",
+            "likes": 9,
+            "name": "Smooth 1-Bit Isosurfaces",
+            "published": 3,
+            "tags": [
+                "isosurface",
+                "fxaa",
+                "smooth",
+                "1bit",
+                "reconstruction"
+            ],
+            "usePreview": 1,
+            "username": "paniq",
+            "viewed": 674
+        },
+        "renderpass": [
+            {
+                "code": "vec3 weight(vec3 p) {\n    return vec3(\n\t\t(p[0]+p[1])*0.5,\n        p[1],\n        (p[1]+p[2])*0.5);\n}\n\nvec3 b2(float x) {\n    float rx = 1.0 - x;\n\treturn vec3(rx*rx, 2.0*rx*x, x*x);\n}\n\nvec3 b2d(float x) {\n    float x2 = 2.0 * x;\n\treturn vec3(x2 - 2.0, 2.0 - 4.0 * x, x2);\n}\n\nfloat interpolate2d(mat3 p, vec3 s, vec3 t) {\n    vec3 q = vec3(\n    \tdot(weight(p[0]), s),\n    \tdot(weight(p[1]), s),\n    \tdot(weight(p[2]), s));\n    \n\treturn dot(weight(q), t);\n}\n\nvec3 interpolate2d_grad(mat3 p, vec2 o) {\n    vec3 s2 = b2(o.x);\n    vec3 t2 = b2(o.y);\n    vec3 s1 = b2d(o.x);\n    vec3 t1 = b2d(o.y);\n    return\n        vec3(\n            interpolate2d(p, s1, t2),\n            interpolate2d(p, s2, t1),\n        \tinterpolate2d(p, s2, t2));\n}\n\nfloat interpolate2d(mat3 p, vec2 o) {\n    vec3 s = b2(o.x);\n    vec3 t = b2(o.y);\n    return interpolate2d(p, s, t);\n}\n\nfloat fetch(ivec2 uv) {\n    int count = 0;\n    for (int y = 0; y < 8; ++y) {\n        for (int x = 0; x < 8; ++x) {\n\t\t    float d = texelFetch(iChannel0, uv * 4 + ivec2(x,y), 0).x;\n            if (d > 0.5) {\n                count++;\n            }\n\t\t}\n    }\n    float d = float(32 - count) / 32.0;\n    return d;\n}\n\nvec3 samplef(vec2 uv) {\n    vec2 suv = uv / 4.0;\n    vec2 n = floor(suv);\n    vec2 f = fract(suv);\n    \n    ivec2 iuv = ivec2(n + 0.5);\n    mat3 p;\n    for (int i = 0; i <= 2; ++i) {\n        for (int j = 0; j <= 2; ++j) {\n            float col = fetch(iuv + ivec2(i-1,j-1));\n            p[j][i] = col;\n        }\n    }\n    \n    return interpolate2d_grad(p, f);\n}\n#if 1\nuint popct(uint x) {\n    x -= ((x >> 1u) & 0x55555555u);\n    x = (x & 0x33333333u) + ((x >> 2u) & 0x33333333u);\n    x = (x + (x >> 4u)) & 0x0F0F0F0Fu;\n    x += (x >> 8u);\n    x += (x >> 16u);    \n    return x & 0x0000003Fu;\n}\n#else\nuint popct(uint x) {\n    uint k = 0u;\n    for (int i = 0; i < 32; ++i) {\n        if ((x & (1u << i)) != 0u)\n            k++;\n    }\n    return k;\n}\n#endif\n\nfloat density(uint x, uint mask) {\n    return float(popct(x & mask))/float(popct(mask));\n}\n\nfloat density(uint x) {\n    return density(x, sp_all);\n}\n\nvec4 density_fetch(sampler2D channel, ivec2 u, int lod, uint mask) {\n#if 0\n    uvec4 d = floatBitsToUint(texelFetch(channel, u, lod));\n    return vec4(\n        density(d.x,mask),\n        density(d.y,mask),\n        density(d.z,mask),\n        density(d.w,mask)\n    ); \n#elif 1\n    mask = (((u.x&1)==1)?(sp10|sp11):(sp00|sp01)) & (((u.y&1)==1)?(sp01|sp11):(sp00|sp10));\n    uvec4 d = floatBitsToUint(texelFetch(channel, u/2, lod));\n    return vec4(\n        density(d.x,mask),\n        density(d.y,mask),\n        density(d.z,mask),\n        density(d.w,mask)\n    ); \n#elif 1\n    mask = 0u;\n    switch (u.x&3) {\n    case 0: mask = sp_x0|sp_x1; break;\n    case 1: mask = sp_x2|sp_x3; break;\n    case 2: mask = sp_x4|sp_x5; break;\n    case 3: mask = sp_x6|sp_x7; break;\n    default: break;\n    }\n    switch (u.y&3) {\n    case 0: mask &= sp_y0|sp_y1; break;\n    case 1: mask &= sp_y2|sp_y3; break;\n    case 2: mask &= sp_y4|sp_y5; break;\n    case 3: mask &= sp_y6|sp_y7; break;\n    default: break;\n    }\n    uvec4 d = floatBitsToUint(texelFetch(channel, u/4, lod));\n    return vec4(\n        density(d.x,mask),\n        density(d.y,mask),\n        density(d.z,mask),\n        density(d.w,mask)\n    ); \n#else\n    mask = 0u;\n    switch (u.x&7) {\n    case 0: mask = sp_x0; break;\n    case 1: mask = sp_x1; break;\n    case 2: mask = sp_x2; break;\n    case 3: mask = sp_x3; break;\n    case 4: mask = sp_x4; break;\n    case 5: mask = sp_x5; break;\n    case 6: mask = sp_x6; break;\n    case 7: mask = sp_x7; break;\n    default: break;\n    }\n    switch (u.y&7) {\n    case 0: mask &= sp_y0; break;\n    case 1: mask &= sp_y1; break;\n    case 2: mask &= sp_y2; break;\n    case 3: mask &= sp_y3; break;\n    case 4: mask &= sp_y4; break;\n    case 5: mask &= sp_y5; break;\n    case 6: mask &= sp_y6; break;\n    case 7: mask &= sp_y7; break;\n    default: break;\n    }\n    uvec4 d = floatBitsToUint(texelFetch(channel, u/8, lod));\n    return vec4(\n        density(d.x,mask),\n        density(d.y,mask),\n        density(d.z,mask),\n        density(d.w,mask)\n    ); \n#endif\n}\n\n\nvec4 density_fetch(sampler2D channel, ivec2 u, int lod) {\n    return density_fetch(channel, u, lod, sp_all);\n}\n\nvec4 sample_blur3x3(sampler2D channel, ivec2 t) {\n    ivec3 e = ivec3(-1, 0, 1);\n    #if 0\n    vec4 s00 = density_fetch(channel, t + e.xx, 0, sp11)*1.;\n    vec4 s01 = density_fetch(channel, t + e.xy, 0, sp10 | sp11)*2.;\n    vec4 s02 = density_fetch(channel, t + e.xz, 0, sp10)*1.;\n    vec4 s10 = density_fetch(channel, t + e.yx, 0, sp01 | sp11)*2.;\n    vec4 s11 = density_fetch(channel, t + e.yy, 0)*4.;\n    vec4 s12 = density_fetch(channel, t + e.yz, 0, sp00 | sp10)*2.;\n    vec4 s20 = density_fetch(channel, t + e.zx, 0, sp01)*1.;\n    vec4 s21 = density_fetch(channel, t + e.zy, 0, sp00 | sp01)*2.;\n    vec4 s22 = density_fetch(channel, t + e.zz, 0, sp00)*1.;    \n    return (s00 + s01 + s02 + s10 + s11 + s12 + s20 + s21 + s22) / 16.0;\n    #elif 0\n    vec4 s00 = density_fetch(channel, t + e.xx, 0, sp11);\n    vec4 s01 = density_fetch(channel, t + e.xy, 0, sp10 | sp11);\n    vec4 s02 = density_fetch(channel, t + e.xz, 0, sp10);\n    vec4 s10 = density_fetch(channel, t + e.yx, 0, sp01 | sp11);\n    vec4 s11 = density_fetch(channel, t + e.yy, 0);\n    vec4 s12 = density_fetch(channel, t + e.yz, 0, sp00 | sp10);\n    vec4 s20 = density_fetch(channel, t + e.zx, 0, sp01);\n    vec4 s21 = density_fetch(channel, t + e.zy, 0, sp00 | sp01);\n    vec4 s22 = density_fetch(channel, t + e.zz, 0, sp00);    \n    return (s00 + s01 + s02 + s10 + s11 + s12 + s20 + s21 + s22) / 9.0;\n    #elif 1\n    vec4 s00 = density_fetch(channel, t + e.xx, 0);\n    vec4 s01 = density_fetch(channel, t + e.xy, 0);\n    vec4 s02 = density_fetch(channel, t + e.xz, 0);\n    vec4 s10 = density_fetch(channel, t + e.yx, 0);\n    vec4 s11 = density_fetch(channel, t + e.yy, 0);\n    vec4 s12 = density_fetch(channel, t + e.yz, 0);\n    vec4 s20 = density_fetch(channel, t + e.zx, 0);\n    vec4 s21 = density_fetch(channel, t + e.zy, 0);\n    vec4 s22 = density_fetch(channel, t + e.zz, 0);    \n    return (s00 + s01 + s02 + s10 + s11 + s12 + s20 + s21 + s22) / 9.0;\n    #else\n    vec4 s00 = density_fetch(channel, t + e.xx, 0)*1.0;\n    vec4 s01 = density_fetch(channel, t + e.xy, 0)*2.0;\n    vec4 s02 = density_fetch(channel, t + e.xz, 0)*1.0;\n    vec4 s10 = density_fetch(channel, t + e.yx, 0)*2.0;\n    vec4 s11 = density_fetch(channel, t + e.yy, 0)*4.0;\n    vec4 s12 = density_fetch(channel, t + e.yz, 0)*2.0;\n    vec4 s20 = density_fetch(channel, t + e.zx, 0)*1.0;\n    vec4 s21 = density_fetch(channel, t + e.zy, 0)*2.0;\n    vec4 s22 = density_fetch(channel, t + e.zz, 0)*1.0;    \n    return (s00 + s01 + s02 + s10 + s11 + s12 + s20 + s21 + s22) / 16.0;\n    #endif\n}\n\nvec4 sample_biquadratic_exact(sampler2D channel, vec2 res, vec2 uv) {\n    vec2 q = fract(uv * res);\n    ivec2 t = ivec2(uv * res);\n    ivec3 e = ivec3(-1, 0, 1);\n#if 1\n#define density_fetch(channel, pos, lod) sample_blur3x3(channel, pos)\n#endif\n    vec4 s00 = density_fetch(channel, t + e.xx, 0);\n    vec4 s01 = density_fetch(channel, t + e.xy, 0);\n    vec4 s02 = density_fetch(channel, t + e.xz, 0);\n    vec4 s10 = density_fetch(channel, t + e.yx, 0);\n    vec4 s11 = density_fetch(channel, t + e.yy, 0);\n    vec4 s12 = density_fetch(channel, t + e.yz, 0);\n    vec4 s20 = density_fetch(channel, t + e.zx, 0);\n    vec4 s21 = density_fetch(channel, t + e.zy, 0);\n    vec4 s22 = density_fetch(channel, t + e.zz, 0);    \n#undef density_fetch\n    vec2 q0 = (q+1.0)/2.0;\n    vec2 q1 = q/2.0;\t\n    vec4 x0 = mix(mix(s00, s01, q0.y), mix(s01, s02, q1.y), q.y);\n    vec4 x1 = mix(mix(s10, s11, q0.y), mix(s11, s12, q1.y), q.y);\n    vec4 x2 = mix(mix(s20, s21, q0.y), mix(s21, s22, q1.y), q.y);    \n\treturn mix(mix(x0, x1, q0.x), mix(x1, x2, q1.x), q.x);\n}\n\nvec2 gradient(sampler2D channel, vec2 res, vec2 uv) {\n    vec2 pos = vec2(1e-4,0.0);\n    return vec2(\n        sample_biquadratic_exact(channel, res, uv + pos.xy).x - sample_biquadratic_exact(channel, res, uv - pos.xy).x,\n        sample_biquadratic_exact(channel, res, uv + pos.yx).x - sample_biquadratic_exact(channel, res, uv - pos.yx).x\n    ) / (2.0*pos.x);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    bool ismag = true;//max(abs(fragCoord.x), abs(fragCoord.y)) < 256.;\n#if 1\n    vec2 p = fragCoord;\n    if (ismag) {\n        p = p + iMouse.xy*8.0;\n        p = p / 8.0 - 0.5 * iResolution.xy / 8.0;\n    }\n    ivec2 subp = ivec2(fract(p)*8.0);\n    ivec2 ip = ivec2(p);\n    \n    vec2 uv = (p/iResolution.xy);//*0.2 + vec2(0.46,0.76);\n    //p += vec2(0.56,0.76)*iResolution.xy;\n    //float w = sample_blur3x3(iChannel0, ivec2(p)).x;\n    float S = 2.0;\n    float w = sample_biquadratic_exact(iChannel0, iResolution.xy*S, uv).x;\n    vec2 g = normalize(gradient(iChannel0, iResolution.xy*S, uv));\n    float s = step(0.5, w);\n    w = 1.0-clamp((abs(w-0.5)-0.1)*8.0+0.5,0.0,1.0);\n    //w = 1.0-min(1.0,abs(w * 2.0 - 1.0)/(iResolution.y*fwidth(uv).y));\n    //vec3 rgb = vec3(w * (vec3(g,0.0)*0.5+0.5));\n    vec3 rgb = vec3(max(s*0.2,(dot(g,vec2(0,-1))*0.5+0.5)*w));\n    uint d = floatBitsToUint(texelFetch(iChannel0, ip, 0).x);\n    d = d & uint(1u << subpixel_index(subp));\n    if (fragCoord.x/iResolution.x < 0.5)        \n        rgb = vec3((((subp.x ^ subp.y) & 1) == 0) && (d != 0u));\n    rgb += vec3(float((ip.x ^ ip.y) & 1) * 0.125);\n#else\n    ivec2 p = ivec2(fragCoord);\n    ivec2 subp;\n    if (ismag) {\n        subp = p % 8;\n        p = p + ivec2(iMouse.xy)*8;\n        p = p / 8 - 128 / 8;\n    }\n    uint d = floatBitsToUint(texelFetch(iChannel0, p, 0).x);\n#if 0\n    if (ismag) {\n        d = d & uint(1u << subpixel_index(subp));\n        fragColor = vec4(vec3((((subp.x ^ subp.y) & 1) == 0) && (d != 0u)),1);\n        return;\n    }\n#endif\n#if 0\n    vec3 rgb = vec3(density(d, sp_x0|sp_x1|sp_x2), density(d, sp_x3|sp_x4|sp_x5), density(d, sp_x6|sp_x7));\n#elif 0\n    float gx = density(d, sp_x4|sp_x5|sp_x6|sp_x7) - density(d, sp_x0|sp_x1|sp_x2|sp_x3);\n    float gy = density(d, sp_y4|sp_y5|sp_y6|sp_y7) - density(d, sp_y0|sp_y1|sp_y2|sp_y3);\n    vec3 rgb = vec3((-vec2(gx, gy)*2.0),0)*0.5+0.5;\n#else\n    vec3 rgb = vec3(density(d, sp_all));\n#endif\n#endif\n    fragColor = vec4(pow(rgb,vec3(1.0/2.2)),1.0);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float sdBox( vec2 p, vec2 b ) {\n  vec2 d = abs(p) - b;\n  return length(max(d,0.0)) + min(max(d.x,d.y),0.0);\n}\n\nvec2 anglevec(float a) {\n    return vec2(cos(a),sin(a));\n}\n\nvoid rotate(inout vec2 p, float a) {\n    float c = cos(a);\n    float s = sin(a);\n    p = vec2(\n        c * p.x - s * p.y,\n        s * p.x + c * p.y\n        );\n}\n\nfloat mapf(vec2 p) {\n    p /= 2.0;\n    float d0 = length(p) - 0.4;\n    float d1 = length(p - vec2(0.3, -0.1)) - 0.4;\n    float d2 = length(p - vec2(0.1, mix(0.1,0.3,sin(iTime*0.2)*0.5+0.5))) - 0.1;\n    \n    //p -= vec2(0.5);\n    rotate(p, radians(iTime*10.0));\n        \n    float d3 = sdBox(p - vec2(0.0, -0.45), vec2(0.25,0.05));\n    float d4 = sdBox(p, vec2(2.0/64.0,0.3));\n    \n    float r = radians(iTime*5.0);\n    float d5 = dot(p, anglevec(r));\n    float d6 = dot(p, anglevec(-r-radians(90.0)));\n    \n    float d = min(d2, max(d0, -d1));\n    return min(d, d3)*2.0;\n}\n\nuint umapf(ivec2 pos, float scale, vec2 offset) {\n    uint d = 0u;\n    for (int i = 0; i < 32; ++i) {\n        ivec2 p = subpixel(i);\n        vec2 uv = subpixel_uv(p);\n        float s = mapf((vec2(pos) + uv) * scale + offset);\n        #if 1\n        if ((s / scale) <= 0.0) {\n            d |= (1u << uint(i));\n        }\n        #else\n        float w = texelFetch(iChannel0, (pos*ivec2(8,4) + p/ivec2(1,2)) % 1024, 0).r;\n        //float w = texelFetch(iChannel1, (pos*ivec2(4,4) + p/ivec2(2,2)) % 8, 0).r;\n        if (((s / scale) <= 0.0) && ((float(pos.y)*scale*0.5) < w)) {\n            d |= (1u << uint(i));\n        }\n        #endif\n    }\n    return d;\n}\n\n\nfloat brushmapf(vec2 p) {\n    return length(p) - 0.01;\n}\n\nuint umapbrush(ivec2 pos, float scale, vec2 offset) {\n    uint d = 0u;\n    for (int i = 0; i < 32; ++i) {\n        ivec2 p = subpixel(i);\n        vec2 uv = subpixel_uv(p);\n        float s = brushmapf((vec2(pos) - iMouse.xy + uv) * scale + offset)/scale;\n        #if 1\n        if (s <= 0.0) {\n            d |= (1u << uint(i));\n        }\n        #else\n        float w = texelFetch(iChannel0, (pos*ivec2(8,4) + p/ivec2(1,2)) % 1024, 0).r;\n        //float w = texelFetch(iChannel1, (pos*ivec2(4,4) + p/ivec2(2,2)) % 8, 0).r;\n        if ((s <= 0.0) && (-s*0.5 > w)) {\n            d |= (1u << uint(i));\n        }\n        #endif\n    }\n    return d;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    uint d;\n    if (iFrame == 0) {\n        d = umapf(ivec2(fragCoord), 2.0/iResolution.y, vec2(-iResolution.x/iResolution.y,-1.0));\n    } else {\n        d = floatBitsToUint(texelFetch(iChannel2, ivec2(fragCoord), 0).r);        \n        #if 1\n        d &= umapbrush(ivec2(fragCoord), 2.0/iResolution.y, vec2(0))^sp_all;\n        #endif\n    }\n\n    fragColor = vec4(uintBitsToFloat(d),0,0,1);\n    \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "ivec2 subpixel(int i) {\n    return ivec2(i & 7, ((i >> 2) & 6) + (i & 1));\n}\n\nvec2 subpixel_uv(ivec2 p) {\n    return (vec2(p-4)+0.5)/8.;\n}\n\nint subpixel_index(ivec2 p) {\n    return p.x | ((p.y & 6) << 2);\n}\n\n// precomputed subpixel masks\n// Y lanes\nconst uint sp_x0 = 0x1010101u;\nconst uint sp_x1 = 0x2020202u;\nconst uint sp_x2 = 0x4040404u;\nconst uint sp_x3 = 0x8080808u;\nconst uint sp_x4 = 0x10101010u;\nconst uint sp_x5 = 0x20202020u;\nconst uint sp_x6 = 0x40404040u;\nconst uint sp_x7 = 0x80808080u;\n// X lanes\nconst uint sp_y0 = 0x55u;\nconst uint sp_y1 = 0xaau;\nconst uint sp_y2 = 0x5500u;\nconst uint sp_y3 = 0xaa00u;\nconst uint sp_y4 = 0x550000u;\nconst uint sp_y5 = 0xaa0000u;\nconst uint sp_y6 = 0x55000000u;\nconst uint sp_y7 = 0xaa000000u;\n// +XY diagonal\nconst uint sp_pxpy = 0xc0300c03u;\n// +X-Y diagonal\nconst uint sp_pxmy = 0x81061860u;\n// XY quadrants\nconst uint sp00 = 0xf0fu;\nconst uint sp10 = 0xf0f0u;\nconst uint sp01 = 0xf0f0000u;\nconst uint sp11 = 0xf0f00000u;\n// all subpixels\nconst uint sp_all = 0xffffffffu;\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

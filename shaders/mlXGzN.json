@@ -1,0 +1,91 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1671480872",
+            "description": "This is debug draw for a new cloth engine I'm working on. Still early days on any kind of nice looking cloth, but this seemed interesting enough as a piece of abstract art to present on its own as a work-in-progress.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "mlXGzN",
+            "likes": 9,
+            "name": "Quadtree Tapestry",
+            "published": 3,
+            "tags": [
+                "simulation",
+                "dynamics",
+                "physics",
+                "quadtree",
+                "cloth"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 279
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  This is debug draw for a new cloth engine I'm working on. Still early days on any\n//  kind of nice looking cloth, but this seemed interesting enough as a piece of abstract\n//  art to present on its own as a work-in-progress.\n//\n//  Define DEBUG_NUM_PROC to 0 to see the current state of my cloth shading. For some\n//  reason my performance goes in the toilet so far with every attempt I have made to\n//  get smooth shading. I'm hopeful of finding a solution, but ideas are welcome! Next\n//  I think I will try returning cloth UVs from the render (which would be useful for\n//  texturing the cloth anyway) and compute the normals separately from the quadtree\n//  traverasal, taking advantage of the texture hardware.\n//\n// ---------------------------------------------------------------------------------------\n\nstruct Span\n{\n    vec2 mins;\n    vec2 maxs;\n};\n\nfloat length2(vec2 v) { return dot(v, v); }\n\nvec2 bary(vec2 p, vec2 a, vec2 b, vec2 c)\n{\n    vec2 v0 = b - a, v1 = c - a, v2 = p - a;\n    float d00 = dot(v0, v0);\n    float d01 = dot(v0, v1);\n    float d11 = dot(v1, v1);\n    float d20 = dot(v2, v0);\n    float d21 = dot(v2, v1);\n    float denom = d00 * d11 - d01 * d01;\n    return vec2((d11 * d20 - d01 * d21) / denom,\n                (d00 * d21 - d01 * d20) / denom);\n}\n\nvec3 screen(vec3 p, mat4 w2c)\n{\n    vec3 s = (w2c * vec4(p,1.0)).xyz;\n    s.xy = s.xy / s.z;\n    return s;\n}\n\nvoid drawTri(vec3 p0, vec3 p1, vec3 p2, vec2 p, vec3 cameraPos, vec3 rayDir, inout float t, inout vec3 norm)\n{\n    vec2 bc = bary(p, p0.xy, p1.xy, p2.xy);\n    float z = p0.z + bc.x * (p1.z - p0.z) + bc.y * (p2.z - p0.z);\n    \n    if (all(lessThanEqual(bc, vec2(1))) && all(greaterThanEqual(bc, vec2(0))) && bc.x + bc.y < 1. && z < t)\n    {\n        norm = normalize(cross(p1 - p0, p2 - p0));\n        t = z;\n    }\n}\n\nconst float MAX_T = 1e6;\n\n#define CLOTH_POS(X) texture(iChannel0, (X+.5)/iResolution.xy).xyz\n\nvoid renderQuad(Span quad, mat4 w2c, vec2 p, vec3 cameraPos, vec3 rayDir, inout float t, inout vec3 norm)\n{\n    vec3 pos0 = screen(CLOTH_POS(quad.mins), w2c);\n    vec3 pos1 = screen(CLOTH_POS(vec2(quad.mins.x, quad.maxs.y)), w2c);\n    vec3 pos2 = screen(CLOTH_POS(quad.maxs), w2c);\n    vec3 pos3 = screen(CLOTH_POS(vec2(quad.maxs.x, quad.mins.y)), w2c);\n\n    t = MAX_T;\n    drawTri(pos0, pos1, pos2, p, cameraPos, rayDir, t, norm);\n    drawTri(pos2, pos3, pos0, p, cameraPos, rayDir, t, norm);\n}\n\nbool testQuad(Span quad, mat4 w2c, vec2 u)\n{\n    vec2 center = (quad.maxs + quad.mins) * .5;\n    vec2 size = (quad.maxs - quad.mins) * .5;\n    float radius = length(size)/float(CLOTH_SIDE_LEN);\n    vec3 worldPos = CLOTH_POS(center);\n    vec3 cameraPos = screen(worldPos, w2c);\n    \n    return length2(cameraPos.xy - u) < radius * radius;\n}\n\n#define DEBUG_NUM_PROC 1\n\n#if DEBUG_NUM_PROC\n#define DEBUG_NUM_PROC_ONLY(X) X\n#else\n#define DEBUG_NUM_PROC_ONLY(X)\n#endif\n\nDEBUG_NUM_PROC_ONLY(int numProc = 0;)\n\nconst int MAX_STACK = 20;\nvoid processQuad(Span quad, mat4 w2c, inout Span stack[MAX_STACK], inout int numStack, vec2 u, vec3 cameraPos, vec3 rayDir, inout vec4 fragColor)\n{\n    DEBUG_NUM_PROC_ONLY(++numProc);\n    if (all(lessThanEqual(quad.maxs - quad.mins, vec2(1))))\n    {\n        float t;\n        vec3 norm;\n        renderQuad(quad, w2c, u, cameraPos, rayDir, t, norm);\n        if (t < MAX_T)\n        {\n            const vec3 lightDir = normalize(vec3(1));\n            fragColor += vec4(vec3(1, 0, 0) * abs(dot(norm, lightDir)), t);\n        }\n    }\n    else if (testQuad(quad, w2c, u))\n    {\n        if (numStack < MAX_STACK)\n        {\n            stack[numStack++] = quad;\n        }\n    }\n}\n\nvoid quadtreeRender(mat4 w2c, vec2 u, vec3 cameraPos, vec3 rayDir, inout vec4 fragColor)\n{\n    const int MAX_STACK = 20;\n    Span stack[MAX_STACK];\n    int numStack = 1;\n    stack[0].mins = vec2(0);\n    stack[0].maxs = vec2(CLOTH_SIDE_LEN - 1);\n    \n    while (numStack > 0)\n    {\n        Span curr = stack[--numStack];\n        vec2 center = (curr.mins + curr.maxs) * .5;\n        \n        processQuad(Span(curr.mins, center), w2c, stack, numStack, u, cameraPos, rayDir, fragColor);\n        processQuad(Span(vec2(center.x, curr.mins.y), vec2(curr.maxs.x, center.y)), w2c, stack, numStack, u, cameraPos, rayDir, fragColor);\n        processQuad(Span(vec2(curr.mins.x, center.y), vec2(center.x, curr.maxs.y)), w2c, stack, numStack, u, cameraPos, rayDir, fragColor);\n        processQuad(Span(center, curr.maxs), w2c, stack, numStack, u, cameraPos, rayDir, fragColor);\n    }\n}\n\nvoid fxCalcCamera(out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraPos = vec3(0,0,-3);\n    cameraLookAt = vec3(0);\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord.xy - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return mat4(vec4(cameraLeft, 0.0),\n        vec4(-cameraUp, 0.0),\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0));\n}\n\nvoid mainImage( out vec4 O, in vec2 fragCoord )\n{\n    DEBUG_NUM_PROC_ONLY(numProc = 0);\n    vec2 u = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n\n    O = vec4(0,0,0,1e6);\n\n    quadtreeRender(w2c, u, cameraPos, rayDir, O);\n    DEBUG_NUM_PROC_ONLY(O = sin(float(numProc) + vec4(0, 5, 11, 0)) * sqrt(vec4(numProc)) / 10.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const int CLOTH_SIDE_LEN = 65;\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Cloth simulation. Left side is current position, right side is last position.\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 ifc = ivec2(fragCoord);\n    if (any(greaterThan(ifc, CLOTH_SIDE_LEN * ivec2(2, 1))))\n    {\n        fragColor = vec4(0);\n        return;\n    }\n    \n    if (iFrame == 0)\n    {\n        fragCoord.x = mod(fragCoord.x, float(CLOTH_SIDE_LEN));\n        fragColor = vec4((((fragCoord) - float(CLOTH_SIDE_LEN - 1) * .5) - .5)*2./float(CLOTH_SIDE_LEN), 0, 0);\n        if (ifc.x >= CLOTH_SIDE_LEN * 2)\n        {\n            fragColor = vec4(0, 0, 1, 0);\n        }\n        return;\n    }\n   \n    if (ifc.x >= CLOTH_SIDE_LEN)\n    {\n        // store last position on right side\n        fragColor = texelFetch(iChannel0, ifc - ivec2(CLOTH_SIDE_LEN, 0), 0);\n        return;\n    }\n    \n    vec3 pos = texelFetch(iChannel0, ifc, 0).xyz;\n    if (ifc.y != CLOTH_SIDE_LEN - 1) // pinned\n    {\n        vec3 oldPos = texelFetch(iChannel0, ifc + ivec2(CLOTH_SIDE_LEN, 0), 0).xyz;\n        pos += (pos - oldPos);\n        pos += vec3(0, -.01, 0);\n        pos.z += sin(pos.x*3. + iTime*.5) * .002;\n\n        for (int i = 0; i < 3; ++i)\n        {\n            ivec2 nb = ifc + ivec2(0, i);\n            if (nb.y <= CLOTH_SIDE_LEN - 1)\n            {\n               vec3 nbPos = texelFetch(iChannel0, nb, 0).xyz;\n               vec3 delta = pos - nbPos;\n               float deltaLen = length(delta);\n               if (deltaLen > float(i) * 2. / float(CLOTH_SIDE_LEN - 1))\n               {\n                   pos = mix(nbPos + normalize(delta) * float(i) * 2. / float(CLOTH_SIDE_LEN - 1), pos, .5);\n               }\n            }\n        }\n    }\n    \n\n    fragColor = vec4(pos, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

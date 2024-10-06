@@ -1,0 +1,188 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1563801859",
+            "description": "flip a five flocken coin\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "WtfSR2",
+            "likes": 49,
+            "name": "heads or tails",
+            "published": 3,
+            "tags": [
+                "game",
+                "bump",
+                "metal",
+                "physics",
+                "copper"
+            ],
+            "usePreview": 0,
+            "username": "flockaroo",
+            "viewed": 1580
+        },
+        "renderpass": [
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// 5 flocken coin\n\n//#define CUBEMAP\n\n#ifdef SHADEROO\n#include Include_A.glsl\n#endif\n\n#define Res1 vec2(textureSize(iChannel1,0))\n#define Res2 vec2(textureSize(iChannel2,0))\n\nvec4 getRand(vec3 pos)\n{\n    vec4 r = vec4(1.0);\n    r*=textureLod(iChannel0,pos.xy,0.)*2.-1.;\n    r*=textureLod(iChannel0,pos.xz,0.)*2.-1.;\n    r*=textureLod(iChannel0,pos.zy,0.)*2.-1.;\n    return r;\n}\n\nvec2 uvSmooth(vec2 uv,vec2 res)\n{\n    return uv+.6*sin(uv*res*PI2)/PI2/res;\n}\n\nfloat arcDist2p( vec2 p, vec2 a, vec2 b )\n{\n    vec2 m=vec2(0); // dont need\n    float r=length(m-a);\n    float d=abs(length(p-m)-r);\n    float ang1=atan((b-m).y,(b-m).x);\n    float dang=atan((a-m).y,(a-m).x)-ang1;\n    float ang=atan((p-m).y,(p-m).x)-ang1;\n    d=max(d,-ang*r);\n    d=max(d,(ang-dang)*r);\n    //d=max(ang*r-ang2);\n    return d;\n}\n\n// basically iq's capsule sdf\nfloat lineDist( vec3 p, vec3 a, vec3 b )\n{\n    vec3 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat lineDist2( vec2 p, vec2 a, vec2 b )\n{\n    vec2 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat lineDistInf( vec3 p, vec3 a, vec3 b )\n{\n    return length( p-a - dot(p-a,b-a)*(b-a)/dot(b-a,b-a) );\n}\n\n// iq's capped cylinder sdf\nfloat sdCappedCylinder( vec3 p, float r, float h )\n{\n    vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(r,h);\n    return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nfloat distFive(vec2 p)\n{\n    float d=10000.;\n    d=min(d, lineDist2(p.xy,vec2(-2.,1.5),vec2(-1.3,4.)));\n    d=min(d, lineDist2(p.xy,vec2(-1.3,4.),vec2(1.7,4.)));\n    d=min(d, arcDist2p(p.xy,vec2(-2.,1.5),vec2(-2.,-1.5)));\n    return d;\n}\n\nfloat bumpMap(vec2 p, float lod) // side=1,-1 front/back\n{\n    float fo=clamp(dot(p,p),0.,1.);\n    float asp=Res1.y/Res1.x;\n    vec2 uv;\n    uv=p*.5*vec2(asp,1)+.5;\n    //FIXME - this should be fixed in prerenderd bumpmap (add border there)\n    //uv=clamp(uv,.01,.99);\n    float b = textureLod(iChannel1,uv,lod).y*.75;\n    return b;\n}\n\nfloat distFloor( vec3 p )\n{\n    vec3 physpos = texelFetch(iChannel1,ivec2(0,0),0).xyz;\n    return p.z+physpos.z/.01;\n}\n\nfloat dist( vec3 p )\n{\n    float d=10000.;\n    float dfloor=distFloor(p);\n    //dfloor=d;\n    vec4 physquat = texelFetch(iChannel1,ivec2(2,0),0);\n    p = transformVecByQuat(p,inverseQuat(physquat));\n    \n    vec4 q;\n    \n    vec2 pb=p.xz*vec2(-sign(p.y),1);\n    float b=bumpMap(pb,0.);\n\n    d=sdCappedCylinder(p,1.+.002*sin(atan(p.x,p.z)*200.)*clamp(1.-p.y*p.y/.07/.07,0.,1.),.05)-.015;\n    d=max(d,-(sdCappedCylinder(p-vec3(0,.12,0),inner,.05)-.02));\n    d=max(d,-(sdCappedCylinder(p+vec3(0,.12,0),inner,.05)-.02));\n\n    return min(d-.01*b,dfloor);\n}\n\nvec3 getGradExt(vec3 pos, float eps)\n{\n    vec2 d=vec2(eps,0);\n    float d0=dist(pos);\n    return vec3(dist(pos+d.xyy)-dist(pos-d.xyy),\n                dist(pos+d.yxy)-dist(pos-d.yxy),\n                dist(pos+d.yyx)-dist(pos-d.yyx))*.5/eps;\n                \n}\n\nvec3 getGrad(vec3 pos, float eps)\n{\n    vec2 d=vec2(eps,0);\n    float d0=dist(pos);\n    return vec3(dist(pos+d.xyy)-d0,\n                dist(pos+d.yxy)-d0,\n                dist(pos+d.yyx)-d0)/eps;\n                \n}\n\n        \n// march it...\nvec4 march(inout vec3 pos, vec3 dir)\n{\n    // cull the sphere\n    //if(length(pos-dir*dot(dir,pos))>1.1) \n    //\treturn vec4(0,0,0,1);\n    vec3 minpos=pos,pos0=pos;\n    float eps=0.003;\n    float bg=1.0;\n    float d=10000., dp, dmin=d;\n    for(int cnt=0;cnt<40;cnt++)\n    {\n        //dp=d;\n        dp=cnt==0?0.:d;\n        d = dist(pos);\n        pos+=d*dir;\n        if(d<dp) { dmin=min(d,dmin); minpos=pos; }\n        if(d<eps) break;\n    }\n    bg = (d<dp)?0.0:1.0;\n    return vec4(dmin,length(pos0-minpos),0,length(pos)>100.?1.:0.); // .w=1 => background\n}\n\nvec4 myenv(vec3 pos, vec3 dir, float period)\n{\n    #ifdef CUBEMAP\n    return textureLod(iChannel3,dir.xzy,4.7);\n    #else\n    dir=normalize(dir);\n    float azim = atan(dir.y,dir.x);\n    float thr  = .5*.5*(.7*sin(2.*azim*5.)+.3*sin(2.*azim*7.));\n    float thr2 = .5*.125*(.7*sin(2.*azim*13.)+.3*sin(2.*azim*27.));\n    float thr3 = .5*.05*(.7*sin(2.*azim*32.)+.3*sin(2.*azim*47.));\n    float br  = smoothstep(thr-.2, thr+.2, dir.z+.25);\n    float br2 = smoothstep(thr2-.2,thr2+.2,dir.z+.15);\n    float br3 = smoothstep(thr3-.2,thr3+.2,dir.z);\n    vec4 r1 = .5*(texture(iChannel0,dir.xy*.01)-texture(iChannel0,dir.xy*.017+.33));\n    vec3 skyCol=vec3(.9,1,1.1)+.5*(r1.xxx*.5+r1.xyz*.5);\n\t//skyCol*=.9;\n    vec4 r2 = .5*(texture(iChannel0,dir.xy*.1)-texture(iChannel0,dir.xy*.07-.33));\n    vec3 floorCol = vec3(.9,1.1,1.)*.8+.5*(r2.xxx*.7+r2.xyz*.3);\n    vec3 col=mix(floorCol.zyx,skyCol,br3);\n    col=mix(floorCol.yzx*.7,col,br2);\n    col=mix(floorCol.xyz*.7*.7,col,br);\n    vec3 r=texture(iChannel0,vec2(azim/PI2*.125,.5)).xyz;\n    col*= 1.-clamp(((r.xxx*.7+r.xzz*.3)*2.-1.)*clamp(1.-abs(dir.z*1.6),0.,1.),0.,1.);\n    return vec4(pow(col,vec3(1.6))*.8*vec3(1.1,1,.9)/**clamp(1.+dir.x*.3,.9,1.2)*/,1);\n    #endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // screen coord -1..1\n    vec2 sc = (fragCoord.xy/iResolution.xy)*2.-1.;\n    vec3 pos,dir;\n    mat3 rot;\n    getInitPosDirRot(pos, dir, rot, fragCoord, iResolution, iMouse, iTime);\n    vec3 pos0 = pos;\n    \n   \tvec4 m=march(pos,dir);\n    vec3 n =getGradExt(pos,.005);\n    vec3 n2=getGradExt(pos+n*.01,.01);\n    //vec3 n3=getGradExt(pos,.02);\n    float isFloor=0.0;\n    if(dist(pos)==distFloor(pos)) isFloor=1.0;\n    \n    float shadow=1.;\n    #define SHADOW\n    #ifdef SHADOW\n    vec3 ldir=normalize(vec3(1.,1.,1));\n    vec3 spos=pos+ldir*.01;\n    vec4 ms=march(spos,ldir);\n    shadow*=1.-max(1.-ms.w,exp(-ms.x*ms.x/.07/.07/(ms.y+.1)/(ms.y+.1)));\n    //shadow=ms.w;\n    #endif\n    \n    float dirt;\n    {\n    vec4 physquat = texelFetch(iChannel1,ivec2(2,0),0);\n    vec3 p = transformVecByQuat(pos,inverseQuat(physquat));\n    dirt=1.-.5*pow(dot(n2-n,n2-n),.125);\n    dirt*=clamp((abs(p.y)-.04)*50.+.5,0.,1.);\n    dirt*=dirt;\n    dirt=.6+.4*dirt;\n    dirt=mix(dirt,1.,smoothstep(.95,1.1,length(p.xz)));\n    dirt=mix(dirt,1.,smoothstep(.05,.058,abs(p.y)));\n    float lsc=log2(iResolution.x/600.);\n    vec2 pb=p.xz*vec2(-sign(p.y),1);\n    //dirt=dirt*.5+.5;\n    dirt=1.;\n    dirt*=1.-2.3*clamp(.5*bumpMap(pb,2.+lsc)+.5*bumpMap(pb,3.5+lsc)-bumpMap(pb,0.),0.,.2);\n    dirt=mix(dirt,1.,isFloor);\n    }\n    float bg=m.w;\n        \n    //ldir=normalize(pos0-pos-vec3(.5,.5,.5));\n    \n    float diff = 1.;\n    //#ifdef DIFFUSE\n    diff = 1.5*clamp(dot(n.xyz,ldir),0.,1.);\n    //#endif\n    \n    // calc some ambient occlusion\n    float ao=1.;\n    // calc ao by stepping along normal\n    //ao*=dist(pos+n.xyz*.01)/.01;\n    ao*=dist(pos+n.xyz*.025)/.025;\n    //ao*=dist(pos+n.xyz*.05)/.05;\n    //ao*=abs(dist(pos+n*vec3(1,-1,1)*.04))/.04;\n    //ao*=(dist(pos+n.xyz*.035)-dist(pos))/.035;\n    // adjust contrast of ao\n    //ao=pow(ao,.4);\n    \n    // reflection dir\n    vec3 R = (pos-pos0)-2.0*dot((pos-pos0),n.xyz)*n.xyz;\n    //R = R*rot;\n    \n    vec3 floorCol=vec3(.43,.5,.57)*.7;\n    \n    //vec3 c = vec3(.6,.5,.3);\n    vec3      c = vec3(.55,.3,.2);   // copper\n    c=mix(c,floorCol,isFloor);\n    //c = vec3(.6,.3,.2);\n    // simply add some parts of the normal to the color\n    // gives impression of 3 lights from different dir with different color temperature\n    c -= n.xyz*vec3(1,.4,.7)*.05;\n        ;\n    //  reflection of cubemap (slightly tilt reflection map to floor - rotX(-.8))\n    float sp=1.;\n    sp-=.12*getRand(rotX(-.8)*pos*1.*(1.-.3*isFloor)).x*4.;\n    sp-=.06*getRand(rotX(-.8)*pos*2.*(1.-.3*isFloor)).x*4.;\n    sp-=.03*getRand(rotX(-.8)*pos*4.*(1.-.3*isFloor)).x*4.;\n    sp-=.7*isFloor;\n    sp*=.9;\n    c += sp*myenv(pos,/*rotX(-.8)**/R,1.).xxx*.8;\n    \n    // apply ambient occlusion\n    c*=min(min(diff,shadow),ao)*.5+.5;\n    //c=vec3(.6*ao+.4);\n    \n    c*=dirt;\n    //c*=.6+.4*shadow;\n    \n    vec3 bgCol = mix(vec3(1.05,1.05,.95),vec3(.9,.95,1.),1.-length(sc));\n    bgCol=vec3(0);\n    bgCol=vec3(.65,.7,.75)*1.+.1*myenv(vec3(0),dir,1.).xyz;\n    \n    // apply background\n    //float aspect=iResolution.y/iResolution.x;\n    //float r = length(vec2(sc.y*aspect,sc.x));\n    //c=mix(c,bgCol,bg);\n    \n    // add some depth fog\n\tc=mix(c,bgCol,clamp(dot(dir,pos)*.05,0.,1.5));\n\t\n    // vignetting\n    vec2 sc2=(fragCoord-.5*iResolution.xy)/iResolution.x;\n    float vign = 1.1-.7*dot(sc2,sc2);\n    //vign-=dot(exp(-sin(fragCoord/iResolution.xy*3.14)*vec2(20,10)),vec2(1,1));\n    vign*=1.-.2*exp(-sin(fragCoord.x/iResolution.x*3.1416)*20.);\n    vign*=1.-.2*exp(-sin(fragCoord.y/iResolution.y*3.1416)*10.);\n\n    //c=texture(iChannel1,fragCoord/iResolution.xy).xyz;\n\n\tfragColor = vec4(c*vign,1);\n    //fragColor = vec4(vec3(dirt),1);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// 5 flocken coin\n\n// prepare the video for coin-incuse + physics in lower left 4 pixels\n\n// advanced incuse  doesn't work properly in windows :-( try on your own risk\n//#define ADVANCED_INCUSE\n\n#ifdef SHADEROO\n#include Include_A.glsl\n#endif\n\n#define CS(x) cos(x-vec2(0,PI2/4.))\n#define N(v) (v.yx*vec2(-1,1))\n#define ROT2(x) mat2(CS(x),N(CS(x)))\n#define MAP2PI(ang) ((ang<PI2/2.)?PI2-ang:ang)\n\n#define Res (iResolution.xy)\n#define Res0 vec2(textureSize(iChannel0,0))\n#define Res1 vec2(textureSize(iChannel1,0))\n#define Res2 vec2(textureSize(iChannel2,0))\n#define Res3 vec2(textureSize(iChannel3,0))\n\n\n#ifdef SHADEROO\nuniform float SrcContrast;\nuniform float SrcBright;\n#else\nconst float SrcContrast=1.;\nconst float SrcBright=1.;\n#endif\n\nvec4 getRand(vec2 pos)\n{\n    return textureLod(iChannel1,pos/Res1,0.);\n}\n\nvec4 getRand(int idx)\n{\n    ivec2 rres=textureSize(iChannel1,0);\n    idx=idx%(rres.x*rres.y);\n    return texelFetch(iChannel1,ivec2(idx%rres.x,idx/rres.x),0);\n}\n\nvec4 getCol(vec2 pos, float lod)\n{\n    // use max(...) for fitting full image or min(...) for fitting only one dir\n    vec2 uv = (pos-.5*Res3)*min(Res0.y/Res3.y,Res0.x/Res3.x)/Res0+.5;\n    vec2 mask = step(vec2(-.5),-abs(uv-.5));\n    mask=vec2(1);\n    return clamp(((textureLod(iChannel0,uv,lod)-.5)*SrcContrast+.5*SrcBright),0.,1.)*mask.x*mask.y;\n}\n\nuniform float FlickerStrength;\n\nvec3 getValCol(vec2 pos, float lod)\n{\n    return getCol(pos,lod).xyz;\n    return getCol(pos,1.5+log2(Res0.x/600.)).xyz*.7+getCol(pos,3.5+log2(Res0.x/600.)).xyz*.3+.003*getRand(pos*.1+iTime*FlickerStrength*10.).xyz;\n    return getCol(pos,.5+lod).xyz*.7+getCol(pos,lod+2.5).xyz*0.3+.003*getRand(pos*.1+iTime*FlickerStrength*10.).xyz;\n}\n\nfloat compsignedmax(vec3 c)\n{\n    vec3 s=sign(c);\n    vec3 a=abs(c);\n    if (a.x>a.y && a.x>a.z) return c.x;\n    if (a.y>a.x && a.y>a.z) return c.y;\n    return c.z;\n}\n\nvec2 getGradMax(vec2 pos, float eps, float lod)\n{\n    eps*=Res3.x/Res0.x*pow(2.,lod);\n    vec2 d=vec2(eps,0);\n    //float lod = log2(2.*eps*Res0.x/Res.x);\n    //lod=0.;\n    return vec2(\n        compsignedmax(getValCol(pos+d.xy,lod)-getValCol(pos-d.xy,lod)),\n        compsignedmax(getValCol(pos+d.yx,lod)-getValCol(pos-d.yx,lod))\n        )/eps/2.;\n}\n\nvec2 getGradBr(vec2 pos, float eps, float lod)\n{\n    eps*=Res3.x/Res0.x*pow(2.,lod);\n    vec2 d=vec2(eps,0);\n    //float lod = log2(2.*eps*Res0.x/Res.x);\n    //lod=0.;\n    return vec2(\n        dot(getValCol(pos+d.xy,lod)-getValCol(pos-d.xy,lod),vec3(.333)),\n        dot(getValCol(pos+d.yx,lod)-getValCol(pos-d.yx,lod),vec3(.333))\n        )/eps/2.;\n}\n\nvec2 getGrad(vec2 pos, float eps, float lod) \n{\n    return getGradMax(pos,eps,lod);\n}\n\nfloat getDetail(vec2 pos, float lod)\n{\n    float d = \n    (length(getGrad(pos,1.,lod-.5))\n    -length(getGrad(pos,1.,lod+.5)))*Res3.x/600.*pow(2.,lod);\n    return d;\n    return smoothstep(.04,.05,d)*.25;\n}\n\nfloat quant(float x, float num)\n{\n    return floor(x*(num-.0001))/(num-1.);\n}\n\nvec2 uvSmooth(vec2 uv,vec2 res)\n{\n    return uv+.6*sin(uv*res*PI2)/PI2/res;\n}\n\nfloat arcDist2p( vec2 p, vec2 a, vec2 b )\n{\n    vec2 m=vec2(0); // dont need\n    float r=length(m-a);\n    float d=abs(length(p-m)-r);\n    float ang1=atan((b-m).y,(b-m).x);\n    float dang=atan((a-m).y,(a-m).x)-ang1;\n    float ang=atan((p-m).y,(p-m).x)-ang1;\n    d=max(d,-ang*r);\n    d=max(d,(ang-dang)*r);\n    //d=max(ang*r-ang2);\n    return d;\n}\n\nfloat lineDist( vec3 p, vec3 a, vec3 b )\n{\n    vec3 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat lineDist2( vec2 p, vec2 a, vec2 b )\n{\n    vec2 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h );\n}\n\nfloat lineDistInf( vec3 p, vec3 a, vec3 b )\n{\n    return length( p-a - dot(p-a,b-a)*(b-a)/dot(b-a,b-a) );\n}\n\nfloat sdCappedCylinder( vec3 p, float h, float r )\n{\n  vec2 d = abs(vec2(length(p.xz),p.y)) - vec2(h,r);\n  return min(max(d.x,d.y),0.0) + length(max(d,0.0));\n}\n\nfloat distFive(vec2 p)\n{\n    float d=10000.;\n    d=min(d, lineDist2(p.xy,vec2(-2.,1.5),vec2(-1.3,4.)));\n    d=min(d, lineDist2(p.xy,vec2(-1.3,4.),vec2(1.7,4.)));\n    d=min(d, arcDist2p(p.xy,vec2(-2.,1.5),vec2(-2.,-1.5)));\n    return d;\n}\n\nfloat bumpMapO(vec2 p, float side, float b0) // side=1,-1 front/back\n{\n    p/=inner;\n    p*=vec2(-side,1);\n    float fo=clamp(dot(p,p),0.,1.);\n    float asp=Res3.y/Res3.x;\n    vec2 uv;\n    uv=p*.5*vec2(asp*-side,1)+.5;\n    float vid = b0;\n    \n    float bb=(-1.+vid)*(1.-fo*fo);\n    float bf=bb;\n    \n    float five=clamp(2.5-distFive((p*vec2(-1,1)-vec2(-.5,.1))*8.5)*10.,-10.,1.);\n    \n    uv=clamp(p*vec2(-1,1)*28.,-7.,21.);\n    //uv.x-=uv.y*.15;\n    uv=(uv+vec2(40.5,-5.8))/Res2;\n    uv=uvSmooth(uv,Res2);\n    float flocken=clamp(textureLod(iChannel2,uv,0.).y*4.-1.5,-1.,1.);\n    \n    bf=max(bf, five-.35);\n    bf=max(bf, flocken-.35);\n    \n    float cs=(p.x+p.y);\n    float stripes = sin(cs*50.)*2.+1.;\n    stripes*=1.-step(-.03,cs);\n    stripes*=step(-1.03,cs);\n    stripes*=1.-step(1.,length(p));\n    bf=max(bf,stripes-2.5);\n    \n        vec2 ctxt;\n    float ang=side*atan(p.y,p.x); ang=ang<0.?ang+PI2:ang;\n    ctxt=vec2((ang)/PI2 * 200.,(length(p)-.68)/.32*15.);\n    ctxt.x=mod(ctxt.x,98.);\n    uv=ctxt/Res2;\n    //uv=uvSmooth(uv,Res2);\n    bb=max(bb,clamp(textureLod(iChannel2,uv,0.).x*4.-2.5,-1.,1.)-.35);\n\n    \n    float b=mix(bb,bf,step(.0,side));\n    \n    return b;\n}\n\n\nvoid physics(inout vec4 col, vec2 coord)\n{\n    col   =texelFetch(iChannel0,ivec2(coord),0);\n    vec3 pos   =texelFetch(iChannel3,ivec2(0,0),0).xyz;\n    vec3 vel   =texelFetch(iChannel3,ivec2(1,0),0).xyz;\n    vec4 quat  =texelFetch(iChannel3,ivec2(2,0),0);\n    vec3 angVel=texelFetch(iChannel3,ivec2(3,0),0).xyz;\n    \n    vec3 acc=vec3(0);\n    \n    float floorConst=100000.; //N/m\n    float m=.001; //kg\n    float I1 = .25*m*.01*.01;\n    float I2 = .5*m*.01*.01;\n    mat3 Ii=mat3(1./I1,0,0, 0,1./I2,0, 0,0,1./I1);\n    \n    int NUM=5;\n    for(int i=0;i<3;i++)\n    {\n    float GRAVITY = 1.0;\n    acc+=vec3(0,0,-GRAVITY);\n    vec3 n = transformVecByQuat(vec3(0,1,0),quat);\n    if(acos(abs(n.z))*360./PI2<.2) break; // dont simulate phys if almost silent\n    vec3 pfloor = -(normalize(cross(n,vec3(n.yx*vec2(-1,1),0)))+clamp(.5*n.z,-.1,.1)*n)*.01+pos;\n    vec3 f=vec3(0), M=vec3(0);\n    f+=max(-pfloor.z,0.)*vec3(0,0,1)*floorConst;\n    f=m*GRAVITY*vec3(0,0,1);\n    M+=cross(pfloor-pos,f);\n    M=transformVecByQuat(M,inverseQuat(quat));\n    \n    acc+=f/m;\n    vec3 angAcc=Ii*M;\n\n    float dt=.01666/float(NUM);\n    vel+=acc*dt*.5;\n    pos+=vel*dt;\n    vel+=acc*dt*.5;\n    angVel+=angAcc*dt;\n    //vec4 dq=angVec2Quat(transformVecByQuat(-angVel*dt,quat));\n    vec4 dq=angVec2Quat(angVel*dt);\n    quat=normalize(multQuat(quat,dq));\n    //angVel+=angAcc*dt*.5;\n    \n    vel*=.99;\n    angVel*=1.-.001-length((pfloor-pos).xy)*.5;\n    pos.z=-(pfloor.z-pos.z);\n    }\n    \n    if(iTime<5. || abs(length(texelFetch(iChannel3,ivec2(2,0),0))-1.)>.001)\n    {\n        pos=vec3(0,0,.01);\n        vel=vec3(0,0,0);\n        vec3 r=texelFetch(iChannel1,ivec2(mod(iDate.w,256.),mod(iDate.w/256.,256.)),0).xyz*2.-1.;\n        //float r3=texelFetch(iChannel1,ivec2(mod(iDate.w,256.),1),0).x;\n        quat = normalize(vec4(-.0*r.x,.0,0,1));\n        angVel = vec3(0,r.z*.08,sign(r.x))*6.*6.*(1.-.4*r.y);\n    }\n    //quat=multQuat(quat,normalize(vec4(0.01,0,0,1)));\n    \n    if(int(coord.x)==0) col.xyz=pos;\n    if(int(coord.x)==1) col.xyz=vel;\n    if(int(coord.x)==2) col=quat;\n    if(int(coord.x)==3) col.xyz=angVel;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 pos0, dir; mat3 rot;\n    getInitPosDirRot(pos0,dir,rot,iResolution.xy*.5, iResolution,iMouse,iTime);\n    vec4 physquat = texelFetch(iChannel3,ivec2(2,0),0);\n    dir = transformVecByQuat(dir,inverseQuat(physquat));\n    \n    fragColor=vec4(0,0,0,1);\n    #ifdef ADVANCED_INCUSE\n    float lod = 8.*fract(iTime/10.);\n    vec2 pos=fragCoord;\n    vec3 d = vec3(0)\n    +getDetail(pos,0.)\n    +getDetail(pos,1.)\n    +getDetail(pos,2.)\n    +getDetail(pos,3.)\n    +getDetail(pos,4.)\n    +getDetail(pos,5.);\n    \n    vec3 c=getCol(pos,0.).xyz;\n    \n    d=1.-d;\n    \n    vec4 col=vec4(0,0,0,1);\n    col.xyz=vec3(0)+d.x;\n    \n    #else\n    vec4 col=1.*texture(iChannel0,fragCoord/iResolution.xy)\n        //+1.5*texture(iChannel0,fragCoord/iResolution.xy,1.5)\n        //+2.*texture(iChannel0,fragCoord/iResolution.xy,3.5)\n        ;\n    //col*=.15;\n    #endif\n    fragColor.xyz=vec3(0)+bumpMapO((fragCoord.xy*2.-Res3.xy)/Res3.y, -sign(dir.y), dot(col.xyz,vec3(.333)));\n    if(fragCoord.x<4. && fragCoord.y<1.) physics(fragColor,fragCoord);\n}\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2019\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// 5 flocken coin\n\n// render text\n\n\nint getDigitMask(int d)\n{\n    if(d==0x0) return 0x00EAAAE;\n    if(d==0x1) return 0x004C444;\n    if(d==0x2) return 0x00E2E8E;\n    if(d==0x3) return 0x00E2E2E;\n    if(d==0x4) return 0x00AAE22;\n    if(d==0x5) return 0x00E8E2E;\n    if(d==0x6) return 0x00E8EAE;\n    if(d==0x7) return 0x00E2222;\n    if(d==0x8) return 0x00EAEAE;\n    if(d==0x9) return 0x00EAE2E;\n    if(d==0xa) return 0x004AAEA;\n    if(d==0xb) return 0x00CACAC;\n    if(d==0xc) return 0x0068886;\n    if(d==0xd) return 0x00CAAAC;\n    if(d==0xe) return 0x00E8C8E;\n    if(d==0xf) return 0x00E8C88;\n    return -1;\n}\n\n\n#define O_ 0x10\n#define I_ 0x11\n#define Z_ 0x12\n#define M_ 0x13\n#define H_ 0x14\n#define S_ 0x15\n#define G_ 0x16\n#define L_ 0x17\n#define X_ 0x18\n#define Q_ 0x19\n#define A_ 0x1A\n#define B_ 0x1B\n#define C_ 0x1C\n#define D_ 0x1D\n#define E_ 0x1E\n#define F_ 0x1F\n#define J_ 0x21\n#define N_ 0x22\n#define W_ 0x23\n#define K_ 0x24\n#define U_ 0x25\n#define P_ 0x26\n#define V_ 0x27\n#define T_ 0x28\n#define Y_ 0x29\n#define R_ 0x2A\n#define dot_ 0x30\n#define dot2_ 0x31\n#define space_ 0x32\n#define minus_ 0x33\n\nint getLetterMask(int d)\n{\n    if(d==O_) return 0x004AAA4; // O\n    if(d==I_) return 0x00E444E; // I\n    if(d==Z_) return 0x00E248E; // Z\n    if(d==M_) return 0x00AEEAA; // M\n    if(d==H_) return 0x00AAEAA; // H\n    if(d==S_) return 0x00E8E2E; // S\n    if(d==G_) return 0x00E8AAE; // G\n    if(d==L_) return 0x008888E; // L\n    if(d==X_) return 0x00EAEAE; // X\n    if(d==Q_) return 0x004AAA6; // q\n    if(d==A_) return 0x004AAEA; // A\n    if(d==B_) return 0x00CACAC; // B\n    if(d==C_) return 0x0068886; // C\n    if(d==D_) return 0x00CAAAC; // D\n    if(d==E_) return 0x00E8C8E; // E\n    if(d==F_) return 0x00E8C88; // F\n    if(d==J_) return 0x00E222C; // J\n    if(d==N_) return 0x00CAAAA; // N\n    if(d==W_) return 0x00AAEEA; // W\n    if(d==K_) return 0x00AACAA; // K\n    if(d==U_) return 0x00AAAAE; // U\n    if(d==P_) return 0x00CAAC8; // P\n    if(d==V_) return 0x00AAAA4; // V\n    if(d==T_) return 0x00E4444; // T\n    if(d==Y_) return 0x00AAE44; // Y\n    if(d==R_) return 0x00CAACA; // R\n    if(d==dot_) return 0x0000004; // .\n    if(d==dot2_) return 0x0004004; // :\n    if(d==space_) return 0x0000000; // _\n    if(d==minus_) return 0x0000E00; // _\n    return getDigitMask(d);\n}\n\n\nvoid drawLetter(int n, vec2 pos, float size, inout vec4 fragColor, vec2 fragCoord)\n{\n    int m = getLetterMask(n);\n    int j=int((fragCoord-pos).y/size);\n    int i=int((fragCoord-pos).x/size);\n    if(i>=0 && i<4 && j>=0 && j<6)\n        //if(((m>>(4*j-i))&1)==1) fragColor=vec4(1);\n        if(int(mod(float(m)/pow(2.0,float(4*j-i)),2.0))==1) fragColor=vec4(1);\n}\n\nvoid drawText(mat4 str, vec2 pos, float size, inout vec4 fragColor, vec2 fragCoord)\n{\n    for(int i=0;i<4;i++)\n    {\n        bool breakIt=false;\n        for(int j=0;j<4;j++)\n        {\n            if(int(str[i][j])<0) { breakIt=true; break; }\n            drawLetter(int(str[i][j]),pos+size*vec2(4.0*float(i*4+j),0),size,fragColor,fragCoord);\n        }\n        if(breakIt) break;\n    }\n}\n\nvoid drawDigit(int n, vec2 pos, float size, inout vec4 fragColor, vec2 fragCoord)\n{\n    int m = getDigitMask(n);\n    int j=int((fragCoord-pos).y/size);\n    int i=int((fragCoord-pos).x/size);\n    if(i>=0 && i<4 && j>=0 && j<6)\n        //if(((m>>(4*j-i))&1)==1) fragColor=vec4(1);\n        if(int(mod(float(m)/pow(2.0,float(4*j-i)),2.0))==1) fragColor=vec4(1);\n}\n\nint getDigit(int n, int d)\n{\n    return int(mod(float(n)/pow(10.0,float(d)),10.0));\n}\n\nint getDigitF(float f, int d)\n{\n    if(d<0) return int(mod(f/pow(0.1,float(-d)),10.0));\n    return int(mod(f/pow(10.0,float(d)),10.0));\n}\n\nvoid drawInt(int n, vec2 pos, float size, inout vec4 fragColor, vec2 fragCoord )\n{\n    int n2 = 10;\n    int dn=0;\n    for(int i=0;i<100;i++) { if(n2-1>=n) {dn=i+1; break;} n2*=10; }\n    for(int i=0;i<100;i++)\n    {\n        if(i==dn) break;\n        drawDigit(getDigit(n,dn-1-i), pos, size, fragColor, fragCoord );\n        pos+=vec2(4.0*size,0);\n    }\n}\n\n\nvoid drawFloat(float f, int dotnum, vec2 pos, float size, inout vec4 fragColor, vec2 fragCoord )\n{\n    int n2 = 10;\n    int dn=0;\n    if(f<0.0) { f=-f; drawLetter(minus_, pos, size, fragColor, fragCoord); pos+=vec2(4.0*size,0); }\n    for(int i=0;i<100;i++) { if(float(n2-1)>=f) {dn=i+1; break;} n2*=10; }\n    for(int i=0;i<100;i++)\n    {\n        int d;\n        if      (i<dn)  d=getDigitF(f,dn-1-i);\n        else if (i==dn) d=dot_;\n        else if (i>dn)  d=getDigitF(f,dn-1-i+1);\n        if(i==dn+dotnum+1) break;\n        drawLetter(d, pos, size, fragColor, fragCoord );\n        pos+=vec2(4.0*size,0);\n    }\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 col=vec4(0,0,0,1);\n    #if 1\n    vec2 coord;\n    coord = fragCoord;\n    col=vec4(0.3,0,0,0);\n    if(fragCoord.x>100. || fragCoord.y>100.) discard;\n    drawText(mat4(5,-1,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0),           vec2(5, 25.), 1., col,coord);\n    drawText(mat4(minus_, F_,U_,E_,N_, F_,minus_,F_,L_, O_,C_,K_,E_, N_,minus_,-1),  vec2(5., 5.), 1., col,coord);\n    #endif\n    fragColor=col;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// created by florian berger (flockaroo) - 2018\n// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n\n// some quaternion functions, frustum\n\n#define PI2 (3.141592653*2.)\nvec4 multQuat(vec4 a, vec4 b)\n{\n    return vec4(cross(a.xyz,b.xyz) + a.xyz*b.w + b.xyz*a.w, a.w*b.w - dot(a.xyz,b.xyz));\n}\n\nvec3 transformVecByQuat( vec3 v, vec4 q )\n{\n    return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w*v );\n}\n\nvec4 angVec2Quat(vec3 ang)\n{\n    float lang=length(ang);\n    return vec4(ang/lang,1) * sin(vec2(lang*.5)+vec2(0,PI2*.25)).xxxy;\n}\n\nvec4 axAng2Quat(vec3 ax, float ang)\n{\n    return vec4(normalize(ax),1) * sin(vec2(ang*.5)+vec2(0,PI2*.25)).xxxy;\n}\n\nvec4 inverseQuat(vec4 q)\n{\n    //return vec4(-q.xyz,q.w)/length(q);\n    // if already normalized this is enough\n    return vec4(-q.xyz,q.w);\n}\n\nvec4 slerpQuat(vec4 q1, vec4 q2, float t)\n{\n    vec4 q3;\n    float dot = dot(q1, q2);\n\n    /*\tdot = cos(theta)\n     if (dot < 0), q1 and q2 are more than 90 degrees apart,\n     so we can invert one to reduce spinning\t*/\n    if (dot < 0.0)\n    {\n        dot = -dot;\n        q3 = -q2;\n    } else q3 = q2;\n\n    if (dot < 0.95)\n    {\n        float angle = acos(dot);\n        return (q1*sin(angle*(1.0-t)) + q3*sin(angle*t))/sin(angle);\n    } else // if the angle is small, use linear interpolation\n        return mix(q1,q3,t);\n}\n\nvec4 mirrorQuat(vec4 q, vec3 n)\n{\n    //rotate projector around axis which lying in mirror plane and is normal to projector x axis\n    //mirroring has to be done afterwards in x\n    // should be as simple as that: (rotating camera-x into mirror normal is exactly half the angle)\n    vec3 bx=transformVecByQuat(vec3(1,0,0),q);\n    vec3 axe=cross(bx,n);\n    vec4 qr=vec4(-axe,-sign(dot(n,bx))*sqrt(1.-dot(axe,axe)));\n    return multQuat(qr,q);\n}\n\n// glFustum reimplemented\nmat4 myFrustum(float l, float r, float b, float t, float n, float f)\n{\n    return mat4(\n        2.*n/(r-l),0,0,0,\n        0,2.*n/(t-b),0,0,\n        (r+l)/(r-l),(t+b)/(t-b),(n+f)/(n-f),-1,\n        0,0,2.*f*n/(n-f),0\n        );\n}\n\nmat3 rotX(float ang)\n{\n    float c=cos(ang), s=sin(ang);\n    return mat3(1,0,0, 0,c,s, 0,-s,c);\n}\n\nmat3 rotZ(float ang)\n{\n    float c=cos(ang), s=sin(ang);\n    return mat3(c,s,0, -s,c,0, 0,0,1);\n}\n\nvoid getInitPosDirRot(inout vec3 pos, inout vec3 dir, inout mat3 rot, vec2 fragCoord, vec3 iResolution, vec4 iMouse, float iTime)\n{\n    vec2 sc = (fragCoord.xy/iResolution.xy)*2.-1.;\n    // viewer position\n    pos = vec3(0,-5.5,0);\n    #ifdef SHADEROO\n    pos.y*=1.-iMouseData.z/5000.;\n    #endif\n    if(iMouse.x<1.) pos.y*=(1.-.25*(.5-.5*cos(iTime*.1)));\n    // pixel view direction\n    dir = normalize(2.*normalize(-pos)+vec3(sc.x,0,sc.y*iResolution.y/iResolution.x));\n    #ifdef DOF\n    vec2 poff=(texture(iChannel0,(fragCoord+vec2(iFrame*13,iFrame*7))/Res0).xy-.5)*.02;\n    pos.xz+=poff;\n    dir.xz-=poff*dir.y/(-pos.y-zoomFunc(iTime));\n    #endif\n    // rotate view around x,z\n    float phi = -(iMouse.x/iResolution.x-.5)*8.+PI2*.5;\n    float th  = -1.6+(iMouse.y/iResolution.y)*1.5;\n    if (iMouse.x==0.) { phi=iTime+2.5; th=-.6+.3*sin(.27*iTime); }\n    mat3 rx = rotX(th);\n    mat3 rz = rotZ(phi);\n    pos = rz*(rx*pos);\n    dir = rz*(rx*dir);\n    rot=rz*rx;\n}\n\nconst float inner=.965;\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

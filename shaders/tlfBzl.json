@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1597432498",
+            "description": "I had a sense that for rough materials, the blending between specular and diffuse had to be done per microfacet. This shader brute forces a solution. Try and increase the specular power or IOR to large values to see the darkening of the diffuse term.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tlfBzl",
+            "likes": 4,
+            "name": "Experimental PBR material",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "sphere",
+                "pbr"
+            ],
+            "usePreview": 0,
+            "username": "BmB23",
+            "viewed": 401
+        },
+        "renderpass": [
+            {
+                "code": "\nfloat IOR = 1.45;\nvec3 spherecolor = vec3(0.9);\nvec3 lightcolor = vec3(1.0);\nfloat roughness = 0.1;\nfloat specular = 0.5;\nbool spec = true;\nbool diff = true;\n\nvec3 env(vec3 v)\n{\n    vec3 cube = texture(iChannel0, rotate(v, vec3(0,1,0), iTime)).xyz;\n    cube = invtonemap(cube, 1.2)*0.7;\n    cube = gamma(cube, 2.2); //linearize texture\n    return cube;\n}\n\nfloat focal = 1.0;\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec2 uv = fragCoord/iResolution.xy - vec2(0.5);\n    uv.x *= iResolution.x/iResolution.y;\n    \n    roughness = max(roughness, 0.02);\n    float eta = (1.0 - IOR) / (1.0 + IOR); eta = eta*eta;\n    float alpha = 1.0/(roughness*roughness);\n    spherecolor = gamma(spherecolor, 2.2);\n    \n    vec3 rayDir = vec3(uv, focal); rayDir = normalize(rayDir);\n    vec3 spherePos = vec3(0, 0, 2.5);\n    vec3 p = intersectSphere(rayDir, spherePos, 1.0);\n    vec3 n = normalize(p - spherePos);\n    vec3 v = -rayDir;\n    vec3 r = reflect(rayDir, n);\n    \n    //generate a bunch of random vectors\n\tvec3[256] randvecs;\n    for (int i = 0; i < 32; i++)\n    {\n        randvecs[i] = random(p*iTime, i);\n    }\n        \n    //diffuse\n    vec3 D = vec3(0);\n    float Dw = 0.0;\n    for(int i = 0; i < 16; i++)\n    {\n        vec3 l = randvecs[i];\n        l = dot(l,n) < 0.0 ? -l : l; //<0: below horizon, >0: above horizon\n        \n        float lambert = max(0.0, dot(n,l));\n        //\"lambert\" term is actually not lambertian emission, but\n        //the light being stretched out over a larger area as a function of\n        //angle to the light and should be applied to the entire incoming radiance\n        //lambertian emission is handled for free by filtering through the pixel grid\n        //since the area under the pixel also increases by the cosine of the angle\n        \n        //sum transmission for each micronormal\n        float T = 0.0;\n        float Tw = 0.0;\n        float E = 0.0;\n        float Ew = 0.0;\n        for(int j = 0; j < 8; j++)\n        {\n            vec3 mn = randvecs[j+16];\n            mn = dot(mn,n) < 0.0 ? -mn : mn;\n            mn = rotate(mn, cross(mn,n), acos(dot(mn,n)) * (1.0-roughness*roughness));\n            \n            float F = schlick(eta, dot(l,mn)); //fresnel on the specific micronormal\n            float pdf = gauss(dot(n,mn), roughness); //ndf for the micronormal\n            \n            T += (1.0 - F*specular);\n            Tw += 1.0;\n            \n            //and emission\n            E += max(dot(l,mn), 0.0) * dot(v,mn) * pdf;\n        \tEw += pdf;\n        }\n        T = T/Tw;\n        E = E/Ew;\n        \n        D += env(l) * T * spherecolor * E;\n        Dw += E;\n    }\n    D = D/Dw * (diff ? 1.0 : 0.0);\n    \n    //specular\n    vec3 R = vec3(0);\n    float Rw = 0.0;\n    for (int i = 0; i < 32; i++)\n    {\n        vec3 l = randvecs[i];\n        l = dot(l,n) < 0.0 ? -l : l;\n        l = rotate(l, cross(l,r), acos(dot(l,r)) * (1.0-roughness)) * 1.015;\n        \n        vec3 h = normalize(v + l);\n\t\tfloat blinn = dot(h,n);\n\t\tfloat micro = dot(h,l);\n        \n        float pdf = gauss(blinn, roughness);\n        R += env(l) * schlick(eta, micro) * pdf;\n        Rw += pdf;\n    }\n    R += env(r) * schlick(eta, dot(n,r)) * (1.0-roughness/roughness) * gauss(1.0, roughness);\n    Rw += (1.0-roughness/roughness) * gauss(1.0, roughness);\n    R = (R/Rw) * specular * (spec ? 1.0 : 0.0);\n    \n    //* keylight\n    vec3 l = normalize(vec3(cos(iTime+pi*0.2), -0.4, sin(iTime+pi*0.2)));\n    float lambert = max(0.0, dot(n,l));\n    vec3 h = normalize(v + l);\n    float blinn = dot(h,n);\n    float micro = dot(h,l);\n    \n    float E = 0.0;\n    float Ew = 0.0;\n    float T = 0.0;\n    float Tw = 0.0;\n    for(int i = 0; i < 16; i++)\n    {\n        vec3 mn = randvecs[i];\n        mn = dot(mn,n) < 0.0 ? -mn : mn;\n        mn = rotate(mn, cross(mn,n), acos(dot(mn,n)) * (1.0-roughness*roughness));\n\t\t\n        float F = schlick(eta, dot(l,mn));\n        float pdf = gauss(dot(n,mn), roughness);\n        \n        T += (1.0 - F*specular) * pdf;\n        Tw += pdf;\n        \n        E += max(dot(l,mn), 0.0) * dot(v,mn) * pdf;\n        Ew += pdf;\n    }\n    T = T/Tw;\n    E = E/Ew;\n    \n    float sigmoid = (1.0 / (1.0 + exp(dot(n,l)*-30.0)));\n    float Lspec = gauss(blinn, roughness) * fresnel(IOR, micro) * specular * (spec ? 1.0 : 0.0);\n    vec3 Ldif = T * spherecolor * E * (diff ? 1.0 : 0.0);\n    vec3 L = clamp(lightcolor * (Ldif + Lspec), 0.0, 1.0) * sigmoid;\n    //*/\n    \n    vec3 bg = texture(iChannel0, rotate(rayDir, vec3(0,1,0), iTime)).xyz;\n    bg = invtonemap(bg, 1.2)*0.7;\n    \n    if (p.z > 0.0) fragColor = vec4(gamma(L + D + R, 1.0/2.2), 1);\n    else fragColor = vec4(bg, 1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float pi = 3.14159265359;\nfloat tau = 6.28318530718;\n\nvec3 intersectSphere(vec3 rayDir, vec3 spherePos, float r)\n{\n    //from wwwtyro\n    float a = dot(rayDir, rayDir);\n    float b = 2.0 * dot(rayDir, -spherePos);\n    float c = dot(-spherePos, -spherePos) - r*r;\n    float d = b*b - 4.0*a*c;\n    float e;\n    if (d < 0.0) e = -1.0;\n    else e = (-b - sqrt(d)) / 2.0*a;\n    return rayDir * e;\n}\n\nvec3 rotate(vec3 v, vec3 axis, float angle)\n{\n \treturn v * cos(angle) + cross(axis, v) * sin(angle) + axis * dot(axis,v) * (1.0 - cos(angle));\n}\n\n// Random functions from Shadertoy/tlsXzf by vstelegin.\n// A single iteration of Bob Jenkins' One-At-A-Time hashing algorithm.\nuint hash( uint x ) {\n    x += ( x << 10u );\n    x ^= ( x >>  6u );\n    x += ( x <<  3u );\n    x ^= ( x >> 11u );\n    x += ( x << 15u );\n    return x;\n}\n\n// Compound versions of the hashing algorithm I whipped together.\nuint hash( uvec2 v ) { return hash( v.x ^ hash(v.y)                         ); }\nuint hash( uvec3 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z)             ); }\nuint hash( uvec4 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z) ^ hash(v.w) ); }\n\n// Construct a float with half-open range [0:1] using low 23 bits.\n// All zeroes yields 0.0, all ones yields the next smallest representable value below 1.0.\nfloat floatConstruct( uint m ) {\n    const uint ieeeMantissa = 0x007FFFFFu; // binary32 mantissa bitmask\n    const uint ieeeOne      = 0x3F800000u; // 1.0 in IEEE binary32\n\n    m &= ieeeMantissa;                     // Keep only mantissa bits (fractional part)\n    m |= ieeeOne;                          // Add fractional part to 1.0\n\n    float  f = uintBitsToFloat( m );       // Range [1:2]\n    return f - 1.0;                        // Range [0:1]\n}\n\n// Pseudo-random value in half-open range [0:1].\nfloat random( float x ) { return floatConstruct(hash(floatBitsToUint(x))); }\nfloat random( vec2  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\nfloat random( vec3  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\nfloat random( vec4  v ) { return floatConstruct(hash(floatBitsToUint(v))); }\n////\n\nvec3 random(vec3 p, int n)\n{\n    float u = random(vec4(p, n));\n    float v = random(vec4(n, p));\n    float yaw = tau * u;\n    float pitch = acos(2.0*v - 1.0);\n    return vec3(sin(pitch)*cos(yaw), cos(pitch), sin(pitch)*sin(yaw));\n}\n\nfloat phong(float cosangle, float alpha)\n{\n    //float norm = 0.0397436 * alpha + 0.0856832;\n    float norm = (alpha + 2.0) / tau;\n    return pow(cosangle, alpha) * norm;\n}\n\nfloat gauss(float cosangle, float sigma)\n{\n    float sqrt2pi = 2.50662827463;\n    float angle = acos(cosangle);\n    float a = angle/sigma;\n    float x = 1.0/(sigma*sqrt2pi);\n    return ( x * exp(-0.5 * (a*a)) );// / (x > 1.0 ? x : 1.0);\n}\n\nfloat snell(float angle, float eta)\n{\n    return sin(eta * sin(angle));\n}\n    \nfloat fresnel(float IOR, float cosangle_i)\n{\n    float n1 = 1.0003; float n2 = IOR;\n    float Rs, Rp, cosangle_t;\n    cosangle_t = snell(acos(cosangle_i), n1/n2);\n    cosangle_t = cos(cosangle_t);\n    Rs = (n1*cosangle_i - n2*cosangle_t) / (n1*cosangle_i + n2*cosangle_t);\n    Rp = (n1*cosangle_t - n2*cosangle_i) / (n1*cosangle_t + n2*cosangle_i);\n    Rs = abs(Rs); Rp = abs(Rp);\n    return (Rs*Rs + Rp*Rp) / 2.0;\n}\n\nfloat schlick(float F0, float cosangle)\n{\n    float a = 1.0 - cosangle;\n    return F0 + (1.0 - F0) * (a*a*a*a*a);\n        //exp2((-5.55473 * cosangle - 6.98316) * cosangle);\n}\n\nvec3 gamma(vec3 color, float power)\n{\n    return vec3(pow(color.x,power), pow(color.y,power), pow(color.z,power));\n}\n\nvec3 invtonemap(vec3 color, float power)\n{\n     return color / (power - color);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

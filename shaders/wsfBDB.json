@@ -1,0 +1,51 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1588970111",
+            "description": "using the fancy PDE solving technique to blur across the surface of an SDF, could be useful to simulate subsurface scattering...\n\nVERY slow with ANGLE on chrome for some reason, sorry!",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wsfBDB",
+            "likes": 11,
+            "name": "Blurring Over SDF Surface",
+            "published": 3,
+            "tags": [
+                "sdf"
+            ],
+            "usePreview": 1,
+            "username": "blackle",
+            "viewed": 1025
+        },
+        "renderpass": [
+            {
+                "code": "//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\n#define NO_UNROLL(k) (k+min(0,iFrame))\nconst float blur_strength = 0.1;\n\n#define FK(k) floatBitsToInt(cos(k))^floatBitsToInt(k)\nfloat hash(float a, float b) {\n    int x = FK(a);int y = FK(b);\n    return float((x*x-y)*(y*y+x)-x)/2.14e9;\n}\n\nfloat super(vec3 p) {\n    return sqrt(length(p*p));\n}\n\nfloat box(vec3 p, vec3 d) {\n    vec3 q = abs(p)-d;\n    return super(max(vec3(0), q)) + min(0., max(q.x, max(q.y, q.z)));\n}\n\nfloat linedist(vec3 p, vec3 a, vec3 b) {\n    float k = dot(p-a,b-a)/dot(b-a,b-a);\n    return distance(p, mix(a,b,clamp(k,0.,1.)));\n}\n\nvec3 erot(vec3 p, vec3 ax, float ro) {\n    return mix(dot(ax,p)*ax, p, cos(ro))+sin(ro)*cross(ax,p);\n}\n\nfloat smin(float a, float b, float k) {\n    float h = max(0., k-abs(b-a))/k;\n    return min(a,b)-h*h*h*k/6.;\n}\n\nfloat domino(vec3 p, mat3 topholes, mat3 bottomholes) {\n    float body = box(p, vec3(0.0,0.4,0.9))-0.2;\n    float holes = linedist(p, vec3(.2,0.45,0), vec3(0.2,-0.45,0))-0.04; //divider\n    for (int i = 0; i < 3; i++) {\n        for (int j = 0; j < 3; j++) {\n            vec2 holepos = vec2(float(i-1), float(j-1))*0.3;\n            if (topholes[i][j] == 1.) {\n                holes = min(holes, length(p-vec3(.2,holepos+vec2(0.,0.55)))-0.08);\n            }\n            if (bottomholes[i][j] == 1.) {\n                holes = min(holes, length(p-vec3(.2,holepos+vec2(0.,-0.55)))-0.08);\n            }\n        }\n    }\n    return -smin(-body, holes, 0.05);\n}\n\nfloat scene(vec3 p) {\n    float table = box(p-vec3(0,0,-1.2), vec3(3,3,0.05))-0.05;\n    float d1 = domino(erot(p-vec3(-1,0,0),vec3(0,0,1),3.1415-0.05), mat3(1,1,1,0,0,0,1,1,1), mat3(1,0,1,0,1,0,1,0,1));\n    float d2 = domino(erot(p-vec3(1,0,0),vec3(0,0,1),3.1415+0.1), mat3(1,0,1,0,0,0,1,0,1), mat3(0,0,1,0,0,0,1,0,0));\n    float dominos = min(d1,d2);\n    return min(dominos,table);\n}\n\n// suggested from tdhooper. Thanks!\n// improve compilation time & overall fps.\nconst int NORMAL_STEPS = 6;\nvec3 norm(vec3 pos) {\n    vec3 eps = vec3(.01, 0, 0);\n    vec3 nor = vec3(0);\n    float invert = 1.;\n    for (int i = 0; i < NORMAL_STEPS; i++) {\n        nor += scene(pos + eps * invert) * eps * invert;\n        eps = eps.zxy;\n        invert *= -1.;\n    }\n    return normalize(nor);\n}\n\nvec3 srgb(float r, float g, float b) {\n    return vec3(r*r,g*g,b*b);\n}\n\nvec3 srgb(float k) {\n    return vec3(k*k);\n}\n\nvec3 trilinear_texture(vec3 p, vec3 n) {\n    return mix(mix(texture(iChannel0,p.xz), texture(iChannel0,p.yz), n.x*n.x), texture(iChannel0,p.xy), n.z*n.z).xyz;\n}\n\nvec3 shade(vec3 p, vec3 cam) {\n\tvec3 n = norm(p);\n    vec3 r = reflect(cam, n);\n    float ao = smoothstep(-1.,1.,scene(p+n*0.1)/.1);\n    float specao = smoothstep(0.,1.,scene(p+r*0.3)/.3)*0.5;\n\n    vec3 tex = trilinear_texture(p*.2,n);\n    float specmix = smoothstep(0.4,0.6,tex.y);\n    float specex = mix(50.,20.,specmix);\n\n    float diff = ao*length(sin(n*2.5)*0.5+0.5)/sqrt(3.)*0.9+0.1;\n    float spec = length(sin(r*2.5)*0.5+0.5)/sqrt(3.);\n    return tex*diff + pow(spec, specex)*specao;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-0.5*iResolution.xy)/iResolution.y;\n    vec2 mouse = (iMouse.xy - 0.5*iResolution.xy)/iResolution.y;\n    float blur_level = pow(0.5-cos(iTime)*0.5,2.);\n    if (fragCoord.y < 10.) {\n        float grad = sin(fragCoord.y/10.*3.14);\n        float bright = pow(clamp(sin(fragCoord.y/15.*3.14),0.,1.),20.);\n        float barpos = smoothstep(-1., 1., blur_level*iResolution.x - fragCoord.x);\n        fragColor.xyz = grad*mix(vec3(.1), vec3(.9,0.1,0), barpos) + bright*0.3;\n        return;\n    }\n\n    vec3 cam = normalize(vec3(2.,uv));\n    vec3 init = vec3(-10,0,0);\n\n   \tfloat yrot = 0.6;\n    float zrot = 0.9;\n    if (iMouse.z > 0.) {\n        yrot += -4.*mouse.y;\n        zrot += 4.*mouse.x;\n    }\n    cam = erot(cam, vec3(0,1,0), yrot);\n    init = erot(init, vec3(0,1,0), yrot);\n    cam = erot(cam, vec3(0,0,1), zrot);\n    init = erot(init, vec3(0,0,1), zrot);\n\n    vec3 p = init;\n    bool hit = false;\n    for (int i = 0; i < 500 && !hit; i++) {\n        float dist = scene(p);\n        hit = dist*dist < 1e-6;\n        p+=dist*cam;\n        if (distance(p, init) > 100.) break;\n    }\n\n    vec4 col = vec4(0);\n    vec3 n = norm(p);\n    float maxdist = max(scene(p+n*blur_strength),0.);\n    float seed = hash(hash(uv.x,uv.y), float(iFrame));\n    for (int i = 0; i < NO_UNROLL(10); i++) {\n        float blurfactor = mix(0.0,maxdist,blur_level);\n        vec3 p2 = p + n*blurfactor;\n        for (int v = 0; v < NO_UNROLL(5); v++) {\n            float h1 = hash(seed, hash(float(i),float(v)));\n            float h2 = hash(h1,h1);\n            float h3 = hash(h2,h2);\n            vec3 dir = normalize(tan(vec3(h1,h2,h3))-n);\n            float dist = scene(p2);\n            p2 += dir*dist;\n        }\n        col += vec4(shade(p2,cam), 1.);\n    }\n    fragColor.xyz = hit ? col.xyz/col.w : vec3(0.);\n    fragColor.xyz = sqrt(fragColor.xyz);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 3,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/95b90082f799f48677b4f206d856ad572f1d178c676269eac6347631d4447258.jpg"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

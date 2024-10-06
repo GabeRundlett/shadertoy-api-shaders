@@ -1,0 +1,204 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1576868770",
+            "description": "Semi-Lagrangian advection for different advection schemes.\n\nSee the description in the Image tab for more information.\n\nLower Left: Euler\nUpper Left: 4th order Runge-Kutta\nLower Right: Euler + BFECC\nUpper Right: 4th order Runge-Kutta + BFECC",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "wt33z2",
+            "likes": 22,
+            "name": "Advection: Euler, RK4 and BFECC",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "advection",
+                "integration",
+                "euler",
+                "rk4",
+                "bfecc"
+            ],
+            "usePreview": 0,
+            "username": "mv",
+            "viewed": 1615
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\tSemi-Lagrangian advection schemes are often used when solving partial \n\tdifferential equations, notably the Navier-Stokes equations and its \n\trelatives used in fluid solvers [1].\n\n\tDuring advection a field (color, density, velocity, etc.) is advected \n\t(i.e. moved) based on some underlying velocity field. The way this is done \n\tis for each point in the field to trace a virtual particle backwards in time\n\talong streamlines and replace the field value with the value at the traced \n\tparticle's position. \n\n\tWe could write this recursively as:\n\n\t\tx = L(v, x)                        (1)\n\n\twhere x is the field we're advecting, the operator L is represents the \n\tparticle trace according to some velocity field v. \n\n    Typically the operator L is using some explicit integration scheme, such as \n    explicit Euler, or some higher order schemes like a 4th order Runge-Kutta \n    scheme. Higher order schemes tend to follow the velocity field streamlines \n    more closely, but are usually more expensive to compute.\n\n\tUnfortunately most advection schemes tend to accumulate errors. We have two \n\tprimary kind of errors to consider here:\n\n\t\t1: Errors while tracing particles along streamlines.\n\t\t2: Errors while interpolating values inbetween sample points.\n\n\tThe first class of errors are due to the imprecisions of the integration \n\tschemes. Higher order schemes typically reduce these errors at a cost, and \n\tmakes our virtual particles follow streamlines more tightly.\n\n\tThe second class of errors are due to using interpolation to represent field \n\tvalues inbetween data points. If we are using textures to store our field \n\t(as in this case) we can only store its at discrete points, i.e. pixels or \n\tvoxels. To calculate values for any point inbetween our sample points we \n\tneed to interpolate the data, typically with linear or cubic interpolation. \n\tAs a result sharp interfaces tend to widen, and neighbouring field values \n\ttend to blend.\n\n\tBack and Forth Error Compensation and Correction (BFECC) is a popular \n\talgorithm to reduce the second class of errors.\tThis works by performing \n\tmultiple steps in succession, then applying a correction based on the \n\tdifferences between the steps.\n\n\tMore precicely, using Equation 1, we have\n\n\t\ty = L(v, x)                        (2)\n\t\tz = L(-v, y)                       (3)\n\t\tx = L(v, x + 0.5 * (x - z))        (4)\n\n\twhere in Equation 2 we do a regular step forward, then in Equation 3 we \n\tperform a step backwards from the new state. The net effect of applying \n\tEquation 2 and 3 in succession should with a precise advection scheme take \n\tus back to our initial state x, but due to accumulation of errors we are not \n\tquite there. The final state computed using Equation 4 has overall less \n\terrors that applying Equation 1 in isolation.\n\n\tA warning: BFECC is not inherently stable, as can be seem in the Rotation \n\tmode in the lower right quadrant. For information and detailed derivation \n\tsee the paper by Kim et al. [2]. \n\t\n\t----------------------------------------------------------------------------\n\t\n\tIn this shader we test different advection schemes, seeing how they behave \n\tfor different velocity fields. \n\n\tYou can change the velocity field by changing the MODE definition in the \n\tCommon tab. There are two kinds of velocity fields:\n\n\t\t1: Uniform rotation: All points rotate around a fixed point in the \n\t\t   center of the screen with the same angular velocity.\n\t\t2: Spirals: Clockwise and counter-clockwise spiral patterns are laid out \n\t\t   in a staggered grid pattern.\n\t\n\tBoth velocity fields are divergence free, i.e. there are no sources or \n\tsinks.\n\n\tThe non-BFECC schemes are performed in Buffer A, while the BFECC corrections \n\tare done in Buffer B and C. The values are composed in buffer D for reuse in \n\tthe next step and for display in this shader:\n\n\t\tLower Left: Euler\n\t    Upper Left: 4th order Runge-Kutta\n\t    Lower Right: Euler + BFECC\n\t    Upper Right: 4th order Runge-Kutta + BFECC\n\n\tIn general higher order schemes preserves shapes better, while BFECC reduces \n\tblurring and diffusion.\n\t\n\t----------------------------------------------------------------------------\n\n\tAdditional information:\n\t\t[1] http://movement.stanford.edu/courses/cs448-01-spring/papers/stam.pdf\n\t\t[2] https://www.cc.gatech.edu/~jarek/papers/FlowFixer.pdf\n\n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec4 s = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    \n    vec3 col;\n    if (fragCoord.x < iResolution.x / 2.0)\n    {\n        if (fragCoord.y < iResolution.y / 2.0)\n        {\n            // Lower left: Euler\n        \tcol = s.zzz;            \n        }\n        else\n        {\n            // Upper left: RK4\n            col = s.xxx;\n        }\n    \t\n    }\n    else\n    {\n        if (fragCoord.y < iResolution.y / 2.0)\n        {\n            // Lower right: BFECC (Euler)\n        \tcol = s.www;            \n        }\n        else\n        {\n            // Upper right: BFECC (RK4)\n            col = s.yyy;\n        }\n    }\n    \n    vec2 uv = (2.0 * fragCoord.xy - iResolution.xy) / iResolution.yy;\n    \n    // Display the region separators.\n    float d = abs(uv.x);               // y-axis\n    d = min(d, abs(uv.y));             // x-axis\n#if MODE == MODE_ROTATE\n    d = min(d, abs(length(uv) - 1.0)); // unit circle\n#endif\n    \n    float w = 2.0 / iResolution.y;\n    float x = smoothstep(-w / 2.0, w / 2.0, abs(d) - w);\n\t\n    col = mix(vec3(1.0, 0.0, 0.0), col, x);\n    \n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define MODE_ROTATE 0\n#define MODE_SPIRALS 1\n#define MODE_COMBINATION 2\n\n// Define the velocity field pattern. \n// Restart the shader if you change this value.\n#define MODE MODE_ROTATE\n\n// Define the advection speed\n#define SPEED 60.0\n\n// Velocity field helper\nvec2 get_velocity(vec2 fragCoord, vec2 iResolution) \n{\n    vec2 uv = (2.0 * fragCoord.xy - iResolution.xy) / iResolution.yy;\n#if MODE == MODE_SPIRALS\n    // Assumes a resolution of 640x360, i.e. the default when not fullscreen.\n    // This will fit 18 vortices diagonally.\n    uv = 9.0 * 3.1415926 * uv;\n    return vec2(sin(uv.y), sin(uv.x));\n#elif MODE == MODE_ROTATE        \n    uv = 6.0 * uv;\n    return vec2(-uv.y, uv.x);\n#else\n    vec2 uv1 = 9.0 * 3.1415926 * uv;\n    vec2 uv2 = uv = 6.0 * uv;\n    return vec2(sin(uv1.y), sin(uv1.x)) + vec2(-uv.y, uv.x);\n#endif\n}\n\n#if MODE == MODE_ROTATE\n#define SPEED2 SPEED\n#else\n#define SPEED2 0.5*SPEED\n#endif\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// Performs an Euler and 4th order Runge-Kutta step forward in time (but backwards along streamlines).\n// Also initializes the color fields for the first frame using a periodic checkerboard pattern.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (iFrame == 0)\n    {\n        // Initialization\n        vec2 uv = fragCoord.xy / iResolution.xy;\n        uv.x *= iResolution.x / iResolution.y;\n        \n        // Assumes a resolution of 640x360, i.e. the default when not fullscreen.\n        // This will fit 18 blocks vertically and 32 blocks horizontally.\n        int X = int(18.0*uv.x) % 2;\n        int Y = int(18.0*uv.y) % 2;\n        \n        fragColor.xyzw = vec4(float(X ^ Y));\n    }\n    else \n    {\n        // Regular Euler and RK4 steps forward in time.\n        float dt = SPEED2 * 1.0 / 60.0;\n        vec2 v1 = get_velocity(fragCoord.xy, iResolution.xy);\n        vec2 v2 = get_velocity(fragCoord.xy - 0.5 * v1 * dt, iResolution.xy);\n        vec2 v3 = get_velocity(fragCoord.xy - 0.5 * v2 * dt, iResolution.xy);\n        vec2 v4 = get_velocity(fragCoord.xy - v3 * dt, iResolution.xy);\n\t\tvec2 v = (1.0 * v1 + 2.0 * v2 + 2.0 * v3 + 1.0 * v4) / 6.0;\n            \n        vec4 s = texture(iChannel0, (fragCoord.xy - v * dt) / iResolution.xy);   // RK4\n        vec4 s1 = texture(iChannel0, (fragCoord.xy - v1 * dt) / iResolution.xy); // Euler\n        \n        // NOTE: The first two components contains the RK4 values, \n        //       while the last two components contains the Euler values.\n        fragColor = vec4(s.x, s.y, s1.z, s1.w);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Performs an Euler and 4th order Runge-Kutta step backward in time\n// then uses that to perform a BFECC correction.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Regular Euler and RK4 steps backwards in time.\n    float dt = -SPEED2 * 1.0 / 60.0;\n    vec2 v1 = get_velocity(fragCoord.xy, iResolution.xy);\n    vec2 v2 = get_velocity(fragCoord.xy - 0.5 * v1 * dt, iResolution.xy);\n    vec2 v3 = get_velocity(fragCoord.xy - 0.5 * v2 * dt, iResolution.xy);\n    vec2 v4 = get_velocity(fragCoord.xy - v3 * dt, iResolution.xy);\n    vec2 v = (1.0 * v1 + 2.0 * v2 + 2.0 * v3 + 1.0 * v4) / 6.0;\n\n    vec4 s = texture(iChannel0, (fragCoord.xy - v * dt) / iResolution.xy);\n    vec4 s1 = texture(iChannel0, (fragCoord.xy - v1 * dt) / iResolution.xy);\n\n    // BFECC correction.\n    // NOTE: We only care about the BFECC fields, i.e. we ignore the x and z values.\n    vec4 s0 = texelFetch(iChannel1, ivec2(fragCoord.xy), 0);\n    fragColor = vec4(0.0, s0.y + 0.5 * (s0.y - s.y), 0.0, s0.w + 0.5 * (s0.w - s1.w));\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Performs an Euler and 4th order Runge-Kutta step forward in time\n// using the BFECC field.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Regular Euler and RK4 steps forwards in time.\n    float dt = SPEED2 * 1.0 / 60.0;\n    vec2 v1 = get_velocity(fragCoord.xy, iResolution.xy);\n    vec2 v2 = get_velocity(fragCoord.xy - 0.5 * v1 * dt, iResolution.xy);\n    vec2 v3 = get_velocity(fragCoord.xy - 0.5 * v2 * dt, iResolution.xy);\n    vec2 v4 = get_velocity(fragCoord.xy - v3 * dt, iResolution.xy);\n    vec2 v = (1.0 * v1 + 2.0 * v2 + 2.0 * v3 + 1.0 * v4) / 6.0;\n\n    vec4 s = texture(iChannel0, (fragCoord.xy - v * dt) / iResolution.xy);\n    vec4 s1 = texture(iChannel0, (fragCoord.xy - v1 * dt) / iResolution.xy);\n\t\n    // NOTE: We only care about the BFECC fields, i.e. we ignore the x and z values.\n    fragColor = vec4(0.0, s.y, 0.0, s1.w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Composes the non-BFECC (buffer A) and BFECC (buffer C) fields\n// We read this buffer in the Image shader and reuse its data the next frame.\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (iFrame == 0) \n    {\n        fragColor = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n    }\n    else\n    {\n        vec4 s1 = texelFetch(iChannel0, ivec2(fragCoord.xy), 0);\n        vec4 s2 = texelFetch(iChannel1, ivec2(fragCoord.xy), 0);\n        fragColor = vec4(s1.x, s2.y, s1.z, s2.w);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

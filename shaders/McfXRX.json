@@ -1,0 +1,108 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1705505845",
+            "description": "Left mouse button = test pattern. Exploring useless ways of producing error diffusion contour lines. I have some more ideas I will try later.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "McfXRX",
+            "likes": 3,
+            "name": "radialdither",
+            "published": 3,
+            "tags": [
+                "dithering",
+                "esoteric"
+            ],
+            "usePreview": 0,
+            "username": "xebulon",
+            "viewed": 224
+        },
+        "renderpass": [
+            {
+                "code": "// so the goal is to find an error diffusion algo that can feasibly perform in\n// a frag shader. it's a failure so far but i figure it's best to catalog the\n// attempt here.\n\n// the biggest perf bottleneck in error diffusion is the # of samples it takes\n// to calculate the error correction. In the case of \"LTR\", for the rightmost\n// pixels, the entire scanline will be sampled pixel by pixel.\n\n// So I have two ideas here:\n\n// 1. \"SEG\".\n// simply split the screen into segments, and accumulate error only\n// within the current segment. This has a bunch of beneficial effects:\n// - a lot fewer samples\n// - controls the amount of noise that flows rightwards.\n// accumulating error left-to-right means there will be seams between\n// segments though. to minimize this, each segment alternates accumulating\n// error from right-to-left, then left-to-right. the result is smoother\n// but still pretty esoteric.\n\n// 2. \"RAD\".\n// Another way of reducing the # of samples per pixel is to accumulate\n// error in a radial fashion. So it's similar to left-to-right, except\n// we collect error from center-to-current_pixel.\n// of course this is mathematically nonsensical as it doesn't guarantee\n// any balance at all of error diffusion. but the effect is you get contour lines\n// in a radial pattern around the center of the image. very strange indeed.\n\n\n\nfloat load(int i) {\n    return texelFetch(iChannel1, ivec2(i,0), 0).x;\n}\n\nfloat tobw(float a) {\n    return step(.6,a);\n}\n\n// Generic algorithm to desaturate images used in most game engines\nfloat togray(vec3 color)\n{\n\treturn dot(vec3(0.299, 0.587, 0.114), color);\n}\n// generate a nice pattern with low & high freqs.\nfloat tex(vec2 p, vec2 R) {\n    float chan = 5.; //  load(0);\n    if (chan == 0.) {\n        // a 2D gradient.\n        float ret = pow(clamp(p.x,0.,1.) * p.y,.5);\n        return ret;\n    }\n    if (chan == 1.) {\n        // another gradient\n        float ret = pow(clamp(p.x,0.,1.) * p.y * (sin(length(p)*9.)*.5+.5),.5);\n        return ret;\n    }\n    if (chan == 2.) {\n        // hard objects on soft gradient.\n        // emphasizes how bad the rolling window calculation is\n        float ret = clamp(p.x,0.,1.) * p.y * .5;\n        p.x *= 2.;\n        vec2 p1 =-abs(p-.5)+.15;\n        float sq1 = sign(p1.x+p1.y);\n        vec2 p2 =-abs(p-.5)+.1;\n        sq1 -= sign(p2.x+p2.y);\n        ret = max(sq1,ret);\n        \n        sq1 = -sign(length(p-vec2(1.4,.5))-.3);\n        float sq2 = sign(length(p-vec2(1.4,.5))-.2);\n        ret = max(sq1+sq2,ret);\n        \n        return clamp(ret,0.,1.);\n    }\n    if (chan == 3.) {\n        // a soft circle. here the kernel makes a big difference in breaking up weird patterns\n        // also shows result of left-to-right error accumulation:\n        // smooth on the left, noisy on the right.\n        p -= .5;\n        return 1.-smoothstep(.0,.2,length(p)-.1);\n    }\n    if (chan == 5.) {\n        // a real video. shows how the fixed window is really just too ugly to be taken seriously.\n        return togray(texture(iChannel2, p).rgb);\n    }\n    \n    // an animation with both high freq & low freq content.\n    float t = iTime*.05;\n    p.x *= R.x / R.y;\n    p*=.5;\n\n    p.x += t;\n    p.y += t*.333;\n    \n    float ret = (sin(p.x * 20.) * .5 + .5) + (sin(p.y * 20.) * .5 + .5);\n    ret /= 2.;\n    \n    float span = .5;\n    vec2 c = mod(p, span) - span*.5;\n    ret = max(ret, 1.-step(.0, length(c)-span*.3));\n\n    span *= .7;\n    c = mod(p - vec2(0,t), span) - span*.5;\n    ret = min(ret, step(.0,length(c)-span*.3));\n    return ret;\n}\n\n\nvoid gray( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    o.r = tex(fragCoord.xy / R.xy, R);\n    o = vec4(o.r);\n}\n\n\nvoid nodither( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    o.r = tex(fragCoord.xy / R.xy, R);\n    o = vec4(tobw(o.r));\n}\n\n// full-width error diffusion. yea that's a lot of sampling.\nvoid leftToRight( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    float error = 0.;\n    float b;\n    for (float i = 0.; i <= fragCoord.x; ++ i) {\n        float a = tex(vec2(i,fragCoord.y) / R.xy, R);\n        a -= error;\n        b = tobw(a);// new color, B&W\n        error = b-a;\n    }\n    o = vec4(b);\n}\n\nconst float segmentSize = 64.;\n\n// accumulate in segments\nvoid ltr_segments( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    float error = 0.;\n    float b;\n    float begin = floor(fragCoord.x / segmentSize) * segmentSize;\n    for (float i = begin; i < fragCoord.x; ++ i) {\n        float a = tex(vec2(i,fragCoord.y) / R.xy, R);\n        a -= error;\n        b = tobw(a);\n        error = b-a;\n    }\n    o = vec4(b);\n}\n\n// accumulate in segments\nvoid rtl_segments( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    float error = 0.;\n    float b;\n    float left = floor(fragCoord.x / segmentSize) * segmentSize;\n    for (float i = left + segmentSize; i >= fragCoord.x; -- i) {\n        float a = tex(vec2(i,fragCoord.y) / R.xy, R);\n        a -= error;\n        b = tobw(a);\n        error = b-a;\n    }\n    o = vec4(b);\n}\n\n\n// accumulate in mirrored segments\n// when doing 1D error diffusion, the left edge is clean and the right edge gets messy.\n// this attempts to put clean against clean and messy against messy.\nvoid segments_mirrored( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    float seg = mod(fragCoord.x, segmentSize * 2.);\n    if (seg > segmentSize) {\n        ltr_segments(o, fragCoord, R);\n    } else {\n        rtl_segments(o, fragCoord, R);\n    }\n}\n\n// accumulate error from center --> edge\n// maximum samples is a line to nearest edge.\n// so for 800x400, instead of 800px wide, it's max 447 px. still a lot though right?\n\nvoid centerToP( out vec4 o, in vec2 fragCoord, vec2 R )\n{\n    vec2 begin = R.xy * .5;\n    vec2 end = fragCoord;\n    float len = distance(begin, end);// how many pixels to travel\n    \n    vec2 cursor = begin;\n    float error = 0.;\n    float b;\n\n    for (float i = 0.; i < len; ++ i) {\n        float a = tex(mix(begin, end, i/len) / R.xy, R);\n        a -= error;\n        b = tobw(a);// new color, B&W\n        error = b-a;\n        // error should be theoretically be scaled because center pixels are smaller than outer pixels.\n        // however ... yea mathematically this is all nonsense so...\n        //error *= i/len;\n    }\n    float a = tex(fragCoord / R.xy, R);\n    a -= error;\n    b = tobw(a);// new color, B&W\n    //error = b-a.r;\n    o = vec4(b);\n}\n\n#define C(c) U.x-=.5; O+= char(U,64+c)\n\nvec4 char(vec2 p, int c) \n{\n    if (p.x<.0|| p.x>1. || p.y<0.|| p.y>1.) return vec4(0,0,0,1e5);\n\treturn textureGrad( iChannel0, p/16. + fract( vec2(c, 15-c/16) / 16. ), dFdx(p/16.),dFdy(p/16.) );\n}\n\n\n\nvoid mainImage( out vec4 o, in vec2 fragCoord )\n{\n    float halfLineW = 2.;\n    vec2 R = iResolution.xy * .5;\n    vec2 window = mod(fragCoord, iResolution.xy*.5);\n    vec2 uv = window / iResolution.y;\n    uv.x -= .5;\n    uv.y -= .3;\n    vec2 U = uv*12.;\n    vec4 O = vec4(0);\n    if (fragCoord.x <= iResolution.x * .5 - halfLineW) {\n        if (fragCoord.y <= iResolution.y * .5 - halfLineW) {\n            // BOTTOM LEFT\n    \t\tsegments_mirrored(o, window, R);\n    \t\tC(19);C(5);C(7); // SEG\n        } else if (fragCoord.y <= iResolution.y * .5 + halfLineW) {\n        \to = vec4(1,0,0,0);\n        } else {\n            // TOP LEFT\n\t    \tgray(o, window, R);\n    \t\tC(15);C(18);C(9);C(7); // ORIG\n        }\n    }\n    else if (fragCoord.x <= iResolution.x * .5 + halfLineW) {\n        \to = vec4(1,0,0,0);\n    } else {\n        if (fragCoord.y <= iResolution.y * .5 - halfLineW) {\n            // BOTTOM RIGHT\n    \t\tcenterToP(o, window, R);\n    \t\tC(18);C(1);C(4);// RAD\n        } else if (fragCoord.y <= iResolution.y * .5 + halfLineW) {\n        \to = vec4(1,0,0,0);\n        } else {\n            // TOP RIGHT\n\t    \tleftToRight(o, window, R);\n    \t\tC(12);C(20);C(18);// LTR\n        }\n    }\n    \n    o = mix(o, vec4(1,0,0,0), O.x);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "video",
+                        "id": 29,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/3405e48f74815c7baa49133bdc835142948381fbe003ad2f12f5087715731153.ogv"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// this is just used to keep track of which \"tv channel\" you're watching\n\n// 0 = tv channel\n// 1 = previous mouse state\n\nfloat load(int i) {\n    return texelFetch(iChannel0, ivec2(i,0), 0).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 C = ivec2(fragCoord);\n    int i = C.x + (int(iChannelResolution[0].x) * C.y);\n    \n    if (i == 0) {\n        float prevClickState = load(1);\n        if (prevClickState != iMouse.z && iMouse.z <= 0.) {\n            // mouse clicked state has changed; change tv channels.\n        \tfloat prev = load(0);\n            fragColor.x = float((int(prev) + 1) % 6);\n            return;\n        }\n    }\n    \n    if (i == 1) { // save mouse state\n        fragColor.x = iMouse.z;\n        return;\n    }\n    fragColor.x = load(i);\n}\n    \n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

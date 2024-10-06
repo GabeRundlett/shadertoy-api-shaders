@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1543018515",
+            "description": "My take on spherical indexing, inspired by [url]http://donw.io/post/sphere-indexing/[/url], but using a different method.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "MlVfzG",
+            "likes": 24,
+            "name": "Spherical indexing",
+            "published": 3,
+            "tags": [
+                "barycentric",
+                "spherical",
+                "indexing"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 926
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Spherical indexing. Assign integer coordinates to regions of a sphere.\n//\n// Inspired by http://donw.io/post/sphere-indexing/ but using a\n// different method that uses barycentric coordinates.\n//\n// Map sphere normal to octahedron face by i) taking absolute values of x,y,z\n// to map into primary quadrant, ii) intersect with surface x+y+z = 1.\n// On the octahedron face, the triangle (1,0,0),(0,1,0),(0.0,1), Euclidean\n// coordinates are the same as barycentric coordinates, which we can\n// reinterpret as positions in the right angled triangle\n// (0,0),(1,0),(0,1) just by dropping the z coordinate. Now the rows and\n// columns are horizontal and vertical and we can find the indices\n// just with some floors and mods.\n//\n////////////////////////////////////////////////////////////////////////////////\n\n// Smooth HSV to RGB conversion \n// Function by iq, from https://www.shadertoy.com/view/MsS3Wc\nvec3 hsv2rgb( vec3 c ) {\n  vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n  rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n  return c.z * mix( vec3(1.0), rgb, c.y);\n}\n\n// Return square of the perp distance from p to line from A to B.\nfloat linedistance2(vec3 p, vec3 A, vec3 B) {\n  vec3 d = B-A;\n  vec3 q = A+dot(p-A,d)/dot(d,d)*d;\n  return dot(p-q,p-q);\n}\n\n// Normalize a vec2 to a vec3 bary coord with sum 1.\nvec3 mkbary(vec2 p) {\n  return vec3(p,1.0-dot(p,vec2(1)));\n}\n\nfloat N = 8.0;\nfloat linewidth2 = 0.005*0.005;\nvec3 getColor(vec3 p) {\n  p = abs(p);            // Map to primary quadrant\n  p /= dot(p,vec3(1));   // To x+y+z = 1 plane\n  vec2 frac = N * p.xy;  // To (0,0),(N,0),(0,N) triangle\n  vec2 xy = clamp(floor(frac),0.0,N-1.0);\n  frac -= xy;\n  // xy now has the integer row/column coordinates\n  // frac has the coordinates within a row/column square\n  // so work our which triangle in the square it is in.\n  float parity = float(dot(frac,vec2(1)) > 1.0);\n  // Compute the index. Adding quadrant left as exercise.\n  // Bottom bit is upper/lower triangle\n  float index = 2.0*xy.y + parity;\n  // Clamp to avoid rounding problems at end.\n  // row n goes from 0 up to 2(N-n-1)\n  index = clamp(index,0.0,2.0*(N-xy.x-1.0));\n  index += 2.0 * N*xy.x;\n\n  // Now find distance to lines in triangle.\n  // A,B,C are vertices of region triangle, in bary coordinates\n  // If p has bary coords (a,b,c), then (a,b',c') is line\n  // parallel to side opposite first vertex.\n  vec3 A = mkbary((xy+vec2(1,0))/N);\n  vec3 B = mkbary((xy+vec2(0,1))/N);\n  vec3 C = mkbary((parity==0.0?xy:xy+vec2(1))/N);\n  if (linedistance2(p,A,B) < linewidth2 ||\n      linedistance2(p,B,C) < linewidth2 ||\n      linedistance2(p,C,A) < linewidth2 ||\n      false) {\n    return vec3(1);\n  }\n  return hsv2rgb(vec3(index/(2.0*N),0.8,0.8));\n}\n\n// Standalone function for finding the nearest point\n// in an octahedral triangulation of the sphere.\nvec3 getnearest(vec3 p) {\n  vec3 signs = sign(p);\n  p = abs(p);            // Map to primary quadrant\n  p /= dot(p,vec3(1));   // To x+y+z = 1 plane\n  vec2 index = N * p.xy;  // To (0,0),(N,0),(0,N) triangle\n  index = round(index);\n  index /= N;\n  p = vec3(index,1.0-dot(index,vec2(1)));\n  p = normalize(p);\n  p *= signs;\n  return p;\n}\n\nfloat PI = 3.14159;\n\nstruct Ray {\n  vec3 q;               // origin\n  vec3 d;               // direction\n};\n\nstruct Hit {\n  float t;      // solution to p=q+t*d\n  vec3 n;       // normal\n};\n\nstruct Sphere {\n  float r;      // radius\n  vec3 p;       // centre\n};\n\nbool intersectSphere(Sphere s, Ray ray, out Hit hit) {\n  vec3 p = s.p;\n  float r = s.r;\n  float c = length(p);\n  vec3 q = ray.q, d = ray.d;\n  // |q + t*d - p|^2 = r^2\n  float B = dot(q-p,d);\n  float C = dot(q,q)-2.0*dot(q,p)+(c+r)*(c-r);\n  float D = B*B - C;\n  if (D < 0.0) return false;\n  D = sqrt(D);\n  float t,t1;\n  if (B >= 0.0) {\n    t = -B-D; t1 = C/t;\n  } else {\n    t1 = -B+D; t = C/t1;\n  }\n  if (t < 0.0) t = t1;\n  if (t < 0.0) return false;\n  // Normal is the radial vector of sphere\n  hit = Hit(t, (q+t*d-p)/r);\n  return true;\n}\n\nbool intersectScene(Ray r, out Hit hit) {\n  Sphere s = Sphere(1.0, vec3(0));\n  if (intersectSphere(s,r,hit)) {\n    return true;\n  }\n  return false;\n}\n\nvec3 light;\nfloat ambient;\nfloat diffuse;\n\nvec4 solve(Ray r) {\n  Hit hit;\n  if (!intersectScene(r,hit)) {\n    return vec4(0,0,0,1);\n  } else {\n    vec3 n = hit.n;\n    if (dot(r.d,n) > 0.0) n *= -1.0;\n    vec3 baseColor = getColor(hit.n);\n    vec3 nearest = getnearest(hit.n);\n    vec3 color = baseColor.xyz*(ambient+diffuse*max(0.0,dot(light,n)));\n    color *= smoothstep(0.015,0.016,distance(hit.n,nearest));\n    float specular = pow(max(0.0,dot(reflect(light,n),r.d)),5.0);\n    color += 0.5*specular*vec3(1.0,1.0,1.0);\n    color *= clamp(1.0 - (hit.t-3.0)/5.0,0.0,1.0);\n    return vec4(sqrt(color),1.0);\n  }\n}\n\nvec2 rotate(vec2 p, float t) {\n  return p * cos(-t) + vec2(p.y, -p.x) * sin(-t);\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = -(2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = -(2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  p.yz = rotate(p.yz,iTime * 0.125);\n  p.zx = rotate(p.zx,iTime * 0.2);\n  return p;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  light = normalize(vec3(0.5,1.0,-1.0));\n  ambient = 0.5;\n  diffuse = 1.0-ambient;\n  vec2 uv = 2.0*fragCoord.xy/iResolution.xy - 1.0;\n  vec3 p = vec3(0,0,-6.0);\n  // \"screen\" coordinate\n  vec3 s = vec3(iResolution.x/iResolution.y * uv.x, uv.y, 0);\n  vec3 d = s-p; // Direction from camera to screen point\n  p = transform(p);\n  d = transform(d);\n  d = normalize(d);\n  light = transform(light);\n  fragColor = solve(Ray(p,d));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,47 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1651618851",
+            "description": "Playing around with SDFs and procedural music until I find something I like.",
+            "flags": 8,
+            "hasliked": 0,
+            "id": "ftXBWs",
+            "likes": 5,
+            "name": "The Shapes Dance By Moonlight",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "sdf",
+                "shapes",
+                "dance"
+            ],
+            "usePreview": 0,
+            "username": "zesterer",
+            "viewed": 401
+        },
+        "renderpass": [
+            {
+                "code": "vec3 ray_dir(vec3 z_up, vec3 dir, float fov, float aspect, vec2 uv) {\n    vec3 right = normalize(cross(z_up, dir));\n    vec3 up = cross(dir, right);\n    return normalize(dir + right * uv.x * aspect * fov + up * uv.y * fov);\n}\n\nconst float PLANCK = 0.01;\n\n\nvec2 smin(float a, float b, float k, float n)\n{\n    float h = max(k - abs(a - b), 0.0) / k;\n    float m = pow(h, n)*0.5;\n    float s = m*k/n;\n    \n    vec2 inv = vec2(1.0) / vec2(a, b);\n    float blend = inv.y / (inv.x + inv.y);\n    \n    return vec2((a<b) ? (a-s) : (b-s), blend);\n}\n\nvec4 sdf_union(vec4 a, vec4 b, float s) {\n    vec2 min_blend = smin(a.w, b.w, s, 2.0);\n    return vec4(mix(a.rgb, b.rgb, clamp(min_blend.y, 0.0, 1.0)), min_blend.x);\n    //return a.w < b.w ? a : b;\n}\n\nfloat vmin(vec3 v) {\n    return min(v.x, min(v.y, v.z));\n}\n\nfloat vmax(vec3 v) {\n    return max(v.x, max(v.y, v.z));\n}\n\nfloat s;\n\nvec4 sdf(vec3 pos) {\n    vec3 p = pos;\n\n    pos.xy = fract((pos.xy + 12.0) / 24.0) * 24.0 - 12.0;\n\n    ivec2 chess = ivec2(floor(pos.xy));\n    vec4 ground = vec4(\n        mix(vec3(0.5), vec3(float((chess.x ^ chess.y) & 1)), clamp(10.0 / length(pos), 0.0, 1.0)),\n       pos.z);\n    \n    float angle = iTime * sign(sin(p.y - pos.y) + 0.01) * 3.0 + sin(p.x - pos.x) * 10.0;\n    vec2 dir = vec2(sin(angle), cos(angle));\n    \n    vec4 ball = vec4(vec3(1, 0, 0), length(pos + vec3(dir * 5.0, -2.0)) - 2.0);\n    \n    vec4 cube = vec4(vec3(0, 1, 0), length(max(vec3(0.0), abs(pos - vec3(dir * 5.0, 2)) - vec3(2, 2, 5))));\n\n    vec4 sdf = sdf_union(sdf_union(ground, ball, s), cube, s);\n    return vec4(sdf.rgb, min(sdf.w, 2.0)); // Hack\n}\n\nvec3 sdf_norm(vec3 pos) {\n    float d000 = sdf(pos).w;\n    float d100 = sdf(pos + vec3(PLANCK, 0.0, 0.0)).w;\n    float d010 = sdf(pos + vec3(0.0, PLANCK, 0.0)).w;\n    float d001 = sdf(pos + vec3(0.0, 0.0, PLANCK)).w;\n    \n    return normalize(d000 - vec3(d100, d010, d001));\n}\n\nconst vec3 sky = vec3(0.2, 0.3, 0.6);\nvec3 sun_dir;\n\nvec3 color_ray(vec3 dir, inout vec3 pos, out bool hit) {\n    for (int i = 0; i < 256; ++i) {\n        vec4 col_dist = sdf(pos);\n        float dist = col_dist.w;\n        \n        if (dist < PLANCK) {\n            hit = true;\n            return col_dist.rgb;\n        }\n        \n        pos += dir * dist;\n    }\n    \n    hit = false;\n    return sky;\n}\n\nfloat shadow_ray(vec3 dir, inout vec3 pos) {\n    vec3 p = pos;\n    float min_shade = 1.0;\n    \n    // Throw in a bit of noise\n    pos += dir * PLANCK * 1.0 * fract(dot(pos, vec3(1000.0)));\n    \n    float t = 0.0;\n    float last_dist = 1e20;\n    for (int i = 0; i < 256; ++i) {\n        float dist = sdf(pos).w;\n        \n        // Approaching surface\n        if (dot(sdf_norm(pos - dir * last_dist), dir) > 0.0) {\n            float y = dist*dist/(2.0*last_dist);\n            float d = sqrt(dist*dist-y*y);\n            d = dist;\n\n            min_shade = min(min_shade, d * 3.0 / t);\n            \n            if (dist < PLANCK) {\n                min_shade = 0.0;\n                break;\n            }\n        }\n        \n        last_dist = dist;\n        t += dist;\n        \n        pos += dir * dist;\n    }\n    \n    return min_shade;\n}\n\nvec3 ray_cast(vec3 dir, inout vec3 pos) {\n    bool hit;\n    vec3 p = pos;\n    vec3 color = color_ray(dir, pos, hit);\n    vec3 q = pos;\n    \n    vec3 light = vec3(0);\n    if (hit) {\n        vec3 norm = sdf_norm(pos);\n        float lambert = max(dot(sun_dir, norm), 0.0);\n        float specular = pow(max(dot(reflect(-sun_dir, norm), dir), 0.0), 120.0) * 3.0;\n        float shade = min(lambert, clamp(shadow_ray(-sun_dir, pos), 0.0, 1.0));\n        float ambient = 0.1;\n        light = ((ambient + shade) * color + specular * shade) * sky * 2.0;\n        light = mix(sky, light, min(1.0 / exp(0.01 * distance(p, q)), 1.0));\n    } else {\n        light = sky + pow(max(dot(dir, -sun_dir), 0.0), 250.0) * 1.0;\n    }\n    \n    return light;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    sun_dir = normalize(vec3(vec2(sin(iTime), cos(iTime)) * sin(iTime * 0.2) * 5.0, -2.0));\n    s = 16.0 * sin(iTime * 3.0) * 0.5 + 0.5;\n\n    vec2 uv = fragCoord/iResolution.xy - 0.5;\n    \n    vec2 angle = (iMouse.xy - iResolution.xy / 2.0) * 0.01;\n    vec3 cam_pos = vec3(vec2(sin(angle.x), cos(angle.x)) * 10.0, angle.y * 6.0 + 10.0);\n    \n    cam_pos.xy = vec2(sin(iTime * 0.5), cos(iTime * 0.8)) * 50.0;\n    cam_pos.z = 6.0 + (sin(iTime * 1.5) * 0.5 + 0.5) * 30.0;\n    \n    vec3 cam_focus = vec3(-vec2(sin(iTime * 1.2), cos(iTime * 1.0 + 0.5)) * 50.0 + vec2(10.0, 15.0), 5.0);\n    cam_pos.z = 7.5 + (sin(iTime * 1.3) * 0.5 + 0.5) * 30.0;\n    vec3 cam_dir = -normalize(cam_pos - cam_focus);\n    \n    vec3 dir = ray_dir(vec3(0, 0, 1), cam_dir, 1.5, 1.5, uv);\n    \n    vec3 col = ray_cast(dir, cam_pos);\n\n    // Output to screen\n    fragColor = vec4(col * min(iTime * 0.1, 1.0),1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float tone(float len, float time) {\n    time = time / len * (time > 0.0 ? 1.0 : 400.0);\n    time += 3.1415 * 0.5;\n    return (cos(time) * 0.5 + 0.5) * (abs(time) > 3.141 ? 0.0 : 1.0);\n}\n\nfloat repeat(float tempo, float time) {\n    return mod(time, tempo);\n}\n\nfloat Note(float pitch, float len, float time) {\n    return (sin(6.2 * 440.0 * time * pitch) * 0.5) * tone(len, time);\n}\n\nvec2 mainSound( int samp, float time )\n{\n    vec2 nz = vec2(0.0);\n    \n    time *= 1.0;\n    float t0 = repeat(4.5, time);\n    \n    float octave = sin(floor(time / 4.5)) * 0.35;\n    \n    nz += Note(0.7 + octave, 0.3, t0 - 0.5);\n    nz += Note(0.8 + octave, 0.3, t0 - 1.0);\n    nz += Note(0.9 + octave, 0.3, t0 - 1.5);\n    nz += Note(1.0 + octave, 0.3, t0 - 2.0);\n    nz += Note(0.9 + octave, 0.3, t0 - 2.5);\n    nz += Note(0.8 + octave, 0.3, t0 - 3.0);\n    nz += Note(0.7 + octave, 0.3, t0 - 3.5);\n    \n    float t1 = repeat(4.5, time * 2.0);\n    \n    float octave2 = sin(floor(time / 4.5)) * 0.35;\n    \n    nz += Note(1.0 + octave2, 0.25, t1 - 0.5) * 0.3;\n    nz += Note(0.9 + octave2, 0.25, t1 - 1.0) * 0.3;\n    nz += Note(0.8 + octave2, 0.25, t1 - 1.5) * 0.3;\n    nz += Note(0.7 + octave2, 0.25, t1 - 2.0) * 0.3;\n    nz += Note(0.8 + octave2, 0.25, t1 - 2.5) * 0.3;\n    nz += Note(0.9 + octave2, 0.25, t1 - 3.0) * 0.3;\n    nz += Note(1.0 + octave2, 0.25, t1 - 3.5) * 0.3;\n    \n    float t2 = repeat(4.5, time * 0.5);\n    \n    float octave3 = sin(floor(time / 4.5)) * 0.35;\n    \n    nz += Note(1.0 + octave3, 0.3, t2 - 0.5) * 0.3;\n    nz += Note(0.9 + octave3, 0.3, t2 - 1.0) * 0.3;\n    nz += Note(0.8 + octave3, 0.3, t2 - 1.5) * 0.3;\n    nz += Note(0.7 + octave3, 0.3, t2 - 2.0) * 0.3;\n    nz += Note(0.8 + octave3, 0.3, t2 - 2.5) * 0.3;\n    nz += Note(0.9 + octave3, 0.3, t2 - 3.0) * 0.3;\n    nz += Note(1.0 + octave3, 0.3, t2 - 3.5) * 0.3;\n    \n    return nz * min(time * 0.1, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Sound",
+                "outputs": [],
+                "type": "sound"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

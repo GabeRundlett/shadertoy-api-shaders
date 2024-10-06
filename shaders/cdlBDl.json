@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1689300073",
+            "description": "How to assign multiple colors when ray marching. Based on the way iq does it: https://www.youtube.com/watch?v=Cfe5UQ-1L9Q&t=8470s",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "cdlBDl",
+            "likes": 0,
+            "name": "Multiple Color Ray Marching",
+            "published": 3,
+            "tags": [
+                "raymarching",
+                "sdf",
+                "tutorial",
+                "colors",
+                "comments"
+            ],
+            "usePreview": 0,
+            "username": "tristanantonsen",
+            "viewed": 241
+        },
+        "renderpass": [
+            {
+                "code": "// Ray marching constants\n#define MAX_STEPS 100\n#define SURF_DIST 0.0001\n#define MAX_DIST 100.0\n#define PI 3.141592653592\n\n////////////////////////////////////////////////////////////////\n// Signed Distance Functions\n////////////////////////////////////////////////////////////////\nfloat sdPlane( vec3 p, vec3 n, float h )\n{\n  return dot(p,normalize(n)) + h;\n}\n\nfloat sdSphere( vec3 p, vec3 c, float r )\n{\n    return length(p-c) - r;\n}\n\n////////////////////////////////////////////////////////////////\n// SDF Operations\n////////////////////////////////////////////////////////////////\n\nfloat opUnion(float d1, float d2 ) { return min(d1,d2); }\n\nfloat opSubtraction(float d1, float d2) {\n    //NOTE: Flipped order because it makes more sense to me\n    return max(-d2, d1);\n}\nfloat opIntersection(float d1, float d2) {\n    return max(d1, d2);\n}\n\nfloat opSmoothUnion(float d1, float d2, float k) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h);\n}\nfloat opSmoothSubtraction(float d1, float d2, float k) {\n    float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );\n    return mix( d1, -d2, h ) + k*h*(1.0-h);\n}\nfloat opSmoothIntersection(float d1, float d2, float k){\n    float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) + k*h*(1.0-h);\n}\n\nvec3 rotY(vec3 p, float a) {\n    float s = sin(a);\n    float c = cos(a);\n    mat3 m = mat3(\n        c, 0., s,\n        0., 1., 0.,\n        -s, 0., c\n        );\n    return m * p;\n}\n\n////////////////////////////////////////////////////////////////\n// Ray Marching Functions\n////////////////////////////////////////////////////////////////\n\nvec2 map(vec3 p) {\n    // Mouse\n    vec2 m = (2.*iMouse.xy-iResolution.xy)/iResolution.y;  \n    float y = 0.1 * sin(iTime);\n    float x = 0.2 * cos(iTime);\n\n\n    vec2 res;\n    \n    // Sphere 1: red\n    float s1 = sdSphere(p, vec3(0.5, y, 0.),0.6);\n    res = vec2(s1, 1.0); // id to track color\n    \n    // Sphere 2: blue\n    float s2 = sdSphere(p, vec3(x, -y, 0.),0.7);\n    if (s2 < res.x) res.y = 2.0; // if the distance is smaller here, assign the color\n    res.x = opSmoothUnion(s1, s2, 0.1); // assign after combining, since it's a union\n    \n    // Sphere 3: green\n    float s3 = sdSphere(p, vec3(m.x, m.y, -1.),0.8);\n    res.x = opSmoothSubtraction(res.x, s3, 0.05); // combine before assigning, since it's a subtraction\n    if (s3 < res.x+SURF_DIST) res.y = 3.0; // offset slightly to prevent artifacts\n   \n   // Sphere 4: purple\n    float s4 = sdSphere(p, vec3(m.x, m.y, -1.),0.2);\n    if (s4 < res.x) res.y = 4.0; // if the distance is smaller here, assign the color\n    res.x = opUnion(res.x, s4); // assign after combining, since it's a union\n    \n\n    return res;\n}\n\nvec2 rayMarch(vec3 ro, vec3 rd) {\n    float d = 0.0;\n    float mat = 1.0;\n    for (int i = 0; i < MAX_STEPS; i++) {\n        if (i >= MAX_STEPS ) break;\n        vec3 p = ro + rd * d;\n        vec2 ds = map(p);\n        d += ds.x;\n        mat = ds.y;\n        if (d >= MAX_DIST || ds.x < SURF_DIST) break;\n        i++;\n    }\n    return vec2(d, mat);\n}\n\nvec3 gradient(vec3 p) {\n    float epsilon = 0.0001;\n    vec3 dx = vec3(epsilon, 0., 0.0);\n    vec3 dy = vec3(0., epsilon, 0.0);\n    vec3 dz = vec3(0., 0.0, epsilon);\n\n    float ddx = map(p + dx).x - map(p - dx).x;\n    float ddy = map(p + dy).x - map(p - dy).x;\n    float ddz = map(p + dz).x - map(p - dz).x;\n    \n    return normalize(vec3(ddx, ddy, ddz));\n}\n\nvec3 rayDirection(vec2 p, vec3 ro, vec3 rt) {\n\n    // screen orientation\n    vec3 vup = vec3(0., 1.0, 0.0);\n    float aspectRatio = iResolution.x / iResolution.y;\n\n    vec3 vw = normalize(ro - rt);\n    vec3 vu = normalize(cross(vup, vw));\n    vec3 vv = cross(vw, vu);\n    float theta = radians(30.); // half FOV\n    float viewport_height = 2. * tan(theta);\n    float viewport_width = aspectRatio * viewport_height;\n    vec3 horizontal = -viewport_width * vu;\n    vec3 vertical = viewport_height * vv;\n    float focus_dist = length(ro - rt);\n    vec3 center = ro - vw * focus_dist;\n\n    vec3 rd = center + p.x * horizontal + p.y * vertical - ro;\n\n    return normalize(rd);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (fragCoord / iResolution.xy - 0.5) * 2.0; // normalizing\n\n    // Ray Marching\n    vec3 rt = vec3(0., 0., 0.);\n    vec3 ro = vec3(0., 0., -10.02);\n\n    vec3 rd = rayDirection(uv, ro, rt);\n    vec2 d = rayMarch(ro, rd);\n\n    // Background\n    float v = length(uv) * .75;\n    fragColor = vec4(mix(0.1, 0.2, smoothstep(0.0, 1.0, uv.y)));\n\n    if (d.x <= 100.0) {\n        vec3 p = ro + rd * d.x;\n        vec3 N = gradient(p);\n        float light1 = dot(N, normalize(vec3(1, 1,-1)))*.5+.5;\n        float light2 = dot(N, normalize(vec3(-1, 1,-1)))*.5+.5;\n        vec3 color = 0.5 * vec3(light1) + 0.5 * vec3(light2);\n        fragColor = vec4(color, 1.0);\n        \n        // \n        if (d.y == 1.) fragColor.yz *= 0.5;\n        if (d.y == 2.) fragColor.xyz *= vec3(0.5, 0.5, 0.9);\n        if (d.y == 3.) fragColor.xyz *= vec3(0.5, 0.9, 0.5);     \n        if (d.y == 4.) fragColor.xyz *= vec3(0.9, 0.5, 0.9);        \n        \n        \n    }\n\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

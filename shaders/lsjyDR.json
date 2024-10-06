@@ -1,0 +1,209 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1492184858",
+            "description": "out of place outer space, main path marcher from here https://www.shadertoy.com/view/XtfSDS\n\nCONTROLS:\nLOOK - MOUSE\nMOVE - ARROW KEYS",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "lsjyDR",
+            "likes": 0,
+            "name": "out of place outer space",
+            "published": 3,
+            "tags": [
+                "space",
+                "out",
+                "of",
+                "place",
+                "outer"
+            ],
+            "usePreview": 0,
+            "username": "public_int_i",
+            "viewed": 605
+        },
+        "renderpass": [
+            {
+                "code": "//Ethan Alexander Shulman 2017\n\n/*CONTROLS:\n\nLOOK - MOUSE\nMOVE - ARROW KEYS\n\n*/\n\n\n\n//Image - Apply post-fx, light adaption and dither.\n\n\n#define TARGET_COLOR vec3(.03,.1,.1)\n#define ADAPTION_AMOUNT 1.0\n#define DITHER_PRECISION 32.\n\n\n//blue noise from here https://www.shadertoy.com/view/4dSyDR\nfloat hash( uint n ) { // from https://www.shadertoy.com/view/llGSzw  Base: Hugo Elias. ToFloat: https://iquilezles.org/articles/sfrand\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.;\n}\n\nfloat noise(vec2 U) {\n    U-=.5; return hash(uint(U.x+iResolution.x*U.y));\n}\n\nfloat bluenoise(vec2 U) {\n#define V(i,j)  noise(U+vec2(i,j))\n    float N = 8./9.* noise( U ) \n           - 1./9.*( V(-1,-1)+V(0,-1)+V(1,-1) +V(-1,0)+V(1,0) +V(-1,1)+V(0,1)+V(1,1) );  \n    return N*2.0+0.5;\n}\n\n//correlation from here https://www.shadertoy.com/view/XsSyDR\nfloat correlated_bluenoise(vec2 U) {\n    return mix(bluenoise(U),\n               bluenoise(mod(U,64.)),\n               0.5)/0.75;\n}\n\nvec3 dither(vec2 uv, vec3 c) {  \n    return (floor(c*(DITHER_PRECISION+1.)+correlated_bluenoise(uv))/DITHER_PRECISION)*min(c*1e8,1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    vec4 c = pow(texture(iChannel0, uv), vec4(1.0/2.2)),\n         b = texture(iChannel1, .5/iResolution.xy);\n    \n    //apply light adaption\n    b.xyz /= TARGET_COLOR;\n    c.xyz = mix(c.xyz,c.xyz/b.xyz,ADAPTION_AMOUNT);\n    \n    //apply dither(hide noise)\n    c.xyz = dither(fragCoord-0.5, c.xyz);\n    \n\tfragColor = c;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//Ethan Alexander Shulman 2017\n\n//Buf A - Rendering\n\n\n\n\nconst float PI = 3.141592,\n            PI2 = PI*2.;\n\nstruct material {\n    vec3 diffuse, specular;\n    float metallic, roughness, emission;\n};\nstruct light {\n    float point, importance;\n    vec3 vector;\n};\n    \n    \nvec3 hash33(vec3 p);\nfloat hash13(vec3 s);\n\n\nvec2 rot2(vec2 p, float a);\n\n\n#define motionBlur(p,v) (p+v*(hash13(p+fract(vec3(iFrame)/vec3(1.092384,25.28394,1564.82934)))-0.5))\n#define transparency(d,o) mix(d,1e7,clamp((hash13(p+fract(vec3(iFrame)/vec3(1.092384,25.28394,1564.82934)))-o)*1e7,0.,1.))\n\n\n\n//SCENE FUNCTIONS & VARIABLES\n#define CAMERA_POSITION texture(iChannel0, vec2(1.5,0.5)/iResolution.xy).xyz\n//vec3(0.,-20.,-29.)\n#define CAMERA_ROTATION vec2((iMouse.x/iResolution.x)*PI*-2.0-PI, (iMouse.y/iResolution.y)*PI*-2.0+1.4)\n    \n    \nconst vec3 DEPTH_OF_FIELD_FOCALPOINT = vec3(0.,5.,0.);\nconst float DEPTH_OF_FIELD_POW = 0.5,\n    \t\tDEPTH_OF_FIELD_SPIKES = 8.;\n//#define DEPTH_OF_FIELD 0.\n\n#define NUM_LIGHTS 1\n#if (NUM_LIGHTS != 0)\nlight lights[NUM_LIGHTS];\n#endif\n\n#define moon vec3(0.3,0.8,0.1)\n\nvoid initLights() {\n    #if (NUM_LIGHTS != 0)\n    lights[0] = light(0.,\n                      0.5,\n                      normalize(moon));\n    #endif\n}\n\n\n\n//distance functions from iq's site\nfloat sdTorus( vec3 p, vec2 t ) {\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  return length(q)-t.y;\n}\nfloat udBox( vec3 p, vec3 b )\n{\n  return length(max(abs(p)-b,0.0));\n}\nfloat sdBox( vec3 p, vec3 b )\n{\n  vec3 d = abs(p) - b;\n  return min(max(d.x,max(d.y,d.z)),0.0) +\n         length(max(d,0.0));\n}\nfloat sdCapsule( vec3 p, vec3 a, vec3 b, float r )\n{\n    vec3 pa = p - a, ba = b - a;\n    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );\n    return length( pa - ba*h ) - r;\n}\nfloat sdTriPrism( vec3 p, vec2 h )\n{\n    vec3 q = abs(p);\n    return max(q.z-h.y,max(q.x*0.866025+p.y*.5,-p.y)-h.x*0.5);\n}\nfloat smin( float a, float b, float k )\n{\n    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h);\n}\n\n\n//returns distance, material id\nvec2 scene(vec3 p, float e) {\n    //grass plane\n    float dst = p.y+sin(p.x*0.03)*4.8+cos(p.z*0.0233)*6.0;\n    if (dst < 4.0) {\n        dst += cos(dot(sin(p.xz*24.)*4.,sin(1.-p.xz*14.)))*2.0;\n    \tdst = transparency(dst,0.9);\n    }\n    \n    vec2 sr = vec2(dst, 0.);\n    \n    \n    //sphere\n    float odst = length(p-vec3(0.,20.,0.))-16.0;\n    if (odst < sr.x) {\n        sr = vec2(odst, 1.);\n    }\n    \n    \n    return sr;\n}\n\n//outputs material(m) from material id, position(p) and normal(n)\nvoid getMaterial(float id, vec3 p, vec3 n, out material m) {\n    \n    if (id < 1.) {\n        //grass\n       \tm = material(vec3(.04, .95, .1),//diffuse\n                     vec3(.4,0.99,0.5),//specular\n                     0.,//metallic\n                     0.7,//roughness\n                     0.//emission\n                    );\n        return;\n    }\n\n    \n    //sphere\n    m = material(vec3(1.),\n                 vec3(1.),\n                 1.0,\n                 0.0,\n                 0.);\n    \n    return;\n}\n\n//returns background color from ray direction(d)\n//random float 0-1 from seed a\nfloat hash(float a) {\n    return fract(fract(a*24384.2973)*512.34593+a*128.739623);\n}\n//returns 1 if a is less than b else it returns 0\nfloat floatLessThan(float a, float b) {\n    return clamp((b-a)*1e10, 0., 1.);\n}\nvec3 background(vec3 d) {\n    vec3 rp = d*800.0;\n \n    #define starCoverage 0.001\n    \n    vec4 c = vec4(clamp((dot(d,normalize(moon))-0.994)*1e2, 0., 1.0));\n    vec4 fog = vec4(1.-clamp(d.y*4.0,0.,1.));\n    fog.xyz *= vec3(0.1,0.03,0.16)*0.02;\n    c = mix(c,fog,fog.w);\n    \n    //stars and background\n    vec3 slp = fract(abs(rp))-.5,\n         slp2 = fract(abs(rp+.5))-.5;\n    float sli = floor(abs(rp.x))+floor(abs(rp.y))*32.+floor(abs(rp.z))*256.,\n          sli2 = -29294.43598+floor(abs(rp.x+.5))+floor(abs(rp.y+.5))*32.+floor(abs(rp.z+.5))*256.;\n    vec3 sbg = vec3(pow(max(0., 1.-max(0., length(slp)-.2)*.75), 24.)*floatLessThan(hash(sli/808.2783+cos(sli)*100.0),starCoverage));\n                        \n    return mix(sbg,c.xyz,c.w);\n}\n\n\n\n\n\n//RENDERING VARIABLES\nconst int ITERATIONS = 80;\n\nconst float MIN_EPSILON = 8e-2,\n    \t\tMAX_EPSILON = 9e-1,\n    \t\tEPSILON_FADE_DISTANCE = 1e6,\n    \n    \t\tMIN_STEP = 0.95,\n    \t\tMAX_STEP = 1.0;\n\n\n\n//2d rotation\nvec2 rot2(vec2 p, float a) {\n    return p*mat2(sin(a),cos(a),-cos(a),sin(a));\n}\n\n//generate seed from current iDate.w\nfloat timeSeed() {\n    float tseed = floor(iDate.w);\n    return fract(tseed*.73624+fract(iDate.w-tseed*.0928275)*1974.3252+float(iFrame)*.98726);\n}\n\n//random float3 with values from 0-1 seeded from float3\nvec3 hash33(vec3 p) {\n\treturn fract(abs(cos(p*.19487)*9284.3459 + cos(p.zxy*29.97612)*37.92384));\n}\n\n//random float from 0-1 seeded from float3\nfloat hash13(vec3 s) {\n\treturn fract(abs(cos(dot(s, vec3(7, 157, 113))))*43758.5453);\n}\n\n\n//calculate up(binorm) and right(tang) normals\nvoid calculateUpRight(vec3 normal, out vec3 tangent, out vec3 binormal)\n{\n    if (abs(normal.x) > abs(normal.y)) {\n        tangent = normalize(vec3(-normal.z, 0., normal.x));\n    } else {\n\t\ttangent = normalize(vec3(0., normal.z, -normal.y));\n\t}\n    \n\tbinormal = cross(normal, tangent);\n}\n//polar->cartesian\nvec3 polarToCartesian(float sinTheta, float cosTheta, \n\t\t\t\t      float sinPhi, float cosPhi) {\n\treturn vec3(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);\n}\n\n\n//BRDF function derived from\n//mplanck https://www.shadertoy.com/view/lsV3zV\n\n//brdf simulating microscopic surface roughness(bumps)\nvec3 brdf(vec3 rnd, vec3 norm, float rough, vec3 view, vec3 tangent, vec3 binormal) {\t\t\t\t\n\tfloat cosTheta = pow(max(0., rnd.x), rough*(1.-1e-6)+1e-6),\n          sinTheta = sqrt(max(0., 1. - cosTheta * cosTheta)),\n          phi = rnd.y * PI2;\n    \n\tvec3 ldir = polarToCartesian(sinTheta, cosTheta, sin(phi), cos(phi)),\n         dir = normalize(ldir.x*tangent + ldir.y*binormal + ldir.z*norm);\n\t\n    dir = reflect(view, dir*(step(0.,dot(dir,-view))*2.-1.));\n    return dir*(step(0.,dot(dir,norm))*2.-1.);\n}\n\n\n\nvec3 normal(vec3 p) {\n    const vec2 NE = vec2(MIN_EPSILON, 0.);\n    return normalize(vec3(scene(p+NE.xyy,MIN_EPSILON).x-scene(p-NE.xyy,MIN_EPSILON).x,\n                          scene(p+NE.yxy,MIN_EPSILON).x-scene(p-NE.yxy,MIN_EPSILON).x,\n                          scene(p+NE.yyx,MIN_EPSILON).x-scene(p-NE.yyx,MIN_EPSILON).x));\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (iFrame < 120) {\n        //init, 2 seconds to go fullscreen\n        return;\n    }\n    \n    vec2 R = iResolution.xy/2.;\n    vec2 uv = fragCoord.xy / R;\n    \n    \n    //cut off 3/4th the screen because we only need 1/4th for super-sampling\n    if (uv.x >= 1. || uv.y >= 1.) return;\n    \n        \n    //pixel jitter for temporal super-sampling\n    float tseed = timeSeed();\n    vec3 tseed3 = hash33(cos(vec3(iFrame)*.098232+vec3(tseed)/vec3(42.7723,2.9914,26.9783)));\n    vec2 jitter = hash33(cos(vec3(iFrame)*.098232+vec3(tseed)/vec3(.92873,.092834,2.19823))).xy-0.5;\n    vec2 nuv = ((fragCoord+jitter)*2.-R)/R.x;\n    \n    \n    initLights();\n    \n    //raymarch path\n    vec3 rp = CAMERA_POSITION,\n         rd = normalize(vec3(nuv,1.0));\n    rd.yz = rot2(rd.yz, CAMERA_ROTATION.y);\n    rd.xz = rot2(rd.xz, CAMERA_ROTATION.x);\n    \n    #ifdef DEPTH_OF_FIELD\n    vec3 cup, cright,\n         fdir = normalize(DEPTH_OF_FIELD_FOCALPOINT-rp);\n    calculateUpRight(rd, cright, cup);\n    \n    vec2 crnd = hash33(rd+tseed3*2.19827).xy-0.5;\n    float ang = atan(crnd.y,crnd.x);\n    \n    float dofAmount = DEPTH_OF_FIELD*(1.-pow(abs(dot(rd,fdir)),DEPTH_OF_FIELD_POW))*\n        \t\t\t\t\t\t\tsin(ang*DEPTH_OF_FIELD_SPIKES);\n    rd = normalize(rd+(cup*crnd.x+cright*crnd.y)*dofAmount);\n    #endif\n    \n    \n    float s = 0.;\n    \n    vec3 l = vec3(1.),\n         o = vec3(0.);\n    for (int i = 0; i < ITERATIONS; i++) {\n        vec3 p = rp+rd*s;\n        float epsilon = MIN_EPSILON+(MAX_EPSILON-MIN_EPSILON)*min(1.,s/EPSILON_FADE_DISTANCE);\n        vec2 sr = scene(p,epsilon);\n        \n        if (sr.x < epsilon) {\n            vec3 norm = normal(p),\n                 rnd = hash33(p+tseed3),\n                tang,binorm;\n            \n            material mat;\n            getMaterial(sr.y, p, norm, mat);\n            \n            float spec = step(hash13(p-tseed3), 0.5+0.5*mat.metallic);\n            l *= mix(mat.diffuse,mat.specular,spec);\n            o += l*mat.emission;\n            \n            \n            #if (NUM_LIGHTS != 0)\n            //light importance sampling\n            float mimportance = 0.;\n            vec3 lightDir;\n            for (int k = 0; k < NUM_LIGHTS; k++) {\n                vec3 ldir = lights[k].vector;\n                float importance = lights[k].importance;\n                if (lights[k].point > 0.) {\n                    ldir -= p;\n                    importance /= (1.0+length(ldir));\n                    ldir = normalize(ldir);\n                }\n                importance *= max(0.,dot(ldir,norm));\n                if (importance > mimportance) {\n                    mimportance = importance;\n                    lightDir = ldir;\n                }\n            }\n            \n            float lsamp = step(hash13(p+tseed3*0.88),mimportance*0.5-max(0.,spec-mat.roughness));\n            if (lsamp < 0.5) {\n                calculateUpRight(norm, tang, binorm);\n            \trd = brdf(rnd, norm, mix(1.,mat.roughness,spec), rd, tang, binorm);\n            } else {\n                rd = lightDir;\n            }\n            #else\n            calculateUpRight(norm, tang, binorm);\n            rd = brdf(rnd, norm, mix(1.,mat.roughness,spec), rd, tang, binorm);\n            #endif\n            \n            rp = p+norm*MIN_EPSILON;\n            s = 0.;\n        }\n        \n        s += sr.x*(MIN_STEP+hash13(p+tseed3)*(MAX_STEP-MIN_STEP));\n    }\n    \n    float epsilon = (MIN_EPSILON+(MAX_EPSILON-MIN_EPSILON)*min(1.,s/EPSILON_FADE_DISTANCE));\n    o += l*background(rd)*step(epsilon, scene(rp+rd*s, epsilon).x);\n    fragColor = vec4(o,1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Ethan Alexander Shulman 2017\n\n//Buf B - Super-sampling convolution.\n\n\n\n//generate seed from current iDate.w\nfloat timeSeed() {\n    float tseed = floor(iDate.w);\n    return fract(tseed*.73624+fract(iDate.w-tseed*.0928275)*1974.3252+float(iFrame)*.98726);\n}\n\n\n//random float3 with values from 0-1 seeded from float3\nvec3 hash33(vec3 p) {\n\treturn fract(abs(cos(p*.19487)*9284.3459 + cos(p.zxy*29.97612)*37.92384));\n}\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (iFrame < 120) {\n        //init blank, 2 seconds to go fullscreen or camera changed\n        fragColor = vec4(0.);\n        return;\n    }\n    \n\tvec2 uv = fragCoord.xy / iResolution.xy;\n    \n    \n    //pixel jitter\n    float tseed = timeSeed();\n    vec2 jitter = hash33(cos(vec3(iFrame)*.098232+vec3(tseed)/vec3(.92873,.092834,2.19823))).xy-0.5;\n\n    vec4 r = texture(iChannel1, uv);\n    vec2 muv = fragCoord-0.5;\n    \n    vec4 s = vec4(0.);\n    for (int x = -1; x < 2; x++) {\n        for (int y = -1; y < 2; y++) {\n            vec2 suv = floor(fragCoord/2.)+vec2(x,y);\n            vec3 c = texture(iChannel0, (suv+0.5)/iResolution.xy).xyz;\n            float portion = max(0., 1.-(length(suv*2.+jitter-muv)/1.41));\n            s += vec4(c,1.)*portion;\n        }\n    }\n    if (s.w > 0.) s /= s.w;\n    \n    if (iMouse.w > 0. || texture(iChannel2, vec2(1.5,0.5)/iResolution.xy).w > 0.5) {\n        fragColor = s;\n    } else {\n   \t\tfragColor = r+s;\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//Ethan Alexander Shulman 2017\n\n//Buf D - Average color calculation for light adaption and camera position.\n\n\n\n#define movement_sensitivity 0.2 * 60.0\n#define CAMERA_ROTATION vec2((iMouse.x/iResolution.x)*PI*-2.0, (iMouse.y/iResolution.y)*PI*-2.0)\n\nconst float PI = 3.141592,\n            PI2 = PI*2.;\n\n\n//generate seed from current iDate.w\nfloat timeSeed() {\n    float tseed = floor(iDate.w);\n    return fract(tseed*.73624+fract(iDate.w-tseed*.0928275)*1974.3252+float(iFrame)*.98726);\n}\n\n\n//random float3 with values from 0-1 seeded from float3\nvec3 hash33(vec3 p) {\n\treturn fract(abs(cos(p*.19487)*9284.3459 + cos(p.zxy*29.97612)*37.92384));\n}\n\n    \n//2d rotation\nvec2 rot(in vec2 v, in float ang) {\n    float si = sin(ang);\n    float co = cos(ang);\n    return v*mat2(si,co,-co,si);\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if (iFrame < 120) {\n        //init, 2 seconds to go fullscreen\n        if (floor(fragCoord.x) > 0.5) {\n            //initial camera pos\n        \tfragColor = vec4(40.,10.,0., 0.);\n        } else {\n        \tfragColor = vec4(1.0);\n        }\n        return;\n    }\n    \n    if (floor(fragCoord.x) > 1.5 || floor(fragCoord.y) > 0.5) return;\n    \n    vec4 c = texture(iChannel0, fragCoord/iResolution.xy);\n    \n    if (floor(fragCoord.x) > 0.5) { \n        //camera position\n        float movementA = texture(iChannel2, vec2(38.5, 25.5)/255.).x-\n                                 texture(iChannel2, vec2(40.5, 25.5)/255.).x,\n            movementB = texture(iChannel2, vec2(39.5, 25.5)/255.).x-\n                      texture(iChannel2, vec2(37.5, 25.5)/255.).x,\n            mflag = 0.;\n        \n        vec2 camRot = CAMERA_ROTATION;\n         if (movementA != 0.) {\n            vec3 rdB = vec3(0.,0.,1.);    \n            rdB.yz = rot(rdB.yz,camRot.y);\n            rdB.xz = rot(rdB.xz,camRot.x);\n            c.xyz += movementA*rdB*iTimeDelta*movement_sensitivity;\n            mflag = 1.;\n        }\n        if (movementB != 0.) {\n             vec3 rdB = vec3(1.,0.,0.);    \n             rdB.yz = rot(rdB.yz,camRot.y);\n             rdB.xz = rot(rdB.xz,camRot.x);\n             c.xyz += movementB*rdB*iTimeDelta*movement_sensitivity;\n             mflag = 1.;\n        }\n        \n        fragColor = vec4(c.xyz, mflag);\n    } else {\n        //average brightness for light adaption\n        float tseed = timeSeed();\n        vec2 sp = floor(hash33(vec3(tseed)).xy*iResolution.xy);\n\n        vec4 s = vec4(0.);\n        for (int x = -1; x < 2; x++) {\n            for (int y = -1; y < 2; y++) {\n                s += vec4(pow(texture(iChannel1, (sp+vec2(x,y)+0.5)/iResolution.xy).xyz,vec3(1.0/2.2)), 1.);\n            }\n        }\n\n        fragColor = mix(c,s/s.w,1./iResolution.x);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buf D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

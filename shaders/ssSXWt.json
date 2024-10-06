@@ -1,0 +1,212 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1621272342",
+            "description": "raymarching a scene deferred",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ssSXWt",
+            "likes": 4,
+            "name": "deferred rendering test .",
+            "published": 3,
+            "tags": [
+                "deferred"
+            ],
+            "usePreview": 0,
+            "username": "sirjofri",
+            "viewed": 355
+        },
+        "renderpass": [
+            {
+                "code": "/* WARNING: bad AA algorithm! */\n/*\nAA 0 - no AA\nAA 1 - filter using fwidth, only direct neighbor pixels (horizontally, vertically)\nAA 2 - filter using fwidth, also using diagonal pixels\nAA 3 - filter using difference. super heavy performance!\n*/\n#define AA 1\n\n/* stolen from https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/ */\n/* thanks, demofox */\nvec3 ACESFilm(vec3 x)\n{\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0., 1.);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n\n    vec3 col = texture(iChannel0, uv).rgb;\n\n#if (AA == 0)\n    fragColor = vec4(pow(ACESFilm(col), vec3(1./2.2)), 1.0);\n    return;\n#endif\n    \n    vec3 mc = col.rgb;\n    float d = .001;\n#if (AA != 3)\n    float df = pow(length(fwidth(col.rgb)), .6);\n    \n    if (df > .4){\n#endif\n        float corner = .5;\n        float edge   = 1.;\n        float center = 2.;\n#if (AA == 2)\n        float div = corner*4. + edge*4. + center;\n#else\n        float div = edge*4. + center;\n#endif\n\n#if (AA == 2)\n        vec3 ca = texture(iChannel0, uv+vec2(-d, -d)).rgb * corner;\n        vec3 cc = texture(iChannel0, uv+vec2(+d, -d)).rgb * corner;\n        vec3 cg = texture(iChannel0, uv+vec2(-d, +d)).rgb * corner;\n        vec3 ci = texture(iChannel0, uv+vec2(+d, +d)).rgb * corner;\n#endif\n        vec3 cb = texture(iChannel0, uv+vec2(0., -d)).rgb * edge;\n        vec3 cd = texture(iChannel0, uv+vec2(-d, 0.)).rgb * edge;\n        vec3 ce = col.rgb * center;\n        vec3 cf = texture(iChannel0, uv+vec2(+d, 0.)).rgb * edge;\n        vec3 ch = texture(iChannel0, uv+vec2(0., +d)).rgb * edge;\n\n#if (AA == 2)\n        vec3 c = (ca+cb+cc+cd+ce+cf+cg+ch+ci)/div;\n#else\n        vec3 c = (cb+cd+ce+cf+ch)/div;\n#endif\n        mc = c;\n        \n#if (AA == 3)\n        float mv = smoothstep(0.1, .4, pow(distance(c, col), .5));\n        mc = mix(col, c, mv);\n#else\n    }\n#endif\n    \n    // use for direct comparison using mouse\n//    mc = mix(pow(mc, vec3(1.1)), col.rgb, step(iMouse.x/iResolution.x, uv.x));\n\n    fragColor = vec4(pow(ACESFilm(mc), vec3(1./2.2)), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "float sdist = .001;   // march until this distance (higher = ugly)\nint maxsteps = 1024;  // march max this steps (smaller = ugly)\n\nvec3 ambi = vec3(.8, .9, 1.);\nvec3 campos = vec3(0., 0., 5.);\nfloat speed = 3.;\n\nfloat sdSphere(vec3 p, vec3 pos, float r)\n{\n    return distance(pos, p) - r;\n}\n\nvec2 matwood(vec3 p)\n{\n    vec3 mspos = vec3(0., -15., .05);\n    float d = min(\n        sdSphere(p, mspos, 1.),\n        min(\n            sdSphere(p, mspos+vec3( .9, 0.1, .6), .5),\n            sdSphere(p, mspos+vec3(-.9, 0.1, .6), .5)\n        )\n    );\n    float m = d < sdist ? 2. : 0.;\n    return vec2(d, m);\n}\n\nvec2 matground(vec3 p)\n{\n    float d = p.z-sin((p.x-.35)*3.+sin(p.y))*.15 + cos((p.y+15.)*.2+cos((p.x+5.)*.2));\n    float m = d < sdist ? 1. : 0.;\n    return vec2(d, m);\n}\n\nvec2 map(vec3 p)\n{\n    vec2 mground = matground(p);\n    vec2 mwood = matwood(p);\n    float d = min(mground.x, mwood.x);\n    float m = max(mground.y, mwood.y);\n    return vec2(d, m);\n}\n\nvec2 march(vec3 ro, vec3 rd, float initd, float maxd)\n{\n    float d = initd;\n    for (int i=0; i<maxsteps; i++){\n        vec2 n = map(ro + rd*d);\n        d += n.x;\n        if (n.x < sdist)\n            return vec2(d, n.y);\n        if (d > maxd)\n            return vec2(1000., 0.);\n    }\n    return vec2(1000., 0.);\n}\n\nvec3 rotate(vec3 p, vec3 r)\n{\n    mat3 yaw = mat3(\n        cos(r.x), -sin(r.x), 0.,\n        sin(r.x),  cos(r.x), 0.,\n        0.      ,  0.      , 1.\n    );\n    mat3 pitch = mat3(\n        1.,       0.,        0.,\n        0., cos(r.y), -sin(r.y),\n        0., sin(r.y),  cos(r.y)\n    );\n    mat3 roll = mat3(\n         cos(r.z), 0., sin(r.z),\n               0., 1.,       0.,\n        -sin(r.z), 0., cos(r.z)\n    );\n    \n    p *= roll;\n    p *= pitch;\n    p *= yaw;\n    return normalize(p);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// scene (distance and material id)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    uv -= .5;\n    uv.x *= iResolution.x/iResolution.y;\n    \n    vec3 cr = vec3(.15+sin(iTime*speed*1.23)*.001, .2+sin(iTime*speed*.94)*.005, cos(iTime*speed*1.41)*.001);\n    vec3 rd = rotate(vec3(uv.x, -2., uv.y), cr);\n    \n    /* march(xx, xx, near clip, far clip); you can adjust for better performance */\n    vec2 mi = march(campos, rd, 10., 100.);\n    float d = mi.x;\n    float m = mi.y;\n    vec3 wp = campos + rd*d;\n    \n    fragColor = vec4(wp, m);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// color buffer\n\nvec3 wood(vec3 wp)\n{\n    return pow(texture(iChannel1, wp.xz).rgb, vec3(2.2));\n}\n\nvec3 ground(vec3 wp)\n{\n    return pow(texture(iChannel2, wp.xy*.7).rrr, vec3(3.))*vec3(.4, .6, .3);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    vec4 t = texture(iChannel0, uv);\n    vec3 wp = t.xyz;\n    int id = int(t.w);\n    \n    float d = distance(wp, campos);\n    \n    vec3 col = vec3(0.);\n    \n    switch(id)\n    {\n    case 1:\n        col = ground(wp);\n        break;\n    case 2:\n        col = wood(wp);\n        break;\n    case 0:\n    default:\n        col = ambi;\n    }\n    \n    fragColor = vec4(col, clamp(pow(d*.01, 2.5), 0., 1.));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 6,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// light buffer\n\nstruct Light {\n    vec3 pos;\n    vec3 col;\n    float intensity;\n};\n\nLight lA = Light(\n    vec3(9., -6., 4.),\n    vec3(1., 1., 0.8),\n    1.7\n);\n\nLight lB = Light(\n    vec3(-3., -3., 9.),\n    vec3(1., .5, .3),\n    .1\n);\n\nfloat dShadow(vec3 wp, Light l)\n{\n    vec3 rd = normalize(l.pos-wp);\n    /* last param for march(): make it smaller for better performance but less shadows */\n    float d = march(wp+(sdist+.02)*rd, rd, 0., 5.).x;\n    return clamp(mix(0., .2, d), 0., 1.);\n}\n\n#define AODIST (.17)\nfloat dAO(vec3 wp, vec3 n)\n{\n    float d = map(wp+n*AODIST).x;\n    return 1.;\n    return clamp(d/AODIST, 0., 1.);\n}\n\nvec3 dLight(vec3 wp, vec3 n, Light l)\n{\n    vec3 ld = normalize(l.pos-wp);\n    float ni = clamp(dot(n, ld), 0., 1.);\n    float dist = 1.-clamp(mix(0., .01, distance(wp, l.pos)), 0., 1.);\n    float d = min(ni, dShadow(wp, l))*dist;\n    return d*l.intensity*l.col;\n}\n\n/* Thanks iq */\nvec3 getNormal(vec3 p)\n{\n    const float h = 0.2;\n    #define ZERO (min(iFrame,0))\n    vec3 n = vec3(0.);\n    for (int i=ZERO; i<4; i++)\n    {\n        vec3 e = 0.5773*(2.*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.);\n        n += e*map(p+e*h).x; /* btw: s/pos/p */\n    }\n    return normalize(n);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    \n    Light lC = Light(\n        vec3(sin(iTime*4.)*2., cos(iTime*4.)*2.-15., 1.2),\n        vec3(cos(iTime)*.5+.5, sin(iTime)*.5+.5, 1.),\n        3.\n    );\n    \n    vec3 wp = texture(iChannel0, uv).xyz;\n    vec3 norm = getNormal(wp);\n    \n    float ao = pow(mix(0., 1., dAO(wp, norm)), 1.2);\n    vec3 col = ambi*.1*ao;\n    col += dLight(wp, norm, lA)*ao;\n    col += dLight(wp, norm, lB)*ao;\n    col += dLight(wp, norm, lC)*ao;\n    \n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "vec3 pp(vec3 bc, float d)\n{\n    return mix(bc, ambi, d);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n\n    vec4 wp = texture(iChannel0, uv);\n    vec4 bc = texture(iChannel1, uv);\n    vec4 lb = texture(iChannel2, uv);\n    \n    vec3 col = pp(bc.rgb * lb.xyz, bc.a);\n\n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,272 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1689849430",
+            "description": "I saw https://youtu.be/CuNgLZiWkm8 and I liked the idea! But the implementation there mimics the visuals of JPEG instead of applying its subsampling + DCT. What if we emulated it more closely? + bonus FX!\nClick and drag to move camera. Scene by @blackle.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "cd2fRG",
+            "likes": 27,
+            "name": "JPEG Compression Depth of Field",
+            "published": 3,
+            "tags": [
+                "depthoffield",
+                "pixelation",
+                "jpg",
+                "jpeg"
+            ],
+            "usePreview": 0,
+            "username": "NBickford",
+            "viewed": 1754
+        },
+        "renderpass": [
+            {
+                "code": "// Elements are columns\n// Modified matrix from the \"JPEG conversion\" section of\n// https://en.wikipedia.org/wiki/YCbCr\nmat3 ycbcr_to_rgb = mat3(vec3(1.), vec3(0., -.344136, 1.772), vec3(1.402, -.714136, 0.));\n// I'm not worrying about 128/255 vs. .5 here.\nvec3 ycbcr_offset_to_rgb = vec3(0., -.5, -.5);\n\nbool show_effect(int effect, vec2 uv){\n#if EFFECT == E_MULTI\n    return float(effect)/4. <= uv.x && uv.x <= float(effect+1)/4.;\n#else\n    return (effect == EFFECT);\n#endif\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 effect_col;\n    vec2 src_uv = fragCoord/iResolution.xy;\n    \nif(show_effect(E_PIXELATE, src_uv)){\n    // Read the depth from the original render\n    // We read from mip 3, without linear filtering,\n    // to try to get a constant value in each 8x8 block.\n    // Otherwise, our pixels have unusual shapes.\n    // uh, don't look at the top row of pixels too closely\n    // if your preview height is not divisible by 8\n    float depth = texelFetch(iChannel0, ivec2(fragCoord)/8, 3).a;\n    float cc = EFFECT_STRENGTH * 60.f * cc_from_depth(depth);\n    \n#if 1\n    // Optional: If cc is restricted to powers of integers,\n    // then we never run into the unusual shape issue!\n    // But then depths look kind of quantized.\n    if(cc > 0.){\n        cc = exp2(round(log2(cc)));\n    }\n#endif\n    \n    // Pixelate fragCoord\n    fragCoord = round(fragCoord/cc)*cc;\n    vec2 pixelated_uv = fragCoord/iResolution.xy;\n    \n    // Output to screen\n    effect_col = texture(iChannel0, pixelated_uv).rgb;\n    \n}else if(show_effect(E_JPEG, src_uv)){\n\n    // Split the image into 8x1 blocks. What's my x index inside the block?\n    int block_x = int(fragCoord.x) % 8;\n    // Go to the start of the row in this 8x8 block\n    ivec2 block_start = ivec2(fragCoord) - ivec2(block_x, 0);\n    // Fetch 8 pixels in this row\n    vec3 row[8];\n    for(int i = 0; i < 8; i++){\n        row[i] = texelFetch(iChannel1, block_start + ivec2(i, 0), 0).rgb;\n    }\n    // Invert the horizontal DCT. This is the same trick\n    // as in Buffer D!\n    vec3 dct_out = vec3(0.);\n    for(int i = 0; i < 8; i++){\n        dct_out += dct[8*i + block_x] * row[i];\n    }\n    \n    effect_col = ycbcr_to_rgb * (dct_out + ycbcr_offset_to_rgb);\n\n}else if(show_effect(E_CHROMATIC, src_uv)){\n\n    // Some sort of chromatic aberration\n    float depth = texelFetch(iChannel0, ivec2(fragCoord), 0).a;\n    float cc = EFFECT_STRENGTH * 200.f * cc_from_depth(depth);\n    vec2 rcp_res = 1. / iResolution.xy;\n    effect_col = vec3(0.);\n    vec3 total_weight = vec3(0.);\n    float d_dx = .25;\n    // If our step size is larger than a pixel, we sample\n    // higher resolutions:\n    float sampled_lod = log2(max(1., d_dx*cc));\n    for(float dx = -1.; dx <= 1.; dx += d_dx){\n        vec3 val = textureLod(iChannel0, (fragCoord + vec2(dx*cc, 0.))*rcp_res, sampled_lod).rgb;\n        // sRGB -> linear\n        val = pow(max(val, vec3(0.)), vec3(2.2f));\n        // r  g  b\n        // \\ /^\\ /\n        //  \\   \\\n        // / \\ / \\\n        //-1  0  1\n        vec3 weight = clamp(vec3(-dx, 1.-abs(dx), dx), vec3(0.), vec3(1.));\n        effect_col += val*weight;\n        total_weight += weight;\n    }\n    effect_col = effect_col / total_weight;\n    // linear -> sRGB\n    effect_col = pow(effect_col, vec3(1./2.2f));\n\n}else if(show_effect(E_FLOW, src_uv)){\n\n    // er, sample along a curve, I guess?\n    vec2 uv = src_uv;\n    float depth = texelFetch(iChannel0, ivec2(fragCoord), 0).a;\n    // Total length, roughly in pixels\n    float cc = EFFECT_STRENGTH * 250.f * cc_from_depth(depth);\n    int num_steps = clamp(int(ceil(cc/4.)), 1, 16);\n    float step_size = (cc/256.)/float(num_steps); // Now to UV\n    effect_col = vec3(0.);\n    for(int i = 0; i < num_steps; i++){\n        effect_col += textureLod(iChannel0, uv, 0.f).rgb;\n        uv += (textureLod(iChannel2, uv, 0.).rg - vec2(.5)) * step_size;\n    }\n    effect_col = effect_col / float(num_steps);\n\n}else if(show_effect(E_CHEAP_DOF, src_uv)){\n    \n    float depth = texelFetch(iChannel0, ivec2(fragCoord), 0).a;\n    float cc = EFFECT_STRENGTH * iResolution.x * .15f * cc_from_depth(depth);\n    float sample_lod = log2(max(1., cc)) - .7;\n    effect_col = vec3(0.);\n    for(int i = 0; i < 3; i++){\n        float t = float(i) * 6.28 / 3.;\n        vec2 dp = .5 * (cc/iResolution.x) * vec2(cos(t), sin(t));\n        vec3 val = textureLod(iChannel0, src_uv + dp, sample_lod).rgb;\n        effect_col += pow(val, vec3(2.2));\n    }\n    effect_col = pow(effect_col / 3., vec3(1./2.2));\n    \n}\n\n#ifdef VIEW_ERROR\n    effect_col = vec3(.5) + effect_col - texelFetch(iChannel0, ivec2(fragCoord), 0).rgb;\n#endif\n\n#if EFFECT == E_MULTI\n    // Draw labels at the top for each column\n    int chars[] = int[](80, 105, 120, 101, 108, 97, 116, 101, 74, 80, 69, 71, 67, 104, 114, \n111, 109, 97, 116, 105, 99, 70, 108, 111, 119);\n    int string_starts[] = int[](0, 8, 12, 21, 25);\n    vec2 char_size_uv = 0.03 * vec2(.6, 1.) * vec2(1.,iResolution.x/iResolution.y);\n    float v_from_top = 1.-src_uv.y - .01;\n    if(v_from_top < char_size_uv.y && v_from_top > 0.) {\n        int str_idx = clamp(int(floor(src_uv.x * 4.)), 0, 3);\n        int str_len = string_starts[str_idx + 1] - string_starts[str_idx];\n        float str_left_u = (float(str_idx) + .5)/4. - float(str_len) * char_size_uv.x * .5;\n        float char_idx_f = (src_uv.x - str_left_u)/char_size_uv.x;\n        int char_idx_i = int(floor(char_idx_f));\n        if(0 <= char_idx_i && char_idx_i < str_len) {\n            vec2 uv_in_letter = vec2(char_idx_f - float(char_idx_i), v_from_top/char_size_uv.y);\n            // Scale letters horizontally so they're more closely spaced\n            uv_in_letter.x = (uv_in_letter.x - .5) / 2. + .5;\n            int char_code = chars[string_starts[str_idx] + char_idx_i];\n            vec2 letter_in_grid = vec2(float(char_code % 16), float(char_code / 16));\n            float letter_sdf = texture(iChannel3, (uv_in_letter + letter_in_grid)/16.).a;\n            // Ad-hoc antialiasing\n            float step_width = 30. / iResolution.x;\n            effect_col = mix(\n                effect_col,\n                vec3(smoothstep(.5+step_width, .5-step_width, letter_sdf)),\n                vec3(smoothstep(.55+step_width, .55-step_width, letter_sdf)));\n        }\n    }\n    // effect_col = texture(iChannel3, src_uv).rgb;\n#endif\n\n    fragColor = vec4(effect_col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 46,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "texture",
+                        "id": 49,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Whack-A-Mole Pistons by Blackle Mori (@blackle):\n// https://www.shadertoy.com/view/WtXcWB\n// Modified by @nbickford with modifications\n// (textured background, reflections, depth in alpha channel)\n// also released under CC0 1.0 Universal.\n//\n//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n\n//uncomment for slow but pretty version\n//#define PRETTY\n#ifdef PRETTY\n#define AA_SAMPLES 8\n#define MOTION_BLUR\n#else\n#define AA_SAMPLES 1\n#endif\n\n//the following functions assume that p is inside the cube of radius 1 centered at the origin\n//closest vertex of the cube to p\nvec3 vertex(vec3 p) {\n    return step(0.,p)*2.-1.;\n}\n//closest face of the cube to p\nvec3 face(vec3 p) {\n    vec3 ap = abs(p);\n    if (ap.x>=max(ap.z,ap.y)) return vec3(sign(p.x),0.,0.);\n    if (ap.y>=max(ap.z,ap.x)) return vec3(0.,sign(p.y),0.);\n    if (ap.z>=max(ap.x,ap.y)) return vec3(0.,0.,sign(p.z));\n    return vec3(0);\n}\n//closest edge of the cube to p\nvec3 edge(vec3 p) {\n    vec3 mask = vec3(1)-abs(face(p));\n    vec3 v = vertex(p);\n    vec3 a = v*mask.zxy, b = v*mask.yzx;\n    return distance(p,a)<distance(p,b)?a:b;\n}\n\nfloat super(vec2 p) {\n    return sqrt(length(p*p));\n}\n\nfloat corner(vec2 p, float h) {\n    vec2 q = p - vec2(0,h);\n    return super(max(q,0.)) + min(0.,max(q.x,q.y));\n}\n\n//returns rhombic dodecahedron tessalation data for p\n//x: distance to circle of radius .6 in current cell\n//y: distance to circle of radius .6 in closest adjacent cell\n//zw: ID of cell\nvec4 grid(vec3 p) {\n    vec3 id = floor(p)+.5;\n    vec3 m = sign(mod(id,2.)-1.);\n    if (m.x*m.y*m.z<0.) id += face(p-id);\n    p -= id;\n    float d1 = length(p)-.6;\n    p -= edge(p);\n    float d2 = length(p)-.6;\n    return vec4(d1,d2,id);\n}\n\n#define FBI floatBitsToInt\nfloat hash(float a, float b) {\n    int x = FBI(cos(a))^FBI(a);\n    int y = FBI(cos(b))^FBI(b);\n    return float((x*x+y)*(y*y-x)+x)/2.14e9;\n}\n\n//springy impulse\nfloat spring(float x) {\n    return smoothstep(-.4,.4,x) + smoothstep(-.3,.3,x) - smoothstep(-.7,.7,x);\n}\n\nfloat smin(float a, float b, float k) {\n    float h = max(0.,k-abs(b-a))/k;\n    return min(a,b) - h*h*h*k/6.;\n}\n\nvec3 smin(vec3 a, vec3 b, float k) {\n    vec3 h = max(vec3(0),k-abs(b-a))/k;\n    return min(a,b) - h*h*h*k/6.;\n}\n\nvec3 erot(vec3 p, vec3 ax, float ro) {\n    return mix(dot(p,ax)*ax,p,cos(ro))+sin(ro)*cross(ax,p);\n}\n\n//mtime set by \"pixel_color\" to influence the time used by the scene\nfloat mtime;\n//lots of globals set by \"scene\"\nvec2 gid;\nvec3 glocal;\nfloat gnd;\nfloat gt;\nfloat scene(vec3 p) {\n    //ds1 chooses z coordinate in 2d slicing of the rhombic dodecahedron tessalation\n    //by varying it over space, we get different sized circles\n    float ds1 = dot(cos(p.xy/5.), sin(p.xy/4.))*.06;\n    vec3 p3 = vec3(p.xy, ds1);\n    vec4 g = grid(p3);\n    gid = g.zw;\n \n    float s1 = hash(gid.x,gid.y);\n    float s2 = hash(s1,s1);\n    gt = sin(s1*100.+mtime*mix(1.,2.,s2*.5+.5))-.4;\n    float h = spring(gt)*2.-.5;\n\n    vec2 crd = vec2(g.x,p.z);\n    vec2 crd2 = vec2(g.y,p.z);\n    float maxheight = 1.7;\n\n    gnd = corner(crd*vec2(-1,1)+vec2(0.08,0.),0.)-.04; //ground holes\n\n    //transform things into local coordinates for piston\n    crd.y -= h;\n    glocal = p - vec3(gid,h);\n    glocal = erot(glocal,vec3(0,0,1),s1*100.+gt*2.);\n    float curr = corner(crd, 0.); //distance to current piston\n    \n    //little holes on side of piston\n    vec3 lp = glocal;\n    lp.z = asin(sin(lp.z*5.+.5))/5.;\n    curr = -smin(-curr, length(lp.yz)-0.05,.03);\n    \n    float adjacent = corner(crd2, maxheight); //distance to adjacent piston (assumes maximally extended)\n    return min(gnd,min(curr, adjacent)-.02);\n}\n\nvec3 norm(vec3 p) {\n    mat3 k = mat3(p,p,p)-mat3(0.01);\n    return normalize(scene(p) - vec3(scene(k[0]),scene(k[1]),scene(k[2])));\n}\n\nvec3 skylight(vec3 p) {\n    return texture(iChannel2, p).rgb;\n    //float d = dot(p,normalize(vec3(1)));\n    //return vec3(1)*d*.2+.2 + pow(max(0.,d),10.)*1.5;\n}\n\nfloat smpl(vec3 p, vec3 dir, float dist) {\n    return smoothstep(-dist,dist,scene(p+dir*dist));\n}\n\nvec4 pixel_color(vec2 uv, float time)\n{\n    vec2 mouse = (iMouse.xy-0.5*iResolution.xy)/iResolution.y;\n    mtime = time;\n    vec3 cam = normalize(vec3(1.5,uv));\n    vec3 init = vec3(-7,0,0);\n    \n    float yrot = 0.7+sin(time*.3)*.2;\n    float zrot = time*.2;\n    if (iMouse.z > 0.) {\n        yrot = clamp(1.-4.*mouse.y,-0.,3.14/2.);\n        zrot = 4.*mouse.x;\n    }\n    \n    cam = erot(cam,vec3(0,1,0),yrot);\n    init = erot(init,vec3(0,1,0),yrot);\n    cam = erot(cam,vec3(0,0,1),zrot);\n    init = erot(init,vec3(0,0,1),zrot);\n    \n    init.xy += time*vec2(.5,sqrt(2.));\n    init.z += 2.;\n    vec3 p =init;\n    bool hit = false;\n    float dist; int i;\n    float total_dist = 0.f;\n    for (i = 0; i < 200 && !hit; i++) {\n        dist = scene(p);\n        hit = dist*dist < 1e-6;\n        p += dist*cam;\n        total_dist += dist;\n        if(distance(p,init)>50.)break;\n    }\n    //save globals locally\n    bool g = gnd == dist;\n    vec2 id = gid;\n    float s1 = hash(gid.y,gid.x);\n    float s2 = hash(s1,gid.x);\n    vec3 local = g ? p : glocal+vec3(id,0);\n    \n    float fog = min(1.,smoothstep(5.,50.,distance(p,init))+smoothstep(100.,200.,float(i)));\n    vec3 n = norm(p);\n    vec3 r = reflect(cam,n);\n    float ao = smpl(p,n,.1);\n    \n    //brushed metal tops. not sure if this is the right way, but it works!\n    if (!g && n.z>.9) {\n        float ang = atan(p.x-id.x,p.y-id.y);\n        float ang2 = atan(local.x-id.x,local.y-id.y);\n        local = vec3(ang2/2.,length(p.xy-id)*40.,local.z+id.x*.9+id.y*.4);\n        n = normalize(vec3(cos(ang*2.),sin(ang*2.),1));\n    }\n    \n    //rough texture\n    float sharpness = texture(iChannel0,local/2.).x;\n    sharpness = sqrt(texture(iChannel0,local*vec3(1,4,.5)+sharpness*.1).x);\n    sharpness *= pow(texture(iChannel0,local/10.+sharpness*.1).x, 2.);\n    sharpness = sharpness*.5+.9;\n    \n    //fake reflection occlusion\n    float ro = sqrt(smpl(p,r,.9)*smpl(p,r,.5)*smpl(p,r,.2));\n    \n    float spec = length(sin(r*3.*sharpness)*.4+.6)/sqrt(3.) * smoothstep(-1.,-.0,p.z);\n    float fres = 1.-abs(dot(cam,n))*.5;\n    vec3 mcol = abs(erot(vec3(0.4,0.6,0.9), normalize(vec3(0,s2,2)), s1*.6));\n    if (g) mcol = vec3(0.1);\n    \n    // Not reflection, just sampling the normal :shrug:\n    vec3 lightDir = reflect(cam, n);\n    vec3 light = texture(iChannel3, lightDir.xzy).rgb;\n    vec3 col = (mcol*spec + pow(spec,10.*sharpness))*ro*ao*fres*1.5*light;\n    vec3 bgcol = skylight(cam.xzy);\n    vec3 fragColor = hit ? mix(col,bgcol,fog) : bgcol;\n    return vec4(fragColor, total_dist);\n}\n\nvec2 weyl_2d(int n) {\n    return fract(vec2(n*12664745, n*9560333)/exp2(24.));\n}\n\nfloat bayer(ivec2 uv) {\n    return texelFetch(iChannel1, uv % 8, 0).x;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-.5*iResolution.xy)/iResolution.y;\n    fragColor = vec4(0);\n    float b = bayer(ivec2(fragCoord));\n    for (int i = 0; i < AA_SAMPLES+int(min(0,iFrame)); i++) {\n        vec2 uv2 = uv + weyl_2d(i)/iResolution.y*1.25;\n#ifdef MOTION_BLUR\n\t\t//using yx's bayer motion blur idea https://www.shadertoy.com/view/wsfcWX\n        float blur = ((float(i)+b)/float(AA_SAMPLES)-.5) * iTimeDelta;\n#else\n        float blur = 0.;\n#endif\n        fragColor += pixel_color(uv2, iTime+blur);\n    }\n\tfragColor.xyz = sqrt(fragColor.xyz/float(AA_SAMPLES));\n    \n    fragColor.xyz = smin(fragColor.xyz,vec3(1),0.1);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "cubemap",
+                        "id": 27,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 28,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/85a6d68622b36995ccb98a89bbb119edf167c914660e4450d313de049320005c.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// \"Depth of Field, but instead of getting blurry it gets more JPEG\",\n// but simulating the YCoCg + Discrete Cosine Transform quantization\n// modules of JPEG directly instead of visually.\n// Plus depth-of-field as pixelation, chromatic aberration, and\n// paint splotches/flow effects inspired by Jam2go's video!\n//\n// Scene:\n// Whack-A-Mole Pistons by Blackle Mori (@blackle):\n// https://www.shadertoy.com/view/WtXcWB\n//CC0 1.0 Universal https://creativecommons.org/publicdomain/zero/1.0/\n//To the extent possible under law, Blackle Mori has waived all copyright and related or neighboring rights to this work.\n// Modified by @nbickford with modifications\n// (textured background, reflections, depth in alpha channel)\n// also released under CC0 1.0 Universal.\n\n//------------------------------------------------------------------------\n// Options (you can change these)!\n\n#define E_PIXELATE 0\n#define E_JPEG 1\n#define E_CHROMATIC 2\n#define E_FLOW 3\n#define E_CHEAP_DOF 4\n#define E_MULTI -1\n\n// Set this to change the effect.\n#define EFFECT E_MULTI\n\n// Set this to a different value to modify the strength of all the effects.\n#define EFFECT_STRENGTH 1.9\n\n// Define this to view the compression error between\n// the uncompressed image and the output.\n// #define VIEW_ERROR\n//------------------------------------------------------------------------\n\n// Here's roughly how the JPEG compression code is structured!\n//\n// Buffer A is the RGB + depth of blackle's Whack-A-Mole Pistons scene.\n// I've modified it so the background and lighting uses an environment map,\n// so if you move the camera the background has some additional detail.\n//\n// Buffers B, C, D, and Image apply different stages in JPEG compression\n// and decompression. They each load 8 pixels and output 1 pixel.*\n// \n// * B transforms RGB to YCoCg, emulates downsampling the CoCg channels\n// by a factor of 2 on the x axis**, and performs the horizontal component\n// of the Discrete Cosine Transform.\n// * C emulates downsampling the CoCg channels by a factor of 2 on the y\n// axis** (because the DCT is linear, the order of the horizontal DCT and\n// vertical downsample doesn't matter), and applies the vertical component\n// of the DCT. Then it looks up the depth from Buffer A and quantizes the\n// DCT coefficients depending on how large that point's circle of confusion\n// would be if this was a real image.\n// (If this was a full JPEG implementation, there would be an entropy\n// coding stage here - but that should*** be a lossless stage, and so this\n// shader doesn't simulate it)\n// * D inverts the vertical component of the DCT.\n// * Image inverts the horizontal component of the DCT.\n\n// Footnotes:\n// * In an ideal world, we could combine them together with Buffer A into\n// one shader by using a compute shader with an 8x8 workgroup size and use\n// warp operations to perform the DCT matrix multiplies. Then we'd never\n// have to read and write intermediate results out to textures, and the\n// amount of duplicated work (e.g. buffer B transforms each pixel color\n// from RGB to YCoCg 8 times) would be significantly reduced.\n// The 4-pass approach here might not be faster than a single-pass approach\n// that loads 64 values and has each thread perform a full DCT and IDCT!\n// After all, 4 passes result in 32 total texture loads, vs. 64 texture\n// loads for a single pass. (Maybe the 4-pass approach uses fewer registers,\n// though.)\n//\n// ** We could do this more accurately by actually downsampling the Co\n// and Cg components of the image and performing the DCT on them\n// separately. That's kind of difficult, though (although I think it's\n// possible in 4 buffers), and the CoCg 4:2:0 chroma subsampling\n// isn't as visible as the overwhelming crunchiness of DCT quantization.\n//\n// *** okay so this isn't true if you have a JPEG encoder that performs\n// Rate-Distortion Optimization or, more generally, modifies the\n// compressed data in some way so that the entropy coding stage produces\n// a smaller result but I'm not going to worry about that here, sorry\n\n// The other effects all take place entirely within the Image shader.\n// They're not really trying to be anything specific. But they're fun!\n\n// Related work:\n// Ompuco has a JPEG emulation asset pack for Unity with more quality options:\n// https://ompuco.itch.io/jpgpu\n// My favorite article on the JPEG file format: https://parametric.press/issue-01/unraveling-the-jpeg/\n// Other JPEG simulators on Shadertoy:\n// https://www.shadertoy.com/view/XtffDj (by Ultraviolet)\n// https://www.shadertoy.com/view/llfyz4 (by rory618; uses a single-pass approach)\n// https://www.shadertoy.com/view/ldyBRc (by rkibria; a DCT-compressed image)\n// https://www.shadertoy.com/view/Dd3Xz4 (by jolle; a DCT-compressed heightmap)\n// https://www.shadertoy.com/view/msdSz7 (by jolle; Dd3Xz4 + Daala deblocking)\n// Hannah Rose's \"pro-aliasing\" concept, which takes geometric edges and\n// makes them more jagged: https://twitter.com/hannaesthetic/status/1349776649802424321\n\n// Compute circle of confusion radius; based on\n// https://en.wikipedia.org/wiki/Circle_of_confusion#Determining_a_circle_of_confusion_diameter_from_the_object_field\n// but replacing units and a division by 2 with ad-hoc figures.\n// Multiply this by something that looks good\nfloat cc_from_depth(float d){\n    const float focus_depth = 7.f;\n    const float f = .7f;\n    return abs(d-focus_depth) * f /(focus_depth * abs(d - f));\n}\n\n// Table for discrete cosine transform; generated in Mathematica using\n// 1/2. Table[If[u==0,1/Sqrt[2],1]Cos[(2x+1)u Pi/16],{u,0,7},{x,0,7}]//Flatten\n// Picture this as an 8x8 matrix A; A*v is the DCT of v.\n// This matrix has some neat properties!\n// Its transpose is its inverse: A * A^t = I\n// The vertical DCT is its transpose.\n// An 8x8 DCT is just the horizontal DCT (apply this to each row), followed\n// by the vertical DCT (apply this to each column).\nfloat dct[64] = float[64](\n0.353553,0.353553,0.353553,0.353553,0.353553,0.353553,0.353553,0.353553,\n0.490393,0.415735,0.277785,0.0975452,-0.0975452,-0.277785,-0.415735,-0.490393,\n0.46194,0.191342,-0.191342,-0.46194,-0.46194,-0.191342,0.191342,0.46194,\n0.415735,-0.0975452,-0.490393,-0.277785,0.277785,0.490393,0.0975452,-0.415735,\n0.353553,-0.353553,-0.353553,0.353553,0.353553,-0.353553,-0.353553,0.353553,\n0.277785,-0.490393,0.0975452,0.415735,-0.415735,-0.0975452,0.490393,-0.277785,\n0.191342,-0.46194,0.46194,-0.191342,-0.191342,0.46194,-0.46194,0.191342,\n0.0975452,-0.277785,0.415735,-0.490393,0.490393,-0.415735,0.277785,-0.0975452\n);",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// RGB -> YPbPr + horizontal DCT\n\n// Elements are columns\n// Modified matrix from the \"JPEG conversion\" section of\n// https://en.wikipedia.org/wiki/YCbCr\nmat3 rgb_to_ycbcr = mat3(vec3(.299, -.168736, .5), vec3(.587, -.331264, -.418688), vec3(.114, .5, -.081312));\n// I'm not worrying about 128/255 vs. .5 here.\nvec3 rgb_to_ycbcr_offset = vec3(0., .5, .5);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord)\n{\n    // Split the image into 8x1 blocks. What's my x index inside the block?\n    int block_x = int(fragCoord.x) % 8;\n    // Go to the start of the row in this 8x8 block\n    ivec2 block_start = ivec2(fragCoord) - ivec2(block_x, 0);\n    // Fetch 8 pixels in this row\n    vec3 row[8];\n    for(int i = 0; i < 8; i++){\n          row[i] = texelFetch(iChannel0, block_start + ivec2(i, 0), 0).rgb;\n    }\n    // Transform each texel to YCbCr, and shift to SNORM.\n    for(int i = 0; i < 8; i++){\n        row[i] = rgb_to_ycbcr_offset + rgb_to_ycbcr * row[i];\n    }\n    // Kind of emulate the horizontal component of 4:2:0 compression\n    // by averaging out the Cb and Cr components of every 2 pixels.\n    // Ideally, we'd really do the image rescaling - since this\n    // is sort of like a 16-wide DCT - but this should be close enough.\n    // Also this is really hard to see on a 1080p screen! Shoutout to\n    // the Joint Photography Experts Group.\n    for(int i = 0; i < 4; i++){\n        row[2*i+0].gb = row[2*i+1].gb = mix(row[2*i+0].gb, row[2*i+1].gb, .5);\n    }\n    // Get this component of the horizontal DCT\n    vec3 dct_out = vec3(0.);\n    for(int i = 0; i < 8; i++){\n          dct_out += dct[8*block_x + i] * row[i];\n    }\n    fragColor = vec4(dct_out, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Horizontal DCT -> Full DCT + quantization\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Split the image into 8x1 blocks. What's my x index inside the block?\n    int block_y = int(fragCoord.y) % 8;\n    // Go to the start of the row in this 8x8 block\n    ivec2 block_start = ivec2(fragCoord) - ivec2(0, block_y);\n    // Fetch 8 pixels in this column\n    vec3 col[8];\n    for(int i = 0; i < 8; i++){\n        col[i] = texelFetch(iChannel1, block_start + ivec2(0, i), 0).rgb;\n    }\n    // Kind of emulate the vertical part of 4:2:0 subsampling\n    // by averaging out the CoCg components of each 2 pixels.\n    for(int i = 0; i < 4; i++){\n        col[2*i+0].gb = col[2*i+1].gb = mix(col[2*i+0].gb, col[2*i+1].gb, .5);\n    }\n    // Get this component of the vertical DCT:\n    vec3 dct_out = vec3(0.);\n    for(int i = 0; i < 8; i++){\n        dct_out += dct[8*block_y + i] * col[i];\n    }\n    // dct_out now contains the DCT of the block at frequency (block_x, block_y)!\n    // Let's quantizue it. I don't feel like embedding the official JPEG tables,\n    // so I'm just going to make something up.\n    int block_x = int(fragCoord.x) % 8;\n    // We'll multiply block_x + block_y + 1 by some value f. Here are a few\n    // test values of f:\n    // 10 is noticeably crunchy; 40 is about 10% in from the left of\n    // https://en.wikipedia.org/wiki/File:Felis_silvestris_silvestris_small_gradual_decrease_of_quality.png;\n    // 100 is like Discord video on a slow connection;\n    // 200 makes everything pink, gray, and blue;\n    // 0 should be no quantization; since I want to avoid division by 0, I'll add 1.\n    float depth = texelFetch(iChannel0, ivec2(fragCoord) - ivec2(block_x, block_y), 0).a;\n    float f = EFFECT_STRENGTH * 450.*(exp2(2.*cc_from_depth(depth)) - 1.);\n    float quantization = f * float(block_x + block_y + 1) + 1.f;\n    // And then this is roughly how JPEG quantizes: we scale to full-range,\n    // apply the quantization, and then scale back to normalized values.\n    dct_out = round(128. * dct_out / quantization) * (quantization / 128.);\n    fragColor = vec4(dct_out, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Full DCT -> Horizontal DCT\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Split the image into 8x1 blocks. What's my x index inside the block?\n    int block_y = int(fragCoord.y) % 8;\n    // Go to the start of the row in this 8x8 block\n    ivec2 block_start = ivec2(fragCoord) - ivec2(0, block_y);\n    // Fetch 8 pixels in this column\n    vec3 col[8];\n    for(int i = 0; i < 8; i++){\n        col[i] = texelFetch(iChannel0, block_start + ivec2(0, i), 0).rgb;\n    }\n    // Multiply by the inverse of the vertical DCT.\n    // That's the transpose! This is the same as\n    // Buffer C except we swap i and block_y.\n    vec3 dct_out = vec3(0.);\n    for(int i = 0; i < 8; i++){\n        dct_out += dct[8*i + block_y] * col[i];\n    }\n    fragColor = vec4(dct_out,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

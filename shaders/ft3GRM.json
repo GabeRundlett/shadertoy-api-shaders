@@ -1,0 +1,97 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1637044649",
+            "description": "I felt like showing off a wine glass model I made with some style ;)\nNo caustics yet :(\n\nLook around with your mouse.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ft3GRM",
+            "likes": 30,
+            "name": "Wine glasses",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "glass",
+                "pathtracer",
+                "spectral",
+                "importance"
+            ],
+            "usePreview": 1,
+            "username": "NLIBS",
+            "viewed": 644
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage(out vec4 O, vec2 U) {\n    O = texture(iChannel0,U/iResolution.xy);\n\tO = pow(max(O/(.2+O),0.), vec4(1./2.2)); //Tone mapping and gamma correction\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define EPS_SDF 0.001\n#define EPS_GLASS 0.003\n#define DISPERSION 1.\n#define MAXBOUNCES 13\n\nconst float pi = acos(-1.);\nconst float N_AIR = 1.;\nconst vec3 GLASS_COL = vec3(.2,.6,.8);\n\n//Wine glass SDF------------------//\n\n//Bottom edge\n#define H0 len(x-min(x,.337),y+.014)\n//Circular bottom lip\n#define H1 len(y,x-.335615)-.014142\n//Vertical distance to hyperbolic part\n#define H2 len(y-.01/min(x,.335615)+.016,x-min(x,.335615))*.9\n//Inner circlular part\n#define H3 abs(len(x,y-1.2)-.34211)\n//Rim of glass\n#define H4 len(y-1.77,x-clamp(x,.23643,.24343))\n\nfloat len(float x, float y) {return sqrt(x*x+y*y);}\n\nfloat map(vec3 p)\n{\n    float c = 1.5;\n    p.xz = mod(p.xz+.5*c,c)-.5*c;\n\n    float x=length(p.xz), y=p.y,\n          r,h,_H3; //Might need to initialise idk\n    y -= .014;\n    if (y<-.014)\n        //Below the glass\n        h = min(H0,H1);\n    else if (y<.0139)\n        //Circular bottom lip\n        h = sign(x-(.335+sqrt(.0002-y*y)))*min(H0,min(abs(H1*sign(x-.335615)),H2)); \n    else if (y<.3) {\n        //Hyperbolic base, includes some trickery to get a decent sdf\n        r = 1./(100.*y+1.6);\n        float m=-100.*r*r, m2=-1./m, c=r-m*y, c2=x-m2*y, a=max((c2-c)/(m-m2),.02);\n        h = sign(x-r)*min(min(H1,H2),len(x-(m*a+c),y-a)*.85);\n    } else if (y<1.2) {\n        //Sigmoid part, some more trickery here\n        r = .0316246+.307515/(1.+exp(14.4-16.*y));\n        h = sign(x-r)*min(min(abs(x-r)*(1.04-.5*y),_H3=H3),H1);\n        //Circular part\n        y-=1.2;\n        r = .121875-y*y;\n        if (y>-.2593)\n            h = sign(x*x-r)*abs(len(x,y)-.34911);\n        //Inside the circular part\n        if (x*x<r)\n            h = -sign(x*x-(.117039-y*y))*min(-h,_H3);\n    } else if (y<1.77) {\n        //Cubic upper part\n        r = .6077*y*y*y-2.83*y*y+4.15*y-1.6058;\n        h = (x-r)*.97;\n        if (x<r)\n            //Inside the cubic upper part\n            h = sign(x-r)*sign(x-r+.007)*min(min(r-x,abs(r-.007-x)*.97),H4);     \n    } else\n        //Above the glass\n        h = H4*.975-.001;\n    return h;\n}\n//--------------------------------//\n\n//High quality normal from finite difference\nvec3 get_norm(vec3 p)\n{\n\tvec2 t = vec2(EPS_SDF,0.);\n\treturn normalize(-vec3(map(p - t.xyy) - map(p + t.xyy),map(p - t.yxy) - map(p + t.yxy),map(p - t.yyx) - map(p + t.yyx)));\n}\n\n//Raymarching loop (I planned for adding more materials e.g. water, wine)\nvec4 march(vec3 rd, vec3 ro, float sgn)\n{\n    vec3 col = GLASS_COL;\n    float t = 0.,h;\n    for (int i = 0; i<70; i++) {\n        vec3 p = ro+rd*t;\n        h = map(p)*sgn;\n        t+=h;\n        if (h<EPS_SDF) return vec4(t,sgn>0. ? exp(-t*vec3(.15,.1,.05)) : pow(col,vec3(t)) );\n        if (h>3.9) return vec4(0,1,1,1);\n        \n    }\n    return vec4(0,1,1,1);\n}\n\n//Fresnel function\nfloat get_fresnel(vec3 rd, vec3 n, float n1, float n2)\n{\n    float cosI = abs(dot(rd, n)), cosR = n1/n2 * sqrt(1.-cosI*cosI);\n    if(cosR > 1.) return 1.;\n    cosR = sqrt(1. - cosR * cosR);\n    float Rs = (n1*cosI - n2*cosR)/(n1*cosI + n2*cosR), Rp = (n1*cosR - n2*cosI)/(n1*cosR + n2*cosI);\n    return (Rs*Rs+Rp*Rp)*.5;\n}\n\n//Hash function for anti-aliasing (https://www.shadertoy.com/view/XlXcW4)\nconst uint k2 = 1103515245U;\nvec3 hash3(uvec3 x)\n{\n    x = ((x>>8U)^x.yzx)*k2;\n    x = ((x>>8U)^x.yzx)*k2;\n    x = ((x>>8U)^x.yzx)*k2;\n    return vec3(x)*(1.0/float(0xffffffffU));\n}\n\n//spectral_zucconi6 but normalized and with gamma applied ----------------//\nvec3 bump3(vec3 x, vec3 yoffset)\n{\n    vec3 y = 1. - x * x;\n    y = clamp(y-yoffset,0.,1.);\n    return y;\n}\n\nvec3 spectral(float lambda)\n{\n    float x = (lambda - 400.)/300.;\n    vec3 c1 = vec3(3.54585, 2.93225, 2.41594),\n         x1 = vec3( .69549,  .49228,  .27700),\n         y1 = vec3( .02313,  .15225,  .52608),\n         c2 = vec3(3.90307, 3.21183, 3.96587),\n         x2 = vec3( .11749,  .86755,  .66078),\n         y2 = vec3( .84897,  .88445,  .73949);\n    return pow((bump3(c1 * (x - x1), y1) + bump3(c2 * (x - x2), y2)),vec3(2.2)) * vec3(3.64499, 4.4228, 15.6893);\n}\n//------------------------------------------------------------------------//\n\n//Environment sampling\nvec3 _sample(vec3 ro, vec3 rd)\n{\n    \n    float t = max(-ro.y/rd.y,0.), c = 1.5;\n    vec3 p = ro+rd*t,\n       col = vec3(1,1,1)*step(rd.y,0.);\n    if (ivec2(p.xz*4./c)!=ivec2(0)) col /= 1.+30.*dot(p.xz,p.xz);\n    p.xz = mod(p.xz+.5*c,c)-.5*c;\n    col *= max(sign(.375-p.x)*sign(.375+p.x)*sign(.375-p.z)*sign(.375+p.z),0.)*.999*vec3(.5,.999,.999)+vec3(.5,.001,.001);    \n    return col*exp(-t*vec3(.15,.1,.05));\n}\n\n//Cauchy's equation for Borosilicate glass (BK7), also applying dispersion factor\nfloat get_n_glass(float lambda, float disp)\n{\n    return 1.5046 + .0042*disp / (lambda*lambda*1e-6);\n}\n\nvoid mainImage(out vec4 O, in vec2 U) {\n    vec2 R = iResolution.xy,\n       uv0 = (2.*U-R)/R.x;\n       \n    //Last frames colour and some mouse info\n    vec4 prev = texture(iChannel1,U/R);\n    \n    //Grab some blue noise\n    vec3 noise0 = texelFetch(iChannel0,ivec2(U)%1024,0).rgb,\n         noise = hash3(uvec3(iFrame,U))-vec3(.5,.5,0.);\n    \n    //Find camera's origin and ray direction\n    vec2 a = (iMouse.xy/R-.5)*pi*vec2(-2,.64);\n    a.y = (a.y+pi*.18);\n    if (prev.w>=0.) a = vec2(.98,.43);\n    \n    mat2 yaw = mat2(cos(a.x),sin(a.x),-sin(a.x),cos(a.x)),\n         pch = mat2(cos(a.y),sin(a.y),-sin(a.y),cos(a.y));\n    \n    vec3 ro = vec3(0,0,-2.-a.y/pi*4.);\n    ro.yz = pch*ro.yz;\n    ro.xz = yaw*ro.xz;\n    \n    vec2 uv = uv0 + noise.rg/R.x*2.;\n    vec3 rd = normalize(vec3(uv,.9));\n    rd.yz = pch * rd.yz;\n    rd.xz = yaw * rd.xz;\n    ro.y+=.9;\n\n\n    //Hit depth, pos and normal\n    float sgn = map(ro)<0. ? -1. : 1.;\n    vec4 tm = march(rd,ro,sgn);\n    float t = tm.x;\n    vec3 p = ro + rd*t,\n         n = get_norm(p),\n         col;\n    if (t>0.) {\n        //Initialise variables\n        float lambda = 400.+300.*fract(noise0.z+iTime),\n              n_glass = get_n_glass(lambda,DISPERSION),\n              b_t = t;      \n        vec3 b_rd = rd,\n             b_p = p,\n             b_n = n,\n             factor = vec3(1);\n        vec4 b_tm;        \n        \n        //Loop through light bounces\n        //Here it randomly chooses to either reflect or refract based on the fresnel factor\n        for (int branch = 0; branch<MAXBOUNCES; branch++) {\n            float n1 = (sgn>0.) ? N_AIR : n_glass,\n                  n2 = n_glass+N_AIR-n1,\n             fresnel = get_fresnel(b_rd,b_n,n1,n2),\n              choice = fract(noise0.x+1.618034*float(branch+(iFrame%10000)*MAXBOUNCES));\n            if (choice<fresnel)\n                b_rd = reflect(b_rd,b_n);\n            else {\n                b_rd = refract(b_rd,b_n,n1/n2);\n                sgn *= -1.;\n            }\n            \n            b_tm = march(b_rd,b_p+b_rd*EPS_GLASS,sgn);\n            b_t = b_tm.x;\n            factor *= b_tm.gba;\n            if (b_t==0. || branch==MAXBOUNCES-1) { col = _sample(b_p,b_rd)*factor; break; }\n\n            b_t += EPS_GLASS;\n            b_p += b_rd*b_t;\n            b_n = sgn*get_norm(b_p);\n        }\n\n        //Use as a spectral componant\n        col *= spectral(lambda);\n    } else col += _sample(ro,rd);\n    \n    //Blending with previous frame\n    float w = abs(prev.w);\n    if (iMouse.z>0.) w = 0.;\n    col = prev.rgb*w/(w+1.) + col/(w+1.);\n    w = min(w+1.,1e4);\n    if (iMouse.z>0. || prev.w<0.) w*=-1.;\n    O = vec4(col,w);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

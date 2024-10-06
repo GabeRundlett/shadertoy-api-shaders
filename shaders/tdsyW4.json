@@ -1,0 +1,117 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1584977086",
+            "description": "Once again, the Kummer quartic surfaces, this time drawn with an SDF, also with soft shadows & other refinements.\n\nMouse moves things around, also various key controls (see code).",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "tdsyW4",
+            "likes": 8,
+            "name": "Kummer Surface III",
+            "published": 3,
+            "tags": [
+                "sdf",
+                "quartic",
+                "kummer"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 413
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// The Kummer Surfaces, raymarched using the implicit equation as SDF,\n// adjusted by the analytic gradient.\n//\n// Matthew Arcus, 2020.\n//\n// <mouse>: rotate\n// <up>/<down>: move in/out\n// <pageup>/<pagedown>: select surface parameter (or allow to vary).\n// <left>/<right>: fog distance or clip radius\n// c: clip at clipradius sphere\n// f: fog\n// l: light transform\n// r: autorotation\n// s: soft shadows\n// x: clip at x-plane\n//\n// https://mathworld.wolfram.com/KummerSurface.html//\n//\n// The Kummer surfaces are a family of surfaces, parametrized on 'mu'.\n// For mu^2 = 1/3, the surface is a (double) sphere and for mu^2\n// = 1, Steiner's Roman Surface; for mu^2 > 1, the surface becomes\n// infinite, assuming various forms as mu^2 increases. All the\n// surfaces have tetrahedral symmetry.\n//\n// Style somewhat inspired by Man Ray's photographs of mathematical\n// models, taken in the 1930's (at the suggestion of Max Ernst):\n//\n// http://photographmag.com/reviews/man-ray-human-equations-a-journey-from-mathematics-to-shakespeare/\n//\n// (the lead photo is in fact of the Kummer surface, with a different projection).\n//\n// The soft shadows can be a little flaky (eg. if the light ray becomes part of\n// the object) and slow things down a bit, but the raymarching works ok\n// out to about mu2 = exp(26.0), with a camera distance of exp(14.0).\n//\n////////////////////////////////////////////////////////////////////////////////\n\nfloat AA = 2.0; // 1.0 for slow machines\n\n// Man Ray chiaroscuro\nconst vec3 bgcol = vec3(0.01);\nconst vec3 tropecol = vec3(0);\nconst vec3 basecol = vec3(1);\nconst vec3 clipcol = 0.1*basecol;\nvec3 light = vec3(4,1,1);\nfloat ambient = 0.05;\n\nint maxsteps = 200;\nfloat maxdist = 25.0;\nfloat precis = 0.00001;\nfloat time = 0.0;\n\nbool dorotate = true; // Autorotate\nbool doclipradius = false;\nfloat clipradius = 2.5;\nbool doclipx = false;\n\n// The Kummer Surface. https://mathworld.wolfram.com/KummerSurface.html\nfloat mu2 = 1.0;\nvec4 kummer4(vec3 pos) {\n  // Return derivative in xyz, function value in w.\n  float x = pos.x, y = pos.y, z = pos.z, w = 1.0;\n  float K = 1.414213562;\n  float p = w-z-K*x;\n  float q = w-z+K*x;\n  float r = w+z+K*y;\n  float s = w+z-K*y;\n  float t = x*x+y*y+z*z-mu2*w*w;\n  float lambda = (3.0*mu2-1.0)/(3.0-mu2);\n  float dx = 4.0*t*x - lambda*K*r*s*(p-q);\n  float dy = 4.0*t*y - lambda*K*p*q*(s-r);\n  float dz = 4.0*t*z - lambda*(-q*r*s-p*r*s+p*q*s+p*q*r);\n  float k = t*t - lambda*p*q*r*s;\n  return vec4(dx,dy,dz,k);\n\n}\n\n// Store sign of implicit function at ray origin here - if negative\n// then we are 'inside' surface and DE and normals must be reversed.\nfloat rosign = 1.0;\n\nfloat eval(vec3 p, out vec3 n, out int type) {\n  vec4 t = kummer4(p);\n  n = t.xyz;\n  float d = t.w/length(n); // Scaled distance\n  type = 0;\n  if (doclipradius) {\n    float d1 = length(p)-clipradius;\n    if (d1 > d) { type = 1; n = p; d = d1; }\n  }\n  if (doclipx) {\n    float d1 = -p.x;\n    if (d1 > d) { type = 2; n = vec3(-1,0,0); d = d1; }\n  }\n  n *= rosign;\n  return rosign*d;\n}\n\nfloat eval(vec3 p) { int type; vec3 n; return eval(p,n,type); }\n\nfloat march(vec3 ro, vec3 rd) {\n  float t = 0.1;\n  for(int i = 0; i < maxsteps; i++) {\n    //assert(i < 50);\n    vec3 p = ro + t*rd;\n    float d = eval(p);\n    if (abs(d) < t*precis) break;\n    // Longer distance estimates can be inaccurate,\n    // so clamp to avoid overstepping.\n    d = min(d,max(0.5,0.1*t));\n    t += d;\n    if (t < 0.0 || t > maxdist) break;\n  }\n  return t;\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    p.yz = rotate(p.yz,-theta);\n    p.zx = rotate(p.zx,phi);\n  }\n  if (dorotate) {\n    p.xz = -rotate(p.xz,time*0.15);\n    //p.yz = rotate(p.yz,0.25*PI);\n    //p.yz = rotate(p.yz,time*0.125);\n  }\n  return p;\n}\n\n// softshadow from iq.\nfloat softshadow(vec3 ro, vec3 rd, float mint, float tmax, float w) {\n  float t = mint;\n  float res = 1.0;\n  for (int i = 0; i < 200; i++) {\n    float h = eval(ro + t*rd);\n    res = min(res, h/(w*t));\n    t += clamp(h, 0.01*t, max(0.5,0.1*t));\n    if (res < -1.0 || t > tmax) break;\n  }\n  res = max(res,-1.0); // clamp to [-1,1]\n  res = 0.25*(1.0+res)*(1.0+res)*(2.0-res); // smoothstep\n  return res;\n}\n\nfloat getmu2(int n) {\n  int noptions = 6, i = 0;\n  n = mymod(n,noptions);\n  if (n == i++) return 0.33334 + 2.5*(1.0-cos(0.2*time));\n  if (n == i++) return 1.0;\n  if (n == i++) return 2.0;\n  if (n == i++) return 12.0;\n  if (n == i++) return 100.0;\n  if (n == i++) return 0.33334 + exp(0.1*time)-1.0;\n  return 1.0;\n}\n\nvoid mainImage(out vec4 fragColor, vec2 fragCoord) {\n  time = iTime;\n  // Interesting values of mu2 start at 1/3.\n  mu2 = getmu2(keycount(KEY_PAGE_DOWN)-keycount(KEY_PAGE_UP));\n  dorotate = !key(CHAR_R);\n  doclipradius = key(CHAR_C);\n  doclipx = key(CHAR_X);\n  float dscale = exp(0.1*float(keycount(KEY_RIGHT)-keycount(KEY_LEFT)));\n  maxdist *= dscale;\n  clipradius *= dscale;\n  float camera = 4.0;\n  camera *= exp(0.1*float(keycount(KEY_DOWN)-keycount(KEY_UP)));\n  maxdist = max(maxdist,2.0*camera); // Ensure maxdist is sensible.\n  vec3 ro = vec3(0,0,-camera);\n  ro = transform(ro);\n  rosign = sign(eval(ro)); // Get sign at ray origin\n  if (!key(CHAR_L)) light = transform(light);\n  vec3 aacol = vec3(0);\n  for (float i = 0.0; i < AA; i++) {\n    for (float j = 0.0; j < AA; j++) {\n      vec2 uv = (2.0*(fragCoord+vec2(i,j)/AA)-iResolution.xy)/iResolution.y;\n      vec3 rd = vec3(uv,2);\n      rd = transform(rd);\n      rd = normalize(rd);\n      float t = march(ro,rd);\n      vec3 col = bgcol;\n      if (t > 0.0 && t < maxdist) {\n        vec3 p = ro+t*rd;\n        int type; vec3 n;\n        eval(p,n,type);\n        // Sharp edge between clip region and surface means\n        // sometimes we get the wrong normal.\n        if (type == 0 && dot(n,rd) > 1e-2) {\n          type = 1; n = p;\n        }\n        n = normalize(n);\n        if (type != 0) {\n          col = clipcol;\n        } else {\n          col = basecol;\n          //p.xy = abs(p.xy); // Exploit this symmetry? Or general tetrahedral symmetry?\n          // Draw some lines\n          float d = 1e8;\n          // Planes through edge and centre of opposite edge of tetrahedron.\n          float K = sqrt(2.0);\n          // Vertices of base tetrahedron\n          vec3 v0 = vec3(K,0,-1);\n          vec3 v1 = vec3(-K,0,-1);\n          vec3 v2 = vec3(0,K,1);\n          vec3 v3 = vec3(0,-K,1);\n          // 6 edges, sphere (radius mu) intersects each edge in 2 places, eg:\n          //|kv0 + (1-k)v1)| = mu\n          //|k(v0-v1)+v1| = mu\n          //(k(v0-v1)+v1).(k(v0-v1)+v1) = mu2 =\n          // k2(v0-v1).(v0-v1)+2k(v0-v1).v1+v1.v1 -mu2 = 0\n          // A = (v0-v1).(v0-v1)\n          // B = (v0-v1).v1\n          // C = v1.v1-mu2\n          // This can probably be simplified\n          float A = dot(v0-v1,v0-v1); // v0.v0 - 2v0.v1 + v1.v1\n          float B = dot(v0-v1,v1);    // v0.v1 - v1.v1\n          float C = dot(v1,v1)-mu2;   // v1.v1 - mu2\n          float D = B*B-A*C;\n          if (D >= 0.0) {\n            D = sqrt(D);\n            float k = -(B+D)/A;\n            vec3 v01 = k*v0+(1.0-k)*v1;\n            vec3 v10 = k*v1+(1.0-k)*v0;\n            vec3 v02 = k*v0+(1.0-k)*v2;\n            vec3 v20 = k*v2+(1.0-k)*v0;\n            vec3 v03 = k*v0+(1.0-k)*v3;\n            vec3 v30 = k*v3+(1.0-k)*v0;\n\n            vec3 v12 = k*v1+(1.0-k)*v2;\n            vec3 v21 = k*v2+(1.0-k)*v1;\n            vec3 v13 = k*v1+(1.0-k)*v3;\n            vec3 v31 = k*v3+(1.0-k)*v1;\n            vec3 v23 = k*v2+(1.0-k)*v3;\n            vec3 v32 = k*v3+(1.0-k)*v2;\n\n            d = min(d,planedist(p,v01,v02,v13)); // v23 also in plane\n            d = min(d,planedist(p,v01,v03,v12)); // v32 also in plane\n            d = min(d,planedist(p,v02,v03,v21)); // etc.\n\n            d = min(d,planedist(p,v10,v12,v03));\n            d = min(d,planedist(p,v10,v13,v02));\n            d = min(d,planedist(p,v12,v13,v20));\n\n            d = min(d,planedist(p,v20,v21,v03));\n            d = min(d,planedist(p,v20,v23,v01));\n            d = min(d,planedist(p,v21,v23,v10));\n\n            d = min(d,planedist(p,v30,v31,v02));\n            d = min(d,planedist(p,v30,v32,v01));\n            d = min(d,planedist(p,v31,v32,v10));\n          }\n          d = min(d,planedist(p,v0,v1,v2));\n          d = min(d,planedist(p,v0,v1,v3));\n          d = min(d,planedist(p,v0,v2,v3));\n          d = min(d,planedist(p,v1,v2,v3));\n          col = mix(tropecol,col,0.1+0.9*smoothstep(0.0,0.0005,d/t));\n        }\n        //vec3 lightdir = normalize(light); // Light at infinity\n        vec3 lightdir = normalize(light-p);\n        float diffuse = (1.0-ambient)*max(0.0,dot(n,lightdir));\n        if (key(CHAR_S)) diffuse *= softshadow(p,lightdir,0.01,4.0*max(1.0,length(p)),0.1);\n        col *= ambient+diffuse;\n        float fog = key(CHAR_F) ? 0.0 : t/maxdist;\n        col = mix(col,bgcol,fog);\n      }\n      aacol += col;\n    }\n  }\n  aacol /= float(AA*AA);\n  aacol = pow(aacol,vec3(0.4545));\n  fragColor = vec4(aacol,1);\n  if (check) fragColor.r = 1.0;\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\nvoid mainImage(out vec4 t, vec2 uv) {\n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0) {\n      t = vec4(0);\n    } else {\n      t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n\nconst float PI = 3.14159;\nbool check = false;\nvoid assert(bool b) {\n  if (!b) check = true;\n}\n\nvec2 rotate(in vec2 p, in float t) {\n  return p * cos(-t) + vec2(p.y, -p.x) * sin(-t);\n}\n\n// Distance of p from plane through q,r,s.\nfloat planedist(vec3 p, vec3 q, vec3 r, vec3 s) {\n  vec3 n = normalize(cross(q-r,q-s));\n  return abs(dot(p-q,n));\n}\n\nvec3 hsv2rgb(float h, float s, float v) {\n  vec3 rgb = clamp( abs(mod(h*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n  rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing       \n  return v * mix( vec3(1.0), rgb, s);\n}\n\nint mymod(int n, int m) {\n  // glsl % undefined for -ve arguments\n  if (n < 0) return m-1-(-n-1)%m;\n  else return n%m;\n}\n\nconst int CHAR_A = 65;\nconst int CHAR_C = 67;\nconst int CHAR_F = 70;\nconst int CHAR_L = 76;\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\nconst int CHAR_X = 88;\nconst int KEY_PAGE_UP = 33;\nconst int KEY_PAGE_DOWN = 34;\nconst int KEY_LEFT = 37;\nconst int KEY_UP = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN = 40;\n\n#define key(code) (texelFetch(iChannel3, ivec2((code),2),0).x != 0.0)\n#define store(i,j) (texelFetch(iChannel2, ivec2((i),(j)),0))\n#define keycount(key) (int(store(0,(key)).x))\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

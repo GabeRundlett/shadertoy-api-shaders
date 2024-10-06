@@ -1,0 +1,84 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1643064979",
+            "description": "I didn't make this, needed to fork for looking glass",
+            "flags": 1,
+            "hasliked": 0,
+            "id": "7sByRh",
+            "likes": 1,
+            "name": "Fork Clouds BigSadge 832",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "3d",
+                "raymarching",
+                "volumetric",
+                "lod",
+                "vr"
+            ],
+            "usePreview": 0,
+            "username": "BigSadge",
+            "viewed": 325
+        },
+        "renderpass": [
+            {
+                "code": "// Copyright Inigo Quilez, 2013 - https://iquilezles.org/\n// I am the sole copyright owner of this Work.\n// You cannot host, display, distribute or share this Work in any form,\n// including physical and digital. You cannot use this Work in any\n// commercial or non-commercial product, website or project. You cannot\n// sell this Work and you cannot mint an NFTs of it.\n// I share this Work for educational purposes, and you can link to it,\n// through an URL, proper attribution and unmodified screenshot, as part\n// of your educational material. If these conditions are too restrictive\n// please contact me and we'll definitely work it out.\n\n\n// Volumetric clouds. Not physically correct in any way - \n// it does the wrong extintion computations and also\n// works in sRGB instead of linear RGB color space. No\n// shadows are computed, no scattering is computed. It is\n// a volumetric raymarcher than samples an fBM and tweaks\n// the colors to make it look good.\n//\n// Lighting is done with only one extra sample per raymarch\n// step instead of using 3 to compute a density gradient,\n// by using this directional derivative technique:\n//\n// https://iquilezles.org/articles/derivative\n\n\n// 0: one 3d texture lookup\n// 1: two 2d texture lookups with hardware interpolation\n// 2: two 2d texture lookups with software interpolation\n#define NOISE_METHOD 1\n\n// 0: no LOD\n// 1: yes LOD\n#define USE_LOD 1\n\n\n\nfloat noise( in vec3 x )\n{\n    vec3 p = floor(x);\n    vec3 f = fract(x);\n\tf = f*f*(3.0-2.0*f);\n\n#if NOISE_METHOD==0\n    x = p + f;\n    return textureLod(iChannel2,(x+0.5)/32.0,0.0).x*2.0-1.0;\n#endif\n#if NOISE_METHOD==1\n\tvec2 uv = (p.xy+vec2(37.0,239.0)*p.z) + f.xy;\n    vec2 rg = textureLod(iChannel0,(uv+0.5)/256.0,0.0).yx;\n\treturn mix( rg.x, rg.y, f.z )*2.0-1.0;\n#endif    \n#if NOISE_METHOD==2\n    ivec3 q = ivec3(p);\n\tivec2 uv = q.xy + ivec2(37,239)*q.z;\n\tvec2 rg = mix(mix(texelFetch(iChannel0,(uv           )&255,0),\n\t\t\t\t      texelFetch(iChannel0,(uv+ivec2(1,0))&255,0),f.x),\n\t\t\t\t  mix(texelFetch(iChannel0,(uv+ivec2(0,1))&255,0),\n\t\t\t\t      texelFetch(iChannel0,(uv+ivec2(1,1))&255,0),f.x),f.y).yx;\n\treturn mix( rg.x, rg.y, f.z )*2.0-1.0;\n#endif    \n}\n\nfloat map( in vec3 p, int oct )\n{\n\tvec3 q = p - vec3(0.0,0.1,1.0)*iTime;\n    float g = 0.5+0.5*noise( q*0.3 );\n    \n\tfloat f;\n    f  = 0.50000*noise( q ); q = q*2.02;\n    #if USE_LOD==1\n    if( oct>=2 ) \n    #endif\n    f += 0.25000*noise( q ); q = q*2.23;\n    #if USE_LOD==1\n    if( oct>=3 )\n    #endif\n    f += 0.12500*noise( q ); q = q*2.41;\n    #if USE_LOD==1\n    if( oct>=4 )\n    #endif\n    f += 0.06250*noise( q ); q = q*2.62;\n    #if USE_LOD==1\n    if( oct>=5 )\n    #endif\n    f += 0.03125*noise( q ); \n    \n    f = mix( f*0.1-0.75, f, g*g ) + 0.1;\n    return 1.5*f - 0.5 - p.y;\n}\n\nconst vec3 sundir = normalize( vec3(-1.0,0.0,-1.0) );\nconst int kDiv = 1; // make bigger for higher quality\n\nvec4 raymarch( in vec3 ro, in vec3 rd, in vec3 bgcol, in ivec2 px )\n{\n    // bounding planes\t\n    const float yb = -3.0;\n    const float yt =  0.6;\n    float tb = (yb-ro.y)/rd.y;\n    float tt = (yt-ro.y)/rd.t;\n\n    // find tigthest possible raymarching segment\n    float tmin, tmax;\n    if( ro.y>yt )\n    {\n        // above top plane\n        if( tt<0.0 ) return vec4(0.0); // early exit\n        tmin = tt;\n        tmax = tb;\n    }\n    else\n    {\n        // inside clouds slabs\n        tmin = 0.0;\n        tmax = 60.0;\n        if( tt>0.0 ) tmax = min( tmax, tt );\n        if( tb>0.0 ) tmax = min( tmax, tb );\n    }\n    \n    // dithered near distance\n    float t = tmin + 0.1*texelFetch( iChannel1, px&1023, 0 ).x;\n    \n    // raymarch loop\n\tvec4 sum = vec4(0.0);\n    for( int i=0; i<190*kDiv; i++ )\n    {\n       // step size\n       float dt = max(0.05,0.02*t/float(kDiv));\n\n       // lod\n       #if USE_LOD==0\n       const int oct = 5;\n       #else\n       int oct = 5 - int( log2(1.0+t*0.5) );\n       #endif\n       \n       // sample cloud\n       vec3 pos = ro + t*rd;\n       float den = map( pos,oct );\n       if( den>0.01 ) // if inside\n       {\n           // do lighting\n           float dif = clamp((den - map(pos+0.3*sundir,oct))/0.3, 0.0, 1.0 );\n           vec3  lin = vec3(0.65,0.65,0.75)*1.1 + 0.8*vec3(1.0,0.6,0.3)*dif;\n           vec4  col = vec4( mix( vec3(1.0,0.95,0.8), vec3(0.25,0.3,0.35), den ), den );\n           col.xyz *= lin;\n           // fog\n           col.xyz = mix(col.xyz,bgcol, 1.0-exp2(-0.075*t));\n           // composite front to back\n           col.w    = min(col.w*8.0*dt,1.0);\n           col.rgb *= col.a;\n           sum += col*(1.0-sum.a);\n       }\n       // advance ray\n       t += dt;\n       // until far clip or full opacity\n       if( t>tmax || sum.a>0.99 ) break;\n    }\n\n    return clamp( sum, 0.0, 1.0 );\n}\n\nmat3 setCamera( in vec3 ro, in vec3 ta, float cr )\n{\n\tvec3 cw = normalize(ta-ro);\n\tvec3 cp = vec3(sin(cr), cos(cr),0.0);\n\tvec3 cu = normalize( cross(cw,cp) );\n\tvec3 cv = normalize( cross(cu,cw) );\n    return mat3( cu, cv, cw );\n}\n\nvec4 render( in vec3 ro, in vec3 rd, in ivec2 px )\n{\n\tfloat sun = clamp( dot(sundir,rd), 0.0, 1.0 );\n\n    // background sky\n    vec3 col = vec3(0.76,0.75,0.86);\n    col -= 0.6*vec3(0.90,0.75,0.95)*rd.y;\n\tcol += 0.2*vec3(1.00,0.60,0.10)*pow( sun, 8.0 );\n\n    // clouds    \n    vec4 res = raymarch( ro, rd, col, px );\n    col = col*(1.0-res.w) + res.xyz;\n    \n    // sun glare    \n\tcol += 0.2*vec3(1.0,0.4,0.2)*pow( sun, 3.0 );\n\n    // tonemap\n    col = smoothstep(0.15,1.1,col);\n \n    return vec4( col, 1.0 );\n}\n\nvoid mainVR( out vec4 fragColor, in vec2 fragCoord, in vec3 fragRayOri, in vec3 fragRayDir )\n{\n    fragColor = render( fragRayOri, fragRayDir, ivec2(fragCoord-0.5) );\n}\n\n #define QAA\t2                                     \n\n\n\nconst float\tsideAngle = radians(35.0);\n\nconst float\thorizontalAngle = radians(14.0);\n\nconst float\tcameraSize = 2.0;\n\nconst float\taspectRatio = 0.75;\n\nconst vec3  \tVROffset = vec3(0, 0, 1);\n\nfloat quiltColumns\t=\t8.;\n\nfloat quiltRows\t\t=\t6.;\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n\n{\n\n    vec4\taccColor = vec4(0.);\n\n    for( int m = 0; m < QAA; m++ )\n\n    for( int n = 0; n < QAA; n++ )\n\n    {\n\n        // pixel coordinates\n\n        vec2 o = (vec2(float(m), float(n)) / float(QAA) - 0.5) / iResolution.xy                                                                                 ;\n\n\t\t\n\n\t\tvec2\tcoord = (fragCoord / iResolution.xy  + o) * vec2(quiltColumns,quiltRows);\n\n\t\tvec2\tfract = fract(coord);\n\n\t\tvec2\tfloor = floor(coord);\n\n\t\tfloat\timageId = floor.x + floor.y * quiltColumns;\n\n\t\tfloat\tvalueId = imageId / (quiltColumns * quiltRows - 1.);\n\n\t\tfloat\tdist = (cameraSize / 2.) / tan(horizontalAngle / 2.);\n\n\t\tfloat\tminCam = -(cameraSize / 2.) - tan(sideAngle / 2.) * dist;\n\n\t\t\n\n\t\tvec3\tcamPos = mix(vec3(minCam,0,dist),vec3(-minCam,0,dist),valueId);\n\n\t\tvec3\tscreenPos = vec3((fract.x-0.5)*cameraSize,(fract.y-0.5)*cameraSize/aspectRatio,0);\n\n\t\t\n\n\t\tvec3\tdir = normalize(screenPos - camPos);\n\n\t\tvec4\tcolor;\n\n\t\tmainVR(color, fragCoord, camPos - VROffset, dir);\n\n\t\taccColor += clamp(color, 0.0, 1.0);\n\n\t}\n\n\tfragColor = accColor / float(QAA*QAA);\n\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 30,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

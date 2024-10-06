@@ -1,0 +1,36 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1591295418",
+            "description": "The magic of copy and paste",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wtlyRn",
+            "likes": 5,
+            "name": "That's why I want to learn shdrs",
+            "published": 3,
+            "tags": [
+                "raymarching"
+            ],
+            "usePreview": 0,
+            "username": "postviolet",
+            "viewed": 332
+        },
+        "renderpass": [
+            {
+                "code": "//ромбики фрактальные\nconst int MAX_MARCHING_STEPS = 255;\nconst float MIN_DIST = 0.0;\nconst float MAX_DIST = 100.0;\nconst float EPSILON = 0.0001;\n\n\nfloat sphereSDF(vec3 samplePoint) {\n    return length(samplePoint) - 1.0;\n}\n\nfloat sdEllipsoid( vec3 p, vec3 r )\n{\n  float k0 = length(p/r);\n  float k1 = length(p/(r*r));\n  return k0*(k0-1.0)/k1;\n}\n\nvec3 opCheapBend(in vec3 p )\n{\n    const float k = -0.50; \n    float c = cos(k*p.x);\n    float s = sin(k*p.x);\n    mat2 m = mat2(c,-s,s,c);\n    vec3 q = vec3(m*p.xy,p.z);\n    return q;\n}\n\nfloat sdLink( vec3 p, float le, float r1, float r2 )\n{\n  vec3 q = vec3( p.x, max(abs(p.y)-le,0.0), p.z );\n  return length(vec2(length(q.xy)-r1,q.z)) - r2;\n}\n\nfloat sdOctahedron( vec3 p, float s)\n{\n  p = abs(p);\n  return (p.x+p.y+p.z-s)*0.57735027;\n}\n\nfloat sdTorus( vec3 p, vec2 t )\n{\n  vec2 q = vec2(length(p.xz)-t.x,p.y);\n  return length(q)-t.y;\n}\n\nfloat opSmoothUnion( float d1, float d2, float k ) {\n    float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );\n    return mix( d2, d1, h ) - k*h*(1.0-h); }\n\nvec3 opRep( in vec3 p, in vec3 c)\n{\n    vec3 q = mod(p+0.5*c,c)-0.5*c;\n    return q;\n}\n\nmat4 rotateX( in float angle ) {\n  return mat4(  1.0,    0,      0,      0,\n           0,   cos(angle),  -sin(angle),    0,\n          0,   sin(angle),   cos(angle),    0,\n          0,       0,        0,     1);\n}\n\nmat4 rotateY( in float angle ) {\n  return mat4(  cos(angle),    0,    sin(angle),  0,\n               0,    1.0,       0,  0,\n          -sin(angle),  0,    cos(angle),  0,\n              0,     0,        0,  1);\n}\n\nmat4 rotateZ( in float angle ) {\n  return mat4(  cos(angle),    -sin(angle),  0,  0,\n           sin(angle),    cos(angle),    0,  0,\n              0,        0,    1,  0,\n              0,        0,    0,  1);\n}\n\nfloat sceneSDF(vec3 samplePoint) {\n  samplePoint = (rotateY(sin(iTime/2.)) * vec4(samplePoint, 1.)).xyz;\n  samplePoint = (rotateX(sin(iTime/2.)) * vec4(samplePoint, 1.)).xyz;\n  samplePoint = (rotateZ(sin(iTime/2.)) * vec4(samplePoint, 1.)).xyz;\n  samplePoint = opRep(samplePoint, vec3(3., 4., 14.));\n    \n    return sdOctahedron(samplePoint, 0.446);\n}\n\n\nfloat shortestDistanceToSurface(vec3 eye, vec3 marchingDirection, float start, float end) {\n    float depth = start;\n    for (int i = 0; i < MAX_MARCHING_STEPS; i++) {\n        float dist = sceneSDF(eye + depth * marchingDirection);\n        if (dist < EPSILON) {\n      return depth;\n        }\n        depth += dist;\n        if (depth >= end) {\n            return end;\n        }\n    }\n    return end;\n}\n\n\nvec3 rayDirection(float fieldOfView, vec2 size, vec2 fragCoord) {\n    vec2 xy = fragCoord - size / 2.0;\n    float z = size.y / tan(radians(fieldOfView) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\n\nvec3 estimateNormal(vec3 p) {\n    return normalize(vec3(\n        sceneSDF(vec3(p.x + EPSILON, p.y, p.z)) - sceneSDF(vec3(p.x - EPSILON, p.y, p.z)),\n        sceneSDF(vec3(p.x, p.y + EPSILON, p.z)) - sceneSDF(vec3(p.x, p.y - EPSILON, p.z)),\n        sceneSDF(vec3(p.x, p.y, p.z  + EPSILON)) - sceneSDF(vec3(p.x, p.y, p.z - EPSILON))\n    ));\n}\n\n\nvec3 phongContribForLight(vec3 k_d, vec3 k_s, float alpha, vec3 p, vec3 eye,\n                          vec3 lightPos, vec3 lightIntensity) {\n    vec3 N = estimateNormal(p);\n    vec3 L = normalize(lightPos - p);\n    vec3 V = normalize(eye - p);\n    vec3 R = normalize(reflect(-L, N));\n    \n    float dotLN = dot(L, N);\n    float dotRV = dot(R, V);\n    \n    if (dotLN < 0.0) {\n        return vec3(0.0, 0.0, 0.0);\n    } \n    \n    if (dotRV < 0.0) {\n        return lightIntensity * (k_d * dotLN);\n    }\n    return lightIntensity * (k_d * dotLN + k_s * pow(dotRV, alpha));\n}\n\n\nvec3 phongIllumination(vec3 k_a, vec3 k_d, vec3 k_s, float alpha, vec3 p, vec3 eye) {\n    const vec3 ambientLight = 0.5 * vec3(1.0, 1.0, 1.0);\n    vec3 color = ambientLight * k_a;\n    \n    vec3 light1Pos = vec3(4.0 * sin(iTime),\n                          2.0,\n                          4.0 * cos(iTime));\n    vec3 light1Intensity = vec3(0.800,0.096,0.119);\n    \n    color += phongContribForLight(k_d, k_s, alpha, p, eye,\n                                  light1Pos,\n                                  light1Intensity);\n    \n    vec3 light2Pos = vec3(1.736,\n                          2.0 ,\n                          2.0);\n    vec3 light2Intensity = vec3(0.4, 0.4, 0.4);\n    \n    color += phongContribForLight(k_d, k_s, alpha, p, eye,\n                                  light2Pos,\n                                  light2Intensity);    \n    return color;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n  vec3 dir = rayDirection(45., iResolution.xy, fragCoord.xy);\n    vec3 eye = vec3(0., 0., 40.)+sin(iTime);\n    float dist = shortestDistanceToSurface(eye, dir, MIN_DIST, MAX_DIST);\n    \n    if (dist > MAX_DIST - EPSILON) {\n        fragColor = vec4(0.0, 0.0, 0.0, 0.0);\n    return;\n    }\n    \n    vec3 p = eye + dist * dir;\n    \n    vec3 K_a = vec3(0.222,0.141,0.440);\n    vec3 K_d = vec3(0.700,0.602,0.194);\n    vec3 K_s = vec3(0.179,0.962,1.000);\n    float shininess = 20.;\n    \n    vec3 color = phongIllumination(K_a, K_d, K_s, shininess, p, eye);\n    \n    fragColor = vec4(color, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

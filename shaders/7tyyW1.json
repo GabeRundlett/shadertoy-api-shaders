@@ -1,0 +1,233 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1661462495",
+            "description": "I wanted to see what it looked like to drop some particles on some more interesting terrain, and I am happy with the results!\nTerrain FBM based on iq's Sphere FBM: https://www.shadertoy.com/view/Ws3XWl\n*space disables terrain* *mouse controls sparks*",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "7tyyW1",
+            "likes": 35,
+            "name": "Sparks on Swiss Cheese Mountain",
+            "published": 3,
+            "tags": [
+                "3d",
+                "collision",
+                "simulation",
+                "fbm",
+                "particles",
+                "physics",
+                "multipass"
+            ],
+            "usePreview": 0,
+            "username": "fenix",
+            "viewed": 537
+        },
+        "renderpass": [
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n//\tCreated by fenix in 2022\n//\tLicense Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.\n//\n//  I wanted to drop some cheap non-interacting particles on some complex geometry,\n//  so I borrowed the FBM function from iq's Sphere FBM: https://www.shadertoy.com/view/Ws3XWl\n//\n//  The mouse basically controls the red particle fountain, in terms of making sense of\n//  the X/Y mappings. The other two streams are also under your control since they are\n//  just rotated by 120 degrees.\n//\n//  Space disables terrain rendering, which also speeds up FPS quite a lot. I tried to\n//  optimize the raymarch performance but it still seems very slow, any ideas to make\n//  it faster are welcome. (Or ideas about anything else for that matter...)\n//\n//  Each particle is a light source, so I guess this renders 100k dynamic lights? :)\n//  I think technically this is deferred rendering because I do lighting calculations\n//  only in the image tab.\n// \n//  Buffer A computes the particle positions\n//  Buffer B computes nearest particles to each screen pixel\n//  Buffer C renders the background with depth in the w component\n//\n// ---------------------------------------------------------------------------------------\n\n#define DIFFUSE_PER_PARTICLE 1\n#define SHADOWS 1 // Disable for faster speed\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // pixel\n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n    \n    // fetch precomputed background geometry\n    vec4 normalAndZ = texelFetch(iChannel2, ivec2(fragCoord), 0);\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n      \n\tvec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n    float zDist = normalAndZ.w;\n    vec3 groundPos = cameraPos + rayDir * zDist;\n\n\tvec3 reverseLightDir = normalize(vec3(sin(iTime * -0.4),0.5,cos(iTime * -0.4)));\n\tvec3 lightColor = vec3(0.2,0.2,0.2);\t\n\tconst vec3 ambientColor = vec3(0);//.05,0.05,0.05);\n    float shadowHit = 1e6;\n#if SHADOWS\n    if (!keyDown(KEY_SPACE))\n    {\n        shadowHit = raycast(groundPos + normalAndZ.xyz * 0.01, -reverseLightDir);\n    }\n    if (shadowHit < 0.)\n    {\n        lightColor = vec3(0);\n    }\n#endif\n\n    // diffuse\n\tvec3 groundColor = ambientColor;\n\tfloat dp = dot(normalAndZ.xyz, reverseLightDir);\n\tif(dp > 0.0) groundColor += (dp * lightColor);\n    \n    // specular\n    vec3 reflection = reflect(reverseLightDir, normalAndZ.xyz);\n    dp = dot(cameraFwd, reflection);\n    if (dp > 0.0 && shadowHit > 0.) groundColor += pow(abs(dp), 15.0) * vec3(0.5);\t\t\n   \n    fragColor = vec4(groundColor, 0.0) * smoothstep(-50.0, -17.0, -zDist);\n    \n    ivec4 old = fxGetClosest( ivec2(fragCoord) );      \n\n    for(int j=0; j<4; j++)\n    {\n        int particle = old[j];\n        if (particle < 0 || particle >= MAX_PARTICLES) continue;\n        fxParticle data = fxGetParticle(particle);\n        \n        vec3 oldPos = data.pos;\n        vec3 newPos = data.pos + data.vel;\n         \n#if DIFFUSE_PER_PARTICLE\n        const float GLOW_INTENSITY = 0.001;\n        vec3 groundDelta = oldPos - groundPos.xyz;\n        float groundDotParticle = dot(groundDelta, normalAndZ.xyz);\n        \n        if (groundDotParticle > 0.001)\n        {\n            float distToGround = length(groundDelta);\n            float glow = GLOW_INTENSITY * normalize(groundDotParticle) / (distToGround * distToGround);\n            vec3 glowTemp  = fxBlackBody(MAX_TEMP * 1.0 * (1.0 - data.age / 1.5));\n            if (data.color == 1.0) glowTemp = glowTemp.brg;\n            if (data.color == -1.0) glowTemp = glowTemp.bgr;\n            fragColor = min(vec4(1), fragColor + vec4(glow * glowTemp, 0.0));\n        }\n#endif // DIFFUSE_PER_PARTICLE\n \n        // convert to camera space\n        vec3 oldPosCamera = (w2c * vec4(oldPos,1.0)).xyz;\n        oldPosCamera.xy = oldPosCamera.xy / oldPosCamera.z;\n        vec3 newPosCamera = (w2c * vec4(newPos,1.0)).xyz;\n        newPosCamera.xy = newPosCamera.xy / newPosCamera.z;\n        \n        // if in front of clipping plane, not occluded by scene\n        if(oldPosCamera.z > 0.01 && newPosCamera.z > 0.01 && zDist > oldPosCamera.z && zDist > newPosCamera.z)\n        {\n            float dist2 = fxLinePointDist2(oldPosCamera.xy, newPosCamera.xy, p, iResolution.x / iResolution.y);\n            float dist = sqrt(dist2);\n            \n            const float PARTICLE_SIZE = 0.015;\n            float particleTemp = max(0.0, PARTICLE_SIZE - dist) * 800.0 / PARTICLE_SIZE;\n        \n            if (dist < PARTICLE_SIZE)\n            {\n                vec4 pColor = 1.0 * vec4(fxBlackBody(particleTemp / (data.age + 0.1)), 1.0);\n                if (data.color == 1.0) pColor = pColor.brga;\n                if (data.color == -1.0) pColor = pColor.bgra;\n                fragColor = min(vec4(1), fragColor + pColor);\n            }\n        }\n    }\n    \n    fragColor.xyz = sqrt(fragColor.xyz);\n    fragColor.w = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float MAX_AGE = 10.0;\nconst int MAX_PARTICLES = 100000;\n\nuvec4 hash(uvec4 x){\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzwx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nuvec4 hash(uvec3 x0){\n    uvec4 x = x0.xyzz;\n    x = ((x >> 16u) ^ x.yzxy) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxz) * 0x45d9f3bu;\n    x = ((x >> 16u) ^ x.yzxx) * 0x45d9f3bu;\n    //x = (x >> 16u) ^ x;\n    return x;\n}\n\nvec4 noise(ivec4 p){\n    const float scale = pow(2., -32.);\n    uvec4 h = hash(uvec4(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec3 p){\n    const float scale = 1.0/float(0xffffffffU);\n    uvec4 h = hash(uvec3(p));\n    return vec4(h)*scale;\n}\n\nvec4 noise(ivec2 p){\n    return noise(ivec3(p, 0));\n}\n\n//hashing noise by IQ\nfloat hash( int k ) {\n    uint n = uint(k);\n\tn = (n << 13U) ^ n;\n    n = n * (n * n * 15731U + 789221U) + 1376312589U;\n    return uintBitsToFloat( (n>>9U) | 0x3f800000U ) - 1.0;\n}\n\nvoid fxCalcCamera(in float iTime, in vec4 iMouse, in vec3 iResolution, out vec3 cameraLookAt, out vec3 cameraPos, out vec3 cameraFwd, out vec3 cameraLeft, out vec3 cameraUp)\n{\n    cameraLookAt = vec3(0.0, 0.0f, 0.0);\n    float angleX = 1.1*3.14 + iTime * 0.1;\n    float angleY = 0.75*3.14;\n    cameraPos\t= (vec3(sin(angleX)*cos(angleY), sin(angleY), cos(angleX)*cos(angleY))) * 3.;\n\n    cameraFwd  = normalize(cameraLookAt - cameraPos);\n    cameraLeft = -normalize(cross(cameraFwd, vec3(0.0,1.0,0.0)));\n    cameraUp   = normalize(cross(cameraLeft, cameraFwd));\n}\n\nmat4 fxCalcCameraMat(vec3 resolution, vec3 cameraLeft, vec3 cameraUp, vec3 cameraFwd, vec3 cameraPos)\n{\n    return mat4(vec4(-0.5* cameraLeft, 0.0),\n        vec4(-0.5*cameraUp, 0.0),\n        vec4(cameraFwd, 0.0),\n        vec4(cameraPos, 1.0));\n}\n\nvec3 fxCalcRay(in vec2 fragCoord, in vec3 iResolution, in vec3 cameraFwd, in vec3 cameraUp, in vec3 cameraLeft)\n{\n\tvec2 screenPos = (fragCoord - .5 * iResolution.xy) / iResolution.y;\n\treturn normalize(cameraFwd - screenPos.x * cameraLeft - screenPos.y * cameraUp);\n}\n\nconst float MAX_TEMP = 1000.0;\n\nvec3 fxBlackBody(float _t)\n{\n    vec3 temp = vec3(min(1.0, _t / MAX_TEMP), min(1.0, _t / (2.0 * MAX_TEMP)), min(1.0, _t / (3.0 * MAX_TEMP)));\n    return temp * temp * temp * temp;\n}\n\nfloat length2(vec2 v)\n{\n    return dot(v, v);\n}\n\nfloat fxLinePointDist2(vec2 a, vec2 b, vec2 p, float ar)\n{\n    p -= a, b -= a;\n    float h = clamp(dot(p, b) / dot(b, b), 0., 1.);// proj coord on line\n    return length2((p - b * h) * vec2(ar, 1)); // squared dist to segment\n}\n\nconst float PI = 3.141592653589793;\n\nmat2 rotMat(float a)\n{\n    vec2 sc = vec2(cos(a), sin(a));\n    return mat2(sc.x, sc.y, -sc.y, sc.x);\n}\n\n// The MIT License\n// Copyright © 2019 Inigo Quilez\n// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n// This shader uses a a grid of spheres to carve out fractal detail from\n// a solid block. Unlike naive SDF disaplcemente by a traditional fBM,\n// this shader produces a field that is a valid SDF, so there's no need\n// to reduce the raymarcher's step size to get artifact free visuals.\n//\n// The article that explains this technique can be found here:\n//\n//     https://iquilezles.org/articles/fbmsdf\n//\n// A additive synthesis example of this technique, here: \n//\n//     https://www.shadertoy.com/view/3dGSWR\n\n// 0 = lattice\n// 1 = simplex\n#define NOISE 0\n\n\n// please, do not use in real projects - replace this by something better\nfloat hash(vec3 p)  \n{\n    p  = 17.0*fract( p*0.3183099+vec3(.11,.17,.13) );\n    return fract( p.x*p.y*p.z*(p.x+p.y+p.z) );\n}\n\n// https://iquilezles.org/articles/distfunctions\nfloat sdBox( vec3 p, vec3 b )\n{\n    vec3 d = abs(p) - b;\n    return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));\n}\n\nfloat sdCone( vec3 p, vec2 c )\n{\n    // c is the sin/cos of the angle\n    vec2 q = vec2( length(p.xz), -p.y );\n    float d = length(q-c*max(dot(q,c), 0.0));\n    return d * ((q.x*c.y-q.y*c.x<0.0)?-1.0:1.0);\n}\n\n// https://iquilezles.org/articles/smin\nfloat smax( float a, float b, float k )\n{\n    float h = max(k-abs(a-b),0.0);\n    return max(a, b) + h*h*0.25/k;\n}\n\nfloat smin( float a, float b, float k )\n{\n    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );\n    return mix( b, a, h ) - k*h*(1.0-h);\n}\n\n// https://iquilezles.org/articles/boxfunctions\nvec2 iBox( in vec3 ro, in vec3 rd, in vec3 rad ) \n{\n    vec3 m = 1.0/rd;\n    vec3 n = m*ro;\n    vec3 k = abs(m)*rad;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n\tfloat tN = max( max( t1.x, t1.y ), t1.z );\n\tfloat tF = min( min( t2.x, t2.y ), t2.z );\n\tif( tN > tF || tF < 0.0) return vec2(-1.0);\n\treturn vec2( tN, tF );\n}\n\n//---------------------------------------------------------------\n// A random SDF - it places spheres of random sizes in a grid\n//---------------------------------------------------------------\n\nfloat sdBase( in vec3 p )\n{\n#if NOISE==0\n    vec3 i = floor(p);\n    vec3 f = fract(p);\n\n\t#define RAD(r) ((r)*(r)*0.7)\n    #define SPH(i,f,c) length(f-c)-RAD(hash(i+c))\n    \n    return min(min(min(SPH(i,f,vec3(0,0,0)),\n                       SPH(i,f,vec3(0,0,1))),\n                   min(SPH(i,f,vec3(0,1,0)),\n                       SPH(i,f,vec3(0,1,1)))),\n               min(min(SPH(i,f,vec3(1,0,0)),\n                       SPH(i,f,vec3(1,0,1))),\n                   min(SPH(i,f,vec3(1,1,0)),\n                       SPH(i,f,vec3(1,1,1)))));\n#else\n    const float K1 = 0.333333333;\n    const float K2 = 0.166666667;\n    \n    vec3 i = floor(p + (p.x + p.y + p.z) * K1);\n    vec3 d0 = p - (i - (i.x + i.y + i.z) * K2);\n    \n    vec3 e = step(d0.yzx, d0);\n\tvec3 i1 = e*(1.0-e.zxy);\n\tvec3 i2 = 1.0-e.zxy*(1.0-e);\n    \n    vec3 d1 = d0 - (i1  - 1.0*K2);\n    vec3 d2 = d0 - (i2  - 2.0*K2);\n    vec3 d3 = d0 - (1.0 - 3.0*K2);\n    \n    float r0 = hash( i+0.0 );\n    float r1 = hash( i+i1 );\n    float r2 = hash( i+i2 );\n    float r3 = hash( i+1.0 );\n\n    #define SPH(d,r) length(d)-r*r*0.55\n\n    return min( min(SPH(d0,r0),\n                    SPH(d1,r1)),\n                min(SPH(d2,r2),\n                    SPH(d3,r3)));\n#endif\n}\n\n//---------------------------------------------------------------\n// subtractive fbm\n//---------------------------------------------------------------\nfloat sdFbm( in vec3 p, float d )\n{\n    const mat3 m = mat3( 0.00,  0.80,  0.60, \n                        -0.80,  0.36, -0.48,\n                        -0.60, -0.48,  0.64 );\n    float t = 0.0;\n\tfloat s = 1.0;\n    for( int i=0; i<4; i++ )\n    {\n        float n = s*sdBase(p);\n    \td = smax( d, -n, 0.2*s );\n        t += d;\n        p = 2.0*m*p;\n        s = 0.5*s;\n    }\n    \n    return d;\n}\n\nfloat sdMountains( in vec3 p )\n{\n    const vec2 sc = vec2(sin(0.9), cos(0.9));\n    \n    float d = sdCone( p - vec3(1.0, 1.0, 0.0), sc );\n    d = smin(d, sdCone( p - vec3(-1.0, 0.8, 0.0), sc ), 0.1);\n    return d;\n}\n\nfloat map( in vec3 p )\n{\n    // box\n    float d = sdMountains( p );\n\n    // fbm\n    d = sdFbm( p, d );\n    \n    return d;\n}\n\nconst float precis = 0.001;\n\n// https://iquilezles.org/articles/normalsSDF\nvec3 calcNormal( in vec3 pos )\n{\n    vec2 e = vec2(1.0,-1.0)*0.5773*precis;\n    return normalize( e.xyy*map( pos + e.xyy ) + \n\t\t\t\t\t  e.yyx*map( pos + e.yyx ) + \n\t\t\t\t\t  e.yxy*map( pos + e.yxy ) + \n\t\t\t\t\t  e.xxx*map( pos + e.xxx ) );\n}\n\nfloat raycast( in vec3 ro, in vec3 rd )\n{\n\tfloat res = 1e6;\n\n    // bounding volume    \n    vec2 dis = iBox( ro + vec3(0.0, 2.0, 0.0), rd, vec3(3.0) ) ;\n    if( dis.y<0.0 ) return res;\n\n    // raymarch\n    float t = dis.x;\n    \n    // First just against the mountains, to get as close as possible\n#if 1 // Disable to test optimization\n\tfor( int i=0; i<256; i++ )\n\t{\n        vec3 pos = ro + t*rd;\n\t\tfloat h = sdMountains( pos );\n        res = t;\n        \n\t\tif( h<precis || t>dis.y ) break;\n\t\tt += h;\n\t}\n#endif\n    \n    // Then against the FBM to pick up details\n\tfor( int i=0; i<256; i++ )\n\t{\n        vec3 pos = ro + t*rd;\n\t\tfloat h = map( pos );\n        res = t;\n        \n\t\tif( h<precis || t>dis.y ) break;\n\t\tt += h;\n\t}\n\n\tif( t>dis.y ) res = 1e6;\n\treturn res;\n}\n\n//returns the ids of the four closest particles from the input\nivec4 fxGetClosestInternal(sampler2D sampler, ivec2 xy)\n{\n    return ivec4(texelFetch(sampler, xy, 0));\n}\n\n#define fxGetClosest(X) fxGetClosestInternal(iChannel1, X)\n\n#define POS 0\n#define VEL 1\n#define NUM_PARTICLE_DATA_TYPES 2\n\n//returns the location of the particle within the particle buffer corresponding with the input id \nivec2 fxLocFromIDInternal(int width, int id, int dataType)\n{\n    int index = id * NUM_PARTICLE_DATA_TYPES + dataType;\n    return ivec2( index % width, index / width);\n}\n\n#define fxLocFromID(X, Y) fxLocFromIDInternal(int(iResolution.x), X, Y)\n\nstruct fxParticle\n{\n    vec3 pos;\n    vec3 vel;\n    float age;\n    float color;\n};\n\n//get the particle corresponding to the input id\nfxParticle fxGetParticleInternal(sampler2D sampler, int resolutionWidth, int id)\n{\n    vec4 particleData0 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, POS), 0);\n    vec4 particleData1 = texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, VEL), 0);\n\n    fxParticle particle;\n    particle.pos = particleData0.xyz;\n    particle.vel = particleData1.xyz;\n    particle.age = particleData0.w;\n    particle.color = particleData1.w;\n    \n    return particle;\n}\n\nvec4 fxSaveParticle(fxParticle p, int dataType)\n{    \n    switch(dataType)\n    {\n    case POS:  \n        return vec4(p.pos, p.age);\n    case VEL:  \n        return vec4(p.vel, p.color);\n    }\n}\n\n#define fxGetParticle(X) fxGetParticleInternal(iChannel0, int(iResolution.x), X)\n\nvec4 fxGetParticleDataInternal(sampler2D sampler, int resolutionWidth, int id, int dataType)\n{\n    return texelFetch(sampler, fxLocFromIDInternal(resolutionWidth, id, dataType), 0);\n}\n\n#define fxGetParticleData(X, Y) fxGetParticleDataInternal(iChannel0, int(iResolution.x), X, Y)\n\n#define keyDown(ascii)    ( texelFetch(iChannel3,ivec2(ascii,0),0).x > 0.)\n\n#define KEY_SPACE 32",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Computes the position and velocity of each particle, one per texture fragment.\n// ---------------------------------------------------------------------------------------\n\nconst vec3 GRAVITY = vec3(0.0,-0.001,0.0);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    ivec2 iFragCoord = ivec2(fragCoord);\n    int index = iFragCoord.x + iFragCoord.y*int(iResolution.x);\n    int id = index / NUM_PARTICLE_DATA_TYPES;\n    int dataType = index - id * NUM_PARTICLE_DATA_TYPES;\n    if(id>=MAX_PARTICLES) return;\n\n    vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n\n    fxParticle p = fxGetParticle(id);\n    \n    // Integrate velocities\n    vec3 newVel = p.vel + GRAVITY;\n    ivec3 newMapPos = ivec3(floor(p.pos + newVel));\n\n    // Detect if we're about to pass through the boundary and bounce off\n    float rc = map(p.pos + p.vel);\n    if (rc > 0.0 && rc < length(p.vel))\n    {\n        vec3 g = calcNormal(p.pos);\n        p.pos += rc * g;\n\n        newVel -= 1.2 * min(0.0, dot(g, newVel)) * g;\n    }\n    \n    float len = length(newVel);\n    if (len > 0.02)\n    {\n        newVel = 0.02 * normalize(newVel);\n    }\n    \n    p.vel = newVel;\n\n    vec3 newPos = p.pos + newVel;\n    float newAge = p.age + min(iTimeDelta, 0.033) / MAX_AGE;\n    \n    p.pos = newPos;\n        \n    // Release particles slowly when shader starts\n    if (int(state.z) < (60*int(MAX_AGE)*id)/MAX_PARTICLES)\n    {\n        newAge = 2.0;\n        p.pos = vec3(1e6);\n    }\n\n    // Reset particles that have gotten too old\n    if (newAge > 1.0)\n    {\n        const float XZ_SPREAD = 0.001;\n        const float Y_SPREAD = 0.0003;\n        const float Y_SPRAY = 0.0;\n\n        vec4 nse = noise(ivec2(id, id)) - 0.5;\n        p.vel = nse.xyz * 2.0 * vec3(XZ_SPREAD, Y_SPREAD, XZ_SPREAD);\n        p.vel.y += Y_SPRAY;\n\n        vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n        fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n        cameraFwd.y = 0.0;\n        \n        vec2 mouse = iMouse.xy;\n        if (iMouse.z <= 0.0)\n        {\n            mouse = (vec2(sin(iTime * 0.2), cos(iTime * 0.4)) * 2.5 + 4.0) * iResolution.xy * 0.1;\n        }\n        vec3 mouseFwd = 2.0 * normalize(cameraFwd) * (2.0*mouse.y/iResolution.y - 1.0);\n        vec3 mouseLeft = -2.0 * cameraLeft * (2.0*mouse.x/iResolution.x - 1.0);\n        \n        p.pos = vec3(0.0, 1.5, 0.0) + p.vel + mouseFwd + mouseLeft;\n        \n        switch (int(hash(id) * 3.0))\n        {\n            case 0:\n                p.color = 0.0;\n                break;\n            case 1:\n                p.color = 1.0;\n                vec2 rotPos = rotMat(0.66 * PI) * p.pos.xz;\n                p.pos = vec3(rotPos.x, p.pos.y, rotPos.y);\n                break;\n            case 2:\n                p.color = -1.0;\n                rotPos = rotMat(-0.66 * PI) * p.pos.xz;\n                p.pos = vec3(rotPos.x, p.pos.y, rotPos.y);\n                break;\n        }\n\n        newAge = noise(ivec2(fragCoord) + 3).x * 0.5;\n    }\n    \n    p.age = newAge;\n    \n    fragColor = fxSaveParticle(p, dataType);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Gijs's Basic : Voronoi Tracking: https://www.shadertoy.com/view/WltSz7\n\n// Voronoi Buffer\n// every pixel stores the 4 closest particles to it\n// every frame this data is shared between neighbours\n\nvoid insertion_sort(inout ivec4 i, inout vec4 d, int i_, float d_){\t\n    if(any(equal(ivec4(i_),i))) return;\n    if     (d_ < d[0])             \n        i = ivec4(i_,i.xyz),    d = vec4(d_,d.xyz);\n    else if(d_ < d[1])             \n        i = ivec4(i.x,i_,i.yz), d = vec4(d.x,d_,d.yz);\n    else if(d_ < d[2])            \n        i = ivec4(i.xy,i_,i.z), d = vec4(d.xy,d_,d.z);\n    else if(d_ < d[3])           \n        i = ivec4(i.xyz,i_),    d = vec4(d.xyz,d_);\n}\n\nfloat distance2Particle(int id, vec2 fragCoord, mat4 w2cNew){\n    if(id==-1) return 1e20;\n    vec3 worldPos = fxGetParticleData(id, POS).xyz + fxGetParticleData(id, VEL).xyz;\n    vec3 screenPos = (w2cNew * vec4(worldPos,1.0)).xyz;\n    screenPos.xy = screenPos.xy / screenPos.z;\n    vec2 delta = (screenPos.xy)-fragCoord;\n    return dot(delta, delta);\n}\n\nvoid mainImage( out vec4 fragColor, vec2 fragCoord ){\n   \tivec2 iFragCoord = ivec2(fragCoord);\n    if(iFragCoord == ivec2(0))\n    {\n        // Reset if resolution changes\n        vec4 state = texelFetch(iChannel1, ivec2(0), 0);\n        if (iFrame == 0 || iResolution.xy != state.xy)\n        {\n            state = vec4(iResolution.xy, -1.0, 0.0);\n        }\n        else\n        {\n            state.z += 1.0;\n        }\n        \n        fragColor = state;\n        return;\n    }\n\tvec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;\n\n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    // camera-to-world and world-to-camera transform\n    mat4 c2w = fxCalcCameraMat(iResolution, cameraLeft, cameraUp, cameraFwd, cameraPos);\n    mat4 w2c = inverse(c2w);\n\n    //in this vector the four new closest particles' ids will be stored\n    ivec4 new = ivec4(-1);\n    //in this vector the distance to these particles will be stored \n    vec4 dis = vec4(1e6);\n\n    ivec4 old   = fxGetClosest( iFragCoord );      \n    for(int j=0; j<4; j++){\n        int id = old[j];\n        float dis2 = distance2Particle(id, p, w2c);\n        insertion_sort( new, dis, id, dis2 );\n    }\n\n    uint searchRange = 15u;\n    uint searchCount = 32u;\n    \n    for(uint i=0u; i<searchCount; ++i)\n    {\n        uvec4 h0 = hash(uvec4(fragCoord, iFrame, iResolution.x) * i);\n\n        ivec4 old   = fxGetClosest( iFragCoord + ivec2( h0.xy % searchRange - searchRange / 2u) );      \n        for(int j=0; j<2; j++){\n            int id = old[j];\n            float dis2 = distance2Particle(id, p, w2c);\n            insertion_sort( new, dis, id, dis2 );\n        }        \n    }\n\n    int searchIterations = 10;\n\n    for(int k = 0; k < searchIterations; k++){\n        //random hash. We should make sure that two pixels in the same frame never make the same hash!\n        float h = hash(\n            iFragCoord.x + \n            iFragCoord.y*int(iResolution.x) + \n            iFrame*int(iResolution.x*iResolution.y) +\n            k\n        );\n\n        //pick random id of particle\n        int id = int(h*float(MAX_PARTICLES));\n        insertion_sort(new, dis, id, distance2Particle(id, p, w2c));\n    }\n    \n    fragColor = vec4(new);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// ---------------------------------------------------------------------------------------\n// Background rendering based on \"Sphere FBM\" by iq\n//    https://www.shadertoy.com/view/Ws3XWl\n//\n// All of iq's code is in common, since it's used both here and for the particle boundary.\n// This buffer just calls raycast to generate a texture full of normals and z distances\n// (the G-buffer).\n// ---------------------------------------------------------------------------------------\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{    \n    if (keyDown(KEY_SPACE))\n    {\n        fragColor = vec4(0.0, 0.0, 0.0, 1e6);\n        return;\n    }\n    \n    vec3 cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp;\n    fxCalcCamera(iTime, iMouse, iResolution, cameraLookAt, cameraPos, cameraFwd, cameraLeft, cameraUp);\n\n    vec3 rayDir = fxCalcRay(fragCoord, iResolution, cameraFwd, cameraUp, cameraLeft);\n\n    // render\n    float t = raycast(cameraPos, rayDir);\n    vec3 normal = vec3(0);\n    if( t>0.0 )\n    {\n        vec3 pos = cameraPos + t * rayDir;\n        normal = calcNormal(pos);\n    }\n\n    fragColor = vec4(normal,t);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

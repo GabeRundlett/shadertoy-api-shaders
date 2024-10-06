@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1595215987",
+            "description": "Animated water and sphere over water",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "tljcRd",
+            "likes": 10,
+            "name": "Sphere over water",
+            "published": 3,
+            "tags": [
+                "reflection",
+                "water",
+                "animated"
+            ],
+            "usePreview": 0,
+            "username": "vipiao",
+            "viewed": 448
+        },
+        "renderpass": [
+            {
+                "code": "\n# define INTERSECTED 0\n# define TOO_FAR 1\n# define TOO_MANY_STEPS 2\n# define PI 3.1415926538\n/******************************************************************************/\n\nfloat waterFunction(in vec3 pos, in float time){\n\tconst int size = 6;\n    vec3 vecs[size] = vec3[](\n        vec3(1,2, 0.2),\n        vec3(0.5,0.5, 0.1),\n        vec3(-1.,0.2, 0.1),\n        vec3(0.,-0.5, 0.5),\n        vec3(2.,-2., 0.01),\n        vec3(-2.,5., 0.01)\n    );\n    float waveHeight = 0.;\n    for(int i=0; i<size; i++) {\n        // The speed of waves on water is independent on amplitude or wavelength.\n    \twaveHeight += sin(pos.x*vecs[i].x+pos.z*vecs[i].y+time*length(vecs[i].xy))*vecs[i].z;\n    }\n    return waveHeight;\n}\n\nfloat sdWater(in vec3 pos){\n    float waveHeight = waterFunction(pos, iTime);\n    \n\tfloat heightDiff = pos.y - waveHeight;\n    const float maxSlope = 1.;\n    float nextDist = heightDiff/sqrt(maxSlope*maxSlope + 1.);\n    \n    float maxWaterHeight = 0.91; // 0.2+0.1+0.1+0.5+0.01+0.0. See waterFunction(.).\n    return max(nextDist, pos.y-maxWaterHeight);\n}\n\nvoid sdWaterNormal(in vec3 pos, inout vec3 normal, inout float sd){\n\tsd = sdWater(pos);\n    vec2 e = vec2(0.01, 0.);\n    normal = normalize(sd - vec3(\n    \tsdWater(pos - e.xyy),\n    \tsdWater(pos - e.yxy),\n    \tsdWater(pos - e.yyx)\n    ));\n}\n\nfloat sdSphere(in vec3 pos, in vec3 center, in float radius){\n   \treturn length(pos-center) - radius;\n}\n\nvoid sdSphereNormal(in vec3 pos, in vec3 center, in float radius, inout vec3 normal, out float sd){\n\tsd = sdSphere(pos, center, radius);\n    vec2 e = vec2(0.01, 0.);\n    normal = normalize(sd - vec3(\n    \tsdSphere(pos - e.xyy, center, radius),\n    \tsdSphere(pos - e.yxy, center, radius),\n    \tsdSphere(pos - e.yyx, center, radius)\n    ));\n}\n\nfloat marchWorld(\n    inout vec3 pos, inout vec3 dir,\n    inout float dist, in float maxDist, in float minDist, out float nearest,\n    inout int numSteps, in int maxNumSteps,\n    inout vec3 color, out vec3 normal, out int returnCode\n){\n    float colorFrac = 1.;\n    float transparency = 0.75;\n    vec3 backgroundColor = vec3(0.1,0.2,0.5);\n    vec3 sphereColor = vec3(0,0,0);\n    vec3 waterColor = vec3(0,0,0.5);\n    vec3 lightDir = normalize(vec3(1,1,1));\n    nearest = maxDist;\n    \n    vec3 spherePosition = vec3(0,0,20);\n    spherePosition.y = waterFunction(spherePosition, iTime-0.5)+5.;\n    float sphereRadius = 4.;\n    for(int i=0; i<maxNumSteps; i++) {\n        float sdToWater = sdWater(pos);\n        float sdToSphere = sdSphere(pos, spherePosition, sphereRadius);\n        float sd = min(sdToWater, sdToSphere);\n        if(sd < nearest){\n        \tnearest = sd;\n        }\n        \n        numSteps++;\n        if(dist + sd + minDist > maxDist){\n            // Fill the remaining color.\n    \t\tcolor = mix(color, backgroundColor, colorFrac);\n            sd = maxDist-dist-sd-minDist;\n            dist += sd;\n            pos += dir*sd;\n            \n            returnCode = TOO_FAR;\n        \treturn sd;\n        }\n        if(sd <= minDist){\n            if(sdToWater < sdToSphere){\n            \tsdWaterNormal(/*in vec3 pos=*/pos, /*inout vec3 normal=*/normal, /*inout float sd=*/sd);\n                color = mix(color, waterColor*dot(lightDir, normal), colorFrac);\n                colorFrac *= transparency;\n                if(dot(normal, dir) < 0.){\n                    dir = reflect(dir, normal);\n                    sd = max(sd, minDist*2.);\n                }\n            }else{\n            \tsdSphereNormal(\n                    /*in vec3 pos=*/pos, /*in vec3 center=*/spherePosition, /*in float radius=*/sphereRadius,\n                    /*inout vec3 normal=*/normal, /*out float sd=*/sd\n                );\n                color = mix(color, sphereColor*dot(lightDir, normal), colorFrac);\n                colorFrac *= transparency;\n                \n                if(dot(normal, dir) < 0.){\n                    dir = reflect(dir, normal);\n                    sd = max(sd, minDist*2.);\n                }\n            }\n        }\n        dist += sd;\n        pos += dir*sd;\n    }\n    \n    // Fill the remaining color.\n    color = mix(color, backgroundColor, colorFrac);\n    \n    //\n    returnCode = TOO_MANY_STEPS;\n    return -1.;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (fragCoord-0.5*iResolution.xy)/iResolution.y;\n    \n    vec3 camPos = vec3(0.2, 3., 0.);\n    vec3 viewDir = normalize(vec3(uv.x, uv.y, 1.));\n    \n    vec3 col = vec3(0.);\n    vec3 pos = camPos;\n    float dist = 0.;\n    float maxDist = 1000.*100.;\n    float minDist = 0.01;\n    int numSteps = 0;\n    int maxNumSteps = 400;\n    vec3 normal;\n    int returnCode;\n    float nearest;\n    \n    marchWorld(\n        /*vec3 pos=*/camPos, /*vec3 dir*/viewDir,\n        /*float dist=*/dist, /*float maxDist=*/maxDist, /*float minDist=*/minDist, /*out float nearest=*/nearest,\n        /*int numSteps=*/numSteps, /*int maxNumSteps=*/maxNumSteps,\n        /*vec3 color=*/col, /*vec3 normal=*/normal, /*int returnCode=*/returnCode\n    );\n    \n    // Mist.\n    //col = mix(col, vec3(0,0,1), 1. / (1. + exp(-float(numSteps)*0.1 + float(maxNumSteps) - 380.)));\n    \n    //col = vec3(dist/100.);\n    \n    // Ambient occlusion.\n    float factor = float(numSteps)/float(maxNumSteps);\n    col = mix(col, vec3(0.5,0.5,0.7), factor);\n    \n    float fieldPace = 0.2;\n    if(mod(iTime*fieldPace,4.0) <= 1.){\n        float fieldFrac = mod(iTime*fieldPace,1.0);\n        float fieldSmooth = 30.*fieldFrac+5.;\n        float depth = (float(maxNumSteps)+fieldSmooth*2.)*fieldFrac-fieldSmooth*2.;\n        float field = max(fieldSmooth-float(abs(numSteps - int(depth))), 0.)/fieldSmooth;\n        field *= (1.-fieldFrac);\n    \tcol.g += field;\n    }\n    \n    fragColor = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

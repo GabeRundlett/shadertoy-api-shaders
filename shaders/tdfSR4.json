@@ -1,0 +1,204 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1551119500",
+            "description": "Trying to understand rory618 code [url]https://shadertoy.com/view/wdBGWG[/url] \nI restructured, simplified, commented\nKeys: X (visc) ,Z (cons) ,C (boost), Space (toggle FFT)\n\nStill unclear to me what contain the buffers precisely and where are the blocks.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "tdfSR4",
+            "likes": 60,
+            "name": "FFT Fluid - analysis rory618 cod",
+            "published": 3,
+            "tags": [
+                "fluid",
+                "diffusion",
+                "advection",
+                "fourier",
+                "multipass",
+                "multipass"
+            ],
+            "usePreview": 0,
+            "username": "FabriceNeyret2",
+            "viewed": 2421
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"FFT Fluid\" by rory618. https://shadertoy.com/view/wdBGWG 2019-02-20 16:36:17\n\n// Data structure, Fourier-block calculation, fluid simulation:\n// see my comments in Common.\n\n// [ original rory618 comments, in their full mystery :-) ]\n// Four step seperated FFT, factored horizontally, vertically, and over major and minor axis for each of x and y\n// Total worst case for 2048*2048 image is 2 (x and y) times 4 (factored into 4) 32pt dft's where each pixel/thread \n// must compute one bin of its corresponding dft. Pipelining through A-B-C-D means fft of the whoe screen only takes one frame.\n// Both the x and y of the feild need to be fft'd so it takes up all 4 channels to do an fft, so every other frame\n// the fft direction is swapped to compute the inverse, and overall the simulation runs at one step per two frames\n\n\n\nvoid mainImage( out vec4 O, vec2 I )\n{\n    O = vec4(0);\n    if(FFT_DIR==BACKWARD){\n        if (keypressed(32)) discard;\n        vec4 t0 = texture(iChannel3, I/R.xy); // --- display fluid\n        O = vec4(.5*log(.5*length(t0))); // fake content\n    } else {\n        if (!keypressed(32))  discard;\n    \tO = texture(iChannel3, .5+I/R.xy);    // --- display Fourier\n        float l0 = dot2(O.xy); O.xy *= log(1.+l0) / l0;\n        float l1 = dot2(O.zw); O.zw *= log(1.+l1) / l1;\n        O.xyz += vec3(1,1,0)*O.w;\n        O = abs(O);\n    }\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// Data structure:\n\n//   O.xyzw contains either V.xy or ^V.xy (even vs odd frames) \n//   that are complex numbers: O.xy = Vx and O.zw = Vy (0 if world velocity)\n\n\n// Fourier calculation:\n\n// - done independently on Vx and Vy\n// - 2D Fourier = Fy(Fx(image)): BufA,B do Fx, BufC,D do Fy\n// - 1D Fourier is done by incomplete FFT: Cooley-Tukey on DFT blocks\n//   - Data structure:\n//       Buf A,B = N0x horizontal blocks of size N1x (NO.N1 = R)\n//                 equiv to array(N0x,N1x)\n//       Buf C,D = N0y vertical blocks of size N1y \n//                 equiv to array(N0y,N1y)\n//   - Algo:\n//       Buf A,C : DTF along N0\n//       Buf B,D : DTF along N1\n\n\n// Fluid calculation:\n\n// Forward:  (odd frames)\n// - advect velocity (bufA) \n// - Fourier transform V (BuffA,B,C,D) -> ^V\n// - apply mass conservation + viscosity in Fourier, see Jos Stam paper http://www.dgp.toronto.edu/people/stam/reality/Research/pdf/jgt01.pdf\n// - display only if Fourier required (Image)\n// Backward: (even frames)\n// - Fourier transform ^V (BuffA,B,C,D) -> V\n// - Apply forces (mouse control) (BuffD)\n// - display fluid (density faked from velocity turbulent features) (Image)\n\n#define viscosity 1e-7 // 1e-7: turbulent 1e-5: some diffusion\n\n#define pi 3.14159265\n#define R  iResolution\n#define iR ivec3(R)\n#define T(x,y) texelFetch(iChannel0, ivec2(x,y), 0)\n#define keypressed(c) (texelFetch(iChannel2,ivec2(c,2),0).x > .5)\n\n// --- (i)FFT sum on blocks\n                            // FFT vs iFFT at even vs odd frame\n#define FFT_DIR float((iFrame%2)*2-1)\n#define FORWARD 1.\n#define BACKWARD -1.\n                             // exp( s* 2iPi k/N )\n#define W(k,n) cexp(vec2(0,FFT_DIR*(2.*pi*float(k)/float(n))))\n\n/**/\n                             // partial DFT on blocks\n#define SUM(v,n0,n2, V)                  \\\n    setRadix(R);                         \\\n    int x = int(I.x),                    \\\n        y = int(I.y),                    \\\n        n = v/n0;  v = v%n0;             \\\n    O = vec4(0);                         \\\n    for(int i = 0; i < 64; i++){         \\\n        if (i >= n2) break;              \\\n        vec2 w = W(i*n,n2);              \\\n        O.xy += cprod(V.xy,w);           \\\n        O.zw += cprod(V.zw,w);           \\\n    }\n/**\nvec2 sum;                    // sum(expr) on blocks\n#define SUM(expr, ind, len)            \\\n    sum = vec2(0);                     \\\n    for(int ind = 0; ind < 64; ind++){ \\\n        if (ind >= len) break;         \\\n        sum += expr;                   \\\n    }\n/**/\n\n// --- radix calculation:\n// partial FFT on blocks N1,N2 close to sqrt(R) with N1.N2=R\n// more understanding needed (e.g. N1,N2 vs 64)\n// See https://en.wikipedia.org/wiki/Cooley%E2%80%93Tukey_FFT_algorithm\n\nint x_N0, x_N1,\n    y_N0, y_N1;\n\nint factor(float x){ // find largest f<sqrt(x) such that f*g = x\n    int i = int(x),  // (isn't it costly to do that for each pixel*frame*buffer ?)\n        f = int(sqrt(x));\n    while( i % f > 0 ) f--;\n    return f;\n  //return float(i)/float(f);\n}\n\nvoid setRadix(vec3 R){  \n    x_N0 = factor(R.x);\n    y_N0 = factor(R.y);\n    x_N1 = int(R.x)/x_N0;\n    y_N1 = int(R.y)/y_N0;\n    \n}\n\n// --- complex arithmetics\n\nvec2 cprod(vec2 a, vec2 b){\n    return mat2(a,-a.y,a.x) * b;\n}\n\nvec2 cis(float t){\n    return cos(t - vec2(0,pi/2.));\n}\nvec2 cexp(vec2 z) {\n    return exp(z.x)*cis(z.y);\n}\n\nfloat dot2(vec2 x) { return dot(x,x); }\n\n// --- random numbers\n\nint IHash(int a){\n\ta = (a ^ 61) ^ (a >> 16);\n\ta = a + (a << 3);\n\ta = a ^ (a >> 4);\n\ta = a * 0x27d4eb2d;\n\ta = a ^ (a >> 15);\n\treturn a;\n}\n\nfloat Hash(int a){\n\ta = (a ^ 61) ^ (a >> 16);\n\ta = a + (a << 3);\n\ta = a ^ (a >> 4);\n\ta = a * 0x27d4eb2d;\n\ta = a ^ (a >> 15);\n\treturn float(a) / float(0x7FFFFFFF);\n}\n\n#define Ihash3(x,y,z) IHash((x)^IHash((y)^IHash(z)))\n    \nvec2 rand2(int seed){\n    return vec2(Hash(seed^0x348C5F93),\n                Hash(seed^0x8593D5BB));\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "// apply advection and proceed 1st step of block-FFTx\n\nvec4 inp(int x, int y);\nvoid mainImage( out vec4 O, vec2 I ) // --- block-FFTx\n{\n    SUM( x, x_N1, x_N0, inp( x+i*x_N1, y ) );\n    \n    O.xy = (cprod(O.xy, W(x*n,iR.x)));\n    O.zw = (cprod(O.zw, W(x*n,iR.x)));\n}\n\n\nvec4 inp(int x, int y){\n    if(FFT_DIR==FORWARD){ // space domain: --- apply advection \n        vec2 v = T(x, y).xz;                  // rand: stochastic interpolation better for low velocity\n        return texture(iChannel0,( vec2(x, y) -v + rand2(Ihash3(x,y,iFrame)) ) / R.xy );\n    } else\n        return T(x, y);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// proceed 2nd step of block-FFTx\n\nvoid mainImage( out vec4 O, vec2 I )\n{\n    SUM( x, x_N0, x_N1, T( x*x_N1+i, y ) );\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// proceed 1st step of block-FFTy\n\nvoid mainImage( out vec4 O, vec2 I )\n{\n    SUM( y, y_N1, y_N0, T( x, y+i*y_N1 ) );\n    \n    O.xy = (cprod(O.xy, W(y*n,iR.y)));\n    O.zw = (cprod(O.zw, W(y*n,iR.y)));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// proceed 2nd step of block-FFTy\n// and apply forces, viscosity, mass conservation, \n// See http://www.dgp.toronto.edu/people/stam/reality/Research/pdf/jgt01.pdf\n\nvoid mainImage( out vec4 O, vec2 I )\n{\n    SUM( y, y_N0, y_N1, T( x, y*y_N1+i ) );  // --- block-FFTy\n    \n    O /= sqrt(R.x*R.y);\n    \n    \n    vec2 C = mod(I+R.xy/2.,R.xy)-R.xy/2.;    // --- forces+conservation\n    \n    if(FFT_DIR==FORWARD){\n        if (!keypressed(88))                 // X\n            // apply viscosity \n        \tO*=exp(-dot2( C )*viscosity);\n        if( /* length(C)>0. && */ !keypressed(90) ){ // Z\n            // mass conservation: reprojection on circle\n            float lx = length(O.xz),\n                  ly = length(O.yw);\n            // Oxy = ^Vx , O.zw = ^Vy , C = ^(x,y) \n            // ^( div(V)=0 ) <=> ^x.^Vx + ^y.^Vy = 0\n            // -> reproj: ^V -= dot(^V,^(x,y)). ^(x,y) / ||^2\n            // do it for real part, then imaginary part:\n        \tO.xz -= dot(C,O.xz) *C /dot(C,C);\n        \tO.yw -= dot(C,O.yw) *C /dot(C,C);\n            if (!keypressed(67)) {              // C\n                // restore length\n            \tO.xz *= lx / (1e-3+length(O.xz));\n           \t    O.yw *= ly / (1e-3+length(O.yw));\n            }\n         }\n        if( dot(C,C) < 1. ) O *= 0.; // no DC: kills global drift\n    } else {\n        // apply forces\n      //O.xz += .01*(iMouse.xy-iMouse.zw)*exp(-10.*length(iMouse.xy-I)/R.y); // true forces\n        O.xz += .01*(iMouse.xy-R.xy*.5)*exp(-.1/(1.+length(I-R.xy*.5))*dot2(I-R.xy*.5));\n    }\n    \n    if(iFrame<6 && FFT_DIR==BACKWARD) // --- init\n        O=vec4(0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

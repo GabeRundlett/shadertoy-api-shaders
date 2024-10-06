@@ -1,0 +1,81 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1622899001",
+            "description": "raytracing spheres and planes. It also uses some DFAO and cheap anti aliasing plus motion blur.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "NllGR7",
+            "likes": 3,
+            "name": "raytracing spheres and planes",
+            "published": 3,
+            "tags": [
+                "raytracing",
+                "motionblur",
+                "dfao"
+            ],
+            "usePreview": 0,
+            "username": "sirjofri",
+            "viewed": 393
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord.xy/iResolution.xy;\n    fragColor = vec4(texture(iChannel0, uv).rgb + fract(iTime*2.0*sin(dot(uv, vec2(12.9898, 78.233))*43758.5453))*.02, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// very cheap AA. Uses 5 frames, but doesn't cost a thing. But: flickering.\n// this also causes motion blur, by accident.\n//  0   - no AA\n//  1-5 -  valid AA levels\n// everything below 0 or above 5 is ignored.\n#define AA 5\n\n// scene speed. \"game time\"\n#define S (1.)\n\n// def this if refraction doesn't work or looks weird.\n//#define refract _refract\n\nconst float maxdist = 10000.;\nconst float nearcull = 0.;           // cull everything near the camera\nconst float shadowdist = 0.001;      // shadow ray distance (keep very small)\nconst float refdist = 0.001;         // reflection ray distance (keep very small)\nconst int refsteps = 4;              // reflection steps\n\nvec3 dirlight = normalize(vec3(.8, -.8, 1.));\nvec3 dirlightcolor = vec3(1., .8, .8);\nvec3 fog = vec3(.8, .8, 1.);\n\nvec3 _refract(vec3 I, vec3 N, float eta)\n{\n    eta += 2.;\n    float e = eta*eta;\n    float d = dot(N, I);\n    float k = 1.0 - e*(1.0-d*d);\n    if (k < 0.0)\n        return vec3(0.);\n    return eta*I - (eta*d + sqrt(k)) * N;\n}\n\nvoid movedirlight()\n{\n    dirlight = normalize(vec3(.8, -.8+cos(iTime*S), cos(iTime*S)*.5+.9));\n}\n\nstruct Tp {\nvec3 wp;\nfloat dist;\nvec3 norm;\nint mat;\n};\n\nTp nil(vec3 ro, vec3 rd, float d)\n{\n    return Tp(ro+d*rd, d, vec3(0.), 0);\n}\n\nTp rtSphere(vec3 ro, vec3 rd, vec3 p, float r, int mat)\n{\n    float dotp = dot(rd, ro)-dot(rd, p);\n    float dist = distance(ro, p);\n    float dd = dotp*dotp - (dist*dist - r*r);\n    if (dd < 0.)\n        return nil(ro, rd, maxdist);\n    float d1 = -dotp + sqrt(dd);\n    float d2 = -dotp - sqrt(dd);\n    float d = min(d1, d2);\n    if (d < nearcull)\n       return nil(ro, rd, maxdist);\n    vec3 wp = ro+rd*d;\n    vec3 n = normalize(wp-p);\n    return Tp(wp, d, n, mat);\n}\n\nTp rtPlane(vec3 ro, vec3 rd, vec3 pp, vec3 pn, int mat)\n{\n    float x = dot(rd, pn);\n    if (x == 0.)\n        return nil(ro, rd, maxdist);\n    float d = dot(pp-ro, pn)/x;\n    if (d < 0.)\n        return nil(ro, rd, maxdist);\n    return Tp(ro+d*rd, d, pn, mat);\n}\n\nfloat sdSphere(vec3 p, vec3 pos, float r)\n{\n    return distance(pos, p) - r;\n}\n\nfloat sdPlane(vec3 p, vec3 n, float h)\n{\n    return dot(p, n) + h;\n}\n\nTp opUnion(Tp a, Tp b)\n{\n    float d = min(a.dist, b.dist);\n    if (d == a.dist) return a;\n    return b;\n}\n\n// the following two functions are the same for different techniques.\n//\n// distance function for the primitives. Used for AO\nfloat mmap(vec3 ro)\n{\n    float plane1 = sdPlane(ro, vec3(0., 0., 1.), 0.);\n    float plane2 = sdPlane(ro, normalize(vec3(-.5, 0., 1.)), 2.);\n    float planes = min(plane1, plane2);\n    float ball1 = sdSphere(ro, vec3(0.7, 15., 1.), 1.);\n    float ball2 = sdSphere(ro, vec3(0.2, 15., .8)+vec3(sin(iTime*2.*S)*3., cos(iTime*2.*S)*2.4, 0.), .8);\n    float balls = min(ball1, ball2);\n    float rball = sdSphere(ro, vec3(1.2, 7., 1.), .3);\n    return min(min(planes, balls), rball);\n}\n\n// raytrace the individual objects, combine them\nTp map(vec3 ro, vec3 rd)\n{\n    Tp plane1 = rtPlane(ro, rd, vec3(0.), vec3(0., 0., 1.), 1);\n    Tp plane2 = rtPlane(ro, rd, vec3(0., 0., -2.), normalize(vec3(-.5, 0., 1.)), 2);\n    Tp planes = opUnion(plane1, plane2);\n    Tp ball1 = rtSphere(ro, rd, vec3(0.7, 15., 1.), 1., 3);\n    Tp ball2 = rtSphere(ro, rd, vec3(0.2, 15., .8)+vec3(sin(iTime*2.*S)*3., cos(iTime*2.*S)*2.4, 0.), .8, 3);\n    Tp balls = opUnion(ball1, ball2);\n    Tp rball = rtSphere(ro, rd, vec3(1.2, 7., 1.), .3, 4);\n    return opUnion(opUnion(planes, balls), rball);\n}\n\n// distance field AO, aka DFAO\nfloat calcAO(Tp s)\n{\n    float d = 0.4;\n    vec3 tp = s.wp + s.norm*d;\n    return clamp(mix(.5, 1., mmap(tp)/d), 0., 1.);\n}\n\nvec3 color(Tp s)\n{\n    \n    vec2 g = floor(mod(s.wp.xy, 2.));\n    float m = clamp(mod(g.x+g.y, 2.), 0., 1.);\n    if (s.dist >= maxdist)\n        return fog;\n    switch (s.mat){\n    case 1: // white ground plane\n        return mix(mix(vec3(1.), vec3(0.), m), vec3(.5), clamp(s.dist*.015, 0., 1.));\n    case 2: // green angled plane\n        return mix(mix(vec3(0., 1., 0.), vec3(0.), m), vec3(0., .5, 0.), clamp(s.dist*.015, 0., 1.));\n    case 3: // red balls\n        return vec3(.8, .02, 0.);\n    case 4: // glass ball\n        return vec3(0.1, 0.3, 0.2);\n    }\n    return vec3(clamp(mod(g.x+g.y, 2.), 0., 1.));\n}\n\nfloat getReflectivity(float d, Tp s)\n{\n    if (s.dist >= maxdist)\n        return 1.;\n    float refl = 1.;\n    switch (s.mat){\n    case 1:\n        refl = mix(0.4, .97, pow(d, .6));\n        break;\n    case 2:\n        refl = mix(0.3, .97, pow(d, .2));\n        break;\n    case 3:\n        refl = mix(0.3, .57, pow(d, .8));\n        break;\n    case 4:\n        refl = mix(0.4, .97, pow(d, .4));\n        break;\n    }\n    return clamp(refl, 0., 1.);\n}\n\n// blend fog and stuff\nvec3 pp(vec3 c, Tp s, vec2 uv)\n{\n    float h = clamp(1.1-s.wp.z*.05, 0., 1.);\n    float d = clamp(s.dist*.002-.05, 0., 1.);\n    return pow(mix(c, fog, d), vec3(1./2.2));\n}\n\nfloat calcShadow(Tp scene)\n{\n    Tp smap = map(scene.wp+shadowdist*scene.norm, dirlight);\n    float ao = calcAO(scene);\n    return clamp(pow(smap.dist, 6.), 0., 1.)*ao;\n}\n\nvec3 getLight(Tp s)\n{\n    return dirlightcolor * (clamp(dot(s.norm, dirlight), 0., 1.) * calcShadow(s)) + fog*.1;\n}\n\nvec3 getReflection(Tp s, vec3 rd)\n{\n    float d = dot(s.norm, rd);\n    d = clamp(d*d, 0., 1.);\n    vec3 ray = rd;\n    Tp refs = s;\n    vec3 refc = vec3(0.);\n    for (int i=0; i<refsteps; i++){\n        float d = dot(refs.norm, ray);\n        d = d*d;\n        ray = reflect(ray, refs.norm);\n        vec3 rcol = color(refs);\n        float r = getReflectivity(d, refs);\n        refs = map(refs.wp+ray*refdist, ray);\n        // which one of those next two lines is more realistic?\n     //   refc += color(refs)*getLight(refs)*rcol*r;\n        refc = mix(color(refs)*getLight(refs)*rcol, refc, r);\n    }\n    return refc;\n}\n\n// is the material refracting?\nbool refracting(Tp s)\n{\n    return s.mat == 4;\n}\n\nvec4 getRefraction(Tp s, vec3 rd)\n{\n    float r1 = 1.05;\n    float r2 = 1.0;\n    if (!refracting(s))\n        return vec4(0.);\n    vec3 ray = refract(rd, s.norm, r1/r2);\n    Tp scene = map(s.wp + refdist*ray, ray);\n    if (!refracting(scene))\n        return vec4(color(scene)*getLight(scene)*normalize(color(s)), clamp(scene.dist, 0., 1.));\n    ray = refract(ray, scene.norm, r2/r1);\n    Tp scout = map(scene.wp + refdist*ray, ray);\n    return vec4(color(scout)*getLight(scout)*normalize(color(s)), clamp(scout.dist, 0., 1.));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 ouv = uv;\n    uv -= .5;\n    uv.x *= iResolution.x/iResolution.y;\n    vec2 diff = ((fragCoord+vec2(1.))-fragCoord)/2./iResolution.xy;\n    diff *= .5;\n    \n    movedirlight();\n    \n    float cammove = smoothstep(-.1, .8, cos(iTime*.8*S))*2.-1.;\n    vec3 ro = vec3(sin(iTime*6.*S)*.02+cammove, cammove*5.+sin(iTime*9.*S)*.01, 2.-cammove+cos(iTime*5.*S)*.01);\n    vec3 rd = normalize(vec3(uv.x, 2., uv.y));\n    \n#if AA != 0\n    //   1 4\n    //    0\n    //   3 2\n    switch (iFrame% max(5, min(0, AA)) ){\n    case 0:\n        break;\n    case 1:\n        rd = normalize(vec3(uv.x-diff.x, 2., uv.y-diff.y));\n        break;\n    case 2:\n        rd = normalize(vec3(uv.x+diff.x, 2., uv.y+diff.y));\n        break;\n    case 3:\n        rd = normalize(vec3(uv.x-diff.x, 2., uv.y+diff.y));\n        break;\n    case 4:\n        rd = normalize(vec3(uv.x+diff.x, 2., uv.y-diff.y));\n        break;\n    }\n#endif\n    \n    Tp scene = map(ro, rd);\n    vec3 col = color(scene);\n    vec3 lightcol = getLight(scene);\n    vec3 refl = getReflection(scene, rd);\n    vec4 refr = getRefraction(scene, rd);\n    \n    float d = dot(scene.norm, rd);\n    d = d*d;\n\n    col = mix(col, refr.rgb, refr.a);\n    col = mix(refl, col*lightcol*lightcol, getReflectivity(d, scene));\n    col = pp(col, scene, uv);\n#if AA != 0\n    if (iFrame != 0) {\n        vec3 ocol = texture(iChannel0, ouv).rgb;\n        col += ocol;\n        col /= 2.;\n    }\n#endif\n\n    fragColor = vec4(col, 1.);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,38 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1611670415",
+            "description": "Licence CC0: Simple plane marcher\nI had fun messing around with \"plane marching\"\n\nThought others might appreciate a basic \"plane marcher\" to play around with",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "wlGcWy",
+            "likes": 13,
+            "name": "Basic \"plane marcher\"",
+            "published": 3,
+            "tags": [
+                "2d",
+                "3d",
+                "planes"
+            ],
+            "usePreview": 0,
+            "username": "mrange",
+            "viewed": 465
+        },
+        "renderpass": [
+            {
+                "code": "// Licence CC0: Simple plane marcher\n//  I had fun messing around with \"plane marching\"\n//  While not right to produce photo-realistic shaders you \n//  create some pretty interesting effects with them\n//  Thought others might appreciate a basic \"plane marcher\"\n//  to play around with\n\n// -----------------------------------------------------------------------------\n// COMMON\n// -----------------------------------------------------------------------------\n\n#define PI              3.141592654\n#define TAU             (2.0*PI)\n#define TIME            iTime\n#define RESOLUTION      iResolution\n#define ROT(a)          mat2(cos(a), sin(a), -sin(a), cos(a))\n\nconst vec3 std_gamma        = vec3(2.2, 2.2, 2.2);\n\nfloat hash(float co) {\n  return fract(sin(co*12.9898) * 13758.5453);\n}\n\nvec4 alphaBlend(vec4 back, vec4 front) {\n  float w = front.w + back.w*(1.0-front.w);\n  vec3 xyz = (front.xyz*front.w + back.xyz*back.w*(1.0-front.w))/w;\n  return w > 0.0 ? vec4(xyz, w) : vec4(0.0);\n}\n\nvec3 alphaBlend(vec3 back, vec4 front) {\n  return mix(back, front.xyz, front.w);\n}\n\nfloat tanh_approx(float x) {\n//  return tanh(x);\n  float x2 = x*x;\n  return clamp(x*(27.0 + x2)/(27.0+9.0*x2), -1.0, 1.0);\n}\n\nvec2 mod2_1(inout vec2 p) {\n  vec2 c = floor(p + 0.5);\n  p = fract(p + 0.5) - 0.5;\n  return c;\n}\n\nfloat hex(vec2 p, float r) {\n  const vec3 k = vec3(-sqrt(3.0)/2.0,1.0/2.0,sqrt(3.0)/3.0);\n  p = p.yx;\n  p = abs(p);\n  p -= 2.0*min(dot(k.xy,p),0.0)*k.xy;\n  p -= vec2(clamp(p.x, -k.z*r, k.z*r), r);\n  return length(p)*sign(p.y);\n}\n\nfloat circle(vec2 p, float r) {\n  return length(p) - r;\n}\n\n// -----------------------------------------------------------------------------\n// PATH\n// -----------------------------------------------------------------------------\n\n// The path function\nvec3 offset(float z) {\n  float a = z;\n  vec2 p = -0.075*(vec2(cos(a), sin(a*sqrt(2.0))) + vec2(cos(a*sqrt(0.75)), sin(a*sqrt(0.5))));\n  return vec3(p, z);\n}\n\n// The derivate of the path function\n//  Used to generate where we are looking\nvec3 doffset(float z) {\n  float eps = 0.1;\n  return 0.5*(offset(z + eps) - offset(z - eps))/eps;\n}\n\n// The second derivate of the path function\n//  Used to generate tilt\nvec3 ddoffset(float z) {\n  float eps = 0.1;\n  return 0.125*(doffset(z + eps) - doffset(z - eps))/eps;\n}\n\n// -----------------------------------------------------------------------------\n// PLANE MARCHER\n// -----------------------------------------------------------------------------\n\n// Plane generating function returns rgba\n//  pp is point on plane\n//  off is path at plane z\n//  aa is estimated pixel size at the plane\n//  n is plane number\nvec4 plane(vec3 ro, vec3 rd, vec3 pp, vec3 off, float aa, float n) {\n  float h = hash(n);\n  float s = mix(0.05, 0.25, h);\n\n  vec3 hn;\n  vec2 p = (pp-off*vec3(1.0, 1.0, 0.0)).xy;\n  p *= ROT(TAU*h);\n  const float lw = 0.005;\n  float d = hex(p/s, 0.5)*s;   \n  float dd = abs(d) - lw;\n\n  float a  = smoothstep(-aa, aa, -dd);\n  float ha = smoothstep(-aa, aa, d+lw);\n\n  vec4 col = vec4(mix(vec3(1.0-tanh_approx(15.0*length(p))), vec3(0.0), a), ha);\n\n  return col;\n}\n\nvec3 skyColor(vec3 ro, vec3 rd) {\n  float ld = max(dot(rd, vec3(0.0, 0.0, 1.0)), 0.0);\n  return vec3(tanh_approx(3.0*pow(ld, 100.0)));\n}\n\nvec3 color(vec3 ww, vec3 uu, vec3 vv, vec3 ro, vec2 p) {\n  float lp = length(p);\n  vec2 np = p + 1.0/RESOLUTION.xy;\n  float rdd = (2.0+0.5*tanh_approx(lp));  // Playing around with rdd can give interesting distortions\n  vec3 rd = normalize(p.x*uu + p.y*vv + rdd*ww);\n  vec3 nrd = normalize(np.x*uu + np.y*vv + rdd*ww);\n\n  const float planeDist = 1.0-0.75;\n  const int furthest = 11;\n  const int fadeFrom = max(furthest-6, 0);\n  const float fadeDist = planeDist*float(furthest - fadeFrom);\n  float nz = floor(ro.z / planeDist);\n\n  vec3 skyCol = skyColor(ro, rd);\n\n\n  vec4 acol = vec4(0.0);\n  const float cutOff = 0.95;\n  bool cutOut = false;\n\n  // Steps from nearest to furthest plane and accumulates the color \n  for (int i = 1; i <= furthest; ++i) {\n    float pz = planeDist*nz + planeDist*float(i);\n\n    float pd = (pz - ro.z)/rd.z;\n\n    if (pd > 0.0 && acol.w < cutOff) {\n      vec3 pp = ro + rd*pd;\n      vec3 npp = ro + nrd*pd;\n\n      float aa = 3.0*length(pp - npp);\n\n      vec3 off = offset(pp.z);\n\n      vec4 pcol = plane(ro, rd, pp, off, aa, nz+float(i));\n\n      float nz = pp.z-ro.z;\n      float fadeIn = exp(-2.5*max((nz - planeDist*float(fadeFrom))/fadeDist, 0.0));\n      float fadeOut = smoothstep(0.0, planeDist*0.1, nz);\n      pcol.xyz = mix(skyCol, pcol.xyz, (fadeIn));\n      pcol.w *= fadeOut;\n      pcol = clamp(pcol, 0.0, 1.0);\n\n      acol = alphaBlend(pcol, acol);\n    } else {\n      cutOut = true;\n      break;\n    }\n\n  }\n\n  vec3 col = alphaBlend(skyCol, acol);\n// To debug cutouts due to transparency  \n//  col += cutOut ? vec3(1.0, -1.0, 0.0) : vec3(0.0);\n  return col;\n}\n\n// Classic post processing\nvec3 postProcess(vec3 col, vec2 q) {\n  col = clamp(col, 0.0, 1.0);\n  col = pow(col, 1.0/std_gamma);\n  col = col*0.6+0.4*col*col*(3.0-2.0*col);\n  col = mix(col, vec3(dot(col, vec3(0.33))), -0.4);\n  col *=0.5+0.5*pow(19.0*q.x*q.y*(1.0-q.x)*(1.0-q.y),0.7);\n  return col;\n}\n\nvec3 effect(vec2 p, vec2 q) {\n  float tm  = TIME*0.4;\n  vec3 ro   = offset(tm);\n  vec3 dro  = doffset(tm);\n  vec3 ddro = ddoffset(tm);\n\n  vec3 ww = normalize(dro);\n  vec3 uu = normalize(cross(normalize(vec3(0.0,1.0,0.0)+ddro), ww));\n  vec3 vv = normalize(cross(ww, uu));\n\n  vec3 col = color(ww, uu, vv, ro, p);\n  col = postProcess(col, q);\n  return col;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 q = fragCoord/RESOLUTION.xy;\n  vec2 p = -1. + 2. * q;\n  p.x *= RESOLUTION.x/RESOLUTION.y;\n\n  vec3 col = effect(p, q);\n\n  fragColor = vec4(col, 1.0);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

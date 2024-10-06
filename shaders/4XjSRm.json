@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1710919030",
+            "description": "To test scattering functions in a controlled way.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "4XjSRm",
+            "likes": 15,
+            "name": "volumetrics testbed",
+            "published": 3,
+            "tags": [
+                "scattering",
+                "volumetrics"
+            ],
+            "usePreview": 0,
+            "username": "sdfgeoff",
+            "viewed": 253
+        },
+        "renderpass": [
+            {
+                "code": "/*\nThis is a testbed for testing volumetrics. It provides a simple cloudy sphere\nthat you can look around, and graphs the scattering and transmittance functions.\n\nThe graph on the left is the absorbtion. Currently it's an exponential decay\nthat can vary for each channel. \n\nThe graph on the right is the scattering. In the graph a white ray enters from the\nleft and hits a \"particle\" in the middle and is scattered in all directions.\nThe scattering is currently done by a series approximation, which can result in\ndifferent colors as you move around the volume. If there were more terms in the\nseries, in theory you could simulate rainbows etc.\nI'm tempted to replace this with a texture lookup at some point and see if I can't\ndo exactly that.\n\n----------------\n\nI can't help feeling there should be a unified scattering/transmittance model\nsomehow, even though logically I know that there is no reason why the wavelengths\nthat are absorbed should correlate to the wavelengths that are scattered.\nBut no matter what, after fiddling around, my brain continually goes \"can't you\nplug the scatting into the transmittance\". Oh well.\n\n\n\nThe light comes from directly above, and there seems to be an artifact there with\nmy current lighting function :shrug:\n\n\n-----------------\n\n\nEverything in this code is written for maximum clarity instead of performance,\nthe one exception is if the density is zero it doesn't bother doing shadow samples.\nThis has no visual impact, and makes a huge performance difference.\n\n\nSuggestions greatly appreciated.\n\n\nI'd love to integrate a GUI to fiddle with parameters, but there isn't a simple\nway to do this in shadertoy - integrating GUI widgets always seems like a hassle.\nI'd love a dear-imgui style thing where I can just say \"give me a slider and wire\nit into this parameter and lay it out in a grid\", but that is a fairly complex\nthing to develop....\n\n*/\n\nconst int STEPS_NUM = 100;\nconst float STEP_SIZE = 0.2;\n\nconst int SHADOW_STEPS_NUM = 5;\nconst float SHADOW_STEP_SIZE = 0.5;\n\nconst float FOV = 0.5;\n\n\nconst vec3 light_direction = normalize(vec3(0,1,0));\nconst vec3 light_intensity = vec3(1);\n\nconst vec3 absorbtion = vec3(1.0, 0.9, 0.8);\n\nvec4 cos_coeff_r = normalize(vec4(\n    0.1, // Forwards\n    0.0, // Back and forwards\n    0.0, // Back 60s and forwards\n    0.0// Forwards and backwards and sides\n));\nvec4 cos_coeff_g = normalize(vec4(\n    0.1, // Forwards\n    0.1, // Back and forwards\n    0.0, // Back 60s and forwards\n    0.0 // Forwards and backwards and sides\n));\nvec4 cos_coeff_b = normalize(vec4(\n    0.0, // Forwards\n    0.9, // Back and forwards\n    0.0, // Back 60s and forwards\n    0.9 // Forwards and backwards and sides\n));\n\n//const vec3 absorptivity = vec3(1.0, 0.9, 0.7) * 1.3;\n\n\n\nfloat density(vec3 position) {\n    float shape = 0.0;\n    \n    // Sphere\n    shape = 1.5 - length(position - vec3(0,0.5,0)) - texture(iChannel1, position * 0.1).r;\n    \n    // Clouds\n    // shape = -position.y * 0.6 + texture(iChannel1, position * 0.05).r;\n    \n    \n    // Fog \n    // shape = 0.08 - texture(iChannel1, position * 0.01).r *0.05;\n    \n    return clamp(shape, 0.0, 1.0) * 3.0;\n}\n\n\n\nvec3 calculate_scattering(float density_here, vec3 input_energy, vec3 input_vector, vec3 scattering_vector) {\n    // calculates how much energy scatters in a given direction.\n    // Ie light (input_energy) comes in from direction input_vector, hits a material with density_here, and scatters in the direction of scattering_vector\n    \n    float n_angle = acos(dot(input_vector, scattering_vector));\n    \n    vec4 angles = vec4(1, 2, 3, 4);\n\n    \n    vec4 c = cos(n_angle * angles);\n    vec3 ratio = vec3(\n        dot(c, cos_coeff_r) + 1.0,\n        dot(c, cos_coeff_g) + 1.0,\n        dot(c, cos_coeff_b) + 1.0\n    );\n    \n    vec3 scattered = density_here * input_energy / 2.0 / 3.14159 * ratio;\n\n    \n    return scattered; // Omni scattering\n}\n\n\nvec3 calculate_transmitance(float material_to_pass_through, vec3 input_energy) {\n    // Beer Lambert\n    return input_energy * exp(-material_to_pass_through * absorbtion);\n}\n\n\n\nvec3 calculate_lighting(vec3 point, float density_here, vec3 camera_direction) {\n    // Equally spaced steps towards light\n    const int num_steps = SHADOW_STEPS_NUM;\n    const float step_size = SHADOW_STEP_SIZE;\n    float material_to_light = 0.0;\n    \n    vec3 light_scattering_to_camera = vec3(0);\n   \n    if (density_here > 0.0) {\n        for (int i=0; i<num_steps; i++) {\n            vec3 position = point + float(i) * step_size * light_direction;\n            material_to_light += density(position) * step_size;\n        }\n        vec3 light_at_particle = calculate_transmitance(material_to_light, light_intensity);\n        light_scattering_to_camera += calculate_scattering(\n            density_here,\n            light_at_particle,\n            light_direction,\n            camera_direction\n        );\n        vec3 ambient_light_at_particle = light_at_particle; // Approx\n        light_scattering_to_camera += ambient_light_at_particle * density_here;\n    }\n    return light_scattering_to_camera;\n}\n\n\n// https://www.shadertoy.com/view/4djSRW\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.zyx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n\n\nvec4 step_density(vec3 from, vec3 direction, int num_steps, float step_size, float max_dist) {\n    float material_to_camera = 0.0;\n    float density_here = 0.0;\n    float reached_end = 1.0;\n        \n    vec3 color = vec3(0.0);\n    \n    for (int i=0; i<num_steps; i++) {\n        float dist = float(i) * step_size;\n        if (dist > max_dist) {\n            reached_end = 0.0;\n            break;\n        }\n        vec3 position = from + direction * dist;\n        density_here = density(position);\n        material_to_camera += density_here * step_size;\n        \n        vec3 light_towards_camera_at_particle = calculate_lighting(position, density_here, direction) * step_size;\n        vec3 light_reaching_camera = calculate_transmitance(material_to_camera, light_towards_camera_at_particle);\n        \n        color += light_reaching_camera;\n    }\n    \n    return vec4(color, material_to_camera);\n}\n\n\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = fragCoord/iResolution.y - iResolution.xy / iResolution.y / 2.0;\n    uv *= iResolution.x / iResolution.y;\n    vec2 coords = uv * 0.5 + 0.5;\n    \n    \n    vec2 angles = iMouse.xy / iResolution.xy * 3.14 * vec2(2.0, 1.0) + vec2(0.0, -1.5) ;//iTime * 0.2;\n    \n    vec2 s = sin(angles);\n    vec2 c = cos(angles);\n    mat4 camera_pivot_origin = mat4(\n        c.x,0,-s.x,0,\n        0,1,0,0,\n        s.x,0,c.x,0,\n        0,0,0,1\n    ) * mat4(\n        1,0,0,0,\n        0,c.y,-s.y,0,\n        0,s.y,c.y,0,\n        0,0,0,1\n    );\n    \n    vec3 ray_start = (camera_pivot_origin * vec4(0,0,-5,1)).xyz;\n    vec3 ray_direction = (camera_pivot_origin * normalize(vec4(uv * FOV, 1.0, 0.0))).xyz;\n    float noise = textureLod(iChannel2, uv + iTime * 10.0, 0.0).r;\n    ray_start += ray_direction * STEP_SIZE * noise;\n\n    \n    vec4 data = step_density(\n        ray_start,\n        ray_direction,\n        STEPS_NUM,\n        STEP_SIZE,\n        50.0\n    );\n    \n    vec3 volume_color = data.rgb;\n    float material_to_background = data.a;\n    vec3 background = textureLod(iChannel0, ray_direction, 1.0).rgb * 0.2;\n    \n    vec3 color = volume_color + calculate_transmitance(material_to_background, background);\n    \n    \n    vec2 graph_size = vec2(0.5, 1.0 / 3.0);\n    \n    if (coords.y < graph_size.y && coords.x < 1.0 && coords.x > 0.0) {\n        color *= 0.2;\n    \n        if (coords.x < 0.5) {\n            vec2 graph = coords / graph_size;\n            vec3 transmittance = calculate_transmitance(graph.x, vec3(1.0));\n            vec3 transmittance_graph = graph.y - transmittance;\n            vec3 transmittance_line = step(transmittance_graph, vec3(0.01));\n            transmittance_line *= 1.0 - step(transmittance_graph, vec3(-0.01));\n            color += transmittance_line;\n\n        } else {\n            vec2 graph = (coords - vec2(0.5,0.0)) / graph_size;\n            graph = graph * 2.0 - 1.0;\n            graph.y *= graph_size.y / graph_size.x;\n            \n            \n            vec3 scatter_color = calculate_scattering(\n                1.0, \n                vec3(1.0), \n                vec3(1,0,0), \n                normalize(vec3(graph, 0))\n            );\n            vec3 phase_graph = vec3(length(graph)) * 0.99 - scatter_color;\n            vec3 phase_line = step(phase_graph, vec3(0.01));\n            float light_line = graph.x < 0.0 ? step(abs(0.01 - graph.y), 0.005) : 0.0;\n            phase_line *= 1.0 - step(phase_graph, vec3(-0.01));\n            color += scatter_color;\n            color += phase_line;\n            color += light_line;\n        }\n    }\n    \n    \n    fragColor = vec4(color, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 22,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/585f9546c092f53ded45332b343144396c0b2d70d9965f585ebc172080d8aa58.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "volume",
+                        "id": 39,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/27012b4eadd0c3ce12498b867058e4f717ce79e10a99568cca461682d84a4b04.bin"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

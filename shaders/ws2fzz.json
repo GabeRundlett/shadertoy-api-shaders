@@ -1,0 +1,232 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1589453100",
+            "description": "The 3d sequel. Voronoi particle tracking 3D.\nif you have the plugin:\nuse acceleration 4x",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ws2fzz",
+            "likes": 38,
+            "name": "SPH 3D",
+            "published": 3,
+            "tags": [
+                "voronoi",
+                "simulation",
+                "interactive",
+                "fluid",
+                "particles",
+                "sph"
+            ],
+            "usePreview": 0,
+            "username": "michael0884",
+            "viewed": 1516
+        },
+        "renderpass": [
+            {
+                "code": "// Fork of \"Super SPH \" by michael0884. https://shadertoy.com/view/tdXBRf\n// 2020-05-09 15:47:15\n\n\nvec3 ACESFilm(vec3 x){\n    float a = 2.51;\n    float b = 0.03;\n    float c = 2.43;\n    float d = 0.59;\n    float e = 0.14;\n    return (x*(a*x+b))/(x*(c*x+d)+e);\n}\n\nmat3 gaussianFilter = mat3(41, 26, 7,\n                           26, 16, 4,\n                           7,  4,  1) / 273.;\n\nvec3 bloom(float scale, vec2 fragCoord){\n    float logScale = log2(scale);\n    vec3 bloom = vec3(0);\n    for(int y = -2; y <= 2; y++)\n        for(int x = -2; x <= 2; x++)\n            bloom += gaussianFilter[abs(x)][abs(y)] * textureLod(iChannel0, (fragCoord+vec2(x, y)*scale)/iResolution.xy, logScale+2.).rgb;\n    \n    return bloom;\n}\n\n\nvoid mainImage( out vec4 fragColor, in vec2 pos )\n{\n    sN = SN; \n    N = ivec2(R*P/vec2(sN));\n    TN = N.x*N.y;\n    ivec2 pi = ivec2(floor(pos));\n    \n     vec3 bloomSum = vec3(0.);\n    //bloomSum += bloom(.4 * R.y, pos) * .07;\n    //bloomSum += bloom(.2 * R.y, pos) * .07;\n    \n    fragColor.xyz = texel(ch2, pi).xyz + 1.*bloomSum;\n    fragColor.xyz = ACESFilm(2.*fragColor.xyz);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define texel(a, p) texelFetch(a, ivec2(p), 0)\n#define ch0 iChannel0\n#define ch1 iChannel1\n#define ch2 iChannel2\n#define ch3 iChannel3\n#define R iResolution.xy\n#define PI 3.14159265\n\n#define dt 1.\n#define loop(i,x) for(int i = min(0, iFrame); i < x; i++)\n\n//rendering scale\n#define SC 3.\n\n#define smoothR 2.5\n#define density 0.05\n\n//sim stuff\nstruct obj\n{\n    int id; //ID\n    vec3 X; //position\n    float Rho; //neighbor density\n    vec3 V; //velocity\n    float Pressure; //pressure\n    vec3 Color;\n    float Scale;\n};\n    \nfloat Force(float d)\n{\n    return 0.2*exp(-0.05*d)-2.*exp(-0.5*d);\n}\n\n//40% of the buffer used for particles\n#define P 0.5\n#define SN ivec2(6, 2)\n\nivec2 N; //buffer size\nivec2 sN; //buffer single element size\nint TN; //buffer length\n\nivec2 i2xy(ivec3 sid)\n{\n    return sN*ivec2(sid.x%N.x, sid.x/N.x) + sid.yz;\n}\n\nivec3 xy2i(ivec2 p)\n{\n    ivec2 pi = p/sN;\n    return ivec3(pi.x + pi.y*N.x, p.x%sN.x, p.y%sN.y);\n}\n\nivec2 cross_distribution(int i)\n{\n    return (1<<(i/4)) * ivec2( ((i&2)/2)^1, (i&2)/2 ) * ( 2*(i%2) - 1 );\n}\n\nfloat sqr(float x)\n{\nreturn x*x + 1e-2;\n}\n\n//hash funcs\nvec2 hash22(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yzx+33.33);\n    return fract((p3.xx+p3.yz)*p3.zy);\n}\n\nfloat hash13(vec3 p3)\n{\n\tp3  = fract(p3 * .1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 hash32(vec2 p)\n{\n\tvec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy+p3.yzz)*p3.zyx);\n}\n\nvec3 hash33(vec3 p3)\n{\n\tp3 = fract(p3 * vec3(.1031, .1030, .0973));\n    p3 += dot(p3, p3.yxz+33.33);\n    return fract((p3.xxy + p3.yxx)*p3.zyx);\n}\n\nvec3 hash31(float p)\n{\n   vec3 p3 = fract(vec3(p) * vec3(.1031, .1030, .0973));\n   p3 += dot(p3, p3.yzx+33.33);\n   return fract((p3.xxy+p3.yzz)*p3.zyx); \n}\n\n\nconst float PHI = 0.5*(sqrt(5.) + 1.);\n\nvec2 inverseSF( vec3 p, float n ) \n{\n    float m = 1.0 - 1.0/n;\n    \n    float phi = min(atan(p.y, p.x), PI), cosTheta = p.z;\n    \n    float k  = max(2.0, floor( log(n * PI * sqrt(5.0) * (1.0 - cosTheta*cosTheta))/ log(PHI+1.0)));\n    float Fk = pow(PHI, k)/sqrt(5.0);\n    vec2  F  = vec2( round(Fk), round(Fk * PHI) ); // k, k+1\n\n    vec2 ka = 2.0*F/n;\n    vec2 kb = 2.0*PI*( fract((F+1.0)*PHI) - (PHI-1.0) );    \n    \n    mat2 iB = mat2( ka.y, -ka.x, \n                    kb.y, -kb.x ) / (ka.y*kb.x - ka.x*kb.y);\n    \n    vec2 c = floor( iB * vec2(phi, cosTheta - m));\n    float d = 8.0;\n    float j = 0.0;\n    for( int s=0; s<4; s++ ) \n    {\n        vec2 uv = vec2( float(s-2*(s/2)), float(s/2) );\n        \n        float i = round(dot(F, uv + c)); // all quantities are ingeters (can take a round() for extra safety)\n        \n        float phi = 2.0*PI*fract(i*PHI);\n        float cosTheta = m - 2.0*i/n;\n        float sinTheta = sqrt(1.0 - cosTheta*cosTheta);\n        \n        vec3 q = vec3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta );\n        float squaredDistance = dot(q-p, q-p);\n        if (squaredDistance < d) \n        {\n            d = squaredDistance;\n            j = i;\n        }\n    }\n    return vec2( j, sqrt(d) );\n}\n\n\nmat4 getPerspective(float fov, float aspect, float n, float f)\n{   \n    float scale = tan(fov * PI / 360.) * n; \n    float r = aspect * scale, l = -r; \n    float t = scale, b = -t; \n\n\t\n    return mat4(2. * n / (r - l), 0, 0, 0,\n                0, 2. * n / (t - b), 0, 0,\n                (r + l) / (r - l), (t + b) / (t - b), -(f + n) / (f - n), -1,\n                0, 0, -2. * f * n / (f - n), 0);\n}\n\nmat4 getRot(vec2 a)\n{\n    \n   mat4 theta_rot = mat4(1, 0, 0, 0,\n                         0, cos(a.y), sin(a.y), 0,\n                         0, -sin(a.y), cos(a.y), 0,\n                         0, 0, 0, 1); \n        \n   mat4 phi_rot = mat4(cos(a.x), sin(a.x), 0, 0,\n        \t\t       -sin(a.x), cos(a.x), 0, 0,\n        \t\t        0, 0, 1, 0,\n                      \t0, 0, 0, 1); \n   return transpose(phi_rot*theta_rot);\n}\n\nmat4 getModel(vec3 dx)\n{\n   return transpose(mat4(1, 0, 0, dx.x,\n        \t   0, 1, 0, dx.y,\n               0, 0, 1, dx.z,\n               0, 0, 0, 1)); ;\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//L1 particle buffer - simulation\n//L2 directional neighbor graph 4x - sort\n\nint ID;\nobj O; //this object\n\n//sort arrays\nvec4 lnk0, lnk1;\nvec4 d0, d1;\n\n//L3\nvec4 EA[SN.x]; //element array\n\nvoid insertion_sort(float t, int id);\nobj getObj(int id); vec4 saveObj(int i);\nbool iscoincidenceEA(int id);\nvoid sort0(int idtemp, int D); void sort1(int idtemp, int D);\n\nfloat Kernel(float d, float h)\n{\n    return exp(-sqr(d/h))/(PI*sqr(h));\n}\n\nfloat KernelGrad(float d, float h)\n{\n    return 2.*d*Kernel(d,h)/sqr(h);\n}\n\nvec2 borderF(vec2 p)\n{\n    \n    float d = min(min(p.x,p.y),min(R.x-p.x,R.y-p.y));\n    return exp(-max(d,0.)*max(d,0.))*((d==p.x)?vec2(1,0):(\n    \t\t(d==p.y)?vec2(0,1):(\n            (d==R.x-p.x)?vec2(-1,0):vec2(0,-1))));\n}\n\nvoid UpdateParticle()\n{\n    vec3 g = -1e-5*O.X; \n    vec3 F = g; \n    \n    float scale = 0.21/density; //radius of smoothing\n    float Rho = Kernel(0., scale);\n    float avgP = 0.;\n\tvec3  avgC = vec3(O.Color);\n\n    loop(j,6)\n    {\n        vec4 nb = texel(ch0, i2xy(ivec3(ID, j, 1)));\n        loop(i,3)\n        {\n            if(nb[i] < 0. || nb[i] > float(TN)) continue;\n            obj nbO = getObj(int(nb[i]));\n\n            float d = distance(O.X, nbO.X);\n            vec3 dv = (nbO.V - O.V); //delta velocity\n            vec3 dx = (nbO.X - O.X); //delta position \n            vec3 ndir = dx/(d+1e-3); //neighbor direction\n            //SPH smoothing kernel\n            float K = Kernel(d, scale);\n\n            vec3 pressure = -0.5*( nbO.Pressure/sqr(nbO.Rho) + \n                                     O.Pressure/sqr(O.Rho) )*ndir*K;//pressure gradient\n            vec3 viscosity = 3.*ndir*dot(dv,ndir)*K;\n           \n            Rho += K;\n            avgC += nbO.Color;\n            avgP += nbO.Pressure*K;\n\n            F += pressure + viscosity;\n        }\n    }\n\n    O.Rho = Rho;\n    \n    O.Scale = scale; //average distance\n    \n    float r = 7.;\n    float D = 1.;\n    float waterP = 0.08*density*(pow(abs(O.Rho/density), r) - D);\n    O.Pressure = min(waterP,0.03);\n\n    O.V += F*dt;\n    O.V -= O.V*(0.5*tanh(8.*(length(O.V)-1.5))+0.5);\n    O.X += O.V*dt; //advect\n\n    //color diffusion\n\n    //O.Color = ;\n}\n\nvoid mainImage( out vec4 Q, in vec2 pos )\n{\n    //4 pix per layer, 3 layers\n    sN = SN; \n    N = ivec2(R*P/vec2(sN));\n    TN = N.x*N.y;\n    int S = 3; //log2(sN.x)\n    \n    ivec2 p = ivec2(floor(pos));\n    if(any(greaterThan(p, sN*N-1))) discard;\n   \n    ivec3 sid = xy2i(p); ID = sid.x;\n    O = getObj(ID);\n    d0 = vec4(1e6); d1 = vec4(1e6);\n    lnk0 = vec4(-1); lnk1 = vec4(-1);\n    \n    switch(sid.z)\n    {\n    case 0: //particle\n        if(sid.z >= 3) discard;\n        float sk = 0.;\n        \n        UpdateParticle();\n        \n        if(iFrame<10)\n        {\n            O.X = 40.*(hash32(3.14159*pos) - 0.5);\n\t\t\tO.V = 0.*(hash32(3.14159*pos) - 0.5);\n            O.Color = hash32(3.14159*pos);\n            O.Pressure = 0.;\n            O.Scale = 5.;\n            O.Rho = 5.;\n        }\n\n        Q = saveObj(sid.y);\n        return;\n        \n    case 1: //dir graph\n        //sort neighbors and neighbor neighbors\n        vec4 nb0 = texel(ch0, i2xy(ivec3(ID, sid.y, 1)));\n        loop(i,4)\n        {\n            sort0(int(nb0[i]), sid.y);  //sort this\n            //use a sudorandom direction of the neighbor\n            vec4 nb1 = texel(ch0, i2xy(ivec3(nb0[i], (iFrame+ID)%4, 1)));\n            loop(j,2)\n            {\n                sort0(int(nb1[j]), sid.y);  \n            }\n        }\n        \n        //random sorts\n        loop(i,4) sort0(int(float(TN)*hash13(vec3(iFrame, ID, i))), sid.y);\n        \n        Q = lnk0;\n        return;\n    }\n     \n}\n\nvec4 saveObj(int i)\n{\n    switch(i)\n    {\n    case 0:  \n        return vec4(O.X, O.Rho);\n    case 1:\n        return vec4(O.V, O.Pressure);\n    case 2:\n        return vec4(O.Color, O.Scale);\n    }\n}\n\nobj getObj(int id)\n{\n    obj o;\n    \n    vec4 a = texel(ch0, i2xy(ivec3(id, 0, 0))); \n    o.X = a.xyz; o.Rho = a.w;\n    a = texel(ch0, i2xy(ivec3(id, 1, 0))); \n    o.V = a.xyz; o.Pressure = a.w; \n    a = texel(ch0, i2xy(ivec3(id, 2, 0))); \n    o.Color = a.xyz; o.Scale = a.w;\n \n    o.id = id;\n    return o;\n}\n\nvoid insertion_sort(float t, int id)\n{\n\tif(d0.x > t)\n    {\n        d0 = vec4(t, d0.xyz);\n        lnk0 = vec4(id, lnk0.xyz);\n    }else if(d0.y > t && d0.x < t)\n    {\n        d0.yzw = vec3(t, d0.yz);\n        lnk0.yzw = vec3(id, lnk0.yz);\n    }else if(d0.z > t&& d0.y < t)\n    {\n        d0.zw = vec2(t, d0.z);\n        lnk0.zw = vec2(id, lnk0.z);\n    }else if(d0.w > t && d0.z < t)\n    {\n        d0.w = t;\n        lnk0.w = float(id);\n    }\n}\n\nbool iscoincidence(int id)\n{\n    return (id < 0) || \n      \t   (id == ID) ||\n           any(equal(lnk0,vec4(id)));\n}\n\nvoid sort0(int idtemp, int D) //sort closest objects in sN.x directions\n{\n    if(iscoincidence(idtemp)) return; //particle already sorted\n    \n    vec3 nbX = texel(ch0, i2xy(ivec3(idtemp, 0, 0))).xyz; \n   \n    vec3 dx = nbX - O.X;\n    int dir = int(inverseSF(dx, float(sN.x)).x);\n    \n    if(dir != D) return; //not in this sector\n    \n    float t = length(dx);\n   \n    insertion_sort(t, idtemp);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "texture",
+                        "id": 5,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/8de3a3924cb95bd0e95a443fff0326c869f9d4979cd1d5b6e94e2a01f5be53e9.jpg"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "//voronoi 3d particle tracking + graph augmented\n\nmat4 rotat; //rotation matrix\nmat4 model; //model matrix\nmat4 imat;\n\n//render range\n#define range 300.\n#define FOV 2.\n\nvec3 ray;\nfloat d;\nvec3 ip;\nint id;\nvec2 p; //screen coord\n\nfloat sphere_intersection(vec3 r, vec3 p, vec4 sphere)\n{\n\tp = p - sphere.xyz;\n\tif(p == vec3(0)) return sphere.w;\n\t\n\tfloat b = dot(p, r);\n\tfloat c = sphere.w*sphere.w - dot(p,p);\n\tfloat d = b*b + c;\n\t\n\tif((d <= 0.)) //if no intersection\n\t{\n\t\treturn -length(cross(r, sphere.xyz)); //return closest dist\n\t}\n\telse\n\t{\n\t\treturn -sqrt(d) - b; //use closest solution in the direction of the ray\n\t}\n}\n\nvec4 ppos(int id)\n{\n\treturn vec4(texel(ch0, i2xy(ivec3(id, 0, 0))).xyz,1.);\n}\n\nvoid getRay()\n{\n    vec2 uv = (p - R*0.5)/R.x;\n    ray = normalize(vec3(FOV*uv, 1.));\n}\n\nfloat zrange(float z)\n{\n    return clamp(z/range,0.,1.);\n}\n\nvec4 point_distance(int id, float r)\n{\n    vec4 X = model*rotat*ppos(id);\n    float cd = sphere_intersection(ray, vec3(0), vec4(X.xyz,r));\n    if(cd > 0.)\n    {\n        return vec4((imat*vec4(cd*ray,1.)).xyz, zrange(cd));\n    }\n    else\n    {\n        return vec4(vec3(1e10), 1.+abs(cd));\n    }\n}\n\nvoid sort(int utemp)\n{\n    if(utemp < 0) return; \n   \tvec4 dtemp = point_distance(utemp, 0.75);\n    if(dtemp.w < d) //sorting\n    {\n        d = dtemp.w;\n        ip = dtemp.xyz;\n        id = utemp;\n    }\n}\n\n\nvoid mainImage( out vec4 Q, in vec2 pos )\n{\n    sN = SN; \n    N = ivec2(R*P/vec2(sN));\n    TN = N.x*N.y;\n    d = 1e10;\n    id = 1;\n    p = pos;\n    ip = vec3(1e10);\n    ivec2 pi = ivec2(floor(pos));\n    \n    getRay(); \n    //set up camera \n    vec2 angles = (iMouse.z>0.)?(iMouse.xy/R)*vec2(2.*PI, PI):vec2(0.3*iTime, PI*0.5+0.5*sin(0.5*iTime));\n    rotat = getRot(angles);\n    model = getModel(vec3(0.,0.,100.));\n    imat = inverse(model*rotat);\n    \n    /// sort pixels\n    sort(int(texel(ch1, pi).x));\n    \n    int ID = id;\n    loop(j,16)\n    {\n        \n        int nbid = int(texel(ch1, pi+cross_distribution(j)).x);\n        sort(nbid);\n    }\n    \n    loop(j,int(sN.x))\n    {\n        vec4 nb = texel(ch0, i2xy(ivec3(ID, j, 1)));\n        loop(i,2)\n    \t{ \n            sort(int(nb[i]));  //sort this\n        }\n    }\n    \n    loop(i,4) //random sort\n    {\n        sort(int(float(TN)*hash13(vec3(iFrame, pi.x, pi.y*i))));\n    }\n    ///\n    \n    \n    //save\n   \tQ = vec4(id, ip);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// iq's smooth HSV to RGB conversion \nvec3 hsv2rgb( in vec3 c )\n{\n    vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n\n\trgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n\n\treturn c.z * mix( vec3(1.0), rgb, c.y);\n}\n\nobj getObj(int id)\n{\n    obj o;\n    \n    vec4 a = texel(ch0, i2xy(ivec3(id, 0, 0))); \n    o.X = a.xyz; o.Rho = a.w;\n    a = texel(ch0, i2xy(ivec3(id, 1, 0))); \n    o.V = a.xyz; o.Pressure = a.w; \n    a = texel(ch0, i2xy(ivec3(id, 2, 0))); \n    o.Color = a.xyz; o.Scale = a.w;\n \n    o.id = id;\n    return o;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 pos )\n{\n    sN = SN; \n    N = ivec2(R*P/vec2(sN));\n    TN = N.x*N.y;\n    ivec2 pi = ivec2(floor(pos));\n    \n    vec4 A = texel(ch1, pi);\n    int ID = int(A.x); \n    vec3 ip = A.yzw;\n\tobj o = getObj(ID);\n    vec3 n = normalize(ip - o.X);\n    vec3 col = o.Color*(0.5*n.x + .8);\n    vec3 ncol = (length(ip) < 1e6)?col:vec3(0.);\n    // Output to screen\n \tvec3 pcol = texel(ch2, pi).xyz;\n    fragColor = vec4(mix(pcol,ncol,0.26),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    }
+                ],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

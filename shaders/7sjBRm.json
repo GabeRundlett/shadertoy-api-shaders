@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1645915451",
+            "description": "Helps achieve an image quality equivalent to having a higher bit depth. See description at the top of the shader code.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "7sjBRm",
+            "likes": 7,
+            "name": "High quality Gaussian dithering",
+            "published": 3,
+            "tags": [
+                "noise",
+                "random",
+                "hash",
+                "dithering",
+                "prng"
+            ],
+            "usePreview": 0,
+            "username": "Michel_Rouzic",
+            "viewed": 351
+        },
+        "renderpass": [
+            {
+                "code": "#define levels 31.           // 255. for 8-bit output, 127. for 7-bit output etc...\n#define square_scale 0.15    // make it bigger to make the squares bigger\n#define noise_frame_div 1    // make it bigger to make the noise only change every noise_frame_div frames\n\n/*\nThis is the Gaussian dithering algorithm I've been using for years, as described here:\nhttps://stackoverflow.com/a/15793794/1675589\n\nBy default a lower bit depth of 5-bit per channel is simulated so that the effect is more evident,\nusing a levels value (see line #1) of 31. The pixels are enlarged to make the effect clearer, and\nyou can pause the shader to see what each pixel looks like at a given time and see that only a\nhandful of different colours are used. You can also increase noise_frame_div to like 1000 to see\nhow it would look if the noise pattern rarely changed. The dithering looks smoother if you lower\nsquare_scale, which makes the pixels smaller.\n\nThe core of the PRNG is a hash function based on github.com/skeeto/hash-prospector. The random\n32-bit integer is then turned into a float in the ]-1 , 1[ range and then a well-known rough\napproximation of the inverse error function is applied to give it a Gaussian distribution.\nWhen colours approach 0 or 1 the intensity of the noise is reduced as to avoid introducing a bias.\nWithout it white wouldn't look as white because the positive noise would be crushed but the\nnegative noise would still darken the image, and black would look like a dark grey noise,\nwhich is undesirable. I tweaked everything to achieve the best lack of banding with the least noise.\n\nBesides the dithering code which is very cool and that I consider essential to making high quality\ngraphics equivalent to having a much superior bit depth, a cool part of this shader that I also\nconsider essential for a different reason is the sinusoidal colour gradient. I use it all the\ntime whenever I need some procedural colours, it's much better than always using a max saturation\ncolour wheel, it produces a natural palette that doesn't seem to ever quite repeat itself. I\nstrongly recommend using such an approach for generating colours.\n\nDithering is done in sRGB therefore it introduces a slight upwards bias, I'm open to suggestions\non how to cancel that out, although at 8-bits that's not really a big deal.\n\nThis shader code is derived from my OpenCL code:\nhttps://github.com/Photosounder/rouziclib/blob/master/rouziclib/graphics/drawqueue/opencl/srgb.cl\n*/\n\nuint rand_xsm32(uint x)\n{\n\tx ^= x >> 16;\n\tx *= 0x21f0aaadu;\n\tx ^= x >> 15;\n\tx *= 0x735a2d97u;\n\tx ^= x >> 15;\n\treturn x;\n}\n\nfloat gaussian_rand_approx(uint pos)\t// max error of the resulting Gaussian distribution: 9.8e-3\n{\n\tfloat r = (float(rand_xsm32(pos)) - 2147483647.5) * 4.6566125e-10;\t\t// r = ]-1 , 1[\n\n\treturn 0.88622693f * sqrt(-log(1. - r*r)) * sign(r);\t\t// gives a e^-x^2 distribution, [-3.54 , 3.54]\n}\n\nfloat sq(float x)\n{\n    return x * x;\n}\n\nfloat lsrgb(float l)\t// converts a [0.0, 1.0] linear value into a [0.0, 1.0] sRGB value\n{\n\tfloat x, line, curve;\n\n\t// 13 FR every time + 2 FR once\n\tline = l * 12.92;\t// 1 FR\n\tx = sqrt(l);\t// 4 FR\n\tcurve = ((((0.455*x - 1.48)*x + 1.92137)*x - 1.373254)*x + 1.51733216)*x - 0.0404733783;\t// 5 FR + 2 FR once, error 0.145 sRGB units\n\n\treturn l <= 0.0031308 ? line : curve;\t// 3 FR\n}\n\nfloat apply_dithering(float pv, float dv)\n{\n\tconst float threshold = 1.2 / levels;\n\tconst float it = 1. / threshold;\n\tconst float rounding_offset = 0.5 / levels;\n\n\t// Reduce the scale of the dithering if pv is close to 0\n\tif (pv < threshold)\t// 1.2 is the threshold so that the crushing happens at 1.2*sqrt(2) = 1.7 sigma\n\t{\n\t\tif (pv <= 0.)\n\t\t\treturn 0.;\n\t\telse\n\t\t\tdv *= pv * it;\n\t}\n\n\t// Same if pv is close to 1\n\tif (pv > 1. - threshold)\n\t{\n\t\tif (pv >= 1.)\n\t\t\treturn 1.;\n\t\telse\n\t\t\tdv *= (1.-pv) * it;\n\t}\n\n\treturn pv += dv + rounding_offset;\n}\n\nvec3 linear_to_srgb(vec3 pl0, uint prng_pos, int use_dithering)\n{\n\tvec3 pl1;\n\tfloat dith;\n\tconst float dith_scale = 0.70710678 / levels;\n\n\tpl0 = clamp(pl0, 0., 1.);\n\n\tpl1.r = lsrgb(pl0.r);\t\t// blue\n\tpl1.g = lsrgb(pl0.g);\t\t// green\n\tpl1.b = lsrgb(pl0.b);\t\t// red\n\n\t// Dithering\n\tdith = gaussian_rand_approx(prng_pos) * dith_scale;\n    if (use_dithering == 0)\n        dith = 0.;\n\n\tpl1.r = apply_dithering(pl1.r, dith);\n\tpl1.g = apply_dithering(pl1.g, dith);\n\tpl1.b = apply_dithering(pl1.b, dith);\n\n\t// Lower bit depth simulation\n\tif (levels < 255.)\n\t\tpl1 = round(pl1 * levels) * (1./levels);\n\n\treturn pl1;\n}\n\nfloat gaussian(float x)\n{\n\treturn exp(-x*x);\n}\n\nfloat point_weight(vec2 dp, float rad, vec2 pf)\n{\n\tfloat d = distance(dp, pf) * rad;\t// distance of the pixel from the centre of the dot, scaled\n\n\treturn gaussian(d);\n}\n\nvec3 value_to_sin_gradient(float v)\n{\n    vec3 g = vec3(v) * vec3(0.36, 0.187, 0.13) + vec3(0.2);\n    g = sin(g) * 0.5 + 0.5;\n    return g;\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    int prng_pos;\n    ivec2 pix_pos;\n    \n    // Pixel to world coordinates\n    float scrscale = 18. / iResolution.y;\n    vec2 uv = (fragCoord-iResolution.xy*0.5) * scrscale;\n    vec2 uvr = round(uv * (1./square_scale));\n    pix_pos = ivec2(uvr);\n    uvr *= square_scale;\n\n    // Colour gradient\n    vec3 pv = vec3(0.);\n    float source_angle = iTime * 0.1;    // speed of rotation of the Gaussian dot\n    float v = point_weight(vec2(sin(source_angle), cos(source_angle))*10., 0.08, uvr);\n    pv = value_to_sin_gradient(29. + iTime*0.2 + v*4.);\n    \n    // Dithering PRNG position\n    prng_pos = (iFrame/noise_frame_div*int(iResolution.y) + pix_pos.y)*int(iResolution.x) + pix_pos.x;\n\n    // Output to screen\n    pv *= 1. - 0.25*gaussian(uv.y*16.);       // Split\n    fragColor = vec4(linear_to_srgb(pv, uint(prng_pos), uv.y > 0. ? 0 : 1), 1.);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

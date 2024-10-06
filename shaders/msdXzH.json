@@ -1,0 +1,41 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1679416957",
+            "description": "volumetric lighting with shadows.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "msdXzH",
+            "likes": 56,
+            "name": "Analytical Volumetric Shadows",
+            "published": 3,
+            "tags": [
+                "3d",
+                "lighting",
+                "volumetric",
+                "analytical",
+                "integration",
+                "clay"
+            ],
+            "usePreview": 0,
+            "username": "me_123",
+            "viewed": 1011
+        },
+        "renderpass": [
+            {
+                "code": "// Created by me_123. March 2023\n\n#define COUNT 10\n\n#define MAX 1000.\nvec3 getRay(in vec3 cameraDir, in vec2 uv) {\n    vec3 cameraPlaneU = vec3(normalize(vec2(cameraDir.y, -cameraDir.x)), 0);\n    vec3 cameraPlaneV = cross(cameraPlaneU, cameraDir) ;\n\treturn normalize(cameraDir + uv.x * cameraPlaneU + uv.y * cameraPlaneV);\n}\nvec3 hash33(uvec3 q)\n{// by David Hoskins.\n\tq *= uvec3(1597334673U, 3812015801U, 2798796415U);\n\tq = (q.x ^ q.y ^ q.z)*uvec3(1597334673U, 3812015801U, 2798796415U);\n\treturn vec3(q) * (1.0 / float(0xffffffffU));\n}\nvec3 hash31(uint q)\n{// by David Hoskins.\n\tuvec3 n = q * uvec3(1597334673U, 3812015801U, 2798796415U);\n\tn = (n.x ^ n.y ^ n.z) * uvec3(1597334673U, 3812015801U, 2798796415U);\n\treturn vec3(n) * (1.0 / float(0xffffffffU));\n}\nfloat hash11(uint q)\n{// by David Hoskins.\n\tuvec2 n = q * uvec2(1597334673U, 3812015801U);\n\tq = (n.x ^ n.y) * 1597334673U;\n\treturn float(q) * (1.0 / float(0xffffffffU));\n}\nvec3 noise(in float x) {\n    return mix(hash31(uint(floor(x))),hash31(1u+uint(floor(x))),0.5*(1.-cos(3.14159*fract(x))));\n}\nvec3 fbm(in float x) {\n    vec3 v = vec3(0);\n    for (int i = 0; i < 5; i += 1) {\n        v += noise(x*float(1<<i))*pow(2., -float(i));\n    }\n    return v*0.5 - 0.5;\n}\nvec2 sphere( in vec3 ro, in vec3 rd, float r )\n{\n    float b = dot( ro, rd );\n    vec3 qc = ro - b*rd;\n    float k = r*r - dot( qc, qc );\n    if(k < 0.0) return vec2(MAX);\n    k = sqrt( k );\n    return vec2(-b-k, -b+k);\n}\nfloat fog(in vec3 o, in vec3 d, in vec2 x) {\n    // integral of 1/((o.x+d.x*x)^2 + (o.y+d.y*x)^2 + (o.y+d.y*x)^2) dx\n    // from x.x to x.y\n    float dd = dot(d, d),\n    d0 = dot(o, d),\n    q = 1./(sqrt(0.00005+dd*(o.z*o.z-d0*d0/dd+dot(o.xy, o.xy))));\n    vec2 k = atan((dd*x+d0)*q);\n    return (k.y-k.x)*q*0.05;\n}\nconst float dark = 0.2; //dark areas\nvec3 findShadow(in vec3 o, in vec3 d, in vec3 p, in vec3 light) {\n    //sphere shadow intersection from a ray and light position\n    // it just points the space to the sphere with a look at matrix\n    // then intersects a ray with x^2+y^2-z^2=0\n    o -= light;\n    p -= light;\n    float see = length(light)-1./length(light);\n    vec3 z = normalize(light);\n    vec3 x = normalize(cross(vec3(0, 0, 1), z));\n    vec3 y = normalize(cross(z, x));\n    mat4 mat = mat4(vec4(x,0),vec4(y,0),vec4(z,0),vec4(light,1));\n    o = -(vec4(o, 0)*mat).xyz;\n    p = -(vec4(p, 0)*mat).xyz;\n    d = -(vec4(d, 0)*mat).xyz;\n    float v = 1./(dot(light, light)-1.0);\n    float j = ((p.x*p.x+p.y*p.y-p.z*p.z*v) > 0.0 || p.z < see) ? 1.0 : -1.0;\n    if (dot(light, light) < 1.0) j = -1.;\n    float a = d.x*d.x+d.y*d.y-(d.z*d.z)*v;\n    float b = 2.*(o.x*d.x + o.y*d.y - v*o.z*d.z);\n    float c = o.x*o.x + o.y*o.y - o.z*o.z*v;\n    vec2 h = (-b + vec2(1, -1)*sqrt((b*b - 4.*a*c)))/(2.*a);\n    if (h.x < 0.0) h.x = MAX;\n    if (o.x*o.x+o.y*o.y-o.z*o.z*v < 0.0 && o.z > 0.0) return vec3(0, h.x, j);\n    if (o.z+d.z*h.y < see) return vec3(MAX, MAX, j);\n    if (isnan(h.x) || h.y < 0.0) return vec3(vec2(MAX), j);\n    if (h.x-h.y < 0.0) h.x = MAX;\n    return vec3(h.yx, j);\n}\nfloat time = 0.0;\nvec3 getColor(in vec3 ro, in vec3 rd) {\n    vec3 normal = vec3(0);\n    float dist = 0.0;\n    vec3 albedo = vec3(0);\n    int mat = -1;\n    dist = sphere(ro, rd, 1.0).x;\n    if (dist < MAX) {\n        normal = ro+rd*dist;\n        mat = 0;    \n    }\n    float ground = -(ro.z+1.)/rd.z;\n    if (ground < 0.0) ground = MAX;\n    if (ground < dist) {\n        normal.z = float(mat = 1);\n        dist = ground;\n    }\n    vec3 p = ro+rd*dist;\n    albedo = vec3(mat==0?1.:(int(floor(p.x)+floor(p.y))%2==0?0.5:1.));\n    albedo *= 2.-1./pow(0.7+length((ro+rd*dist)-vec3(0,0,-1)),2.0);\n    dist = min(dist, ground);\n    vec3 volumetric = vec3(0);\n    vec3 light = vec3(0);\n    for (int i = 0; i < COUNT; i += 1) {\n        vec3 lightPos = sin(hash31(uint(i+10))*10.+hash31(uint(i+100))*time*0.5)*2.5;\n        vec3 lightColor = 0.005/pow(hash31(uint(i+10)), vec3(1.25));\n        if (i == 1) lightColor *= 10.;\n        vec3 god = findShadow(ro, rd, p, lightPos);\n        volumetric += lightColor*fog(ro-lightPos, rd, vec2(0, dist));\n        light += lightColor*((god.z > 0.0 || mat == 0)?1.0:dark)*clamp(mix(dot(normal, normalize(lightPos-p)), 1.0, 0.5), dark, 1.0)/(dot(lightPos-p, lightPos-p));\n        if (god.x != MAX) volumetric -= lightColor*fog(ro-lightPos, rd, vec2(min(god.x, dist), min(god.y, dist)));\n    }\n    volumetric += albedo*light;\n    return (2.-1./(volumetric*(3.0+0.5*sin(time))+0.5))*0.5;\n}\nfloat Falloff = 0.25;\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    time = 0.3*((sin(iTime)+1.0)*5.+time);\n    vec2 uv = (fragCoord.xy-iResolution.xy*0.5)/iResolution.y;\n    vec2 m = vec2(iTime*0.8, sin(iTime*0.25)*0.6+3.1415*0.5);\n    if (iMouse.z > 0.0) m = (iMouse.xy/iResolution.xy)*vec2(6.28, 3.14159263);\n    vec3 ro = vec3(sin(m.y) * cos(-m.x), sin(m.y) * sin(-m.x), max(cos(m.y), -0.1))*5.0;\n    vec3 rd = getRay(-normalize(ro), uv);\n    ro += fbm(iTime)*0.5;\n    vec3 color = getColor(ro, rd)+hash33(uvec3(fragCoord.xy, iTime))*0.00390625;\n    fragColor = vec4(color, 1);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,82 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1479523885",
+            "description": "Write your volumetric shader in the \"mainVolume\" function in Buf A. \nThe resolution of the volume buffer automatically scales with the frame resolution and is equal to floor(cuberoot(resX * resY)) (iVResolution in Buf A).",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Ml3SD4",
+            "likes": 61,
+            "name": "Volumetric Sandbox",
+            "published": 3,
+            "tags": [
+                "3d",
+                "volume",
+                "raymarch",
+                "sandbox"
+            ],
+            "usePreview": 0,
+            "username": "Flyguy",
+            "viewed": 2017
+        },
+        "renderpass": [
+            {
+                "code": "\n#define LINEAR_SAMPLE 1\n#define MAX_VOLUME_STEPS 290\n#define VOLUME_STEP_SIZE 0.02\n#define MAX_ALPHA 0.95\n#define DENSITY_SCALE 1.0\n\nfloat pi = atan(1.0)*4.0;\nfloat tau = atan(1.0)*8.0;\n\nvec3 vres = vec3(0);\n\nmat2 rotate(float a)\n{\n    return mat2(cos(a),sin(a),-sin(a),cos(a));\n}\n\nvec4 texture3D(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    uvw = mod(floor(uvw * vres), vres);\n    \n    //XYZ -> Pixel index\n    float idx = (uvw.z * (vres.x*vres.y)) + (uvw.y * vres.x) + uvw.x;\n    \n    //Pixel index -> Buffer uv coords\n    vec2 uv = vec2(mod(idx, iResolution.x), floor(idx / iResolution.x));\n    \n    //WEBGL 2 FIX: texture(...) caused loop unrolling errors, using textureLod(...) fixes this.\n    return textureLod(tex, (uv + 0.5) / iResolution.xy, 0.0);\n}\n\nvec4 texture3DLinear(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    vec3 blend = fract(uvw*vres);\n    vec4 off = vec4(1.0/vres, 0.0);\n    \n    //2x2x2 sample blending\n    vec4 b000 = texture3D(tex, uvw + off.www, vres);\n    vec4 b100 = texture3D(tex, uvw + off.xww, vres);\n    \n    vec4 b010 = texture3D(tex, uvw + off.wyw, vres);\n    vec4 b110 = texture3D(tex, uvw + off.xyw, vres);\n    \n    vec4 b001 = texture3D(tex, uvw + off.wwz, vres);\n    vec4 b101 = texture3D(tex, uvw + off.xwz, vres);\n    \n    vec4 b011 = texture3D(tex, uvw + off.wyz, vres);\n    vec4 b111 = texture3D(tex, uvw + off.xyz, vres);\n    \n    return mix(mix(mix(b000,b100,blend.x), mix(b010,b110,blend.x), blend.y), \n               mix(mix(b001,b101,blend.x), mix(b011,b111,blend.x), blend.y),\n               blend.z);\n}\n\n//Ray-Cube intersection. x = tmin, y = tmax, hit = tmin < tmax \nvec2 IntersectBox(vec3 orig, vec3 dir, vec3 pos, vec3 size)\n{\n    size = abs(size / dir / 2.0);\n\n    vec3 tc = (pos - orig) / dir;    \n\n    vec3 t0 = tc - size;\n    vec3 t1 = tc + size;\n    \n    return vec2(\n        max(max(t0.x,t0.y),t0.z), \n        min(min(t1.x,t1.y),t1.z)\n    );\n}\n\nvec4 MarchVolume(vec3 orig, vec3 dir)\n{\n    vec2 hit = IntersectBox(orig, dir, vec3(0), vec3(2));\n    \n    if(hit.x > hit.y){ return vec4(0); }\n    \n    //Step though the volume and add up the opacity.\n    float t = hit.x;   \n    vec4 dst = vec4(0);\n    vec4 src = vec4(0);\n    \n    for(int i = 0;i < MAX_VOLUME_STEPS;i++)\n    {\n        t += VOLUME_STEP_SIZE;\n        \n        //Stop marching if the ray leaves the cube.\n        if(t > hit.y){break;}\n        \n    \tvec3 pos = orig + dir * t;\n        \n        vec3 uvw = 1.0 - (pos * 0.5 + 0.5);\n        \n        #if(LINEAR_SAMPLE == 1)\n            src = texture3DLinear(iChannel0, uvw, vres);\n        #else\n            src = texture3D(iChannel0, uvw, vres);\n        #endif\n        \n        src = clamp(src, 0.0, 1.0);\n        \n        src.a *= DENSITY_SCALE;\n        src.rgb *= src.a;\n        \n        dst = (1.0 - dst.a)*src + dst;\n        \n        //Stop marching if the color is nearly opaque.\n        if(dst.a > MAX_ALPHA){break;}\n    }\n    \n    return vec4(dst);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vres = vec3(floor(pow(iResolution.x*iResolution.y, 1.0/3.0)));\n    \n    vec2 res = iResolution.xy / iResolution.y;\n\tvec2 uv = fragCoord.xy / iResolution.y;\n    \n    vec4 color = vec4(0);\n    \n    //Checkerboard background\n    vec2 bguv = uv - res/2.0;\n    float back = sin(bguv.x*pi*8.0) * sin(bguv.y*pi*8.0);\n    back = step(0.0,back);\n    back = back * 0.05 + 0.2;\n    color.rgb = vec3(back);\n    \n    vec3 dir = normalize(vec3(uv-res/2.0,1.0));\n    vec3 orig = vec3(0,0,-3.5);\n\t\n    vec2 angles = vec2(0);\n    \n    if(iMouse.xy == vec2(0))\n    {\n        angles = vec2(iTime * 0.5, -tau/16.0); \n    }\n    else\n    {\n    \tangles = (iMouse.xy / iResolution.xy)*2.0 - 1.0;\n    \tangles *= vec2(tau, tau/2.0);\n    }\n    \n    mat2 rX = rotate( angles.y);\n    mat2 rY = rotate(angles.x);\n    \n    dir.yz *= rX;\n    orig.yz *= rX;\n    \n    dir.xz *= rY;\n    orig.xz *= rY;\n    \n    vec4 volume = MarchVolume(orig,dir);\n    \n    color = mix(color, volume, volume.a);\n    \n\tfragColor = vec4(color);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "\nfloat pi = atan(1.0)*4.0;\nfloat tau = atan(1.0)*8.0;\n\nvec3 iVResolution = vec3(0);\n\nvoid mainVolume( out vec4 voxColor, in vec3 voxCoord);\n\nvec4 texture3D(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    uvw = mod(floor(uvw * vres), vres);\n    float idx = (uvw.z * (vres.x*vres.y)) + (uvw.y * vres.x) + uvw.x;\n    vec2 uv = vec2(mod(idx, iResolution.x), floor(idx / iResolution.x));\n    \n    return texture(tex, (uv + 0.5) / iResolution.xy);\n}\n\nvec4 texture3DLinear(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    vec3 blend = fract(uvw*vres);\n    vec4 off = vec4(1.0/vres, 0.0);\n    \n    vec4 b000 = texture3D(tex, uvw + off.www, vres);\n    vec4 b100 = texture3D(tex, uvw + off.xww, vres);\n    \n    vec4 b010 = texture3D(tex, uvw + off.wyw, vres);\n    vec4 b110 = texture3D(tex, uvw + off.xyw, vres);\n    \n    vec4 b001 = texture3D(tex, uvw + off.wwz, vres);\n    vec4 b101 = texture3D(tex, uvw + off.xwz, vres);\n    \n    vec4 b011 = texture3D(tex, uvw + off.wyz, vres);\n    vec4 b111 = texture3D(tex, uvw + off.xyz, vres);\n    \n    return mix(mix(mix(b000,b100,blend.x), mix(b010,b110,blend.x), blend.y), \n               mix(mix(b001,b101,blend.x), mix(b011,b111,blend.x), blend.y),\n               blend.z);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 vres = vec3(floor(pow(iResolution.x*iResolution.y, 1.0/3.0)));    \n    vec2 uv = floor(fragCoord - 0.5);\n    \n    float idx = (uv.y * iResolution.x) + uv.x;\n    \n    vec3 uvw = mod(floor(vec3(idx) / vec3(1.0, vres.x, vres.x*vres.y)), vres);\n    \n    iVResolution = vres;\n    mainVolume(fragColor, uvw);\n}\n\n//Write your shader here.\n//3D plasma thing.\nvoid mainVolume( out vec4 voxColor, in vec3 voxCoord)\n{\n    vec3 uvw = voxCoord / iVResolution;\n\n    vec3 color = vec3(1,0,0);\n    \n    vec3 p0 = sin(vec3(1.3,0.9,2.1) * iTime + 7.0)*.5+.5;\n    vec3 p1 = sin(vec3(0.5,1.6,0.8) * iTime + 4.0)*.5+.5;\n    vec3 p2 = sin(vec3(0.9,1.2,1.5) * iTime + 2.0)*.5+.5;\n    \n    float s0 = cos(length(p0-uvw)*28.0);\n    float s1 = cos(length(p1-uvw)*19.0);\n    float s2 = cos(length(p2-uvw)*22.0);\n    \n    float dens = (s0+s1+s2)/3.0;\n    \n    color = vec3(s0,s1,s2);\n    \n    dens *= 0.5;\n    \n    voxColor = vec4(color, dens);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

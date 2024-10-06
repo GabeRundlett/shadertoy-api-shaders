@@ -1,0 +1,76 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1532291424",
+            "description": "For a cube of N x N x N points, draws a stack of N planes oriented towards the camera on the axis nearest to the ray direction with a repeated dot pattern on them. The dots are colored from a pseudo-volumetric buffer in Buf A.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "MtdcDn",
+            "likes": 34,
+            "name": "Volumetric Points",
+            "published": 3,
+            "tags": [
+                "3d",
+                "ray",
+                "volume",
+                "cube",
+                "volumetric"
+            ],
+            "usePreview": 0,
+            "username": "Flyguy",
+            "viewed": 1321
+        },
+        "renderpass": [
+            {
+                "code": "#define DEBUG 0 //Visualize the planes\n#define ADD 1\n#define ALPHA 2\n\n#define BLENDMODE ADD\n\nconst float CUBE_SIZE = 1.5;\nconst float GRID_RES = 17.0;\nconst float POINT_SIZE = 0.375;\nconst vec4 COLOR_BOOST = vec4(1,1,1,3);\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 res = iResolution.xy / iResolution.y;\n\tvec2 uv = fragCoord.xy / iResolution.y;\n    \n    //Camera setup\n    vec3 camAngles = vec3((iMouse.xy / iResolution.xy) * pi, 0);\n    camAngles.xy *= vec2(2.0, 1.0);\n    \n    //Thumbnail mode\n    if(iMouse.xy == vec2(0))\n    {\n    \tcamAngles = vec3(iTime*0.6, 1.0, 0.0);   \n    }\n    \n    mat3 camMatrix = rotate(camAngles.yzx);\n    vec3 camOrig = vec3(0, 0,-1.5) * camMatrix; \n    vec3 camDir = normalize(vec3(uv - res/2.0, 0.5)) * camMatrix;\n    \n    //Setup plane axis,initial location, and step direction based on ray direction\n    vec3 planeNorm = nearestAxis(camDir);\n    vec3 planePos = planeNorm * ((GRID_RES-1.0)/GRID_RES)/2.0 * CUBE_SIZE;\n    vec3 planeDelta = planeNorm / GRID_RES * CUBE_SIZE;\n    \n    vec3 outColor = vec3(0);\n    vec3 volRes = volumeSize(iChannel0);\n    \n    for(float i = 0.0;i < GRID_RES;i++)\n    {\n        vec3 hit = rayPlane(camOrig, camDir, planePos, planeNorm) / CUBE_SIZE;\n        \n\t\tplanePos -= planeDelta;\n        \n        if(max3(abs(hit)) < 0.5) //Only draw areas inside the cube.\n        {\n            vec3 pointUVW = fract(((hit-0.5)*GRID_RES))-0.5;\n            vec3 volUVW = (floor(((hit-0.5)*GRID_RES))+0.5) / GRID_RES;\n            \n            //Sample the pseudo-volumetric texture in BufA\n            vec4 vCol = texture3DLinear(iChannel0, volUVW, volRes);\n            vCol = clamp(vCol*COLOR_BOOST, 0.0, 1.0);\n            \n            //Make the points face the camera.\n            //This makes the transition between planes seamless.\n            pointUVW = cross(pointUVW,camDir);\n            \n            //Shape of the points\n            float pointMask = smoothstep(POINT_SIZE*vCol.a,\n                                         POINT_SIZE*vCol.a*0.8,\n                                         length(pointUVW));\n            \n            #if BLENDMODE == ADD\n            \toutColor += 0.5*vCol.rgb*pointMask*vCol.a;\n            #elif BLENDMODE == ALPHA\n            \toutColor = mix(outColor, vCol.rgb, pointMask*vCol.a);\n            #elif BLENDMODE == DEBUG\n            \toutColor = (planeNorm*.5+.5)*(i/GRID_RES);\n            #endif\n        }\n\t}\n\n\tfragColor = vec4(outColor,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "const float pi = atan(1.0) * 4.0;\nconst float tau = atan(1.0) * 8.0;\n \n//Rotation matrix from euler (X/Y/Z) angles.\nmat3 rotate(vec3 angles)\n{\n    vec3 c = cos(angles);\n    vec3 s = sin(angles);\n    \n    mat3 rotX = mat3( 1.0, 0.0, 0.0, 0.0,c.x,s.x, 0.0,-s.x, c.x);\n    mat3 rotY = mat3( c.y, 0.0,-s.y, 0.0,1.0,0.0, s.y, 0.0, c.y);\n    mat3 rotZ = mat3( c.z, s.z, 0.0,-s.z,c.z,0.0, 0.0, 0.0, 1.0);\n\n    return rotX * rotY * rotZ;\n}\n\n/*Nearest axis to 'dir':\nX: (+/-1, 0, 0)\nY: (0, +/-1, 0)\nZ: (0, 0, +/-1)\n*/\nvec3 nearestAxis(vec3 dir)\n{\n    vec3 asign = sign(dir);\n    dir = abs(dir);\n    float amax = max(max(dir.x,dir.y),dir.z);\n                     \n    if(amax == dir.x){ return vec3(asign.x,0,0); }\n    if(amax == dir.y){ return vec3(0,asign.y,0); }\n    if(amax == dir.z){ return vec3(0,0,asign.z); }\n    \n    return vec3(0);\n}\n\n//Intersection point of ray (rorg, rdir) with plane (porg, pnrm)\n//Assumes rdir & pnrm are normalized\nvec3 rayPlane(vec3 rorg, vec3 rdir, vec3 porg, vec3 pnrm)\n{\n    float t = dot(porg - rorg, pnrm) / dot(pnrm, rdir);\n    return rorg+rdir*t;\n}\n\n//Maximum component of a vec3.\nfloat max3(vec3 v)\n{\n    return max(max(v.x,v.y),v.z); \n}\n\n//Calculate maximum volumetric resolution of a 2D texture.\nvec3 volumeSize(sampler2D tex)\n{\n    vec2 size2D = vec2(textureSize(tex,0));\n\treturn vec3(floor(pow(size2D.x*size2D.y, 1.0/3.0)));\n}\n\nvec3 volumeSize(vec2 size2D)\n{\n\treturn vec3(floor(pow(size2D.x*size2D.y, 1.0/3.0)));\n}\n\n//Samples a texture as a psuedo-volumetric buffer.\nvec4 texture3D(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    vec2 texRes = vec2(textureSize(tex,0));\n    uvw = mod(floor(uvw * vres), vres);\n    float idx = (uvw.z * (vres.x*vres.y)) + (uvw.y * vres.x) + uvw.x;\n    ivec2 uv = ivec2(mod(idx, texRes.x), floor(idx / texRes.x));\n    return texelFetch(tex, uv, 0);\n}\n\n//texture3D with linear sampling.\nvec4 texture3DLinear(sampler2D tex, vec3 uvw, vec3 vres)\n{\n    vec3 blend = fract(uvw*vres);\n    vec4 off = vec4(1.0/vres, 0.0);\n    \n    vec4 b000 = texture3D(tex, uvw + off.www, vres);\n    vec4 b100 = texture3D(tex, uvw + off.xww, vres);\n    \n    vec4 b010 = texture3D(tex, uvw + off.wyw, vres);\n    vec4 b110 = texture3D(tex, uvw + off.xyw, vres);\n    \n    vec4 b001 = texture3D(tex, uvw + off.wwz, vres);\n    vec4 b101 = texture3D(tex, uvw + off.xwz, vres);\n    \n    vec4 b011 = texture3D(tex, uvw + off.wyz, vres);\n    vec4 b111 = texture3D(tex, uvw + off.xyz, vres);\n    \n    return mix(mix(mix(b000,b100,blend.x), mix(b010,b110,blend.x), blend.y), \n               mix(mix(b001,b101,blend.x), mix(b011,b111,blend.x), blend.y),\n               blend.z);\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "vec3 iVResolution = vec3(0);\n\nvoid mainVolume(out vec4 voxColor, in vec3 voxCoord);\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 vres = volumeSize(iResolution.xy);    \n    vec2 uv = floor(fragCoord - 0.5);\n    float idx = (uv.y * iResolution.x) + uv.x; \n    vec3 uvw = mod(floor(vec3(idx) / vec3(1.0, vres.x, vres.x*vres.y)), vres);  \n    iVResolution = vres;\n    mainVolume(fragColor, uvw);\n}\n\n//Write your shader here.\n//3D plasma thing.\nvoid mainVolume( out vec4 voxColor, in vec3 voxCoord)\n{\n    vec3 uvw = voxCoord / iVResolution;\n\n    vec3 color = vec3(1,0,0);\n    \n    vec3 p0 = sin(vec3(1.3,0.9,2.1) * iTime + 7.0)*.5+.5;\n    vec3 p1 = sin(vec3(0.5,1.6,0.8) * iTime + 4.0)*.5+.5;\n    vec3 p2 = sin(vec3(0.9,1.2,1.5) * iTime + 2.0)*.5+.5;\n    \n    float s0 = cos(length(p0-uvw)*14.0);\n    float s1 = cos(length(p1-uvw)*10.0);\n    float s2 = cos(length(p2-uvw)*11.0);\n    \n    float dens = (s0+s1+s2)/3.0;\n    \n    color = vec3(s0,s1,s2);\n    \n    dens *= 0.5;\n    \n    voxColor = vec4(color, dens);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

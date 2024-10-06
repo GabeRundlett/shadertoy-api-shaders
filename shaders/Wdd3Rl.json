@@ -1,0 +1,81 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1569157064",
+            "description": "Use the cone-traced soft shadow trick, but spread over a hemisphere to sample ambient occlusion.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "Wdd3Rl",
+            "likes": 32,
+            "name": "Cone Traced AO",
+            "published": 3,
+            "tags": [
+                "ao",
+                "ambientocclusion",
+                "conetracing"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 1552
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColour, in vec2 fragCoord )\n{\n    fragColour = texelFetch(iChannel0,ivec2(fragCoord),0);\n    fragColour.rgb = pow(fragColour.rgb,vec3(1./2.2));\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define AO_SAMPLES 5\n\n// comment these out to see the raw effect\n#define DITHER\n#define BLEND_FRAMES\n\n// comment/uncomment these to turn different light effects on/off\n//#define LIGHTS\n#define AMBIENT_LIGHT\n//#define COLOURISE_AMBIENT\n\nconst float phi = 1.6180339887498948;\nconst float tau = 6.2831853071795865;\n\nuvec2 quasi2 = uvec2(0xC13FA9A9u,0x91E10DA5u);\nuvec3 quasi3 = uvec3( 3518319155, 2882110345, 2360945575 );\n\nfloat sdf( vec3 p )\n{\n    return\n        min(min(min(min(min(\n        \tmax(max(max(\n                length(p)-1.,\n                .3 - length((p-vec3(.5,0,0)).xz)),\n                .3 - length((p-vec3(-.25,0,-.5)).xz)),\n                dot(p,normalize(vec3(-1,0,-2)))-.4 + .003*sin(p.y*100.)\n            ),\n            max(max(\n                length(p-vec3(0,-.5,1.2))-.5,\n                .45-length(p-vec3(0,-.5,1.2))),\n                dot(p-vec3(0,-.5,1.2),normalize(vec3(1,2,-3)))\n            )),\n            length(p-vec3(0,-.5,1.2))-.3),\n\t\t\tmax(\n                length(p.xz)-.5,\n                p.y+.9\n            )),\n            max(\n                length((p-vec3(-.25,0,-.5)).xz) - .22,\n                dot(p,normalize(vec3(-1,4,-2)))-.95\n            )),\n            p.y + 1.\n        );\n}\n\n\nfloat OcclusionTrace( vec3 pos, vec3 target, float rpert )\n{\n#ifdef AMBIENT_LIGHT\n    const int maxSteps = 80; const float stepSize = 1.;\n#else\n    // higher quality setting, better for direct lights\n    const int maxSteps = 150; const float stepSize = .5;\n#endif\n    \n    vec3 toTarget = target-pos;\n    float end = length(toTarget);\n    vec3 ray = toTarget/end;\n    float t = .05;\n    float visibility = 1.;\n    for ( int i=0; i < maxSteps; i++ )\n    {\n        float h = sdf( ray*t+pos );\n        if ( t >= end ) break;\n        float r = rpert*t;\n        visibility = min( visibility, smoothstep( -r, r, h ) );\n        if ( visibility <= 0. ) break;\n        t += (h+r) * stepSize;\n    }\n\treturn visibility;\n}\n\n\nvoid mainImage( out vec4 fragColour, in vec2 _fragCoord )\n{\n#ifdef BLEND_FRAMES\n    uint seed = uint(_fragCoord.x)*quasi3.x\n        \t\t+ uint(_fragCoord.y)*quasi3.y\n        \t\t+ uint(iFrame)*quasi3.z;\n#else\n    uint seed = uint(_fragCoord.x)*quasi2.x\n        \t\t+ uint(_fragCoord.y)*quasi2.y;\n#endif\n#ifndef DITHER\n    seed = 0u;\n#endif\n    vec2 jitter = vec2( quasi2 * seed ) / exp2(32.);\n#ifndef BLEND_FRAMES\n    jitter = vec2(0);\n#endif\n    vec2 fragCoord = _fragCoord + jitter;\n    \n    vec3 ray = vec3( (fragCoord-iResolution.xy*.5)/sqrt(iResolution.x*iResolution.y), 2 );\n    \n    vec3 camPos = vec3( 0, 0, -8. );\n    vec2 a = vec2(.3,iTime*.3);//-1.5);//\n    vec2 d = vec2(-1,1);\n    camPos.yz = camPos.yz*cos(a.x) + camPos.zy*d.xy*sin(a.x);\n    camPos.zx = camPos.zx*cos(a.y) + camPos.xz*d.xy*sin(a.y);\n    \n    vec3 camTarget = vec3(0);\n    \n    vec3 camK = normalize(camTarget - camPos);\n    vec3 camI = normalize(cross(vec3(0,1,0),camK));\n    vec3 camJ = cross(camK,camI);\n    \n    ray = ray.x*camI + ray.y*camJ + ray.z*camK;\n    ray = normalize( ray );\n    \n    float t = 0.;\n    for ( int i=0; i < 200; i++ )\n    {\n        float h = sdf(ray*t + camPos);\n        t += h;\n        if ( h < .001 )\n        {\n            break;\n        }\n    }\n    \n    vec3 pos = ray*t+camPos;\n    \n    d *= .001;\n    vec3 normal =\n        normalize(\n            sdf(pos+d.xxx)*d.xxx +\n            sdf(pos+d.yyx)*d.yyx +\n            sdf(pos+d.yxy)*d.yxy +\n            sdf(pos+d.xyy)*d.xyy\n        );\n    \n    struct Light\n    {\n        vec3 pos;\n        vec3 col;\n    };\n    \n    Light lights[] = Light[]\n        (\n            //Light( vec3(4,8,-6), vec3(50) ),\n            //Light( vec3(.7,-.7,0), vec3(5,0,0) ) // shows multiple bugs with the shadow tech - all fixed by increasing loop limit on shadow test!\n            /*Light( vec3(4,8,-6), vec3(50,0,0) ),\n            Light( vec3(4,8,-5), vec3(0,50,0) ),\n            Light( vec3(4,8,-4), vec3(0,0,50) )*/\n            Light( vec3(.5,0,2), vec3(0,1,0) ),\n            Light( vec3(2,-.5,.5), vec3(1,.3,0) ),\n            Light( vec3(1,.5,-1.2), vec3(1,0,0) ),\n            Light( vec3(-.25,-.5,-1), vec3(1,0,.7)*.2 ),\n            Light( vec3(-1,1,.5), vec3(0,.2,1)*2. )\n        );\n    \n    fragColour.rgb = vec3(0);\n    \n    for ( int i=0; i < lights.length(); i++ )\n    {\n        vec3 toLight = lights[i].pos - pos;\n        float lightStrength = max(0.,dot(normal,normalize(toLight)));\n        lightStrength /= dot(toLight,toLight);\n        lightStrength *= OcclusionTrace( pos, lights[i].pos, .05 );\n#ifdef LIGHTS\n    \tfragColour.rgb += lights[i].col*lightStrength;\n#endif\n    }\n    \n    const int aoSamples = AO_SAMPLES;\n    float weightSum = 0.;\n    //float ao = 0.;\n    vec3 ambient = vec3(0);\n    for( int i=0; i < aoSamples; i++ )\n    {\n        // distribute samples uniformly on a disc and project onto hemisphere\n        // this gives n.l implicitly within the sample distribution!\n        \n        float r = (float(i)+.5)/float(aoSamples);\n        r = sqrt(r);\n        float a = phi*tau*float(i);\n\n\t\t// break up with dither\n\t\ta += tau*(float(seed)/exp2(32.));\n        \n        vec3 dir = vec3(sin(a)*r,sqrt(1.-r*r),cos(a)*r);\n        \n        float area = 1./float(aoSamples);\n        area /= dir.y;\n        float radius = sqrt(area*2./tau);\n        \n\t\t//AAARGH have to rotate it to be perp to normal!\n        vec3 tangent = normalize(cross(normal,vec3(1,0,0)));\n        if ( abs(normal.x) > .9999 ) tangent = vec3(0,1,0);\n        vec3 bitangent = cross(tangent,normal);\n        dir = dir.x*tangent + dir.y*normal + dir.z*bitangent;\n\n        float ao = OcclusionTrace( pos, dir*10., radius );\n\n#ifdef COLOURISE_AMBIENT\n        vec3 ambientColour = mix( vec3(1,.3,0), vec3(0,.3,1), dir.x*.5+.5 );\n#else\n        vec3 ambientColour = vec3(.7);\n#endif\n        \n        float weight = area;\n        ambient += weight * ao * ambientColour;\n        weightSum += weight;\n    }\n    ambient /= weightSum;\n    \n#ifdef AMBIENT_LIGHT\n    fragColour.rgb += ambient;\n#endif\n\n#ifdef BLEND_FRAMES\n    fragColour = mix( texelFetch(iChannel0,ivec2(_fragCoord),0), fragColour, .33);\n#endif\n    fragColour.a = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

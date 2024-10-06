@@ -1,0 +1,219 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1616923062",
+            "description": "A test of erosion and general terrain generation/rendering.\nSpace to reset terrain(needed if screen size changes).\n\nAsync texture loading might break this shader sometimes, if so wait for the clouds to load and then reset with space or the back button.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "Nd2GRR",
+            "likes": 34,
+            "name": "Erosion Landscape",
+            "published": 3,
+            "tags": [
+                "procedural",
+                "raymarching",
+                "simulation",
+                "clouds",
+                "landscape",
+                "volumetrics",
+                "erosion"
+            ],
+            "usePreview": 0,
+            "username": "Dragonpeak",
+            "viewed": 1375
+        },
+        "renderpass": [
+            {
+                "code": "// a better version is available at https://www.shadertoy.com/view/st2BRW\nvec3 CAMERA_POS = vec3(-1.5, -1.5, 1.);\nconst vec3 CAMERA_LOOK = vec3(0.,0.,0.);\nconst float FAR = 5.;\n\nconst float EPS = .01;\nconst float SHADOW_EPS = .03;\nconst float STEP_SIZE = .001;\nconst float SHADOW_STEP = .06;\nconst vec3 SUN_DIR = normalize(vec3(.3, .5, .1));\nconst vec3 SUN_COL = vec3(1,.7,.4)*2.;\nconst vec3 AMBIENT = vec3(.3,.35,.53)*.3;\n\nconst vec2 W_NRM_EPS = vec2(.001,0.);\n\nconst float CLOUDS_STEP = .007;\nconst int CLOUD_OCT = 7;\nconst float CLOUD_SCALE = .0016;\nconst float CLOUD_LIGHT_STEP = .1;\nconst float CLOUD_LIGHT_FAR = .5;\n\nconst int TERRAIN_BUMP_OCT = 4;\n\nconst vec2 T_NRM_EPS = vec2(.0017,0.);\nvec3 ray_direction(float fov, vec2 size, vec2 coord) {\n    // from https://www.shadertoy.com/view/Xtd3z7\n    vec2 xy = coord - size / 2.0;\n    float z = size.y / tan(radians(fov) / 2.0);\n    return normalize(vec3(xy, -z));\n}\n\nmat4 view_matrix(vec3 eye, vec3 center, vec3 up) {\n    // from https://www.shadertoy.com/view/Xtd3z7\n    vec3 f = normalize(center - eye);\n    vec3 s = normalize(cross(f, up));\n    vec3 u = cross(s, f);\n    return mat4(\n        vec4(s, 0.0),\n        vec4(u, 0.0),\n        vec4(-f, 0.0),\n        vec4(0.0, 0.0, 0.0, 1)\n    );\n}\n\nvec2 ray_box_intersect( vec3 ro, vec3 rd, vec3 boxSize, out vec3 outNormal ) \n{\n    //from https://iquilezles.org/articles/intersectors\n    vec3 m = 1.0/rd; // can precompute if traversing a set of aligned boxes\n    vec3 n = m*ro;   // can precompute if traversing a set of aligned boxes\n    vec3 k = abs(m)*boxSize;\n    vec3 t1 = -n - k;\n    vec3 t2 = -n + k;\n    float tN = max( max( t1.x, t1.y ), t1.z );\n    float tF = min( min( t2.x, t2.y ), t2.z );\n    if( tN>tF || tF<0.0) return vec2(FAR); // no intersection\n    outNormal = -sign(rd)*step(t1.yzx,t1.xyz)*step(t1.zxy,t1.xyz);\n    return vec2( tN, tF );\n}\n\nvec4 get_terrain(vec2 p)\n{\n    //if(p.x > 1. || p.y > 1.|| p.x < 0.|| p.y < 0.) return vec4(0,0,1,0);\n    return texture(iChannel0, (p+vec2(1))*.4);\n}\n\nvec4 march_terrain(vec3 pos, vec3 dir, float dist, float far)\n{\n    vec4 data = vec4(0);\n    while(dist < far)\n    {\n        vec3 p = pos+dir*dist;\n        data = get_terrain(p.xy);\n        if(p.z < data.w+EPS)return vec4(data.xyz, dist-STEP_SIZE/2.);\n        dist += STEP_SIZE;\n    }\n    return vec4(data.xyz, FAR);\n}\nfloat march_shadows(vec3 p, vec3 d, float k)\n{\n    float r = 1.;\n    float dep = 0.001+SHADOW_EPS;\n    while(dep < FAR)\n    {\n        vec3 p = p+d*dep;\n        float dist = get_terrain(p.xy).w;\n        if(p.z < dist+SHADOW_EPS) 0.;\n        \n        r = min(r, k*(p.z-dist)/dep);\n        dep += SHADOW_STEP;\n    }\n    return r;\n}\n\n\nfloat cloud_dens(vec3 p)\n{\n   float s = 1.;\n   float a = .5;\n   float data = 0.;\n   for(int i = 0; i < CLOUD_OCT; i++)\n   {\n       data += noise(((p.xy+vec2(float(i)*7.8936345, float(i)*-13.73467))*s)+WIND*iTime, iChannel2, vec2(1024), CLOUD_SCALE, .001)*a;\n       s*= 1.8;\n       a*= .6;\n   }\n   data = min(max(data-.65, 0.)*4., 1.);\n   \n   float h = max(1.-max(abs(p.z-.4)+4.93, 0.)*.2, 0.);\n   \n   return data*h*10.;\n       \n}\n\nvec3 march_cloud_light(vec3 p, vec3 dir)\n{\n    float dep = 0.;\n    float dens = 0.;\n    //float amt = (ma-mi)/CLOUDS_STEP;\n    while(dep < CLOUD_LIGHT_FAR)\n    {\n        vec3 pos = p+dir*dep;\n        dens += cloud_dens(pos);\n        dep += CLOUD_LIGHT_STEP;\n    }\n    return mix(SUN_COL, vec3(.8, .8, 1.),  clamp(pow(dens, .2), 0., 1.))*1.4+AMBIENT;\n}\n\nvec4 march_clouds(vec3 p, vec3 dir, float mi, float ma)\n{\n    float dep = mi;\n    float dens = 0.;\n    vec3 light = vec3(1.);\n    float amt = (FAR-mi)/CLOUDS_STEP;\n    while(dep < ma)\n    {\n        vec3 pos = p+dir*dep;\n        float cd = cloud_dens(pos);\n        dens += cd;\n        dep += CLOUDS_STEP;\n        if(cd > .01)light += march_cloud_light(pos, SUN_DIR)*(1./dens);\n    }\n    return vec4(light/amt,clamp(dens, 0., 1.));\n}\n\n\n\nfloat terrain_bump(vec2 p)\n{\n   float s = 1.;\n   float a = .5;\n   float data = 0.;\n   for(int i = 0; i < TERRAIN_BUMP_OCT; i++)\n   {\n       data += noise(((p.xy+vec2(float(i)*7.8936345, float(i)*-13.73467))*s), iChannel2, vec2(1024), .1, .001)*a;\n       s*= 1.8;\n       a*= .6;\n   }\n   return data;\n}\n\nvec3 terrain_bump_nrm(vec2 p)\n{\n    vec3 nrm = vec3(0.);\n    nrm.x = -(terrain_bump(p+T_NRM_EPS) - terrain_bump(p-T_NRM_EPS));\n    nrm.y = -(terrain_bump(p+T_NRM_EPS.yx) - terrain_bump(p-T_NRM_EPS.yx));\n    nrm.z = 1.;\n    nrm = normalize(nrm);\n    \n    return nrm;\n}\n\n\nfloat get_ao(vec2 p)\n{\n    vec2 t = vec2(EPS*3., 0);\n    float ao = 0.;\n    \n    float b = get_terrain(p).w;\n    \n    float x = (get_terrain(p+t).w+get_terrain(p-t).w+get_terrain(p+t.yx).w+get_terrain(p-t.yx).w)/4.;\n    \n    ao += b-x;\n    \n    return ao*16.+.4;\n}\n\nvec3 texture_terrain(vec3 p, vec3 nrm, bool is_edge)\n{\n    vec3 col = vec3(0.);\n    vec3 stone = vec3(.6);\n    vec3 grass = vec3(.4, .6, .4);\n    vec3 snow = vec3(1.1, 1.1, 1.2)*4.;\n    float stone_mask = min(max((dot(nrm, vec3(0,0,1))-.87), 0.)*8., 1.);\n    float snow_mask = min(max((p.z-.14), 0.)*64., 1.);\n    \n    if(is_edge)//draw edge\n    {\n        float h = get_terrain(p.xy).w-p.z;\n        stone_mask += 1.-min(max(h-.01, 0.)*64., 1.);\n        \n    }\n    \n    vec3 ground = mix(grass, snow, snow_mask);\n    \n    col = mix(stone, ground, stone_mask);\n\n    \n    return col;\n}\n\nvec3 shade_terrain(vec3 p, vec3 nrm, vec3 dir, float dist, bool is_edge)\n{\n\n    vec3 col = texture_terrain(p,nrm,is_edge);\n    float sun = clamp(dot(SUN_DIR, nrm), 0.,1.);\n    vec3 r = reflect(dir, nrm);\n    vec3 ref = vec3(min(max((dot(r, SUN_DIR)-.85), 0.)*4., 1.));\n    if(!is_edge)\n    {\n        float shadow = clamp(march_shadows(p, SUN_DIR, 10.),0.,1.);\n\n        sun *= shadow;\n        ref *= shadow;\n    }\n    vec3 light = SUN_COL*sun;\n    light += AMBIENT;\n    light += ref;\n    \n    if(!is_edge)\n    {\n        float ao = get_ao(p.xy);\n\n        light *= ao;\n    }\n    \n  \n    col *= light;\n    //col = nrm;\n    //col = vec3(shadow);\n   \n    return col;\n}\n\nvec3 draw_fog(vec3 p, float d, bool is_edge)\n{\n    if(is_edge)return vec3(0);\n    d /= FAR;\n    float z = 1.-min(max(p.z-.03, 0.)*5., 1.);\n    z *= d;\n    return vec3(.7, .7, .9)*z*.7;\n}\n\nvec3 shade_sky(vec3 d)\n{\n    vec3 col = mix(vec3(.8,.8, 1.), vec3(.025, .05, .7)*.8, clamp(d.z+.4, 0., 1.));\n    \n    \n    col += SUN_COL*max(1.-max(distance(SUN_DIR, d)+.9, 0.), 0.)*10.;\n    \n    return col;\n}\n\nfloat water_h(vec2 p)\n{\n    return noise((p*1.2)+WIND*.5*iTime, iChannel2, vec2(1024), .1, .001);\n}\n\nvec3 water_nrm(vec2 p)\n{\n    vec3 nrm = vec3(0.);\n    nrm.x = -(water_h(p+W_NRM_EPS) - water_h(p-W_NRM_EPS));\n    nrm.y = -(water_h(p+W_NRM_EPS.yx) - water_h(p-W_NRM_EPS.yx));\n    nrm.z = 1.;\n    nrm = normalize(nrm);\n    \n    return nrm;\n}\n\nvec3 fresnel(float cosTheta, vec3 F0)\n{\n    //from https://learnopengl.com/PBR/Theory\n    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);\n}\n\nvec3 shade_water(vec3 dir, float d, float wd, vec3 nrm)\n{\n    nrm = normalize(nrm+water_nrm((CAMERA_POS+dir*wd).xy));\n    float fr = fresnel(dot(dir, nrm), vec3(1.055)).x;//fresnel\n    vec3 sky = shade_sky(reflect(dir, nrm));\n    return vec3(sky*fr*.5);\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec3 col = vec3(0);\n    if(DEBUG_DRAW_PARTICLES)\n    {\n        col = vec3(texture(iChannel0, fragCoord/iResolution.xy).w);\n        for(int i = 0; i < PARTICLE_COUNT_X; i++)\n        {\n            for(int j = 0; j < PARTICLE_COUNT_Y; j++)\n            {\n                vec4 data = texelFetch(iChannel1, ivec2(i,j), 0);\n                if(floor(data.xy) == floor(fragCoord.xy)) col = vec3(data.z, 1, 0);\n            }\n        }\n    }\n    else\n    {\n        CAMERA_POS.y = sin(iTime*0.2)*2.5;\n        CAMERA_POS.x = cos(iTime*0.2)*2.5;\n\n        vec3 local_dir = ray_direction(80., iResolution.xy, fragCoord);\n\n        mat4 view = view_matrix(CAMERA_POS, CAMERA_LOOK, vec3(0.,0.,1.));\n        vec3 dir = (view * vec4(local_dir, 0.)).xyz;\n\n        vec3 b_nrm;\n        vec3 box_s = vec3(1,1,FAR);\n        vec2 b_dist = ray_box_intersect(CAMERA_POS, dir, box_s, b_nrm);\n        col = shade_sky(dir);\n        if(b_dist.x<FAR)\n        {\n\n            vec4 data = march_terrain(CAMERA_POS, dir, b_dist.x, b_dist.y);\n            if(data.w <= b_dist.x+EPS) data = vec4(b_nrm, b_dist.x);\n            data.w = min(data.w, b_dist.y);\n            vec3 pos = CAMERA_POS+dir*data.w;\n            \n            bool is_edge = data.xyz == vec3(0,1,0) || data.xyz == vec3(0,-1,0) || data.xyz == vec3(1,0,0) || data.xyz == vec3(-1,0,0);\n            vec3 water_nrm;\n            vec2 water_d = ray_box_intersect(CAMERA_POS, dir, vec3(box_s.xy, WATER_HEIGHT), water_nrm);\n            //if(is_edge) data.xyz = b_nrm;\n            if(data.w < b_dist.y)\n            {\n                 if(!is_edge)data.xyz = normalize(data.xyz+terrain_bump_nrm(pos.xy));\n                 col = shade_terrain(pos, data.xyz, dir, data.w,is_edge);\n                \n                 //col = data.xyz;\n            }\n            if(water_d.x < data.w)\n            {\n\n                col += shade_water(dir, data.w, water_d.x, water_nrm);\n            }\n            vec3 ndump;\n            col += draw_fog(pos, data.w,is_edge);\n            vec2 cbox = ray_box_intersect(CAMERA_POS-vec3(0.,0.,.4), dir, vec3(box_s.xy, .1),ndump);\n            if(cbox.x < FAR)\n            {\n                vec4 cld = march_clouds(CAMERA_POS, dir+vec3(vec2(pcg2d(uvec2(fragCoord)+uint(iFrame)))/float(0xffffffffu)*.002, 0.), cbox.x+.01, min(data.w, cbox.y));\n                col = mix(col, cld.rgb, cld.w);\n                //col = vec3(1.);\n            }\n           \n            //col = vec3(cld.rgb);\n            \n        }\n    }\n    //col = vec3(cloud_dens(vec3(fragCoord/iResolution.xy*3., 1.)));\n    // Output to screen\n    fragColor = vec4(pow(col, vec3(1./2.1)),1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//terrain\nconst float SCALE = .004;\nconst vec2 OFF = vec2(.1, -.2);\nconst float BLUR_AMT = .1;\n\nconst vec2 NRM_EPS = vec2(.6,0.);\nconst float NRM_SOFT = .01;\nconst int OCT = 8;\n\n\n\n\nfloat get_terrain(vec2 p)\n{\n    float data = 0.;\n    if(iFrame < 5 || is_space_down(iChannel3))\n    {\n        p/=iResolution.xy;\n        p += OFF;\n        float s = 1.;\n        float a = .5;\n        \n        for(int i = 0; i < OCT; i++)\n        {\n            data += noise((p+vec2(float(i)*7.8936345, float(i)*-13.73467))*s, iChannel0, vec2(1024), SCALE, BLUR_AMT)*a;\n            s*= 1.7;\n            a*= .5;\n        }\n       \n        data = pow(data, 3.2);\n    }\n    else\n    {\n        data = texture(iChannel1, p/iResolution.xy).w;\n    }\n    \n    return data;\n}\n\nvec3 get_nrm(vec2 uv)\n{\n    vec3 nrm = vec3(0.);\n    nrm.x = -(get_terrain(uv+NRM_EPS) - get_terrain(uv-NRM_EPS));\n    nrm.y = -(get_terrain(uv+NRM_EPS.yx) - get_terrain(uv-NRM_EPS.yx));\n    nrm.z = NRM_EPS.x*NRM_SOFT;\n    nrm = normalize(nrm);\n    \n    return nrm;\n}\n\n \n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    float f = get_terrain(fragCoord);\n    for(int i = 0; i < PARTICLE_COUNT_X; i++)\n    {\n        for(int j = 0; j < PARTICLE_COUNT_Y; j++)\n        {\n            vec4 d = texelFetch(iChannel2, ivec2(i,j), 0);\n            if(d.w == 1.)\n            {\n                f += d.z * (1.-clamp(distance(d.xy,fragCoord)/ERODE_SIZE*64.,0.,1.));\n            }\n            else f -= ERODE_AMT * (1.-clamp(distance(d.xy,fragCoord)/ERODE_SIZE,0.,1.));\n        }\n    }\n    f = clamp(f,0.,1.);\n    fragColor = vec4(get_nrm(fragCoord),f);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 3,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "\nconst int PARTICLE_COUNT_X = 40;\nconst int PARTICLE_COUNT_Y = 40;\nconst vec2 SAMPLE[] = vec2[](vec2(0,1),vec2(1,0), vec2(0,-1),vec2(-1,0),vec2(1,1),vec2(-1,1),vec2(1,-1),vec2(-1,-1));\nconst float ERODE_AMT = .00004;\nconst float PICK_AMT = .0000001;\nconst float MAX_PICK = .000001;\nconst float PART_RESET_AMT = 0.96;\nconst float RAND_AMT = .3;\nconst bool DEBUG_DRAW_PARTICLES = false;\nconst float ERODE_SIZE = 1.2;\nconst float FULL_RESET_INT = 200.;\n\nconst float WATER_HEIGHT = .03;\n\nconst vec2 WIND = vec2(.06, .1);\n\nuvec2 pcg2d(uvec2 v)\n{\n    //from https://www.shadertoy.com/view/XlGcRh\n    v = v * 1664525u + 1013904223u;\n\n    v.x += v.y * 1664525u;\n    v.y += v.x * 1664525u;\n\n    v = v ^ (v>>16u);\n\n    v.x += v.y * 1664525u;\n    v.y += v.x * 1664525u;\n\n    v = v ^ (v>>16u);\n\n    return v;\n}\n\nfloat noise(vec2 p, sampler2D s, vec2 r, float sc, float bl)\n{\n    float data = 0.;\n    for(int i = 0; i < 8; i++)\n    {\n        data+=texture(s, p*sc+SAMPLE[i]*(bl/r.x)).x/8.;\n    }\n    return data;\n}\n\n\nbool is_space_down(sampler2D key)\n{\n    return texelFetch(key, ivec2(32,0),0).x>0.;\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "//particles\n\n\nconst float SAMPLE_DIST = .1;\n\n\nvec4 init(vec2 p)\n{  \n    return vec4(vec2(pcg2d(uvec2(p)+uint(iFrame)))/float(0xffffffffu)*iResolution.xy, 0.01,0.01);\n}\n\nvec2 get_vel(vec4 p)\n{\n    vec2 vel = vec2(0);\n    vel += texelFetch(iChannel1, ivec2(p.xy), 0).xy;\n    \n    vel += (vec2(pcg2d(uvec2(p.xy)+uint(iFrame)))/float(0xffffffffu)*2.-1.)*RAND_AMT;\n    \n    return vel;\n}\n \nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    fragColor = vec4(0);\n    if(int(fragCoord.x)+1 < PARTICLE_COUNT_X && int(fragCoord.y)+1 < PARTICLE_COUNT_Y)\n    {\n        if(iFrame < 5 || is_space_down(iChannel2))\n        {\n           fragColor = init(fragCoord);\n        }\n        else\n        {\n           vec4 o = texelFetch(iChannel0, ivec2(fragCoord), 0);\n           \n            \n           fragColor = o;\n           vec2 vel = get_vel(fragColor);\n           fragColor.xy += vel;\n           vec4 d = texelFetch(iChannel1, ivec2(fragColor.xy), 0);\n           float h_a_p = d.w;\n           fragColor.z += h_a_p * PICK_AMT;\n           fragColor.z = min(MAX_PICK, fragColor.z);\n           if(fragColor.w == 1.) fragColor = init(fragCoord);\n           if(length(vel) < 0.5, mod(float(iFrame), FULL_RESET_INT)==1. || dot(d.xyz, vec3(0,0,1)) > PART_RESET_AMT || h_a_p <=WATER_HEIGHT || fragColor.x < 0. || fragColor.x > iResolution.x  || fragColor.y < 0. || fragColor.y > iResolution.y)\n           {\n               fragColor.w = 1.;\n           }\n\n\n        }\n    }\n\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 2,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "nearest",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

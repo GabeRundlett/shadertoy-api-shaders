@@ -1,0 +1,80 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1510945646",
+            "description": "Bare bones unbiased monte carlo.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "llXfR8",
+            "likes": 33,
+            "name": "Monte Carlo Bare Bones",
+            "published": 3,
+            "tags": [
+                "raymarch",
+                "montecarlo"
+            ],
+            "usePreview": 0,
+            "username": "TekF",
+            "viewed": 1894
+        },
+        "renderpass": [
+            {
+                "code": "void mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\tfragColor = texelFetch(iChannel0,ivec2(fragCoord.xy),0);\n    fragColor.rgb /= fragColor.a;\n\n//    fragColor.rgb = pow(fragColor.rgb,vec3(1./2.2));\n    // actual sRGB - slightly darkens shadows\n    fragColor.rgb = mix(\n        \t\t\t\t12.92 * fragColor.rgb,\n        \t\t\t\t1.055 * pow(fragColor.rgb, vec3(1./2.4)),\n        \t\t\t\tstep(0.0031308,fragColor.rgb))\n        \t\t\t- 0.055;\n    \n    fragColor.a = 1.;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/* Bare bones of a monte-carlo ray tracer\nAt each bounce look up BRDF and accumulate as a multiply-add to incident light, so\nwe never need to store all bounces.\nBounce directions are random on a hemisphere - would be faster if biases are added but\nwant a minimal-complexity implementation \n*/\n\n//--------scene--------\n\nfloat SDF( vec3 pos )\n{\n    return min(min(min(\n        \tlength(pos) - 1., // sphere in the centre\n        \tlength(pos-vec3(0,-11,0)) - 10.), // sphere below\n        \tlength(pos-vec3(-6,0,0)) - 5.), // sphere to the left\n        \t10. - length(pos) // inverse sphere containing the scene\n        );\n}\n\nvoid BRDF( out vec3 tint, out vec3 emissive, in vec3 pos,\n          in vec3 toEye, in vec3 toLight, in vec3 normal )\n{\n\ttint = vec3(.95); // default everything to white paint\n    if ( length(pos-vec3(-6,0,0)) - 5. <= .004 ) // are we on the left sphere?\n    {\n    \ttint = vec3(.95,0,0); // paint it red\n    }\n    \n    // lighting - just basic n.l\n\ttint *= dot(normal,toLight); // no need to do max(0,) because we never fire rays inside the surface\n\n    \n    // emit light from some surfaces\n    emissive = vec3(0); // default: non-emissive\n    \n    if ( length(pos) > 9. ) // are we on the outer sphere?\n    {\n        // draw an emissive-only background\n        tint = vec3(0);\n        emissive = vec3(10)*pow(max(0.,dot(normalize(pos),normalize(vec3(2,3,1)))),10.)\n            \t\t+ .7;\n    }\n}\n\n//--------renderer-------\n\n// From https://www.shadertoy.com/view/ltXBz8\nvec3 SphereRand( uint seed )\n{\n    float a = (float((seed*0x73493U)&0xfffffU)/float(0x100000))*2. - 1.;\n    float b = 6.283*(float((seed*0xAF71fU)&0xfffffU)/float(0x100000));\n    float cosa = sqrt(1.-a*a);\n    return vec3(cosa*cos(b),a,cosa*sin(b));\n}\n\nvec3 HemisphereRand( vec3 a, uint seed )\n{\n    vec3 r = SphereRand(seed);\n    return dot(r,a)>.0?r:-r;\n}\n    \nvec3 GetNormal( vec3 pos )\n{\n    vec2 d = vec2(-1,1)*.01;\n    return normalize(\n        \t\tSDF(pos+d.xxx)*d.xxx+\n        \t\tSDF(pos+d.yyx)*d.yyx+\n        \t\tSDF(pos+d.yxy)*d.yxy+\n        \t\tSDF(pos+d.xyy)*d.xyy\n        \t);\n}\n\nvec3 Trace( vec3 pos, vec3 ray )\n{\n    float e = .001;\n    pos += ray*e*4.; // try to prevent false self-intersect\n    for ( int i=0; i < 200; i++ )\n    {\n        float s = SDF(pos);\n        pos += s*ray;\n        if ( s < e ) break;\n    }\n    return pos;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // random seed per-pixel\n    // for best results this should be random noise, but I like having an obvious pattern\n    // so I can see when the render has converged\n    // also looks cool if you set it to 0\n    uint pixelSeed = uint(fragCoord.x)^uint(fragCoord.y);\n    \n    // anti-aliasing\n    vec2 jitter = vec2((pixelSeed^uint(iFrame*7))&0xffU,((pixelSeed^uint(iFrame*29))/5U)&0xffU)/float(0x100U) - .5;\n    \n    \n    // camera setup\n    vec3 ray = normalize(vec3(\n        \t\t\t(fragCoord.xy+jitter-iResolution.xy*.5)/iResolution.y,\n                     1.0\n                ));\n    vec3 pos = vec3(0,0,-3);\n\n    \n    // monte-carlo loop\n    vec3 emit = vec3(0);\n    vec3 tint = vec3(1);\n    const uint bounces = 8U;\n    for ( uint i=0U; i < bounces; i++ )\n    {\n        pos = Trace( pos, ray );\n        vec3 normal = GetNormal(pos);\n        \n        // fire the next ray\n        uint seed = pixelSeed^(uint(iFrame)/(1u+i)); // bounce directions should be independent of each other\n        vec3 newRay = HemisphereRand(normal,seed);\n        vec3 tinti, emiti;\n        \n        // sample what colour the next ray should be tinted, and any emissive effects\n        BRDF( tinti, emiti, pos, -ray, newRay, normal );\n        \n        // apply previous accumulated tint to emissive colour from this point\n        emit += tint*emiti;\n        \n        // accumulate tint\n        tint *= tinti;\n        \n        if ( length(tint) == 0. ) break; // optimisation - ignore bounces from a surface that doesn't bounce any light\n        \n        ray = newRay;\n    }\n    \n    \n    // sum colour with previous sample, keep count of total in alpha\n    fragColor.rgb = emit;\n    fragColor.a = 1.;\n\n    if ( iFrame > 0 )\n    {\n\t\tfragColor += texelFetch(iChannel0,ivec2(fragCoord.xy),0);\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buf A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

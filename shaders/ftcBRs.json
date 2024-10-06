@@ -1,0 +1,155 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1665160052",
+            "description": "16-tap chromatic dispersion.\nChange #def at the top of common tab for 16-taps.\nReally wants a brawny GPU either way!\n 8-tap version: [url]https://www.shadertoy.com/view/cssGRn[/url]\n16-tap version: [url]https://www.shadertoy.com/view/ftcBRs[/url]\n",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "ftcBRs",
+            "likes": 33,
+            "name": "chromatic dispersion!",
+            "published": 3,
+            "tags": [
+                "refraction",
+                "fresnel",
+                "chromaticdispersion"
+            ],
+            "usePreview": 0,
+            "username": "elenzil",
+            "viewed": 611
+        },
+        "renderpass": [
+            {
+                "code": "// Chromatic Dispersion.\n//  8-tap version: https://www.shadertoy.com/view/cssGRn\n// 16-tap version: https://www.shadertoy.com/view/ftcBRs\n//\n// The actual work is all in the Common Tab.\n//\n// Here we collect the per-wavelength intensities from each of the buffers,\n// convert the wavelengths to RGB, and add them up.\n// I am not an expert on SRGB, so there are likely some things missing.\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n\n#if SIXTEEN_TAPS\n#define NUM_BANKS 4u\n#else\n#define NUM_BANKS 2u\n#endif\n\n    vec4 colors[NUM_BANKS];\n    \n    colors[0] = texelFetch(iChannel0, ivec2(XY), 0);\n    colors[1] = texelFetch(iChannel1, ivec2(XY), 0);\n#if SIXTEEN_TAPS\n    colors[2] = texelFetch(iChannel2, ivec2(XY), 0);\n    colors[3] = texelFetch(iChannel3, ivec2(XY), 0);\n#endif\n\n    vec3 accum = vec3(0.0);    \n    \n    for (uint bank = 0u; bank < NUM_BANKS; ++bank) {\n        for (uint n = 0u; n < 4u; ++n) {\n            uint index = bank * 4u + n;\n            float wl = famousWavelengths[index];\n            vec3 rgb = spectral_zucconi(wl);\n            accum += colors[bank][n] * rgb;\n        }\n    }\n    \n    accum *= 1.5 / float(NUM_BANKS);\n    \n    RGBA = vec4(accum, 1.0);\n    \n    // gamma\n    RGBA.rgb = pow(RGBA.rgb, vec3(0.5));\n}\n\n\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 259,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer02.png"
+                    },
+                    {
+                        "channel": 3,
+                        "ctype": "buffer",
+                        "id": 260,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer03.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// 0 = 8 taps, 1 = 16 taps.\n#define SIXTEEN_TAPS 1\n\n\n#define MINRES (min(RES.x, RES.y))\n\nconst float pi = 3.14159265359;\nconst vec3  v1 = vec3(1.0);\nconst vec3  v0 = vec3(0.0);\nconst vec3  vX = vec3(1.0, 0.0, 0.0);\nconst vec3  vY = vec3(0.0, 1.0, 0.0);\nconst vec3  vZ = vec3(0.0, 0.0, 1.0);\n\n//--------------------------------------------------------------------------------\n\nstruct ray_t {\n    vec3  ro;\n    vec3  rd;\n    float amt;   // [0, 1] amount of light left in the ray\n    float side;  // -1 = inside, 1 = outside.\n};\n\nstruct hit_t {\n    bool  hit;\n    float t;\n    vec3  pnt;\n    vec3  nrm;\n    uint  mtl;\n};\n\nhit_t newHit() {\n    hit_t ret;\n    ret.hit = false;\n    ret.t   = 1e9;\n    return ret;\n}\n\nstruct mtl_t {\n    float ior;\n    float diffVsTrns; // (0 = diffuse 1 = transparent), modulo reflection\n    \n    // Here is how the light contribution is allocated at a surface collision:\n    // ior                = Cauchy(ior, wavelength)\n    // reflect            = Schlick(ior)  (aka Fresnel)\n    // transmit + diffuse = 1 - reflect\n    // transmit           =      diffVsTrans  * (1 - reflect)\n    // diffuse            = (1 - diffVsTrans) * (1 - reflect)\n};\n\n//--------------------------------------------------------------------------------\n\nconst float ior_air     =  1.0003;\nconst float ior_aerogel =  1.03;\nconst float ior_ice     =  1.309;\nconst float ior_water   =  1.333;\nconst float ior_quartz  =  1.46;\nconst float ior_diamond =  2.42;\nconst float ior_shiny1  =  4.0;    // ad hoc\nconst float ior_mrr     =  1e2;    // ad hoc\n\nconst uint mtl_air   = 0u;\nconst uint mtl_ball1 = 1u;\nconst uint mtl_ball2 = 2u;\nconst uint mtl_floor = 3u;\nconst uint mtl_matte = 4u;\n\nconst mtl_t materials[] = mtl_t[](\n    mtl_t(ior_air    , 1.0),    // 0\n    mtl_t(ior_aerogel, 0.6),    // 1\n    mtl_t(ior_ice    , 1.0),    // 2\n    mtl_t(ior_air    , 0.0),    // 3\n    mtl_t(ior_air    , 0.0)     // 4\n);\n\n//--------------------------------------------------------------------------------\n\nconst float um_from_nm = 0.001;\nconst float famousWavelengths[] = float[] (\n#if SIXTEEN_TAPS\n    680.0,\n    661.0,\n    642.0,\n    624.0,\n    605.0,\n    586.0,\n    568.0,\n    549.0,\n    530.0,\n    512.0,\n    493.0,\n    474.0,\n    456.0,\n    437.0,\n    418.0,\n    400.0\n#else\n    680.0,\n    640.0,\n    600.0,\n    560.0,\n    520.0,\n    480.0,\n    440.0,\n    400.0\n#endif\n);\n\n//--------------------------------------------------------------------------------\n\n// fifo queue.\n// usage:\n// #define Q_TYPE and Q_MAX_ENTRIES,\n// then put Q_IMPLEMENMTATION.\n// This is a basic ringbuffer.\n// NO ERROR CHECKING\n// orion elenzil 2022.\n#define Q_IMPLEMENTATION                           \\\nconst uint gQCapacity = Q_MAX_ENTRIES;             \\\nconst uint gQNumSlots = gQCapacity + 1u;           \\\nQ_TYPE gQ[gQNumSlots];                             \\\nuint gQHead = 0u;                                  \\\nuint gQTail = 0u;                                  \\\n                                                   \\\nuint QCount() {                                    \\\n    if (gQHead >= gQTail) {                        \\\n        return gQHead - gQTail;                    \\\n    }                                              \\\n    else {                                         \\\n        return gQNumSlots - (gQTail - gQHead);     \\\n    }                                              \\\n}                                                  \\\n                                                   \\\nuint QSpaceLeft() {                                \\\n    return gQCapacity - QCount();                  \\\n}                                                  \\\n                                                   \\\nbool QIsFull() {                                   \\\n    return QSpaceLeft() == 0u;                     \\\n}                                                  \\\n                                                   \\\nbool QIsEmpty() {                                  \\\n    return QCount() == 0u;                         \\\n}                                                  \\\n                                                   \\\nuint QEnqueueIndex() {                             \\\n    gQHead = (gQHead + 1u) % gQNumSlots;           \\\n    return gQHead;                                 \\\n}                                                  \\\n                                                   \\\nuint QDequeueIndex() {                             \\\n    gQTail = (gQTail + 1u) % gQNumSlots;           \\\n    return gQTail;                                 \\\n}                                                  \\\n                                                   \\\nvoid QEnqueue(Q_TYPE item) {                       \\\n    gQ[QEnqueueIndex()] = item;                    \\\n}                                                  \\\n                                                   \\\nQ_TYPE QDequeue() {                                \\\n    return gQ[QDequeueIndex()];                    \\\n}\n////////////////////////////////////////////////////\n\n\n//--------------------------------------------------------------------------------\n\n// returns false if there are no real roots.\n// returns true if there are one or two real roots.\n// roots.x <= roots.y.\nbool solveQuadratic(in vec3 coeffs, out vec2 roots) {\n    const uint A = 0u;\n    const uint B = 1u;\n    const uint C = 2u;\n    \n    // (-B +- sqrt(BB - 4AC)) / 2A\n    \n    float disc = (coeffs[B] * coeffs[B]) - (4.0 * coeffs[A] * coeffs[C]);\n    \n    if (disc < 0.0) {\n        return false;\n    }\n    \n    float sqrt_disc = sqrt(disc);\n    \n    roots.x = (-coeffs[B] - sqrt_disc) / (2.0 * coeffs[A]);\n    roots.y = (-coeffs[B] + sqrt_disc) / (2.0 * coeffs[A]);\n    \n    if (roots.y < roots.x) {\n        roots.xy = roots.yx;\n    }\n    \n    return true;\n}\n\n//--------------------------------------------------------------------------------\n\nmat3 matLookTo(in vec3 lookFrom, in vec3 lookTo) {\n    vec3 fw = -normalize(lookTo - lookFrom);\n    vec3 rt =  normalize(cross(fw, vY));\n    vec3 up =  cross(rt, fw);\n    \n    return mat3(rt, up, fw);\n}\n\nmat2 matRot2(in float theta) {\n    float c = cos(theta);\n    float s = sin(theta);\n    return mat2(c, s, -s, c);\n}\n\n\n//--------------------------------------------------------------------------------\n\n// https://www.shadertoy.com/view/ls2Bz1\n\n// Spectral Colour Schemes\n// By Alan Zucconi\n// Website: www.alanzucconi.com\n// Twitter: @AlanZucconi\n\n// Example of different spectral colour schemes\n// to convert visible wavelengths of light (400-700 nm) to RGB colours.\n\n// The function \"spectral_zucconi6\" provides the best approximation\n// without including any branching.\n// Its faster version, \"spectral_zucconi\", is advised for mobile applications.\n\n// Read \"Improving the Rainbow\" for more information\n// http://www.alanzucconi.com/?p=6703\n\nfloat saturate (float x)\n{\n    return min(1.0, max(0.0,x));\n}\nvec3 saturate (vec3 x)\n{\n    return min(vec3(1.,1.,1.), max(vec3(0.,0.,0.),x));\n}\n\n// --- Spectral Zucconi --------------------------------------------\n// By Alan Zucconi\n// Based on GPU Gems: https://developer.nvidia.com/sites/all/modules/custom/gpugems/books/GPUGems/gpugems_ch08.html\n// But with values optimised to match as close as possible the visible spectrum\n// Fits this: https://commons.wikimedia.org/wiki/File:Linear_visible_spectrum.svg\n// With weighter MSE (RGB weights: 0.3, 0.59, 0.11)\nvec3 bump3y (vec3 x, vec3 yoffset)\n{\n    vec3 y = vec3(1.,1.,1.) - x * x;\n    y = saturate(y-yoffset);\n    return y;\n}\nvec3 spectral_zucconi (float w)\n{\n    // w: [400, 700]\n    // x: [0,   1]\n    float x = saturate((w - 400.0)/ 300.0);\n\n    const vec3 cs = vec3(3.54541723, 2.86670055, 2.29421995);\n    const vec3 xs = vec3(0.69548916, 0.49416934, 0.28269708);\n    const vec3 ys = vec3(0.02320775, 0.15936245, 0.53520021);\n\n    return bump3y ( cs * (x - xs), ys);\n}\n\n// --- Spectral Zucconi 6 --------------------------------------------\n\n// Based on GPU Gems\n// Optimised by Alan Zucconi\nvec3 spectral_zucconi6 (float w)\n{\n    // w: [400, 700]\n    // x: [0,   1]\n    float x = saturate((w - 400.0)/ 300.0);\n\n    const vec3 c1 = vec3(3.54585104, 2.93225262, 2.41593945);\n    const vec3 x1 = vec3(0.69549072, 0.49228336, 0.27699880);\n    const vec3 y1 = vec3(0.02312639, 0.15225084, 0.52607955);\n\n    const vec3 c2 = vec3(3.90307140, 3.21182957, 3.96587128);\n    const vec3 x2 = vec3(0.11748627, 0.86755042, 0.66077860);\n    const vec3 y2 = vec3(0.84897130, 0.88445281, 0.73949448);\n\n    return\n        bump3y(c1 * (x - x1), y1) +\n        bump3y(c2 * (x - x2), y2) ;\n}\n\n\n//--------------------------------------------------------------------------------\n\n// from https://www.cs.princeton.edu/courses/archive/fall00/cs426/lectures/raycast/sld017.htm\nvoid rayVsPlane(in ray_t ray, in vec3 n, in float d, uint mtl, inout hit_t hit) {\n    float t = -(dot(ray.ro, n) + d) / (dot(ray.rd, n));\n    if (t > 0.0 && t < hit.t) {\n        hit.hit = true;\n        hit.t   = t;\n        hit.mtl = mtl;\n        hit.pnt = ray.ro + hit.t * ray.rd;\n        hit.nrm = n;\n    }\n}\n\n//--------------------------------------------------------------------------------\n\nvoid rayVsSphere(in ray_t ray, in vec3 c, float r, uint mtl, inout hit_t hit) {\n    \n    vec3 ro = ray.ro - c;\n    vec3 rd = ray.rd;\n\n    float A = dot(rd, rd);\n    float B = dot(ro, rd) * 2.0;\n    float C = dot(ro, ro) - (r * r);\n    \n    vec2 roots;\n    if (!solveQuadratic(vec3(A, B, C), roots)) {\n        return;\n    }\n    \n    if (roots.y < 0.0) {\n        // both hits are before the start of the ray\n        return;\n    }\n    \n    if (roots.x > 0.0) {\n        if (roots.x > hit.t) {\n            return;\n        }\n        // good hit\n        hit.hit = true;\n        hit.t   = roots.x;\n        hit.mtl = mtl;\n        hit.pnt = ray.ro + hit.t * ray.rd;\n        hit.nrm = (hit.pnt - c) / r;\n        return;\n    }\n    \n    if (roots.y < hit.t) {\n        // good hit\n        hit.hit = true;\n        hit.t   = roots.y;\n        hit.mtl = mtl;\n        hit.pnt = ray.ro + hit.t * ray.rd;\n        hit.nrm = (hit.pnt - c) / r;\n        return;\n    }\n}\n\n//--------------------------------------------------------------------------------\n\n// https://en.wikipedia.org/wiki/Schlick%27s_approximation\nfloat schlickR0(in float n1, in float n2) {\n    // same if n1 and n2 are swapped.\n    float q  = (n1 - n2) / (n1 + n2);\n    float q2 = q * q;\n    return q2;\n}\n\nfloat schlick(in float R0, in float cosTheta) {\n    float q  = 1.0 - cosTheta;\n    float q5 = q * q * q * q * q;\n    return R0 + ((1.0 - R0) * q5);\n}\n\n// https://en.wikipedia.org/wiki/Cauchy%27s_equation\nfloat cauchyN(in float invWavelengthMicrometersSquared, in float A) {\n    // I can't find a table of Cauchy coefficients,\n    // so just going with something.\n    const float B = 0.01;\n    return A + B * invWavelengthMicrometersSquared;\n}\n\n//---------------------------------------------------------------------------------\n//---------------------------------------------------------------------------------\n//---------------------------------------------------------------------------------\n//---------------------------------------------------------------------------------\n//---------------------------------------------------------------------------------\n\n// Below here is all the code that would go into a \"single tap\" implementation of this.\n// Since we're doing multi-taps and want this exact same code in several buffers,\n// we put it here in ShaderToy's \"common\" tab, which is like an implicit #include.\n\n\nconst float gMinRayAmt =  0.01;     // a ray must have at least this much \"amt\" to be included.\nconst uint  gMaxRays   = 10u;       // maximum number of rays per pixel per wavelength.\nconst float gSurfEps   =  0.001;    // a small distance relative to this scene.\nconst float gZoom      =  1.2;\n\nvec2 RES;\n\nfloat gT;            // time.\nvec3  gSunDir;       // direction to sun.\n\n\n// ringbuffer of rays\n#define Q_TYPE ray_t\n#define Q_MAX_ENTRIES 10u\nQ_IMPLEMENTATION\n\nconst float blankSkyTone = 0.01;\n\nfloat toneSky(in vec3 dir) {\n    float eps = cos(0.05);\n    float q = smoothstep(-.001, 0.0, dot(dir, gSunDir) - eps);\n    // the \"sun\" has brightness > 1.\n    q *= 2e1;\n    q = q * (1.0 - blankSkyTone) + blankSkyTone;\n    return q;\n}\n\nfloat toneChecks(in vec2 p) {\n    const float width2 = 0.06;\n          float width1 = width2 * mix(0.1, 0.9, smoothstep(10.0, 1.0, length(p)));\n    p *= 0.25;\n    float q = 1.0;\n    q *= smoothstep(width1, width2, abs(fract(p.x) - 0.5));\n    q *= smoothstep(width1, width2, abs(fract(p.y) - 0.5));\n    q *= smoothstep(width1, width2, abs(length(p) / 1.5 - 1.0) * 1.5);\n    q  = 1.0 - 0.95 * q;\n    q = mix(q, blankSkyTone, smoothstep(2.0, 10.0, length(p)));\n    return q;\n}\n\nfloat toneMatte(in vec3 nrm) {\n    return max(0.0, dot(nrm, gSunDir));\n}\n\nfloat tone(in hit_t h, in ray_t r) {\n    // using if()'s here because iOS was behaving strangely with switch().\n    if (h.mtl == mtl_air) {\n        return toneSky(r.rd);\n    }\n    if (h.mtl == mtl_floor) {\n        return toneChecks(h.pnt.xz) * toneMatte(h.nrm);\n    }\n    return toneMatte(h.nrm);\n}\n\n// convert a screen-space coordinate to viewport.\nvec2 viewportFromScreen(in vec2 p) {\n    return (p * 2.0 - RES.xy) / MINRES / gZoom;\n}\n\nvec3 gBallPos1;\nvec3 gBallPos2;\nvoid setupScene() {\n    gSunDir = normalize(vec3(0.0, 3.0 + sin(gT * 0.1) * 2.8, -10.0));\n    gSunDir.xz = matRot2(gT * 0.7) * gSunDir.xz;\n    \n    const float bounceHeight = 0.75;\n    \n    float fT1 = fract(gT * 2.00) * 2.0 - 1.0;\n    float fT2 = fract(gT * 2.21) * 2.0 - 1.0;\n    gBallPos1 = vY * (1.0 + bounceHeight - fT1 * fT1 * bounceHeight) - vZ * 1.5;\n    gBallPos2 = vY * (1.0 + bounceHeight - fT2 * fT2 * bounceHeight) + vZ * 1.5;\n}\n\n// given a ray and a running hit,\n// modify the hit to indicate the nearest intersection with the ray.\nvoid rayVsScene(in ray_t r, inout hit_t h) {\n    rayVsPlane (r, vY       , 0.0, mtl_floor, h);\n    rayVsSphere(r, gBallPos1, 1.0, mtl_ball1, h);\n    rayVsSphere(r, gBallPos2, 1.0, mtl_ball2, h);\n}\n\n// Ordinarily this would be 'main()', but it's here in Common for re-use in multiple buffers.\n// Uniforms like resolution, time, mouse are passed in because they're not available in Common.\n//\n// This returns the intensity at this pixel for 4 separate wavelengths ray-traced through the scene.\nvec4 commonMain(in vec2 XY, in float inTime, in vec2 inRes, in vec4 iMouse, in uint wlBank) {\n    RES     = inRes;\n    gT      = inTime * 0.2;\n    vec2 xy = viewportFromScreen(XY);\n    vec2 m  = viewportFromScreen(length(iMouse.xy) < 40.0 ? RES.xy / 2.0 : iMouse.xy);\n    \n    setupScene();\n    \n    // setup camera\n    float theta     = gT - m.x * pi;\n    vec3  lookTo    = vY;\n    vec3  lookFrom  = vec3(cos(theta), 0.4 - m.y, sin(theta)) * 5.0;\n    // don't let camera go below the floor\n    lookFrom.y = max(0.1, lookFrom.y);\n    \n    // ret is the output.\n    vec4 ret = vec4(0.0);\n    \n    // loop over 4 wavelengths\n    for (uint wlSubIndex = 0u; wlSubIndex < 4u; wlSubIndex++) {\n    \n        uint wlIndex = wlBank * 4u + wlSubIndex;\n        \n        float wavelengthUm = um_from_nm * famousWavelengths[wlIndex];\n        float invWavelengthUmSquared = 1.0 / (wavelengthUm * wavelengthUm);\n\n        // intensity for this wavelength.\n        float wlOut = 0.0;\n\n        ray_t r0;\n        r0.ro   = lookFrom;\n        r0.rd   = matLookTo(lookFrom, lookTo) * normalize(vec3(xy, -2.0));\n        r0.amt  = 1.0;\n        r0.side = 1.0;\n        // ^-- cheating a little with side = 1. We're assuming the ray begins outside any object.\n\n        QEnqueue(r0);\n\n        uint rayCount = 0u;\n\n        while (!QIsEmpty()) {\n            rayCount += 1u;\n            ray_t r = QDequeue();\n\n            hit_t h = newHit();\n            h.mtl = mtl_air;    \n            rayVsScene(r, h);\n\n            if (!h.hit) {\n                // no hit\n                wlOut += r.amt * tone(h, r);\n            }\n            else {\n                // a hit!\n                // \"nrm\" here is the hit-facing normal,\n                // while h.nrm is the \"outward\" facing normal.\n                vec3  nrm     = h.nrm * r.side;\n                mtl_t mtl     = materials[h.mtl];\n                float ior     = cauchyN(invWavelengthUmSquared, mtl.ior);\n                float R0      = schlickR0(ior, ior_air);\n                float reflAmt = schlick  (R0, dot(r.rd, -nrm));\n                float trnsAmt = mtl.diffVsTrns * (1.0 - reflAmt);\n                float diffAmt = (1.0 - mtl.diffVsTrns) * (1.0 - reflAmt);\n\n                reflAmt *= r.amt;\n                trnsAmt *= r.amt;\n                diffAmt *= r.amt;\n\n                if (diffAmt > gMinRayAmt) {\n                    // diffuse lighting at surfaces.\n                    // cast a ray for shadows.\n                    ray_t shdRay;\n                    shdRay.ro         = h.pnt + h.nrm * gSurfEps;\n                    shdRay.rd         = gSunDir;\n                    shdRay.amt        = diffAmt;\n                    shdRay.side       = 1.0;\n                    hit_t shdHit      = newHit();\n                    \n                    rayVsScene(shdRay, shdHit);\n                    float lit = 1.0 - float(shdHit.hit);\n                    wlOut += diffAmt * lit * tone(h, r);\n                }\n\n                // moving on to transmission and then reflection.\n\n                if (QSpaceLeft() < 2u)    continue;\n                if (rayCount >= gMaxRays) continue;\n\n                if (trnsAmt > gMinRayAmt) {\n                    float eta = ior_air / ior;\n                    if (r.side < 0.0) {\n                        eta = 1.0 / eta;\n                    }\n                    vec3 trnRayDir = refract(r.rd, nrm, eta);\n                    if (dot(trnRayDir, trnRayDir) < 0.001) {\n                        // total internal reflection.\n                        // this is theoretically impossible for a ray that entered a sphere,\n                        // but keeping it in here anyhow for more exotic scenarios.\n                        reflAmt += trnsAmt;\n                    }\n                    else {\n                        ray_t trnRay;\n                        trnRay.ro   = h.pnt - nrm * gSurfEps;\n                        trnRay.rd   = trnRayDir;\n                        trnRay.side = -r.side;\n                        trnRay.amt  = trnsAmt;\n                        QEnqueue(trnRay);\n                    }\n                }\n\n                if (reflAmt > gMinRayAmt) {\n                    ray_t rflRay;\n                    rflRay.ro   = h.pnt + nrm * gSurfEps;\n                    rflRay.rd   = reflect(r.rd, nrm);\n                    rflRay.side = r.side;\n                    rflRay.amt  = reflAmt;\n                    QEnqueue(rflRay);\n                }\n            }\n        }\n        \n        ret[wlSubIndex] = wlOut;\n    }\n    \n    return ret;\n}\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            },
+            {
+                "code": "const uint wavelengthBank = 0u;\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n    RGBA = commonMain(XY, iTime, iResolution.xy, iMouse, wavelengthBank);   \n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const uint wavelengthBank = 1u;\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n    RGBA = commonMain(XY, iTime, iResolution.xy, iMouse, wavelengthBank);   \n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const uint wavelengthBank = 2u;\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n#if SIXTEEN_TAPS\n    RGBA = commonMain(XY, iTime, iResolution.xy, iMouse, wavelengthBank);   \n#else\n    RGBA = vec4(0.0);\n#endif\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer C",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 259
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "const uint wavelengthBank = 3u;\n\nvoid mainImage(out vec4 RGBA, in vec2 XY) {\n#if SIXTEEN_TAPS\n    RGBA = commonMain(XY, iTime, iResolution.xy, iMouse, wavelengthBank);   \n#else\n    RGBA = vec4(0.0);\n#endif\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer D",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 260
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

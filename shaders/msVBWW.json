@@ -1,0 +1,40 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1698244514",
+            "description": "Shadows with almost no self-shadowing, without using skip id's.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "msVBWW",
+            "likes": 4,
+            "name": "No self-shadowing test",
+            "published": 3,
+            "tags": [
+                "3d",
+                "test",
+                "raymarch",
+                "shadow",
+                "shadows"
+            ],
+            "usePreview": 0,
+            "username": "ianertson",
+            "viewed": 155
+        },
+        "renderpass": [
+            {
+                "code": "#define R (iResolution.xy)\n#define M_PI 3.1415\n#define TAU (M_PI*2.0)\n#define ZERO min(0, iFrame)\n#define NEAR 0.003\n#define FAR 32.0\n#define STEPS 100\n#define SHADOW_STEPS 8\n#define AMBIENT 0.07\n\nstruct Data {\n    vec3 p;\n    vec3 n;\n    float d;\n    int id;\n};\n\n#define NEW_DATA Data(vec3(0.0), vec3(0.0), FAR, -1)\n\nstruct Light {\n    vec3 p;\n    vec3 c;\n    float s;\n};\n\nmat2 rot(float a) { float c = cos(a); float s = sin(a); return mat2(c, s, -s, c);}\n\nvec3 pointRot(in vec3 p, in vec3 r) {\n    p.yz *= rot(r.x);\n    p.xz *= rot(r.y);\n    p.xy *= rot(r.z);\n    return p;\n}\n\nfloat boxSDF(vec3 p, vec3 s) {\n    p = abs(p)-s;\n    return length(max(p, 0.0)) + min(max(p.x, max(p.y, p.z)), 0.0);\n}\n\nfloat planeSDF(vec3 p, vec2 s) {\n    return max(max(p.y, abs(p.x)-s.x), abs(p.z)-s.y)+\n    0.019*cos(p.x*10.+p.z*10.+iTime*10.) + \n    0.025*sin(p.x+p.z*10.+iTime*10.) + \n    0.025*exp(cos(p.x*p.z*10.+sin(iTime+p.x*3.14+p.z))-1.) - \n    0.025*exp(sin((iTime*2.2)+(p.x*10.-p.z*10.))-1.);\n}\n\n#define ID_BOX 0\n#define ID_GROUND 1\n\nfloat sdf(vec3 p, inout Data data) {\n    float box = boxSDF(pointRot(p - vec3(0, (0.19) + 0.25*(0.5+0.5*sin(iTime)), 0), vec3(iTime, iTime, 0)), vec3(0.1))-0.01;\n    float ground = planeSDF(p, vec2(2, 2));\n    \n    float d = FAR;\n    if (box < d) { d = box; data.id = ID_BOX; }\n    if (ground < d) { d = ground; data.id = ID_GROUND; }\n    \n    return d/1.1;\n}\n\nbool march(vec3 ro, vec3 rd, inout Data data) {\n    float d = 0.0;\n    \n    for (int i = ZERO; i < STEPS; i++) {\n        vec3 p = ro+rd*d;\n        float next = sdf(p, data);\n        \n        if (abs(next) <= NEAR) break;\n        if (abs(d) >= FAR) return false;\n        \n        d += next;\n    }\n    \n    vec3 p = data.p = ro+rd*d;\n    data.d = d;\n    vec2 e = vec2(0.003, 0.0);\n    data.n = normalize(sdf(p, data) - vec3(\n        sdf(p - e.xyy, data),\n        sdf(p - e.yxy, data),\n        sdf(p - e.yyx, data)\n    ));\n    \n    \n    return true;\n}\n\nfloat getShadow(vec3 ro, vec3 rd, in Data data, in Light light) {\n    vec3 L = normalize(light.p);\n    vec3 N = data.n;\n    ro = data.p + N*NEAR*3.;\n    rd = L;\n    \n    float d = 2.5*max(0.0, -dot(N, L));\n    \n    for (int i = ZERO; i < SHADOW_STEPS; i++) {\n        vec3 p = ro+rd*d;\n        float r = float(i) / float(SHADOW_STEPS);\n        p += N * (1.0/(1.0 + r))*0.1;\n        float next = sdf(p, data);\n        \n        if (abs(next) <= NEAR || abs(d) >= FAR) break;\n        \n        d += next;\n    }\n    \n    float s = (d / (1.0 + d));\n    return clamp(smoothstep(0.0, 0.5, s*s), AMBIENT*2., 1.0);\n}\n\n\nvec3 getColor(in Data data) {\n    switch (data.id) {\n        case ID_BOX: return vec3(1, 0, 0); break;\n        default: return vec3(1.0); break;\n    }\n    \n    return vec3(1.0);\n}\n\nvec3 forEachLight(vec3 ro, vec3 rd, inout Data data, in Light light) {\n    vec3 L = normalize(light.p);\n    vec3 N = data.n;\n    vec3 ref = reflect(L, N);\n    float NdotL = max(AMBIENT, dot(N, L));\n    float VdotR = max(0.0, dot(rd, ref));\n    float spec = pow(VdotR, 16.0);\n    float shadow = NdotL <= (AMBIENT*0.03) ? AMBIENT : getShadow(ro, rd, data, light);\n    vec3 diffuse = getColor(data) / M_PI;\n    return (NdotL * light.c + spec)*shadow*diffuse;\n}\n\nvec3 render(vec3 ro, vec3 rd, inout Data data) {\n    Light light = Light(vec3(1, 2., -3.), vec3(0.97, 0.69, 0.51), 2.0);\n    vec3 L = normalize(light.p);\n    float VdotL = max(0.0, dot(rd, L));\n    vec3 col = vec3(0.0);\n    col += pow(VdotL, 4.)*light.c;\n    if (march(ro, rd, data)) {\n        col += forEachLight(ro, rd, data, light);\n    }\n    \n    return col;\n}\n\nvoid mainImage(out vec4 O, in vec2 fc)\n{\n    vec3 col = vec3(0.0);\n    vec2 uv = (fc.xy - 0.5 * R.xy) / R.y;\n    vec4 m = vec4((iMouse.xy - 0.5 * R.xy) / R.y, iMouse.zw);\n    \n    vec3 ro = vec3(0.0, 0.2, -1.);\n    vec3 rd = normalize(vec3(uv.xy, 1.0));\n    \n    if (m.z < 0.01) {\n        m.x = (iTime+4.0)*0.09;\n        m.y = -0.09;\n    }\n    \n    rd.yz *= rot(m.y*TAU);\n    rd.xz *= rot(m.x*TAU);\n    ro.yz *= rot(m.y*TAU);\n    ro.xz *= rot(m.x*TAU);\n    \n\n    \n    Data data = NEW_DATA;\n    col += render(ro, rd, data);\n    float depth = data.d / FAR;\n    col += smoothstep(0.02, 0.2, depth);\n    col += col*col;\n    \n    col = pow(col, vec3(1.0 / 2.2));\n    \n    O = vec4(col, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

@@ -1,0 +1,94 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1661778519",
+            "description": "Trying to relearn some curve/spline stuff after a long time, so decided to write some interpolation stuff to help me remember this stuff better in the future. Drag around points with cursor. Enable/Disable #ifdefs in common for drawing debug stuff. ",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "NlKcWR",
+            "likes": 1,
+            "name": "Quadratic Bézier Interpolation",
+            "published": 3,
+            "tags": [
+                "2d",
+                "interactive",
+                "sdf",
+                "bezier",
+                "spline",
+                "curve",
+                "lerp",
+                "quadratic"
+            ],
+            "usePreview": 0,
+            "username": "piyushslayer",
+            "viewed": 327
+        },
+        "renderpass": [
+            {
+                "code": "/**\nTrying to relearn some curve/spline stuff after a long time, so decided to write this implementation\nto help me remember this stuff better in the future. \n\nUsage: Drag around anchor points with mouse to see how the curve changes. Also, enabling/disabling ifdefs \nin the common tab helps draw various debug points and line segments that are used in calculation the final\nBézier interpolant for drawing the curve. \n*/\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord / iResolution.xy;\n    vec3 outColor = textureLod(iChannel0, uv, 0.0).xyz;\n    \n    if (fragCoord.y < 1.0) \n    {\n        outColor = BackgroundColor;\n    }\n    \n    fragColor = vec4(pow(outColor, GammaInv), 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define PIXEL_SIZE 2.0 / max(iResolution.x, iResolution.y) // because uv is in [-1, 1] domain\n#define DOUBLE_PIXEL_SIZE 2.0 * PIXEL_SIZE\n#define SS_PIXEL(x) smoothstep(DOUBLE_PIXEL_SIZE, -DOUBLE_PIXEL_SIZE * 2.0, x) // double AA looks smoother imo\n\nvoid DrawCircle(inout vec3 outColor, in vec3 inColor, in vec2 uv, in vec2 pos, const in float radius)\n{\n    outColor = mix(outColor, inColor, SS_PIXEL(length(uv - pos) - radius));\n}\n\nvoid DrawSegment(inout vec3 outColor, in vec3 inColor, in vec2 uv, in vec2 a, in vec2 b, float thickness)\n{\n    vec2 AB = b - a;\n    vec2 AP = uv - a;\n    float position = SATURATE(dot(AP, AB) / dot(AB, AB));\n    outColor = mix(outColor, inColor, SS_PIXEL(length(AP - position * AB) - thickness));\n}\n\nvoid CalculateAnchorPositions(inout vec3 outColor, inout Point anchors[AnchorCount], in vec2 uv, in vec4 mouse)\n{\n\n    if (iFrame == 0) // First frame, so just set the position and gtfo.\n    {\n        for (int i = 0; i < AnchorCount; ++i)\n        {\n            vec3 anchorPosition = InitialAnchorPositions[i];\n            \n            if (iResolution.x > iResolution.y)\n            {\n                anchorPosition.x *= iResolution.x / iResolution.y;\n            }\n            else\n            {\n                anchorPosition.y *= iResolution.y / iResolution.x;\n            }\n            \n            anchors[i].position = anchorPosition;//InitialAnchorPositions[i];\n        }\n        \n        return;\n    }\n    \n    float anchorsUnderCursor = 0.0;\n    \n    for (int i = 0; i < AnchorCount; ++i)\n    {\n        // Previous frame anchor position.\n        anchors[i].position = texelFetch(iChannel0, ivec2(i, 0), 0).xyz; \n        anchors[i].color[i] = 2.0;\n        \n        // Handle mouse input\n        if (iMouse.w > 0.0) \n        {\n            // Mask to decide which anchor to move, especially when 2 or more anchors are overlapping each \n            // other. For now it just choses the first one in the array that's detected under the mouse, but \n            // I'd eventually like to handle depth as well.\n            anchors[i].position.z = mix(step(ANCHOR_POINT_RADIUS, length(anchors[i].position.xy - mouse.xy)), 1.0, SATURATE(anchorsUnderCursor));\n            if (anchors[i].position.z < 0.5)\n            {\n                anchorsUnderCursor++;\n            }\n        }\n        \n        // Set current anchor position after handling mouse click\n        anchors[i].position.xy = mix(mouse.xy, anchors[i].position.xy, anchors[i].position.z);\n        \n        // Draw the anchor point (It's totally fine to draw here, but deferring drawing anchors \n        // until debug segments are drawn makes it look better.)\n        // DrawCircle(outColor, anchors[i].color, uv, anchors[i].position.xy, POINT_RADIUS);\n    }    \n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    vec4 mouse = (2.0 * iMouse - iResolution.xyxy) / iResolution.y;\n    vec3 outColor = BackgroundColor;\n  \n    Point anchors[AnchorCount];\n    CalculateAnchorPositions(outColor, anchors, uv, mouse);\n    \n#ifdef DRAW_DEBUG_ANCHOR_SEGMENTS\n    // Draw the line segments joining the anchor points.\n    DrawSegment(outColor, AnchorSegmentColor, uv, anchors[0].position.xy, anchors[1].position.xy, PIXEL_SIZE);\n    DrawSegment(outColor, AnchorSegmentColor, uv, anchors[1].position.xy, anchors[2].position.xy, PIXEL_SIZE);\n#endif\n    \n    // Draw the anchor points.\n    for (int i = 0; i < AnchorCount; ++i)\n    {\n        DrawCircle(outColor, anchors[i].color, uv, anchors[i].position.xy, ANCHOR_POINT_RADIUS);\n    }\n    \n    // Interpolate the Quadratic Bézier Curve.\n    vec2 previousBezierInterpolant = anchors[2].position.xy;\n    for (float i = 0.0; i < TotalBezierSegments - 1.0; ++i)\n    {\n        float fraction = (i + 1.0) * (1.0 / TotalBezierSegments);\n        \n#if defined(DRAW_DEBUG_INTERPOLANT_SEGMENTS) || defined(DRAW_DEBUG_LINEAR_INTERPOLANT_POINTS)\n        // If we're drawing debug points/segments, then calculate the interpolation manually\n        vec2 D = mix(anchors[1].position.xy, anchors[0].position.xy, fraction);\n        vec2 E = mix(anchors[2].position.xy, anchors[1].position.xy, fraction);\n        vec2 F = mix(E, D, fraction);\n#endif\n        \n#ifdef DRAW_DEBUG_LINEAR_INTERPOLANT_POINTS\n        // Draw the points that divide the line segments joining the anchor points at different fractions.\n        DrawCircle(outColor, LinearInterpolantPointColor, uv, D, INTERPOLANT_POINT_RADIUS);\n        DrawCircle(outColor, LinearInterpolantPointColor, uv, E, INTERPOLANT_POINT_RADIUS);\n#endif\n\n#ifdef DRAW_DEBUG_INTERPOLANT_SEGMENTS\n        // Draw the line segments that join the two main anchor segments at different fractions, and\n        // on which the point on the Bézier curve is interpolated.\n        DrawSegment(outColor, FloatToRGB(fraction, 4.0) * 4.0, uv, D, E, PIXEL_SIZE);\n#endif\n        \n#if !defined(DRAW_DEBUG_INTERPOLANT_SEGMENTS) && !defined(DRAW_DEBUG_LINEAR_INTERPOLANT_POINTS)\n        // If debug stuff that requires manual interpolation is turned off, just use the solved equation.\n        // Bézier quadratic equation:\n        // (A - 2B + C)*t*t + 2*t*(B - C) + C \n        vec2 currentBezierInterpolant = fraction * fraction * (anchors[0].position.xy - 2.0 * anchors[1].position.xy + anchors[2].position.xy) + \n            2.0 * fraction * (anchors[1].position.xy - anchors[2].position.xy) + anchors[2].position.xy;\n#else\n        vec2 currentBezierInterpolant = F;\n#endif\n            \n        // Draw the Bézier curve.\n        DrawSegment(outColor, BezierCurveColor, uv, previousBezierInterpolant, \n            currentBezierInterpolant, DOUBLE_PIXEL_SIZE);\n            \n#ifdef DRAW_DEBUG_BEZIER_INTERPOLANTS_POINTS\n        // Draw the point interpolated on the Bézier curve.\n        DrawCircle(outColor, BezierInterpolantPointColor, uv, currentBezierInterpolant, INTERPOLANT_POINT_RADIUS);\n#endif\n        \n        previousBezierInterpolant = currentBezierInterpolant;\n    }\n    \n    // Draw the last segment in the curve joining the ending anchor point and the last interpolant in the curve.\n    DrawSegment(outColor, BezierCurveColor, uv, previousBezierInterpolant, \n            anchors[0].position.xy, DOUBLE_PIXEL_SIZE);\n      \n#ifdef DRAW_ANIMATED_INTERPOLANTS\n    float linearRatio = sin(iTime) * 0.5 + 0.5; // 0 - 1\n    \n    vec2 D = mix(anchors[1].position.xy, anchors[0].position.xy, linearRatio);\n    vec2 E = mix(anchors[2].position.xy, anchors[1].position.xy, linearRatio);\n    vec2 F = mix(E, D, linearRatio);\n    \n    DrawCircle(outColor, LinearInterpolantPointColor, uv, D, INTERPOLANT_POINT_RADIUS);\n    DrawCircle(outColor, LinearInterpolantPointColor, uv, E, INTERPOLANT_POINT_RADIUS);\n    DrawCircle(outColor, BezierInterpolantPointColor, uv, F, INTERPOLANT_POINT_RADIUS);\n    \n    DrawSegment(outColor, vec3(2.0, 2.0, 0.01), uv, D, E, PIXEL_SIZE);\n#endif\n    \n    fragColor = vec4(outColor, 1.0);\n    \n    // Write anchor positions to the buffer.\n    if (all(lessThan(fragCoord, vec2(1.0, 1.0))))\n    {\n        fragColor = vec4(anchors[0].position, 1.0);\n    }\n    else if(all(lessThan(fragCoord, vec2(2.0, 1.0))))\n    {\n        fragColor = vec4(anchors[1].position, 1.0);\n    }\n    else if(all(lessThan(fragCoord, vec2(3.0, 1.0))))\n    {\n        fragColor = vec4(anchors[2].position, 1.0);\n    }\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "#define SATURATE(x) clamp(x, 0.0, 1.0)\n#define ANCHOR_POINT_RADIUS 0.048\n#define INTERPOLANT_POINT_RADIUS 0.024\n\n#define DRAW_DEBUG_ANCHOR_SEGMENTS\n#define DRAW_ANIMATED_INTERPOLANTS\n// #define DRAW_DEBUG_INTERPOLANT_SEGMENTS\n// #define DRAW_DEBUG_LINEAR_INTERPOLANT_POINTS\n// #define DRAW_DEBUG_BEZIER_INTERPOLANTS_POINTS\n\nconst int  AnchorCount = 3;\nconst float TotalBezierSegments = 64.0;\nconst vec3 BackgroundColor = vec3(0.03, 0.012, 0.06);\nconst vec3 BezierCurveColor = vec3(0.01, 2.0, 0.01);\nconst vec3 AnchorSegmentColor = vec3(1.0);\nconst vec3 LinearInterpolantPointColor = vec3(2.0, 1.0, 0.01);\nconst vec3 BezierInterpolantPointColor = vec3(0.01, 1.8, 2.0);\nconst vec3 GammaInv = vec3(1.0 / 2.2);\n\nconst vec3 InitialAnchorPositions[AnchorCount] = vec3[AnchorCount] (\n    vec3(-0.7, -0.6, 1.0),\n    vec3(0.9, -0.9, 1.0),\n    vec3(0.7, 0.6, 1.0)\n);\n\nstruct Point\n{\n    vec3 position;\n    vec3 color;\n};\n\n// Taken from: https://www.shadertoy.com/view/WsVGzm\nvec3 FloatToRGB(in float v, in float scale) {\n    float r = v;\n    float g = mod(v * scale, 1.0);\n    r -= g / scale;\n    float b = mod(v * scale * scale, 1.0);\n    g -= b / scale;\n    return vec3(r, g, b);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

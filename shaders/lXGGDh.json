@@ -1,0 +1,73 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1717666320",
+            "description": "test shader",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "lXGGDh",
+            "likes": 8,
+            "name": "test height map shader",
+            "published": 3,
+            "tags": [
+                "8086"
+            ],
+            "usePreview": 0,
+            "username": "svatostop",
+            "viewed": 174
+        },
+        "renderpass": [
+            {
+                "code": "//---------------------------------------------------------------------------------------\n// required inputs\n//---------------------------------------------------------------------------------------\n#define HEIGHT_MAP iChannel0\n#define CUBE_MAP iChannel1\n\n#define METALNESS 0.5\n#define ROUGHNESS 0.10\n#define ALBEDO vec3(1.0)\n\n// uncomment below to use static position\n//#define STATIC_LIGHT \n#define LIGHT_POSITION vec3(1.0, 1.0, 1.50)\n//---------------------------------------------------------------------------------------\n// additional inputs\n//---------------------------------------------------------------------------------------\n#define DEPTH_SCALE 0.5\n\n#define AO_STRENGTH 0.13\n#define SHADOW_STRENGTH 0.5\n#define VIEW vec3(0.0, 0.0, 1.0)\n#define LIGHT_COLOR vec3(1.0)\n\n//---------------------------------------------------------------------------------------\n// height map \n//---------------------------------------------------------------------------------------\nfloat getHeight(vec2 uv) {\n  return texture(HEIGHT_MAP, uv).r;\n}\n//---------------------------------------------------------------------------------------\n// normal from height \n//---------------------------------------------------------------------------------------\nvec4 height2normal(vec2 uv, vec2 resolution) {\n  vec2 step = 1. / resolution;\n    \n  float height = getHeight(uv);\n    \n  vec2 dxy = height - vec2(\n      getHeight(uv + vec2(step.x, 0.)), \n      getHeight(uv + vec2(0., step.y)));\n    \n  return vec4(normalize(vec3(dxy * DEPTH_SCALE / step, 1.)), height);\n}\n//---------------------------------------------------------------------------------------\n// ambient occlusion \n//---------------------------------------------------------------------------------------\nfloat AO(vec3 p)\n{\n\tfloat ao = 0.0;\n\tfloat steps = 1.0;\n\tfor (int i = 0; i < 4; ++i)\n\t{\n\t\tfloat offset = 0.001 + 0.2 * float(i) / 5.0;\n\t\tfloat height = getHeight(p.xy);\n\t\tao += (offset - height) * steps;\n\t\tsteps *= 0.4;\n\t}\n\treturn smoothstep(0.0, 1.0, clamp(AO_STRENGTH - ao, 0.0, 1.0));\n}\n//---------------------------------------------------------------------------------------\n// specular ibl \n//---------------------------------------------------------------------------------------\nvec3 IBL(vec3 normal, vec3 F0) {\n    vec3 reflection = reflect(-VIEW, normal);\n    vec3 irradiance = texture(CUBE_MAP, reflection).rgb;\n    vec3 F = fresnelSchlickRoughness(max(dot(normal, VIEW), 0.0), F0, ROUGHNESS);\n    return irradiance * F;\n}\n//---------------------------------------------------------------------------------------\n// surface + IBL \n//---------------------------------------------------------------------------------------\nvec3 calculateLight(Ray ray) {\n\n    vec3 F0 = vec3(0.04); \n    F0 = mix(F0, ALBEDO, METALNESS);\n    \n    vec3 lighting = vec3(0);\n    \n    vec3 lightDir = normalize(ray.light - ray.origin);\n    vec3 halfway = normalize(VIEW + lightDir);\n\n    float distances = length(ray.light - ray.origin);\n    float attenuation = 1. / (distances * distances);\n    vec3 radiance = LIGHT_COLOR * attenuation; \n\n    float ndotl = max(dot(ray.normal, lightDir), 0.0);\n    float vdoth = max(dot(VIEW, halfway), 0.0);\n    float ndotv = max(dot(ray.normal, VIEW), 0.0);\n\n    // cook-torrance brdf\n    float NDF = DistributionGGX(ray.normal, halfway, ROUGHNESS); \n    vec3 F = fresnelSchlickRoughness(vdoth, F0, ROUGHNESS);      \n    float G = GeometrySmith(ray.normal, VIEW, lightDir, ROUGHNESS);\n\n    vec3 numerator = (NDF * G) * F;\n    float denominator = 4.0 * ndotv * ndotl;\n\n    vec3 kS = F;\n    vec3 kD = vec3(1.0) - kS;\n    kD *= 1.0 - METALNESS;\n\n    vec3 specular = numerator / max(denominator, 0.001);   \n    vec3 diffuse = kD * ALBEDO / PI;\n\n    vec3 color =  (diffuse + specular) * radiance * ndotl;\n\n    color = color / (color + vec3(1.0));\n    lighting = pow(color, vec3(1.0 / 2.2));\n  \n    lighting += IBL(ray.normal, F0);\n    return lighting;\n}\n\n//---------------------------------------------------------------------------------------\n// Shadows \n//---------------------------------------------------------------------------------------\nfloat Shadow(vec3 lightPosition, vec2 uv)\n{\n    float samples = 32.0;\n    float height = getHeight(uv) ;\n    float shadow = 0.0;\n    vec2 lightdir = (lightPosition.xy - uv);\n    for (float steps = 0.0; steps < 1.0; steps += 1.0 / samples)\n    {\n        float curRayHeight = getHeight(uv + steps * lightdir);\n        float firstRayHeight = height + steps * DEPTH_SCALE;\n        shadow += clamp(curRayHeight - firstRayHeight, 0.0, 1.0);\n    }\n    return clamp(shadow, 0.0, SHADOW_STRENGTH);\n}\n//----------------------------------------------------------------------------------------\n// main\n//----------------------------------------------------------------------------------------\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // normalized coordinates [0;1]\n    float uvScale = 1.5;\n    vec2 uv = fragCoord / iResolution.xy * uvScale - 0.5;\n    uv.x *= iResolution.x/iResolution.y ;\n        \n    Ray ray;\n    // camera position \n    ray.origin = vec3(0.0, 0.0, 1.0);\n    ray.target = vec3(0.0, 0.0, 0.0);\n    // ortho projection\n    ray.dir = lookAt(ray.origin, ray.target) * normalize(vec3(0.0, 0.0, 1.0));\n    ray.origin += vec3(uv, 0.0);\n    // normal from height map\n    ray.normal = height2normal(ray.origin.xy,  iResolution.xy).xyz;\n    // light position\n#ifdef STATIC_LIGHT\n    ray.light = LIGHT_POSITION;\n#else\n    ray.light = vec3((iMouse.xy/iResolution.xy * uvScale - 0.5) , 1.50);\n#endif\n    \n    // light calculation\n    vec3 lightColor = calculateLight(ray);\n    // ambient occlusion\n    float ao = AO(ray.origin);\n    // shadows\n    float shadow = 1.0 - Shadow(ray.light, uv);\n    //result\n    lightColor.rgb *= shadow * ao;\n    \n    fragColor = vec4(lightColor, 1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "cubemap",
+                        "id": 26,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 47,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/ad56fba948dfba9ae698198c109e71f118a54d209c0ea50d77ea546abad89c57.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "struct Ray {\n    vec3 origin;\n    vec3 target;\n    vec3 dir;\n    vec3 light;\n    vec3 normal;\n};\n\nmat3 lookAt(in vec3 eye, in vec3 tar){\n    vec3 cw = normalize(tar - eye);\n    vec3 up = (vec3(0.0, 1.0, 0.0));\n    vec3 cu = normalize(cross(cw, up));\n    vec3 cv = normalize(cross(cu, cw));\n    return mat3(cu, cv, cw);\n}\n\n// light helpers\n\n#define PI 3.14159265358979323846\n\nfloat DistributionGGX(vec3 N, vec3 H, float roughness)\n{\n    float a      = roughness*roughness;\n    float a2     = a*a;\n    float NdotH  = max(dot(N, H), 0.0);\n    float NdotH2 = NdotH*NdotH;\n\t\n    float num   = a2;\n    float denom = (NdotH2 * (a2 - 1.0) + 1.0);\n    denom = PI * denom * denom;\n\t\n    return num / denom;\n}\n\nfloat GeometrySchlickGGX(float NdotV, float roughness) {\n    float a = roughness;\n    float k = (a * a) / 2.0;\n\n    float nom   = NdotV;\n    float denom = NdotV * (1.0 - k) + k;\n\n    return nom / denom;\n}\n\nfloat GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)\n{\n    float NdotV = max(dot(N, V), 0.0);\n    float NdotL = max(dot(N, L), 0.0);\n    float ggx2 = GeometrySchlickGGX(NdotV, roughness);\n    float ggx1 = GeometrySchlickGGX(NdotL, roughness);\n\n    return ggx1 * ggx2;\n}\n\nvec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {\n    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);\n}   \n\n\n\n\n\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

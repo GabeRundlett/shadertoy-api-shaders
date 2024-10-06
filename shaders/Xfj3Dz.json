@@ -1,0 +1,52 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1704095310",
+            "description": "Quick and crude hack, not perfect, 10 minutes to go.",
+            "flags": 0,
+            "hasliked": 0,
+            "id": "Xfj3Dz",
+            "likes": 3,
+            "name": "Fireworks 2024 mds2",
+            "published": 3,
+            "tags": [
+                "example",
+                "demo"
+            ],
+            "usePreview": 0,
+            "username": "mds2",
+            "viewed": 208
+        },
+        "renderpass": [
+            {
+                "code": "// because I hacked this together, there are two ways to increase particle density\n// Prefer to use this one. \n// integer values between 1 and 20 (inclusive) work best.\n// larger numbers correspond to more particles.\n#define TORUS_DENSITY 3.0\n\n\n#define MAX_DIST 25.0\n\n// density and inverse density of the actual grid.\n// These are more finicky than TORUS_DENSITY\n#define DENSITY 20.0\n#define INV_DENSITY 0.05\n\nfloat global_scale = 1.0;\nfloat global_height = 0.0;\n\nfloat box_length(in vec3 pt) {\n // use thsi in single_item_sdf to change the base shape\n vec3 p = abs(pt);\n return max(p.x, max(p.y, p.z));\n}\n\nfloat single_item_sdf(in vec3 pt) {\n  // base sdf for a sphere.  You can put other shapes in here\n  // for instance, change \"length\" to \"box_length\" to replace ellipsoids with boxes\n  return length(pt) - 0.75;\n}\n\nfloat gridded_sdf(in vec3 pt) {\n  // this is where the domain repetition happens. We transform the coordinates and use \"mod\"\n  // to make an SDF of one object into an SDF of a bunch of (gridded) copies of that object.\n  vec3 new_pt = mod(DENSITY * pt + vec3(4.0), vec3(8.0)) - vec3(4.0);\n  if (pt.z > 0.6 || pt.z < -0.8) {\n    // and we do want to clamp the domain of where the particles show up in z.\n    new_pt.z = DENSITY * pt.z;\n  }\n  return INV_DENSITY * single_item_sdf(new_pt);\n}\n\nfloat sdf(in vec3 pt) {\n  // and here we transform our grid of repeated particles onto a flowing animation of repeated particles\n  // we do this by creating a mapping from visual space to grid space.  In this case we're wrapping\n  // the grid of particles around a toroid.\n  //\n  // Yeah, I know, I wouldn't be able to follow this math either if I hadn't written it.\n  pt.y += global_height;\n  pt *= global_scale;\n  float height = pt.y + 0.5;\n  float base = length(pt.xz + vec2(0.0, 1.0)) - 1.25;\n  float d = length(vec2(height, base)) - 0.375;\n  float theta = atan(pt.z + 1.0, pt.x);\n  float phi = atan(height, base);\n  const float scale = TORUS_DENSITY;\n  vec3 xformed = scale * vec3(0.25 * 3.2 * phi / 3.141592654 + 0.25 * iTime,0.5 * iTime +  3.2 * theta / 3.141592654, d);\n  return (gridded_sdf(xformed)/scale)/global_scale;\n}\n\nvec3 normed_grad(in vec3 pt) {\n  // cheap trick for getting the surface normal of the surface of an sdf.\n  // Just numerically evaluate the gradient! And then normalize it!\n  // since we're normalizing it anyway, we don't care about the \"divide by step size\" thing\n  // that most numerical calculations of gradients have.\n  float v = sdf(pt);\n  return normalize(vec3(sdf(pt + vec3(0.01, 0.0, 0.0)) - v,\n                        sdf(pt + vec3(0.0, 0.01, 0.0)) - v,\n                        sdf(pt + vec3(0.0, 0.0, 0.01)) - v));\n}\n\nfloat raycast(in vec3 dir, in vec3 orig, out float accum) {\n  // this is my personal favorite modification of the shadertoy raycasting algorithm\n  // in addition to returning the distance along a ray until you hit the surface\n  // of an SDF, it also approximates the integral of 1/sdf^2 along the ray.\n  //\n  // This lets me compute a sort of foggy \"glow\" around the particles.\n  accum = 0.0;\n  float along = 0.0;\n  float last_dist = sdf(orig);\n  for (int i = 0; i < 100; ++i) {\n    float stepsize = 0.4 * last_dist;\n    float next_dist = sdf(orig + (along + stepsize) * dir);\n    accum += stepsize * 0.5 * (1.0 / max(last_dist*last_dist, 0.001) + 1.0 / max(next_dist*next_dist, 00.1));\n    last_dist = next_dist;\n    along += stepsize;\n    if (abs(last_dist) < 1.0e-3) {\n      return along;\n    }\n    if (last_dist > MAX_DIST) {\n      return MAX_DIST + 1.0;\n    }\n  }\n  return along;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n\n    float actual_scale = max(0.0, 1.5 * mod(iTime * 0.3, 1.0) - 0.75);\n    actual_scale = 1.0 - actual_scale;\n    actual_scale *= actual_scale * actual_scale;\n    actual_scale *= actual_scale;\n    actual_scale = 1.0 - actual_scale;\n    actual_scale += 0.01;\n    float height_offset = 0.5 + 3.0 * min(0.0, mod(iTime * 0.3, 1.0) - 0.5);\n    float fade = smoothstep(0.9, 0.5, mod(iTime * 0.3, 1.0));\n    global_height = -height_offset;\n    global_scale = 1.0/actual_scale;\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (2.0 * fragCoord - iResolution.xy)/min(iResolution.x, iResolution.y);\n    \n    vec3 ray = normalize(vec3(uv, -1.0));\n    \n    vec3 orig = vec3(0.0, 0.0, 1.0);\n    \n    float pitch = -1.0 * iMouse.y/iResolution.y;\n    \n    float cpitch = cos(pitch);\n    float spitch = sin(pitch);\n    \n    mat3 orient = mat3(1.0, 0.0, 0.0, 0.0, cpitch, spitch, 0.0, -spitch, cpitch);\n    \n    orig = orient * (orig + vec3(0.0, 0.5, 1.0)) - vec3(0.0, 0.5, 1.0);\n    ray = orient * ray;\n    \n    float accum;\n    \n    float d = raycast(ray, orig, accum);\n    \n    // base color comes from that integral along a ray of 1/sdf^2, but,\n    // there's a trick here. For rays that get really close to objects, this spikes\n    // to way above 1.  And the graphics pipeline does clamping for you when converting to color.\n    // So if you multiply a signal that sometimes get's really large by a color with different values\n    // for red, green, and blue, you get a bit of a color gradient as the thing you're drawing gets\n    // more intense.\n    vec3 col = 0.00625 * accum * vec3(0.5, 0.1, 1.0);\n    \n    if (d < MAX_DIST) {\n      // and if the ray actually hits an object, we do a bit of shading, so that the \"particles\"\n      // show up more clearly and the whole thing doesn't just look like a blob of gelatinous fog.\n      vec3 surfNorm = normed_grad(orig + d * ray);\n      vec3 bounce = normalize(reflect(ray, surfNorm));\n      float raw_shine = max(0.0, dot(bounce, normalize(vec3(0.5, 1.0, 1.0))));\n      raw_shine = raw_shine * raw_shine;\n      raw_shine = raw_shine * raw_shine;\n      col.g += raw_shine * raw_shine * raw_shine;\n      col += 0.4 * max(vec3(0.5), vec3(1.5, 1.0, 0.5) * texture(iChannel0, bounce).rgb);\n    }\n    \n    float flash = 0.3 * smoothstep(0.05, 0.0, abs(mod(iTime * 0.3, 1.0) - 0.5));\n    // Output to screen\n    fragColor = vec4(flash + fade * col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "cubemap",
+                        "id": 25,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "false",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/a/550a8cce1bf403869fde66dddf6028dd171f1852f4a704a465e1b80d23955663.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

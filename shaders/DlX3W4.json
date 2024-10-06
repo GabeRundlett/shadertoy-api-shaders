@@ -1,0 +1,132 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1672850278",
+            "description": "A basic implementation of the Lucas–Kanade method with rejection based on the eigen values.\n\n",
+            "flags": 34,
+            "hasliked": 0,
+            "id": "DlX3W4",
+            "likes": 17,
+            "name": "Lucas–Kanade Optical Flow",
+            "published": 3,
+            "tags": [
+                "opticalflow",
+                "opticalflow",
+                "lucaskanade",
+                "motionestimation"
+            ],
+            "usePreview": 0,
+            "username": "theschwa",
+            "viewed": 1197
+        },
+        "renderpass": [
+            {
+                "code": "/*\n\nThis is mostly a straightforard implementation of the Lucas-Kanade method\nfor sparse optical flow. I'm also using the eigen values to reject bad features.\n\nI've also added some temporal denoising to the webcam input, and the number of\naccumulated frames can be changed in Buffer A.\n\nThe window size can be set in Buffer B\n\n*/\n\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 mov = textureLod(iChannel0, uv, 0.).xy;\n    \n    float mag = length(mov.xy);\n    float ang = atan(mov.y, mov.x)/(2.*3.14159) + .5;\n    \n    // Remove noisey small values and scale down\n    mag = mag * .5 * smoothstep(0., 1., mag);\n    \n    vec3 col = vec3( ang, 1., mag );\n    col = hsv2rgb(col);\n    \n    fragColor = vec4(col,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// This buffer solves for dI/dx, dI/dy, dI/dt\n\n# define FRAMES 2.\n# define LOD 0.\n\nfloat lum( vec4 col ) {\n    return dot( col, vec4(.333,.333,.333,.0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 texel = pow(2.,LOD)/iResolution.xy;\n    \n    vec4 N = textureLod(iChannel0, uv + vec2( 0., 1.)*texel, LOD);\n    vec4 E = textureLod(iChannel0, uv + vec2( 1., 0.)*texel, LOD);\n    vec4 S = textureLod(iChannel0, uv + vec2( 0.,-1.)*texel, LOD);\n    vec4 W = textureLod(iChannel0, uv + vec2(-1., 0.)*texel, LOD);\n    \n    vec4 currCol = textureLod(iChannel0, uv, LOD);\n    float curr = lum(currCol);\n    float prev = textureLod(iChannel1, uv, LOD).a;\n    \n    // Temporal denoising\n    curr = mix(prev, curr, 1./(1.+ FRAMES ) );\n    \n    float dIdx = lum( (E - W)/2. );\n    float dIdy = lum( (N - S)/2. );\n    float dIdt = curr-prev;\n    \n    fragColor = vec4(dIdx, dIdy, dIdt, curr);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "webcam",
+                        "id": 31,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/webcam.png"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// Lucas-Kanade Method\n// Implemented straight from Wikipedia https://en.wikipedia.org/wiki/Lucas%E2%80%93Kanade_method\n\n#define halfSize 5.\n\n// Trace\nfloat tr2( mat2 A ) {\n    return A[0][0] + A[1][1];\n}\n\nfloat det( mat2 A ) {\n    return (A[0][0] * A[1][1]) - (A[1][0] * A[0][1]);\n}\n\n// 3Blue1Brown https://www.youtube.com/watch?v=e50Bj7jn9IQ\nvec2 eigenValues( mat2 A ) {\n    float m = .5*tr2(A);\n    float p = det(A);\n    return vec2( m + sqrt(m*m-p), m - sqrt(m*m-p) );\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy;\n    vec2 texel = 1./iResolution.xy;\n    \n    mat2 structureTensor = mat2(0.,0.,0.,0.);\n    vec2 Atb = vec2(0.,0.);\n    for( float i = -halfSize; i < halfSize; i++) {\n        for( float j = -halfSize; j < halfSize; j++) {\n            vec2 loc = uv + vec2(i,j)*texel;\n            vec2 dis = loc - uv;\n            float weight = exp( - dot(dis,dis)/3. );\n            vec4 deriv = texture(iChannel0, loc);\n            structureTensor += mat2( weight*deriv.x*deriv.x, weight*deriv.x*deriv.y, weight*deriv.x*deriv.y, weight*deriv.y*deriv.y);\n            Atb -= vec2( weight*deriv.x*deriv.z, weight*deriv.y*deriv.z );\n        }\n    }\n    vec2 motion = inverse(structureTensor)*Atb;\n    \n    // Remove bad features\n    vec2 e = eigenValues( structureTensor );\n    if( e.x < 0.001 || e.y < 0.001 ) {\n        motion = vec2(0.,0.);\n    } \n    \n    fragColor = vec4(motion,0.,1.0);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "// From: https://gist.github.com/983/e170a24ae8eba2cd174f\nvec3 hsv2rgb(vec3 c)\n{\n    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

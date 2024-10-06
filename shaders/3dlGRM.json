@@ -1,0 +1,112 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1545662413",
+            "description": "In a world full of cubes...\n\nSee code intro for more details.",
+            "flags": 48,
+            "hasliked": 0,
+            "id": "3dlGRM",
+            "likes": 15,
+            "name": "Cubespace",
+            "published": 3,
+            "tags": [
+                "cubes",
+                "random",
+                "volumetric",
+                "raytrace",
+                "curve",
+                "normal"
+            ],
+            "usePreview": 0,
+            "username": "mla",
+            "viewed": 1210
+        },
+        "renderpass": [
+            {
+                "code": "////////////////////////////////////////////////////////////////////////////////\n//\n// Cubespace\n//\n// Created 2018 by Matthew Arcus.\n//\n// Raytrace through a grid of random cubes, notionally infinite but actually\n// restricted by numeric precision to about 1e6 units, and we only follow\n// the ray out to about 150 units (with some fogging to obscure the boundary).\n//\n// Controls:\n// <mouse>: adjust view direction\n// <up>/<down>: change speed\n// <left/right>: change density of cubes\n// 'r': Add an extra rotation to the circular orbit path\n// 's': Clip to a (fixed size) sphere. This can be confusing if the sphere is\n//      out of range.\n// 't': Change trajectory between four predefined paths (see code for details).\n//\n// Trajectories and speed settings return to defaults after a time reset (the\n// contents of BufferA are cleared - if anyone knows a way to persist these\n// settings, I'd be glad to hear it).\n//\n// Every point p is in a cubic cell, with cell index floor(p).\n// A cell is filled randomly with a certain probability.\n// Advance a ray to the next cell boundary and see if the new\n// cell is filled (move ray slightly inside cell, take cell\n// index, hash and randomize).\n//\n// Extensions:\n// Cuboids and parallepipeds.\n// Divide each cell into 3 tetrahedral fundamental regions\n// Projective or non-euclidean spaces\n// Space or time varying densities.\n// \n////////////////////////////////////////////////////////////////////////////////\n\nconst float PI =  3.141592654;\nconst int nsteps = 200;\nconst float fogfactor = 1.0/(0.65*float(nsteps));\nconst float clipradius = 30.0;\n\nbool alert = false;\nvoid assert(bool t) {\n  if (!t) alert = true;\n}\n//#define assert(x)\n\nbool eq(float x, float y) {\n  return abs(x-y) < 1e-4;\n}\n\nbool eq(vec3 p, vec3 q) {\n  return eq(p.x,q.x) && eq(p.y,q.y) && eq(p.z,q.z);\n}\n\nbool eq(vec4 p, vec4 q) {\n  return eq(p.x,q.x) && eq(p.y,q.y) && eq(p.z,q.z) && eq(p.w,q.w);\n}\n\nbool eq(mat4 m, mat4 n) {\n  return eq(m[0],n[0]) && eq(m[1],n[1]) && eq(m[2],n[2]) && eq(m[3],n[3]);\n}\n\n// Numerical Recipes 32-bit Linear Congruential Generator\nuint seed = 1U;\nuint lcg() {\n  seed *= 1664525U;\n  seed += 1013904223U;\n  return seed;\n}\n\n// Thomas Wang hash, used to seed LCG\nuint ihash(uint a) {\n  a = (a ^ 61U) ^ (a >> 16);\n  a *= 9U;\n  a = a ^ (a >> 4);\n  a = a * 0x27d4eb2dU;\n  a = a ^ (a >> 15);\n  return a;\n}\n\nuint to_uint(int n) {\n  // Definite conversion of ints to uints.\n  return uint(n >= 0? 2*n: -2*n-1);\n}\n\nuint ihash(ivec3 p) {\n  // Hash together 3 coordinates. This is a bit ad-hoc, should check.\n  uint i = to_uint(p.x), j = to_uint(p.y), k = to_uint(p.z);\n  i ^= j ^ k;\n  i ^= (i << 5) ^ (j << 7) ^ (k << 11);\n  return ihash(i);\n}\n\n// Uniform random float in [0,1)\nfloat rand() {\n  const float k = 1.0/pow(2.0,32.0);\n  return clamp(k*float(lcg()),0.0,1.0);\n}\n\nfloat square(float x) { return x*x; }\n\n// Smooth HSV to RGB conversion \n// Function by iq, from https://www.shadertoy.com/view/MsS3Wc\nvec3 hsv2rgb(float h, float s, float v) {\n  vec3 rgb = clamp( abs(mod(h*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );\n  rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing\t\n  return v * mix( vec3(1.0), rgb, s);\n}\n\nvec2 rotate(vec2 p, float t) {\n  return p * cos(t) + vec2(p.y, -p.x) * -sin(t);\n}\n\nvec3 transform(in vec3 p) {\n  if (iMouse.x > 0.0) {\n    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;\n    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;\n    p.yz = rotate(p.yz,theta);\n    p.zx = rotate(p.zx,-phi);\n  }\n  return p;\n}\n\nbool keypress(int code) {\n  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;\n}\n\nvec4 store(int i,int j) {\n  return texelFetch(iChannel1, ivec2(i,j),0);\n}\nint keycount(int key) {\n  return int(store(0,key).x);\n}\n\nvoid trajectory0(out vec3 p0, inout vec3 r, float speed) {\n  // Figure of eight path, with view orientation taken from curve\n  // normal and osculating planes.\n  // gnuplot: splot cos(u),sin(2*u),-0.25*sin(4*u)\n  // With speed = 1, repeats after 62.8 seconds.\n  float t = speed*0.05*iTime;\n  const float R = 50.0;\n  const float A = 0.25;\n  const float B = 4.0;\n  p0 = 0.5+R*vec3( cos(t),-A*sin(B*t),-sin(2.0*t));\n  vec3 v =   vec3(-sin(t),-A*cos(B*t),-cos(2.0*t));\n  vec3 dv =  vec3(-cos(t), A*sin(B*t),+sin(2.0*t));\n  // Find coordinate axes for the motion:\n  // Axis forwards (ie. z) is the velocity vector.\n  // Axis up down (ie. y) is normal to velocity/acceleration plane\n  // Choose direction with +ve y.\n  // Axis left-right (ie. x) is then determined.\n  // OpenGL uses a left-handed coordinate system, so have:\n  // z = -cross(x,y) = cross(y,x) & so on for cyclic permutations.\n  // and (x,y,z) == (u,n,v) so:\n  // v = cross(n,u)\n  // u = cross(v,n)\n  // n = cross(u,v)\n  v = normalize(v);     // Velocity, forwards\n  dv = normalize(dv);   // Acceleration,\n  vec3 n = normalize(cross(v,dv)); // Normal plane, this will be \"up\", so we steer left and right.\n  if (n.y < 0.0) n = -n;\n  vec3 u = cross(v,n);  // Osculating plane\n  assert(eq(v,cross(n,u)));\n  assert(eq(u,cross(v,n)));\n  assert(eq(n,cross(u,v)));\n  r = mat3(u,n,v)*r;\n}\n\nvoid trajectory1(out vec3 p0, inout vec3 r, float speed, bool dorotation) {\n  // Move in a circle in xz plane, radius R\n  float t = speed*0.1*iTime;\n  const float R = 50.0;\n  p0 = 0.5+R*vec3(cos(t),0,sin(t));\n  vec3 v =  vec3(-sin(t),0,cos(t));\n  vec3 u = vec3(0,1,0);\n  if (dorotation) {\n    // Rotate view direction about path. \n    u.xy = rotate(u.xy,4.0*t);\n    u.xz = rotate(u.xz,t);\n  }\n  assert(eq(dot(v,u),0.0));\n  vec3 n = cross(v,u);\n  r = mat3(n,u,v)*r;\n}\n\nbool docubes(vec3 p0, vec3 r, bool clipsphere, float pcube,\n             out vec3 p, out vec3 basecolor, out vec3 normal) {\n  bool found = false;\n  // Step p forwards to successive cell boundaries, ie. find\n  // minimal k such that p+kr has an integer component.\n  // Easier done if all components of r are positive, so\n  // construct p1 and r1 that make that possible.\n  p = p0;\n  vec3 p1 = p*sign(r);\n  vec3 r1 = abs(r);\n  float eps = 1e-4;\n  float fogfactor2 = square(fogfactor);\n  for (int step = 0; step < nsteps; step++) {\n    if (fogfactor2*dot(p-p0,p-p0) > 1.0) return false;\n    vec3 p2 = floor(p1)+1.0;\n    vec3 dp = (p2-p1)/r1;\n    // Add epsilon so we end up inside the cube,\n    // else when we do the floor, we might end up\n    // in the wrong cell.\n    float dt = eps+min(dp.x,min(dp.y,dp.z));\n    p += dt*r;\n    p1 += dt*r1;\n    vec3 cell = floor(p);\n    uint hash = ihash(ivec3(cell));\n    // Condition for p moving away from origin:\n    // |p-kr| < |p| => k < 2p.r\n    if (clipsphere) {\n      vec3 centre = cell + 0.5;\n      float cc = dot(centre,centre);\n      if (cc > square(clipradius)) {\n        // Make real sure we are out of the clipped region\n        bool outgoing = dt < 2.0*dot(p,r) && cc > square(clipradius+2.0);\n        if (outgoing) return false;\n        else continue;\n      }\n    }\n    seed = hash; // seed RNG with cell hash.\n    if (rand() < pcube) {\n      found = true;\n      break;\n    }\n  }\n  if (!found) return false;\n  // Now work out the normal of the face we have hit.\n  // Find the coordinate with value 1\n    vec3 q = p-floor(p);\n  q = min(q,1.0-q);\n  // Ensure the normal is from a definite face.\n  float eps2 = 2.0*eps;\n  if (q.x < eps2) normal = vec3(1,0,0);\n  else if (q.y < eps2) normal = vec3(0,1,0);\n  else if (q.z < eps2) normal = vec3(0,0,1);\n  else assert(false);\n  if (dot(normal,r) > 0.0) normal = -normal;\n  basecolor = hsv2rgb(rand(),1.0,1.0);\n  if (normal.y == -1.0) basecolor = vec3(0.1); // cube base is grey\n  return true;\n}\nconst int CHAR_R = 82;\nconst int CHAR_S = 83;\nconst int CHAR_T = 84;\n\nconst int KEY_LEFT = 37;\nconst int KEY_UP = 38;\nconst int KEY_RIGHT = 39;\nconst int KEY_DOWN = 40;\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  float speed = 0.1*float(10+keycount(KEY_UP)-keycount(KEY_DOWN));\n  float density = 0.1*float(20+keycount(KEY_LEFT)-keycount(KEY_RIGHT));\n  float pcube = pow(10.0,-density); // Probability of finding a cube\n\n  vec3 light = normalize(vec3(0.25,1,-0.5));\n  float ambient = 0.4;\n  float diffuse = 1.0-ambient;\n\n  vec2 uv  = (2.0*fragCoord - iResolution.xy)/ iResolution.y;\n\n  vec3 p0, r = vec3(uv,3);\n  r = transform(r);   // Apply mouse transform\n  int trajectory = keycount(CHAR_T)%4;\n  if (trajectory == 0) trajectory0(p0,r,speed);\n  else if (trajectory == 1) trajectory1(p0,r,speed,keypress(CHAR_R));\n  else if (trajectory == 2) {\n    // Just moving in a straight line.\n    p0 = 0.5+vec3(0,0,5.0*speed*iTime);\n  } else if (trajectory == 3) {\n    // Moving with exponential speed.\n    // Rounding errors kick in seriously around |p| = 1e5\n    // with complete wipeout by around 1e8\n    p0 = 0.5+vec3(0,0,pow(10.0,mod(0.1*iTime,8.0)));\n  } else {\n    assert(false);\n  }\n  r = normalize(r);\n  vec3 color = vec3(0);\n  vec3 p, basecolor, normal;\n  if (docubes(p0,r,keypress(CHAR_S),pcube,p,basecolor,normal)) {\n    color += basecolor*ambient;\n    color += basecolor*diffuse*(max(0.0,dot(light,normal)));\n    float specular = pow(max(0.0,dot(reflect(light,normal),vec3(r))),4.0);\n    color += 0.5*specular*vec3(1.0,1.0,1.0);\n    color *= clamp(0.0,1.0,1.0-fogfactor*distance(p0,p));\n    color = sqrt(color);\n  }\n  if (alert) color = vec3(1,0,0);\n  fragColor = vec4(color,1);\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "#define keystate(k,n) ( texelFetch(iChannel0,ivec2(k,n),0) )\n\nvoid mainImage(out vec4 t, vec2 uv) {\n#if __VERSION__ < 300\n    t = vec4(0);\n#else\n    \n    int i = int(uv.x);\n    int j = int(uv.y);\n    if ( iFrame == 0 ) {\n        t = vec4(0);\n    } else {\n        t = texelFetch(iChannel1,ivec2(i,j),0); // Get current state   \n    }  \n    if (i == 0) {\n        float w1 = keystate(j,2).x;\n        if (w1 != t.w) {\n            t.w = w1;\n            t.x++;\n        }\n    }     \n        \n#endif           \n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "keyboard",
+                        "id": 33,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/tex00.jpg"
+                    },
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

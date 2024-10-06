@@ -1,0 +1,84 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1520041284",
+            "description": "A little lerping can add a good deal of polish. Even though the GUI updates instantaneously, the selected color always changes continuously.",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4sdcDS",
+            "likes": 18,
+            "name": "minidemo #2: continuous UI",
+            "published": 3,
+            "tags": [
+                "transition",
+                "ui",
+                "gui",
+                "continuous",
+                "colorpicker",
+                "snapping"
+            ],
+            "usePreview": 0,
+            "username": "mattz",
+            "viewed": 1244
+        },
+        "renderpass": [
+            {
+                "code": "/* \"minidemo #2: continuous UI\", by mattz\n   License Creative Commons Attribution 3.0 (CC BY 3.0) Unported License.\n\n   Using a separate state management render pass to manage\n   continuous transitions for user input.\n\n   For any bit of state the user controls (in this case, just \n   mouse position within the unit circle), we store *two* copies:\n   a \"target\" value which changes instantaneously and a \"current\" \n   value that always moved towards the target.\n    \n   GUI elements (like the color picker here) reflect/control the \n   target state, whereas the rendered graphic (here just a solid \n   background color) is based on the current state.\n\n   In terms of sampling, this strategy is sometimes called an\n   \"exponential moving average\", see for instance \n \n     https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average\n\n   For slightly snazzier rendering, you could use more sophisticated\n   dynamical models, for example\n\n     https://en.wikipedia.org/wiki/Harmonic_oscillator#Damped_harmonic_oscillator\n \n */\n\n// define this if you want to see the state update in action\n// as you click around\n//#define SHOW_CURRENT_STATE\n\n// rainbow at distance 1, white in center\nvec3 wheel_rgb(vec2 p) {\n    float h = atan(p.y, p.x) * 0.15915494309189535;\n    vec3 c = mod(h*6.0 + vec3(2, 0, 4), 6.0);\n    c = clamp(min(c, -c+4.0), 0.0, 1.0);\n    return mix(vec3(1), c, min(length(p), 1.));\n}\n\n// very simple rendering example\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord) {\n    \n    vec2 ctr = vec2(0.3)*iResolution.y;\n    float scl = 4.0 / iResolution.y;\n\n    // current fragment coords relative to circle center\n    vec2 p = (fragCoord - ctr) * scl;\n\n    // fetch target and current state from other render pass\n    // row 0 = target, row 1 = current\n    vec2 p_target =  texelFetch(iChannel0, ivec2(0, 0), 0).xy;\n    vec2 p_current = texelFetch(iChannel0, ivec2(0, 1), 0).xy;\n                    \n    // start with the selected background color\n    vec3 color = wheel_rgb(p_current);\n    \n    // draw the color wheel\n    color = mix(color, vec3(0), smoothstep(scl, 0.0, length(p) - 1. - 3.*scl));\n    color = mix(color, wheel_rgb(p), smoothstep(scl, 0.0, length(p)-1.));\n    \n#ifdef SHOW_CURRENT_STATE   \n    // draw the current state, moving towards the target\n    color *= mix(0.5, 1., smoothstep(0.,scl, abs(length(p - p_current) - 3.*scl) - 0.5*scl));\n#endif\n    \n    // the GUI control is the target state\n    color = mix(color, vec3(0), smoothstep(scl, 0.0, length(p - p_target) - 4.*scl));\n    color = mix(color, vec3(1), smoothstep(scl, 0.0, length(p - p_target) - 2.*scl));\n\n    // gamma correction\n    color = pow(color, vec3(1./2.2));\n    \n    fragColor = vec4(color, 1);\n    \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "// the state management render pass maintains both the \n// target state (set by user) and the current state\n// (which always lerps towards the target)\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n    \n    ivec2 fc = ivec2(fragCoord);\n    fragColor = texelFetch(iChannel0, fc, 0);\n    \n    vec2 ctr = vec2(0.3)*iResolution.y;\n    float scl = 4.0 / iResolution.y;\n    \n    // we have just two elements of state to manage (XY within\n    // unit circle), but in theory you could manage many in \n    // parallel. \n    //\n    // in my larger shader https://www.shadertoy.com/view/Md3yRB,\n    // I store up to four continuous elements of state in each\n    // column of texture. the target state lives in row 0, \n    // and the current state in row 1 (or above)\n    \n    if (iFrame == 0) {\n        \n        // on first frame, set default state\n        if (min(iMouse.x, iMouse.y) > 0.) {        \n            fragColor.xy = (iMouse.xy - ctr)*scl;\n            fragColor.xy /= max(length(fragColor.xy), 1.);\n        } else {\n            fragColor = vec4(0);\n        }\n        \n    } else if (fc.y == 0) { \n        \n        // we are in the target row, set the state\n        // instantaneously from mouse input\n        if (min(iMouse.x, iMouse.y) > 0.) {        \n            fragColor.xy = (iMouse.xy - ctr)*scl;\n            fragColor.xy /= max(length(fragColor.xy), 1.);\n        }\n        \n    } else {\n        \n        // we are in a non-target row, take the current\n        // state and lerp it gradually towards the target.\n        \n        float TARGET_LERP_RATE = 0.03;\n        \n        vec4 target = texelFetch(iChannel0, ivec2(0, 0), 0);\n        fragColor = mix(fragColor, target, TARGET_LERP_RATE);\n        \n    }\n                               \n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    }
+                ],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

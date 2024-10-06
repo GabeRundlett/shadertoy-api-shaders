@@ -1,0 +1,61 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1589843750",
+            "description": "I heard people were obsessed with this \"trypophobia\" concept, so I decided to try out a shader riffing on the idea.\n\nThen I changed my mind and decided to make it a webcam filter",
+            "flags": 2,
+            "hasliked": 0,
+            "id": "3d2BWz",
+            "likes": 5,
+            "name": "glowing video waffle",
+            "published": 3,
+            "tags": [
+                "raycast",
+                "subsurface",
+                "holes"
+            ],
+            "usePreview": 0,
+            "username": "mds2",
+            "viewed": 1032
+        },
+        "renderpass": [
+            {
+                "code": "#define MAX_DIST 4.0\n\n#define SUPERSAMPLE 0 // per IQ, enable at your own risk\n// #define SUPERSAMPLE 1 // it's a boolean\n\nfloat length_1 = 0.4;\nconst float crinkle = 0.00375; // make this smaller to make grid finer\n\nvec2 bright_clamp = vec2(0.0, 1.0); // ramp brightness values in this range to 0.0,1.0\n\n#define HOLES_OR_RODS 1 // 1 for holes, 0 for rods\n\nconst vec3 light_dir = normalize(vec3(0.05, 0.05, -0.15));\n\nfloat do_bright_clamp(in float x) {\n#if !HOLES_OR_RODS\n    // return clamp((x-bright_clamp.y)/(bright_clamp.x - bright_clamp.y), 0.0, 1.0);\n\treturn smoothstep(bright_clamp.y, bright_clamp.x, x);\n#else\n    // return clamp((x-bright_clamp.x)/(bright_clamp.y - bright_clamp.x), 0.0, 1.0);\n    return smoothstep(bright_clamp.x, bright_clamp.y, x);\n#endif\n}\n\nfloat core_sdf(in vec3 pt) {\n    const vec3 p1 = vec3(0.0, 0.45, 0.7);\n    const vec3 p2 = -vec3(0.0, -0.1, 0.7);\n    float d1 = length((pt - p1)* vec3(1.6)) - 3.1 * length_1;\n    // float d1 = dot(pt - p1, normalize(p2 - p1)) - 1.85 * length_1;\n    // float d2 = length((pt - p2) * vec3(1.6)) - 3.0 *  length_1;\n    float d2 = dot(pt - p2, normalize(p1 - p2)) - 1.9 * length_1;\n    // float d1 =  length((pt.xy + vec2(0.0, -0.15))) -0.8 *  length_1;\n    return smooth_max(d1, d2, 0.05);\n}\n\nfloat wavefront(vec3 p) {\n    return (1.0 - length_1) * smoothstep(0.0, length_1, abs(mod(p.x, 2.0 * length_1) - length_1))\n        + length_1 * smoothstep(0.0, length_1, p.y * (p.x + p.y));\n}\n\nfloat sdf(in vec3 pt) {\n    float result = core_sdf(pt);\n    if (abs(result) < 14.0 * crinkle) {\n        vec3 cell_rel = mod(pt, vec3(2.0 * crinkle)) - 1.0 * vec3(crinkle);\n        cell_rel.z = 0.5 * result;\n        vec3 cell_center = pt - cell_rel;\n        cell_rel.xy = abs(cell_rel.xy);\n        vec2 uv = cell_center.xy * 2.0 * iResolution.yx/iResolution.x + vec2(0.5, 0.0);\n        float max_hole_size = crinkle * 1.0;\n        float hole_size = max_hole_size * do_bright_clamp(dot(texture(iChannel0, uv).rgb, 0.8 * vec3(1.0, 0.75, 0.75)));\n        float in_image = step(0.0, uv.x) * step(0.0, uv.y) * step(uv.x, 1.0) * step(uv.y, 1.0);\n        hole_size = mix(max_hole_size, hole_size, in_image);\n        cell_rel.xy = max(vec2(0.0), cell_rel.xy - vec2(0.5 * hole_size));\n        float hole_dist = 0.5 * hole_size - length(cell_rel.xy);\n#if HOLES_OR_RODS\n        result = smooth_max(result, hole_dist, 0.05 * max_hole_size);\n#else\n        result = smooth_max(result, -hole_dist, 0.05 * max_hole_size);\n#endif\n       // result -= crinkle * smoothstep(0.0, 0.8, simple_noise(32.0 * pt, 28.1));\n    }\n    return result;\n}\n\nvec3 sdf_grad(in vec3 pt) {\n    float f = sdf(pt);\n    const float h = 0.001;\n    const float h_inv = 1000.0;\n    \n    return h_inv *\n        vec3(sdf(pt + vec3(h, 0.0, 0.0)) - f,\n             sdf(pt + vec3(0.0, h, 0.0)) - f,\n             sdf(pt + vec3(0.0, 0.0, h)) - f);\n}\n\n\n\nfloat raymarch(in vec3 pt, in vec3 dir, out float sumdist) {\n    vec3 d = normalize(dir);\n    vec3 p = pt;\n    float accum = 0.0;\n    float s = sdf(pt);\n    sumdist = 0.0;\n    for(int i = 0; i < 512; ++i) {\n        if (accum > MAX_DIST || s < 1.0e-3) {\n            return accum;\n        }\n        accum += 0.25 * s;\n        p = pt + accum * d;\n        s = sdf(p);\n        sumdist = sumdist + 0.25 * s / max(s, 1.0e-3);\n    }\n    if (s > 1.0e-3) {\n        return MAX_DIST + 1.0;\n    }\n    return accum;\n}\n\nfloat raymarch_out(in vec3 pt, in vec3 dir) {\n    vec3 d = normalize(dir);\n    vec3 p = pt;\n    float total_step = 0.0;\n    float accum = 0.0;\n    float s = core_sdf(pt);\n    for(int i = 0; i < 256; ++i) {\n        if (total_step > MAX_DIST) {\n            return accum;\n        }\n        float curr_step = 0.75 * max(abs(s), 1.0e-3);\n        total_step += curr_step;\n        accum += curr_step * step(s, 0.0); \n        p = pt + total_step * d;\n        s = core_sdf(p);\n    }\n    return accum;\n}\n\nfloat ramp(in float a, in float b, in float x) {\n    float p = (x-a)/(b-a);\n    return clamp(p, 0.0, 1.0);\n}\n\nvec4 color_at(in vec2 fragCoord ) {\n    // Normalized pixel coordinates (from 0 to 1)\n    vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y;\n    \n    vec3 dir = normalize(vec3(uv, 6.0));\n    \n    vec3 orig = vec3(0.0, 0.25, -1.5);\n    \n    float theta = 0.0625 * sin(0.25 * iTime) + 3.141592654;\n    float ct = cos(theta);\n    float st = sin(theta);\n    \n    mat3 spin = mat3(ct, 0.0, st,\n                     0.0, 1.0, 0.0,\n                     -st, 0.0, ct);\n    \n    theta = 0.25 * sin(iTime);\n    vec2 trigs = cos(vec2(theta, theta + 0.5 * 3.141592654));\n    ct = 0.8 * trigs.x - 0.6 * trigs.y;\n    st = 0.6 * trigs.x + 0.8 * trigs.y;\n\ttheta = 0.25 * sin(1.21 * iTime);\n    trigs = cos(vec2(theta, theta + 0.5 * 3.141592654));\n    ct = 0.6 * trigs.x - 0.8 * trigs.y;\n    st = 0.8 * trigs.x + 0.6 * trigs.y;\n    \n    \n    theta = 0.25 * sin(0.93 * iTime);\n    trigs = cos(vec2(theta, theta + 0.5 * 3.141592654));\n    ct = 0.8 * trigs.x - 0.6 * trigs.y;\n    st = 0.6 * trigs.x + 0.8 * trigs.y;\n    \n    orig = spin * orig;\n    dir = spin * dir;\n    \n    float cloud_integral = 0.0;\n    \n    float dist = raymarch(orig, dir, cloud_integral);\n    \n    vec3 color_mul = vec3(1.0);\n    \n    \n    vec3 col = vec3(0.0);\n    vec3 refl_color = 1.0 * vec3(0.8, 1.0, 0.5);\n    vec3 trans_color = 1.0 * vec3(1.0, 0.1, 0.5); // 1.0 , 0.5, 0.4);\n    float thru_dist = 1000.0;\n    vec3 n = dir;\n    if (dist < MAX_DIST) {\n        vec3 pt = orig + dir * dist;\n        thru_dist = raymarch_out(pt, light_dir);\n        n = normalize(sdf_grad(pt));\n        dir = normalize(reflect(dir, n));\n  \n\n    \n    \tcol = (0.8 * smoothstep(0.99, 1.0, dot(dir, light_dir)) + 0.5 * smoothstep(0.2, 1.0, dot(n, light_dir)))*\n        \trefl_color;\n    \n\t    float pen_length = 0.1 * length_1; //  10.25 * crinkle;\n    \tfloat soften_subsurface = 1.0;\n    \n\t    col += ( soften_subsurface * pen_length / max(abs(soften_subsurface *  thru_dist), pen_length)) * trans_color;\n    \n    }\n    float sweep = 20.0 * fragCoord.x / iResolution.x + smoothstep(0.0, iResolution.y, fragCoord.y);\n    float cloud_modulate = 0.25; //  + 0.25 * sin(1.71 * iTime + sweep);\n    float cloud_contrib =  0.05 * cloud_modulate * cloud_integral;\n    // cloud_contrib *= smoothstep(0.4, 0.6, cloud_contrib);\n    col +=  1.0 * vec3(-1.0, 1.0, 1.0) * cloud_contrib;\n\n    // col = vec3(freckles, 0.0);\n    // Output to screen\n    return  vec4(color_mul * col,1.0);\n}\n\n   \nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    // length_1 += 0.05 * length_1 * sin(0.11 * iTime);\n    \n \n\tvec4 col_out = color_at(fragCoord);\n#if SUPERSAMPLE\n    col_out *= 0.25;\n    const float scatter_scale = 0.8;\n    col_out += 0.25 * color_at(fragCoord + scatter_scale * vec2(0.6, 0.8));\n    col_out += 0.25 * color_at(fragCoord + scatter_scale * vec2(-1.0, 0.0));\n    col_out += 0.25 * color_at(fragCoord + scatter_scale * vec2(0.0, -1.0));\n#endif\n    fragColor = col_out;\n}\n",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 0,
+                        "ctype": "webcam",
+                        "id": 31,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/presets/webcam.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "//The MIT License\n//Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n\n\nfloat smooth_max(in float x, in float y, in float s) {\n    float bridge =\n        clamp(abs(x-y)/s, 0.0, 1.0);\n    return max(x,y) + 0.25 * s * (bridge - 1.0) * (bridge - 1.0);\n}\n\n\nvec3 smooth_max(in vec3 x, in vec3 y, float s) {\n\treturn vec3(smooth_max(x.x, y.x, s),\n                smooth_max(x.y, y.y, s),\n                smooth_max(x.z, y.z, s));\n}\n\nfloat smooth_min(in float x, in float y, in float s) {\n\n    float bridge =\n        clamp(abs(x-y)/s, 0.0, 1.0);\n    return min(x,y) - 0.25 * s * (bridge - 1.0) * (bridge - 1.0);\n}\n\n\nvec3 smooth_min(in vec3 x, in vec3 y, float s) {\n\treturn vec3(smooth_min(x.x, y.x, s),\n                smooth_min(x.y, y.y, s),\n                smooth_min(x.z, y.z, s));\n}\n",
+                "description": "",
+                "inputs": [],
+                "name": "Common",
+                "outputs": [],
+                "type": "common"
+            }
+        ],
+        "ver": "0.1"
+    }
+}

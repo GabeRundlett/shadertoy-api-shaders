@@ -1,0 +1,111 @@
+{
+    "Shader": {
+        "info": {
+            "date": "1707252838",
+            "description": "3D Gaussian Splats with Gaussian Mixture Models?\nSo I'm not really caught up with the hottest trends... but couldn't you use Gaussian mixture models with kNN-searches on point clouds (i.e. kd-trees or octrees) to quickly construct 3D Gaussian Splats?",
+            "flags": 32,
+            "hasliked": 0,
+            "id": "4XXGz7",
+            "likes": 5,
+            "name": "3DGS with GaussianMixtureModels?",
+            "published": 3,
+            "tags": [
+                "3d",
+                "model",
+                "gaussian",
+                "splats",
+                "covariance",
+                "mixture",
+                "classification"
+            ],
+            "usePreview": 0,
+            "username": "toomuchvoltage",
+            "viewed": 520
+        },
+        "renderpass": [
+            {
+                "code": "/***********************************************************\n\n   3D Gaussian Splats with Gaussian Mixture Models?\n\n   So this idea jumped into my head:\n   If presented with a point cloud, one could very quickly plaster it on some sort of an \n   acceleration structure (say a kd-tree). Then do a very quick kNN-search and rapidly squeeze out a\n   3D Guassian using Gaussian Mixture Models. Color distance or a radial cut-off could also\n   feed into 'painting' the points. Subsequently using wider tails and normalized weights,\n   you could get a pretty nice continuous blend between the 'splats' :).\n   If in fact, you placed it on an octree, you'd get the added benefit of inherent LODing?\n\n   I dunno, what do you folks think? :D Let me know in the comments.\n   If this *is* how things are done, let me know too ;).\n   \n   For a tutorial on Gaussian Mixture Models, see: https://www.youtube.com/watch?v=q71Niz856KE\n   The 3D extension is not too far off: http://individual.utoronto.ca/rav/FR/cov.htm\n\n   Covered under the MIT license:\n\n   Copyright (c) 2024 TooMuchVoltage Software Inc.\n\n   Permission is hereby granted, free of charge, to any person obtaining a copy\n   of this software and associated documentation files (the \"Software\"), to deal\n   in the Software without restriction, including without limitation the rights\n   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n   copies of the Software, and to permit persons to whom the Software is\n   furnished to do so, subject to the following conditions:\n\n   The above copyright notice and this permission notice shall be included in all\n   copies or substantial portions of the Software.\n\n   THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n   SOFTWARE.\n\n\n   Hit me up! :)\n   Twitter: twitter.com/toomuchvoltage\n   Facebook: fb.com/toomuchvoltage\n   YouTube: youtube.com/toomuchvoltage\n   Website: www.toomuchvoltage.com\n\n************************************************************/\n\n#define M_PI 3.1415926535\n#define DRAW_DISTANCE 50.0\n#define GAUSSIAN_TAIL -0.05\n#define SCATTERING_COEF 5.0\n#define EXTINCTION_COEF 5.0\n\nfloat sRGBencode(float C_linear)\n{\n    return C_linear > 0.0031308 ? (1.055 * pow(C_linear, 1./2.4) - 0.055) : (12.92 * C_linear);\n}\n\nvec3 sRGBencode(vec3 C_linear)\n{\n    C_linear = clamp(C_linear, 0., 1.);\n    return vec3(sRGBencode(C_linear.x), sRGBencode(C_linear.y), sRGBencode(C_linear.z));\n}\n\nfloat GMM(vec3 inPoint, vec3 setMean, mat3 coVarMatInv, float coVarMatDet)\n{\n    vec3 diffVec = inPoint - setMean;\n    return exp (GAUSSIAN_TAIL * dot (diffVec * coVarMatInv, diffVec)) / sqrt(pow(2.0 * M_PI, 3.0) * coVarMatDet);\n}\n\nvec4 worldDensityColor (vec3 samplePt, vec3 setMean[3], mat3 coVarMatInv[3], float coVarMatDet[3])\n{\n    float set1GMM = GMM (samplePt, setMean[0], coVarMatInv[0], coVarMatDet[0]);\n    float set2GMM = GMM (samplePt, setMean[1], coVarMatInv[1], coVarMatDet[1]);\n    float set3GMM = GMM (samplePt, setMean[2], coVarMatInv[2], coVarMatDet[2]);\n    float gmmSum = set1GMM + set2GMM + set3GMM;\n    if (gmmSum > 1.0)\n    {\n        set1GMM /= gmmSum; // Soft max\n        set2GMM /= gmmSum; // Soft max\n        set3GMM /= gmmSum; // Soft max\n    }\n    return vec4 (vec3 (set1GMM, set2GMM, set3GMM), min (gmmSum, 1.0));\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy * 2.0 - vec2 (1.0);\n    vec3 curEye = vec3 (cos(iTime) * 20.0, 1.5, sin(iTime) * 20.0);\n    vec3 curLook = -normalize (curEye);\n    vec3 curSide = normalize (cross(vec3 (0.0, 1.0, 0.0), curLook));\n    vec3 curUp = cross(curLook, curSide);\n    float noiseEval =  (texture(iChannel0, fragCoord/iResolution.xy).r * 0.1 + 0.9);\n    vec3 sampleDir = normalize (curLook - curSide * uv.x - curUp * uv.y) * noiseEval * 0.1;\n    vec3 samplePt = curEye + sampleDir;\n    float scat = 1.0;\n    vec3 finalColor = vec3 (0.0);\n    \n    vec3 setMean[3];\n    mat3 coVarMatInv[3];\n    float coVarMatDet[3];\n    for (int i = 0; i != 3; i++)\n    {\n        vec4 setMeanDet = texelFetch(iChannel2, ivec2 (i, 0), 0);\n        setMean[i] = setMeanDet.xyz;\n        coVarMatDet[i] = setMeanDet.a;\n        coVarMatInv[i][0] = texelFetch(iChannel2, ivec2 (i, 1), 0).xyz;\n        coVarMatInv[i][1] = texelFetch(iChannel2, ivec2 (i, 2), 0).xyz;\n        coVarMatInv[i][2] = texelFetch(iChannel2, ivec2 (i, 3), 0).xyz;\n    }\n\n\n    for (;;)\n    {\n        vec3 diffVec = samplePt - curEye;\n        if ( dot(diffVec, diffVec) > DRAW_DISTANCE*DRAW_DISTANCE ) break;\n        vec4 densityColorEval = worldDensityColor (samplePt, setMean, coVarMatInv, coVarMatDet);\n        if ( densityColorEval.a > 0.001 )\n        {\n\t        finalColor += scat * densityColorEval.a * densityColorEval.rgb * SCATTERING_COEF;\n            scat *= exp (-densityColorEval.a * EXTINCTION_COEF * noiseEval * 0.1);\n        }\n        if ( scat < 0.1 ) break;\n        samplePt += sampleDir;\n    }\n    finalColor = sqrt(tanh(finalColor*finalColor));\n    finalColor = sRGBencode(finalColor);\n\n    // Output to screen\n    fragColor = vec4(vec3 (finalColor),1.0) + texture(iChannel1, fragCoord/iResolution.xy);\n}",
+                "description": "",
+                "inputs": [
+                    {
+                        "channel": 1,
+                        "ctype": "buffer",
+                        "id": 257,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer00.png"
+                    },
+                    {
+                        "channel": 2,
+                        "ctype": "buffer",
+                        "id": 258,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "linear",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "clamp"
+                        },
+                        "src": "/media/previz/buffer01.png"
+                    },
+                    {
+                        "channel": 0,
+                        "ctype": "texture",
+                        "id": 14854,
+                        "published": 1,
+                        "sampler": {
+                            "filter": "mipmap",
+                            "internal": "byte",
+                            "srgb": "false",
+                            "vflip": "true",
+                            "wrap": "repeat"
+                        },
+                        "src": "/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png"
+                    }
+                ],
+                "name": "Image",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 37
+                    }
+                ],
+                "type": "image"
+            },
+            {
+                "code": "/***********************************************************\n\n   3D Gaussian Splats with Gaussian Mixture Models?\n\n   So this idea jumped into my head:\n   If presented with a point cloud, one could very quickly plaster it on some sort of an \n   acceleration structure (say a kd-tree). Then do a very quick kNN-search and rapidly squeeze out a\n   3D Guassian using Gaussian Mixture Models. Color distance or a radial cut-off could also\n   feed into 'painting' the points. Subsequently using wider tails and normalized weights,\n   you could get a pretty nice continuous blend between the 'splats' :).\n   If in fact, you placed it on an octree, you'd get the added benefit of inherent LODing?\n\n   I dunno, what do you folks think? :D Let me know in the comments.\n   If this *is* how things are done, let me know too ;).\n   \n   For a tutorial on Gaussian Mixture Models, see: https://www.youtube.com/watch?v=q71Niz856KE\n   The 3D extension is not too far off: http://individual.utoronto.ca/rav/FR/cov.htm\n\n   Covered under the MIT license:\n\n   Copyright (c) 2024 TooMuchVoltage Software Inc.\n\n   Permission is hereby granted, free of charge, to any person obtaining a copy\n   of this software and associated documentation files (the \"Software\"), to deal\n   in the Software without restriction, including without limitation the rights\n   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n   copies of the Software, and to permit persons to whom the Software is\n   furnished to do so, subject to the following conditions:\n\n   The above copyright notice and this permission notice shall be included in all\n   copies or substantial portions of the Software.\n\n   THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n   SOFTWARE.\n\n\n   Hit me up! :)\n   Twitter: twitter.com/toomuchvoltage\n   Facebook: fb.com/toomuchvoltage\n   YouTube: youtube.com/toomuchvoltage\n   Website: www.toomuchvoltage.com\n\n************************************************************/\n\n#define GoodTime1 (iTime * 0.25 + 23.0)\n#define GoodTime2 (iTime * 0.35 + 26.0)\n#define GoodTime3 (iTime * 0.45 + 52.0)\n\n#define SET_LEN 10\n\nbool point(vec3 eye, vec3 sampleDir, vec3 set[SET_LEN])\n{\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        vec3 toEye = normalize (set[i] - eye); \n        if (dot (toEye, sampleDir) > 0.99999) return true;\n    }\n    return false;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    vec2 uv = fragCoord/iResolution.xy * 2.0 - vec2 (1.0);\n    vec3 curEye = vec3 (cos(iTime) * 20.0, 1.5, sin(iTime) * 20.0);\n    vec3 curLook = -normalize (curEye);\n    vec3 curSide = normalize (cross(vec3 (0.0, 1.0, 0.0), curLook));\n    vec3 curUp = cross(curLook, curSide);\n    vec3 sampleDir = normalize (curLook - curSide * uv.x - curUp * uv.y);\n    \n    vec3 set1[SET_LEN], set2[SET_LEN], set3[SET_LEN];\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        set1[i] = vec3 (sin(GoodTime1 * float(i) * 0.45), sin(GoodTime1 * float(i) * 0.75), cos(GoodTime1 * float(i) * 0.97));\n        set1[i] += vec3 (-2.5, -2.5, -2.5);\n    }\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        set2[i] = vec3 (sin(GoodTime2 * float(i) * 1.35), sin(GoodTime2 * float(i) * 0.65), cos(GoodTime2 * float(i) * 0.77));\n        set2[i] += vec3 (2.5, -2.5, 2.5);\n    }\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        set3[i] = vec3 (sin(GoodTime3 * float(i) * 0.75), sin(GoodTime3 * float(i) * -0.85), cos(GoodTime3 * float(i) * 0.46));\n        set3[i] += vec3 (0.0, 2.5, 0.0);\n    }\n\n    fragColor = vec4 (0.0);\n    if (point(curEye, sampleDir, set1))\n        fragColor += vec4(1.0, 0.0, 0.0, 1.0);\n    if (point(curEye, sampleDir, set2))\n        fragColor += vec4(0.0, 1.0, 0.0, 1.0);\n    if (point(curEye, sampleDir, set3))\n        fragColor += vec4(0.0, 0.0, 1.0, 1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer A",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 257
+                    }
+                ],
+                "type": "buffer"
+            },
+            {
+                "code": "/***********************************************************\n\n   3D Gaussian Splats with Gaussian Mixture Models?\n\n   So this idea jumped into my head:\n   If presented with a point cloud, one could very quickly plaster it on some sort of an \n   acceleration structure (say a kd-tree). Then do a very quick kNN-search and rapidly squeeze out a\n   3D Guassian using Gaussian Mixture Models. Color distance or a radial cut-off could also\n   feed into 'painting' the points. Subsequently using wider tails and normalized weights,\n   you could get a pretty nice continuous blend between the 'splats' :).\n   If in fact, you placed it on an octree, you'd get the added benefit of inherent LODing?\n\n   I dunno, what do you folks think? :D Let me know in the comments.\n   If this *is* how things are done, let me know too ;).\n   \n   For a tutorial on Gaussian Mixture Models, see: https://www.youtube.com/watch?v=q71Niz856KE\n   The 3D extension is not too far off: http://individual.utoronto.ca/rav/FR/cov.htm\n\n   Covered under the MIT license:\n\n   Copyright (c) 2024 TooMuchVoltage Software Inc.\n\n   Permission is hereby granted, free of charge, to any person obtaining a copy\n   of this software and associated documentation files (the \"Software\"), to deal\n   in the Software without restriction, including without limitation the rights\n   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n   copies of the Software, and to permit persons to whom the Software is\n   furnished to do so, subject to the following conditions:\n\n   The above copyright notice and this permission notice shall be included in all\n   copies or substantial portions of the Software.\n\n   THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n   SOFTWARE.\n\n\n   Hit me up! :)\n   Twitter: twitter.com/toomuchvoltage\n   Facebook: fb.com/toomuchvoltage\n   YouTube: youtube.com/toomuchvoltage\n   Website: www.toomuchvoltage.com\n\n************************************************************/\n\n#define GoodTime1 (iTime * 0.25 + 23.0)\n#define GoodTime2 (iTime * 0.35 + 26.0)\n#define GoodTime3 (iTime * 0.45 + 52.0)\n\n#define SET_LEN 10\n\nvec3 Mean(vec3 set[SET_LEN])\n{\n    vec3 ret = vec3(0.0);\n    for (int i = 0; i != SET_LEN; i++)\n        ret += set[i];\n    ret /= float(SET_LEN);\n    return ret;\n}\n\nvec3 Var(vec3 set[SET_LEN], vec3 setMean)\n{\n    vec3 ret = vec3(0.0);\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        vec3 curDiff = vec3 (set[i].x - setMean.x, set[i].y - setMean.y, set[i].z - setMean.z);\n        curDiff *= curDiff;\n        ret += curDiff;\n    }\n    ret /= float(SET_LEN);\n    return ret;\n}\n\nvec3 CoVar(vec3 set[SET_LEN], vec3 setMean)\n{\n    vec3 ret = vec3 (0.0);\n    for (int i = 0; i != SET_LEN; i++)\n    {\n        vec3 curDiff = vec3 (set[i].x - setMean.x, set[i].y - setMean.y, set[i].z - setMean.z);\n        ret += vec3 (curDiff.x * curDiff.y, curDiff.x * curDiff.z, curDiff.y * curDiff.z);\n    }\n    ret /= float(SET_LEN);\n    return ret;\n}\n\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord )\n{\n    if ( int (fragCoord.x) == 0 && int (fragCoord.y) < 4 )\n    {\n        vec3 set1[SET_LEN];\n        for (int i = 0; i != SET_LEN; i++)\n        {\n            set1[i] = vec3 (sin(GoodTime1 * float(i) * 0.45), sin(GoodTime1 * float(i) * 0.75), cos(GoodTime1 * float(i) * 0.97));\n            set1[i] += vec3 (-2.5, -2.5, -2.5);\n        }\n        vec3 setMean = Mean (set1);\n        vec3 setVar = Var (set1, setMean);\n        vec3 setCoVar = CoVar (set1, setMean);\n        mat3 coVarMat, coVarMatInv;\n        coVarMat[0] = vec3 (setVar.x,   setCoVar.x, setCoVar.y);\n        coVarMat[1] = vec3 (setCoVar.x, setVar.y,   setCoVar.z);\n        coVarMat[2] = vec3 (setCoVar.y, setCoVar.z, setVar.z);\n        coVarMatInv = inverse(coVarMat);\n        float coVarMatDet = coVarMat[0][0] * coVarMat[1][1] * coVarMat[2][2] - coVarMat[0][2] * coVarMat[1][1] * coVarMat[2][0];\n        if ( int(fragCoord.y) == 0 )\n            fragColor = vec4 (setMean, coVarMatDet);\n        else if ( int(fragCoord.y) == 1 )\n            fragColor = vec4 (coVarMatInv[0], 1.0);\n        else if ( int(fragCoord.y) == 2 )\n            fragColor = vec4 (coVarMatInv[1], 1.0);\n        else\n            fragColor = vec4 (coVarMatInv[2], 1.0);\n    }\n    else if ( int (fragCoord.x) == 1 && int (fragCoord.y) < 4 )\n    {\n        vec3 set2[SET_LEN];\n        for (int i = 0; i != SET_LEN; i++)\n        {\n            set2[i] = vec3 (sin(GoodTime2 * float(i) * 1.35), sin(GoodTime2 * float(i) * 0.65), cos(GoodTime2 * float(i) * 0.77));\n            set2[i] += vec3 (2.5, -2.5, 2.5);\n        }\n        vec3 setMean = Mean (set2);\n        vec3 setVar = Var (set2, setMean);\n        vec3 setCoVar = CoVar (set2, setMean);\n        mat3 coVarMat, coVarMatInv;\n        coVarMat[0] = vec3 (setVar.x,   setCoVar.x, setCoVar.y);\n        coVarMat[1] = vec3 (setCoVar.x, setVar.y,   setCoVar.z);\n        coVarMat[2] = vec3 (setCoVar.y, setCoVar.z, setVar.z);\n        coVarMatInv = inverse(coVarMat);\n        float coVarMatDet = coVarMat[0][0] * coVarMat[1][1] * coVarMat[2][2] - coVarMat[0][2] * coVarMat[1][1] * coVarMat[2][0];\n        if ( int(fragCoord.y) == 0 )\n            fragColor = vec4 (setMean, coVarMatDet);\n        else if ( int(fragCoord.y) == 1 )\n            fragColor = vec4 (coVarMatInv[0], 1.0);\n        else if ( int(fragCoord.y) == 2 )\n            fragColor = vec4 (coVarMatInv[1], 1.0);\n        else\n            fragColor = vec4 (coVarMatInv[2], 1.0);\n    }\n    else if ( int (fragCoord.x) == 2 && int (fragCoord.y) < 4 )\n    {\n        vec3 set3[SET_LEN];\n        for (int i = 0; i != SET_LEN; i++)\n        {\n            set3[i] = vec3 (sin(GoodTime3 * float(i) * 0.75), sin(GoodTime3 * float(i) * -0.85), cos(GoodTime3 * float(i) * 0.46));\n            set3[i] += vec3 (0.0, 2.5, 0.0);\n        }\n        vec3 setMean = Mean (set3);\n        vec3 setVar = Var (set3, setMean);\n        vec3 setCoVar = CoVar (set3, setMean);\n        mat3 coVarMat, coVarMatInv;\n        coVarMat[0] = vec3 (setVar.x,   setCoVar.x, setCoVar.y);\n        coVarMat[1] = vec3 (setCoVar.x, setVar.y,   setCoVar.z);\n        coVarMat[2] = vec3 (setCoVar.y, setCoVar.z, setVar.z);\n        coVarMatInv = inverse(coVarMat);\n        float coVarMatDet = coVarMat[0][0] * coVarMat[1][1] * coVarMat[2][2] - coVarMat[0][2] * coVarMat[1][1] * coVarMat[2][0];\n        if ( int(fragCoord.y) == 0 )\n            fragColor = vec4 (setMean, coVarMatDet);\n        else if ( int(fragCoord.y) == 1 )\n            fragColor = vec4 (coVarMatInv[0], 1.0);\n        else if ( int(fragCoord.y) == 2 )\n            fragColor = vec4 (coVarMatInv[1], 1.0);\n        else\n            fragColor = vec4 (coVarMatInv[2], 1.0);\n    }\n    else\n        fragColor = vec4(0.0,0.0,1.0,1.0);\n}",
+                "description": "",
+                "inputs": [],
+                "name": "Buffer B",
+                "outputs": [
+                    {
+                        "channel": 0,
+                        "id": 258
+                    }
+                ],
+                "type": "buffer"
+            }
+        ],
+        "ver": "0.1"
+    }
+}
